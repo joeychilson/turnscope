@@ -1,0 +1,4 @@
+{"alert":{"account":"claude:a","title":"Claude Max","label":"joey@example.com","limit":"5 hours","scope":null,"kind":"running_out","at":"2026-09-30T14:00:00Z","left":20.0}}
+{"recap":[{"account":"claude:a","title":"Claude Max","label":"joey@example.com","limit":"Weekly","used":84.0,"used_up_at":null,"project":"atlas"}]}
+{"reply":{"id":2,"error":"codex isn't on this Mac's PATH"}}
+{"reply":{"id":3,"error":null}}
