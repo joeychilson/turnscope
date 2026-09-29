@@ -1,0 +1,9 @@
+/target/
+.DS_Store
+# Xcode's and SwiftPM's own, per person and per build.
+xcuserdata/
+*.xcuserstate
+.build/
+.swiftpm/
+# Claude Code worktrees.
+.claude/

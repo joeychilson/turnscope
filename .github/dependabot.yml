@@ -1,0 +1,28 @@
+# Dependencies are pinned, so these are the notices that one has fallen
+# behind: one grouped pull request a week for each ecosystem, for versions
+# out at least a week, so a bad release has time to be pulled first.
+#
+# Sparkle, the app's one Swift dependency, is pinned in the Xcode project,
+# which Dependabot can't read: update it by hand, in Xcode, and check
+# Sparkle's release notes for what signing and the appcast need.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      rust:
+        patterns: ["*"]

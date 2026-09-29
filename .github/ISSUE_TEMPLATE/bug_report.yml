@@ -1,0 +1,53 @@
+name: Bug report
+description: Something Turnscope shows, counts or does is wrong.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead. A screenshot of the panel helps; crop out anything private.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      placeholder: |
+        1. Use Claude Code with two accounts
+        2. Open the panel
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: Turnscope version
+      description: Settings › General, at the bottom.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version, and Apple silicon or Intel
+      placeholder: "macOS 26.3, Apple silicon"
+    validations:
+      required: true
+  - type: textarea
+    id: agents
+    attributes:
+      label: Agents and their versions
+      description: Which agents are involved, with `claude --version`, `codex --version` and so on, and the subscription or key each uses.
+      placeholder: |
+        Claude Code 2.3.1, Claude Max
+        Codex 0.60.0, ChatGPT Plus
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: What `turnscope doctor` says
+      description: |
+        For a figure that is wrong or missing, run this and paste what it prints. It reads your history into a scratch folder, which can take a minute, and reports what it found and understood. It prints counts, not what was said, but may name files and folders it couldn't read: look it over before posting.
+
+        `/Applications/Turnscope.app/Contents/Helpers/turnscope doctor --data "$(mktemp -d)"`
+      render: text
