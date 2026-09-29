@@ -1,0 +1,146 @@
+{
+  "version": 4,
+  "at": "2026-09-30T12:00:00Z",
+  "accounts": [
+    {
+      "id": "claude:a",
+      "title": "Claude Max",
+      "label": "joey@example.com",
+      "logo": "anthropic",
+      "agents": [
+        "claude-code"
+      ],
+      "in_use": true,
+      "hidden": false,
+      "problem": null,
+      "standing": "running_out",
+      "deciding": "five_hour",
+      "limits": [
+        {
+          "key": "five_hour",
+          "name": "5 hours",
+          "scope": null,
+          "hours": 5,
+          "left": 20.0,
+          "resets_at": "2026-09-30T15:00:00Z",
+          "runs_out_at": "2026-09-30T14:00:00Z",
+          "left_at_reset": null,
+          "standing": "running_out"
+        },
+        {
+          "key": "seven_day",
+          "name": "Weekly",
+          "scope": null,
+          "hours": 168,
+          "left": 60.0,
+          "resets_at": "2026-10-04T00:00:00Z",
+          "runs_out_at": null,
+          "left_at_reset": 43.2,
+          "standing": "lasts"
+        }
+      ],
+      "used_most": [
+        {
+          "session": "claude-code:s1",
+          "title": "Rethink the architecture",
+          "project": "atlas",
+          "agent": "claude-code",
+          "share": 12.5,
+          "active": true
+        }
+      ],
+      "advice": {
+        "kind": "reread",
+        "context": 966000
+      }
+    },
+    {
+      "id": "chatgpt:b",
+      "title": "ChatGPT Pro Lite",
+      "label": null,
+      "logo": "openai",
+      "agents": [
+        "codex",
+        "opencode"
+      ],
+      "in_use": false,
+      "hidden": false,
+      "problem": null,
+      "standing": "lasts",
+      "deciding": "primary_window",
+      "limits": [
+        {
+          "key": "primary_window",
+          "name": "Weekly",
+          "scope": null,
+          "hours": 168,
+          "left": 66.0,
+          "resets_at": "2026-10-03T19:00:00Z",
+          "runs_out_at": null,
+          "left_at_reset": 66.0,
+          "standing": "lasts"
+        }
+      ],
+      "used_most": [],
+      "advice": null
+    },
+    {
+      "id": "supergrok:c",
+      "title": "SuperGrok",
+      "label": null,
+      "logo": "xai",
+      "agents": [
+        "grok",
+        "pi"
+      ],
+      "in_use": false,
+      "hidden": false,
+      "problem": "sign_in",
+      "standing": "lasts",
+      "deciding": null,
+      "limits": [],
+      "used_most": [],
+      "advice": null
+    },
+    {
+      "id": "api:openrouter",
+      "title": "OpenRouter API key",
+      "label": null,
+      "logo": "openrouter",
+      "agents": [
+        "opencode",
+        "pi"
+      ],
+      "in_use": false,
+      "hidden": true,
+      "problem": null,
+      "standing": "lasts",
+      "deciding": null,
+      "limits": [],
+      "used_most": [],
+      "advice": null
+    }
+  ],
+  "agents": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "status": "connected"
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "status": "available"
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "status": "outdated"
+    },
+    {
+      "id": "pi",
+      "name": "Pi",
+      "status": "unsupported"
+    }
+  ]
+}

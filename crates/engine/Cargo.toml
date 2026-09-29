@@ -1,0 +1,37 @@
+[package]
+name = "turnscope-engine"
+description = "Reads coding agents' history and keeps the ledger Turnscope answers from"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-channel.workspace = true
+base64.workspace = true
+jiff.workspace = true
+notify.workspace = true
+rayon.workspace = true
+rusqlite.workspace = true
+rust-stemmers.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# The integration tests record limit readings of synthetic accounts.
+turnscope-engine = { path = ".", features = ["fixture"] }
+
+[features]
+# `Engine::record_fixture_limits`, for the engine's and the MCP server's
+# tests, whose synthetic history has subscriptions no provider could be
+# asked about.
+fixture = []
+
+[lints]
+workspace = true

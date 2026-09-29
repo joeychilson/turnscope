@@ -1,0 +1,24 @@
+[package]
+name = "turnscope-mcp"
+description = "Turnscope's answers for coding agents, over the Model Context Protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+turnscope-engine.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# The tests record limit readings of synthetic accounts.
+turnscope-engine = { workspace = true, features = ["fixture"] }
+
+[lints]
+workspace = true

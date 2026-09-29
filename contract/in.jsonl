@@ -1,0 +1,3 @@
+{"id":1,"do":"hide","account":"api:openrouter","hidden":true}
+{"id":2,"do":"connect","agent":"codex"}
+{"id":3,"do":"panel","open":true}
