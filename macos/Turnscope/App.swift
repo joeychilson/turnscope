@@ -12,7 +12,8 @@
 // `TURNSCOPE_BINARY` names, as a build from a checkout runs; `--data <dir>`
 // keeps its ledger in a scratch directory, as work in progress should, and
 // `--open` opens the panel once the first feed comes, to look at it: `--open
-// account` with the first account in use open, and `--open settings`,
+// account` with the first account in use open, `--open resting` with the
+// accounts not in use listed, and `--open settings`,
 // `--open agents` or `--open accounts` at that tab of Settings.
 // `--fixture <feed.json>` shows a feed from a file, with no engine, as
 // `contract/feed.json`, and `--snapshot <folder>` draws the panel over it,
@@ -116,6 +117,8 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         self.navigation.go(.settings, tab: tab)
                     } else if opened == "account" {
                         self.navigation.open = self.store.inUse.first?.id
+                    } else if opened == "resting" {
+                        self.navigation.restingOpen = true
                     }
                 }
             }
