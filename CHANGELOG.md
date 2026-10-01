@@ -8,6 +8,8 @@ released.
 
 ## [Unreleased]
 
+- Opening Turnscope for the first time doesn't send a notification for how
+  much of a week is left: only a limit that will run out, or has, is news.
 - Limits show up within a few seconds of opening Turnscope for the first
   time, rather than once all of your agents' history has been read.
 ## [0.1.0]
