@@ -145,6 +145,15 @@ pub struct Engine {
     names: Mutex<Option<(Option<i64>, Arc<Names>)>>,
 }
 
+/// Limits waiting for a scan, until dropped ([`Engine::queue_limits`]).
+struct Queueing<'a>(&'a Mutex<Option<Vec<LimitsRead>>>);
+
+impl Drop for Queueing<'_> {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
+
 /// What reading one subscription's limits found, to be recorded.
 struct LimitsRead {
     subscription: Subscription,
@@ -305,7 +314,7 @@ impl Engine {
     pub fn scan(&self) -> Result<ScanReport> {
         let mut ledger = self.writing()?;
         // Limits read while it holds the ledger wait for it to record them.
-        *self.waiting.lock().unwrap_or_else(PoisonError::into_inner) = Some(Vec::new());
+        let queueing = self.queue_limits();
         // A long read, as the first is, shows what it has read so far, the
         // newest history first: after a second, and then after four times as
         // long each time, since each showing works the cache out again.
@@ -313,7 +322,7 @@ impl Engine {
         let mut wait = SHOW_PROGRESS;
         let roots = self.roots();
         let scanned = ingest::scan(&self.readers, &roots, &mut ledger, |ledger| {
-            self.record_waiting(ledger, false)?;
+            self.record_waiting(ledger, false);
             if caught.elapsed() >= wait {
                 self.catch_up(ledger)?;
                 caught = Clock::now();
@@ -323,9 +332,9 @@ impl Engine {
         });
         // Whatever became of the read, the last limits that waited are
         // recorded and no more wait.
-        let recorded = self.record_waiting(&mut ledger, true);
+        self.record_waiting(&mut ledger, true);
+        drop(queueing);
         let report = scanned?;
-        recorded?;
         // Recorded before the last catch-up tells subscribers, so what they
         // ask on hearing of it finds the look finished.
         ledger.record_look(Instant::now(), &report.failed)?;
@@ -334,11 +343,23 @@ impl Engine {
         Ok(report)
     }
 
+    /// Have limits read from now on wait for the scan about to start, until
+    /// what this returns is dropped, as it is however the scan ends: one
+    /// that panicked would otherwise leave every later read waiting for a
+    /// scan that never records it. Those waiting then are read again in
+    /// minutes, as any read that failed is.
+    fn queue_limits(&self) -> Queueing<'_> {
+        *self.waiting.lock().unwrap_or_else(PoisonError::into_inner) = Some(Vec::new());
+        Queueing(&self.waiting)
+    }
+
     /// Record the limits waiting for the scan that holds `ledger`, and tell
     /// subscribers of them; with `last`, as the scan ends, none wait after.
     /// The weekly recap waits for the next read, since it draws on the
-    /// history the scan is still reading.
-    fn record_waiting(&self, ledger: &mut Ledger, last: bool) -> Result<()> {
+    /// history the scan is still reading. A read that can't be recorded is
+    /// told of, as a read that fails is, and stops neither the rest nor the
+    /// scan: limits are read again in minutes, and history is read now.
+    fn record_waiting(&self, ledger: &mut Ledger, last: bool) {
         let waited = {
             let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
             if last {
@@ -348,10 +369,12 @@ impl Engine {
             }
         };
         for read in waited {
-            let (alerts, _) = self.record_limits_read(ledger, read, false)?;
-            self.tell_limits(alerts, Vec::new());
+            let name = read.subscription.name();
+            match self.record_limits_read(ledger, read, false) {
+                Ok((alerts, _)) => self.tell_limits(alerts, Vec::new()),
+                Err(error) => self.publish(Change::Trouble(format!("{name} limits: {error}"))),
+            }
         }
-        Ok(())
     }
 
     /// How complete what the engine answers from is: when every agent's
@@ -663,7 +686,10 @@ impl Engine {
     /// read, as a file is while an agent writes it, which leaves its accounts
     /// as they were until the next read; or a ledger or cache that can't be
     /// read or written. A provider that cannot be reached is no failure but
-    /// the account's problem, recorded with it.
+    /// the account's problem, recorded with it. Called while another thread
+    /// of this process reads history in full, what it reads is recorded by
+    /// that read, within a tenth of a second, rather than by the time it
+    /// returns.
     pub fn read_all_limits(&self) -> Result<()> {
         let mut first = Ok(());
         for subscription in Subscription::ALL {
@@ -1053,7 +1079,7 @@ mod tests {
         // A scan holds the ledger throughout, as a first read of history
         // does for seconds.
         let mut scanning = engine.writing().unwrap();
-        *engine.waiting.lock().unwrap() = Some(Vec::new());
+        let queueing = engine.queue_limits();
         let read = LimitsRead {
             subscription: Subscription::ChatGpt,
             reads: vec![Read {
@@ -1079,12 +1105,28 @@ mod tests {
         std::thread::spawn(move || taken.send(taking.take_limits(read).is_ok()));
         assert_eq!(take.recv_timeout(Duration::from_secs(10)), Ok(true));
         // Recorded at the scan's next group, while it still holds the ledger.
-        engine.record_waiting(&mut scanning, false).unwrap();
+        engine.record_waiting(&mut scanning, false);
+        drop(queueing);
         drop(scanning);
         let accounts = engine.limits().unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, "chatgpt:acct-1");
         assert_eq!(accounts[0].limits[0].left(), Some(60.0));
+    }
+
+    #[test]
+    fn a_scan_that_stops_unexpectedly_leaves_no_limits_waiting_for_it() {
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let engine = Engine::open(data.path(), home.path()).unwrap();
+        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _queueing = engine.queue_limits();
+            panic!("the scan stopped");
+        }));
+        assert!(stopped.is_err());
+        // Limits read after are recorded as they are read, not left for a
+        // scan that will never record them.
+        assert!(engine.waiting.lock().unwrap().is_none());
     }
 
     #[test]
