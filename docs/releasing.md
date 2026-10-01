@@ -101,8 +101,10 @@ copy would refuse an update signed with it.
    The release build takes the app's version from there; the
    `MARKETING_VERSION` in the Xcode project is only for development builds,
    and can be set to match.
-3. **Merge.** Commit as `chore(release): release X.Y.Z`, merge to main, and
-   wait for Verify to pass on main.
+3. **Commit.** Commit as `chore(release): release X.Y.Z` directly on main
+   and push it: a release changes no code, so it needs no pull request,
+   which code changes go through and land squashed, one commit each. Main
+   takes only commits added on top. Wait for Verify to pass on main.
 4. **Tag.** On that commit on main:
 
    ```sh
