@@ -37,7 +37,10 @@
 //! out before it resets, one reached, and one back, which is news only when
 //! the last alert about it said it was reached. Beside them go milestones of
 //! a week or a month: each quarter of it used, and a subscription's that
-//! resets within a day with more than half of it left. So is the weekly
+//! resets within a day with more than half of it left. An account's first
+//! reading, as every account's is when Turnscope first runs, says only that
+//! a limit runs out or ran out: how much is left is where it stands, not
+//! news, and its milestones are kept as told. So is the weekly
 //! recap ([`recap`]): from Monday morning, how each account's week that
 //! ended went. Only the process that keeps the data directory works them
 //! out, the app, which shows them: limits another process reads, as an MCP
@@ -1099,6 +1102,11 @@ pub(crate) fn alerts(
     let mut alerts = Vec::new();
     // An account the person hid is not to be heard of.
     for account in accounts.iter().filter(|account| !account.hidden) {
+        // Read for the first time, as every account is when Turnscope first
+        // runs, how much of a week is left is where it stands, not news: its
+        // milestones are kept as told, and only that it runs out, ran out or
+        // is back is said.
+        let first = ledger.read_once(&account.id)?;
         for limit in &account.limits {
             // A week or a month someone was warned of is worth saying is
             // full again; five hours, which reset within the day, aren't.
@@ -1153,7 +1161,7 @@ pub(crate) fn alerts(
             for (kind, when, window) in due.into_iter().chain(milestones(account, limit, long, now))
             {
                 if ledger.send_alert(&account.id, &limit.key, kind, window, now)? {
-                    if warned && kind.quarter() {
+                    if (warned || first) && kind.quarter() || first && kind == AlertKind::Unused {
                         continue;
                     }
                     warned |= matches!(kind, AlertKind::RunningOut | AlertKind::Reached);
@@ -1923,6 +1931,27 @@ mod tests {
     }
 
     #[test]
+    fn an_account_read_for_the_first_time_says_only_that_it_runs_out() {
+        // First read four days in at 30%, 0.3125 points an hour, lasting: a
+        // quarter used is where it stands, not news. An hour on, 51%, 0.526
+        // an hour, the 49 left lasting 93 hours, past the reset 71 hours
+        // off: half left is news.
+        assert_eq!(
+            alerted(vec![
+                (4 * DAY, weekly(30.0, 0)),
+                (4 * DAY + 60, weekly(51.0, 0)),
+            ]),
+            [(4 * DAY + 60, AlertKind::HalfLeft)]
+        );
+        // First read six days in at 90%, 0.625 an hour: the 10 left run out
+        // in 16 hours, before the reset a day off, which is said.
+        assert_eq!(
+            alerted(vec![(6 * DAY, weekly(90.0, 0))]),
+            [(6 * DAY, AlertKind::RunningOut)]
+        );
+    }
+
+    #[test]
     fn a_quarter_crossed_as_a_week_starts_running_out_is_not_said_beside_it() {
         // 10% a day in, then 30% an hour later: 20 points an hour, so the
         // 70 left last three and a half hours, far before the week resets
@@ -1939,6 +1968,8 @@ mod tests {
     #[test]
     fn a_week_mostly_left_a_day_before_it_resets_is_said_once() {
         let sent = alerted(vec![
+            // Read before, so what follows is news.
+            (DAY, weekly(10.0, 0)),
             // 36 hours before the reset, a day and a half: not yet.
             (WEEK - 36 * 60, weekly(30.0, 0)),
             // 18 hours before it, with 69% left.
@@ -2025,6 +2056,8 @@ mod tests {
     #[test]
     fn a_milestone_said_after_a_warning_does_not_keep_a_week_from_being_back() {
         let sent = alerted(vec![
+            // Read before, so what follows is news.
+            (12 * 60, weekly(5.0, 0)),
             // 26% two days in, 13 points a day: the 74 left last 137 hours,
             // past the reset five days on.
             (2 * DAY, weekly(26.0, 0)),

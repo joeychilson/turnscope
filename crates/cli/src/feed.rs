@@ -11,6 +11,11 @@
 //! tests. A change to the feed's shape changes that file and [`VERSION`],
 //! in the same commit as the app's reading of it.
 //!
+//! **Reading.** Until the engine has looked through every agent's history
+//! once, as on the first launch, which took 10 s on 2026-09-30, the feed
+//! says it is still reading: what it has found may be all there is, or not
+//! yet, and the app says so rather than that nothing was found.
+//!
 //! **Accounts.** Every account the engine knows, hidden ones too, marked, so
 //! Settings can list them. Those in use come first, the most urgent first:
 //! used up, then running out, then the least left. The rest follow: those
@@ -43,7 +48,7 @@ use crate::connect::Link;
 
 /// The feed's version, which `contract/feed.json` carries: raised with
 /// every change to its shape.
-pub(crate) const VERSION: u32 = 6;
+pub(crate) const VERSION: u32 = 7;
 
 /// How many sessions that used a window are named.
 const NAMED: usize = 3;
@@ -61,6 +66,9 @@ const LARGE: u64 = 100_000;
 pub(crate) struct Feed {
     pub(crate) version: u32,
     pub(crate) at: String,
+    /// Whether the engine is still reading every agent's history for the
+    /// first time ([`turnscope_engine::Health::looked`]).
+    pub(crate) reading: bool,
     pub(crate) accounts: Vec<Account>,
     pub(crate) agents: Vec<Link>,
 }
@@ -160,6 +168,7 @@ pub(crate) fn read(
     used: bool,
 ) -> turnscope_engine::Result<Feed> {
     let accounts = engine.limits()?;
+    let reading = engine.health()?.looked.is_none();
     let now = Instant::now();
     let mut told = HashMap::new();
     for account in accounts
@@ -190,14 +199,16 @@ pub(crate) fn read(
             model.clone_from(name);
         }
     }
-    Ok(assemble(accounts, told, agents, now))
+    Ok(assemble(accounts, told, agents, reading, now))
 }
 
-/// The feed of `accounts` as of `now`, with what was `told` of those in use.
+/// The feed of `accounts` as of `now`, with what was `told` of those in use,
+/// while history is still `reading` for the first time or not.
 pub(crate) fn assemble(
     accounts: Vec<AccountLimits>,
     mut told: HashMap<String, Told>,
     agents: Vec<Link>,
+    reading: bool,
     now: Instant,
 ) -> Feed {
     let accounts = ranked(accounts)
@@ -210,6 +221,7 @@ pub(crate) fn assemble(
     Feed {
         version: VERSION,
         at: time(now),
+        reading,
         accounts,
         agents,
     }
@@ -617,6 +629,7 @@ mod tests {
             vec![key, grok, chatgpt, claude],
             told,
             agents,
+            false,
             at("2026-09-30T12:00:00Z"),
         )
     }
