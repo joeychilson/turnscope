@@ -1,6 +1,7 @@
 {
-  "version": 6,
+  "version": 7,
   "at": "2026-09-30T12:00:00Z",
+  "reading": false,
   "accounts": [
     {
       "id": "claude:a",

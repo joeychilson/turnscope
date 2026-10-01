@@ -230,9 +230,14 @@ public struct Words: Sendable {
         }
     }
 
-    /// What the panel says before any account is found: that no agent it
-    /// reads is here, or that those here aren't signed in yet.
-    public func welcome(_ agents: [AgentLink]) -> (headline: String, detail: String) {
+    /// What the panel says before any account is found: while the engine is
+    /// still `reading` agents' history for the first time, that limits are
+    /// on their way, since none found may only mean none found yet; after,
+    /// that no agent it reads is here, or that those here aren't signed in.
+    public func welcome(_ agents: [AgentLink], reading: Bool = false) -> (headline: String, detail: String) {
+        if reading {
+            return ("Getting your limits", "They show up here in a moment.")
+        }
         guard !agents.isEmpty else {
             return ("No agents found",
                     "Turnscope reads Claude Code, Codex, OpenCode, Grok and Pi. Sign in to one, and its limits show up here.")

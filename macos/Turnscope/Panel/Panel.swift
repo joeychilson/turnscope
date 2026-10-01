@@ -91,7 +91,7 @@ private struct FirstPage: View {
             if store.feed == nil {
                 Opening(failure: store.failure)
             } else {
-                Verdict(inUse: store.inUse, agents: store.all.isEmpty ? store.agents : nil)
+                Verdict(inUse: store.inUse, agents: store.all.isEmpty ? store.agents : nil, reading: store.reading)
                     .padding(.horizontal, 20)
                     .padding(.top, 18)
                     .padding(.bottom, 14)
@@ -195,10 +195,12 @@ private struct Verdict: View {
     var inUse: [Account]
     /// The agents found, when no account is.
     var agents: [AgentLink]?
+    /// Whether agents' history is still read for the first time.
+    var reading = false
 
     var body: some View {
         let words = Words(now: Words.frozen ?? navigation.now)
-        let verdict = agents.map(words.welcome)
+        let verdict = agents.map { words.welcome($0, reading: reading) }
             .map { (headline: $0.headline, detail: $0.detail, standing: Standing.lasts) }
             ?? words.verdict(inUse)
         VStack(alignment: .leading, spacing: 4) {
@@ -218,8 +220,9 @@ private struct Verdict: View {
     }
 }
 
-/// Settings and Quit, and, only while the engine is down and what is shown
-/// may be out of date, that it is.
+/// Settings and Quit, and how current what is shown is: only while the
+/// engine is down, that what is shown may be out of date; and while it is
+/// still reading agents' history for the first time, that it is.
 private struct Footer: View {
     @Environment(Store.self) private var store
     @Environment(Navigation.self) private var navigation
@@ -235,6 +238,18 @@ private struct Footer: View {
                     .accessibilityLabel("Not up to date: \(failure). Trying again.")
                     .padding(.leading, 6)
                     .transition(appears)
+            } else if store.reading {
+                HStack(spacing: 6) {
+                    Spinner()
+                    Text("Reading your agents' history…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .help("Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.")
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Reading your agents' history")
+                .padding(.leading, 6)
+                .transition(appears)
             }
             Spacer()
             // Escape closes the panel from its first page; its other pages
@@ -255,5 +270,22 @@ private struct Footer: View {
                 .help("Quit Turnscope")
                 .accessibilityLabel("Quit Turnscope")
         }
+    }
+}
+
+/// A small arc turning while something is under way, drawn by SwiftUI, so a
+/// snapshot shows it as the panel does.
+private struct Spinner: View {
+    @State private var turning = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.7)
+            .stroke(.secondary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            .frame(width: 9, height: 9)
+            .rotationEffect(.degrees(turning ? 360 : 0))
+            .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: turning)
+            .onAppear { turning = true }
+            .accessibilityHidden(true)
     }
 }

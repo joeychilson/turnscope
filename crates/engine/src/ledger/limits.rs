@@ -172,6 +172,20 @@ impl Ledger {
         readings(statement.query(params![account, since.millis()])?)
     }
 
+    /// Whether `account`'s limits have been read at one time only, as every
+    /// account's are when Turnscope first runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Ledger`] when the ledger cannot be read.
+    pub(crate) fn read_once(&self, account: &str) -> Result<bool> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT at FROM limit_reading WHERE account = ?1 LIMIT 2)",
+        )?;
+        let times: i64 = statement.query_row([account], |row| row.get(0))?;
+        Ok(times == 1)
+    }
+
     /// The readings `account`'s latest successful read found: each limit its
     /// provider reported then. A limit it has stopped reporting, as a window
     /// a plan no longer has, is not among them, however recently it was

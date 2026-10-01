@@ -9,11 +9,14 @@ import Foundation
 public struct Feed: Decodable, Equatable, Sendable {
     public var version: Int
     public var at: Date
+    /// Whether the engine is still reading every agent's history for the
+    /// first time, so what it has found may not be all there is.
+    public var reading: Bool
     public var accounts: [Account]
     public var agents: [AgentLink]
 
     /// The feed's version this app reads.
-    public static let version = 6
+    public static let version = 7
 }
 
 /// An account, as the app shows it. `title` is what it is called before
