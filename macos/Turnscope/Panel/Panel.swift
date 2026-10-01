@@ -95,7 +95,7 @@ private struct FirstPage: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 18)
                     .padding(.bottom, 14)
-                VStack(spacing: 2) {
+                VStack(spacing: 4) {
                     ForEach(store.inUse) { account in
                         AccountRow(account: account,
                                    open: navigation.open == account.id,

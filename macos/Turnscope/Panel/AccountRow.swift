@@ -199,7 +199,8 @@ private struct UsedMost: View {
                             HStack(spacing: 5) {
                                 Text(used.title ?? "Untitled session").font(.system(size: 12)).lineLimit(1)
                                 if used.active {
-                                    Circle().fill(.primary).frame(width: 5, height: 5)
+                                    Circle().fill(active).frame(width: 6, height: 6)
+                                        .help("Active now")
                                         .accessibilityLabel("Active now")
                                 }
                             }

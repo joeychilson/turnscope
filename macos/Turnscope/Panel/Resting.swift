@@ -22,7 +22,9 @@ struct Resting: View {
         // The feed lists those with room first, the most first.
         let best = accounts.first { $0.problem == nil && $0.decidingLimit?.left != nil }
         let label = accounts.isEmpty ? "\(hidden.count) hidden" : "\(accounts.count) not in use"
-        VStack(alignment: .leading, spacing: 0) {
+        // Rows a few points apart, so one open, or hovered, doesn't sit on
+        // the next.
+        VStack(alignment: .leading, spacing: 4) {
             Button {
                 withAnimation(spring) {
                     open.toggle()
@@ -47,7 +49,7 @@ struct Resting: View {
             .accessibilityLabel(label)
             .accessibilityHint(open ? "Folds them" : "Lists them")
             if open {
-                VStack(spacing: 0) {
+                VStack(spacing: 4) {
                     ForEach(accounts) { account in
                         RestingRow(account: account, open: chosen == account.id) {
                             withAnimation(spring) { chosen = chosen == account.id ? nil : account.id }

@@ -17,6 +17,11 @@ let spring = Animation.spring(response: 0.34, dampingFraction: 0.9)
     removal: .opacity.animation(.easeOut(duration: 0.06))
 )
 
+/// The color of something at work this moment, as a session active now: the
+/// one color a calm panel carries, since it asks nothing of the person. As
+/// bright as the amber beside it, and muted as it is.
+let active = Color(red: 0.27, green: 0.72, blue: 0.43)
+
 extension Standing {
     /// The color what stands so is written in.
     var color: Color {

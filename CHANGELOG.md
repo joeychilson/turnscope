@@ -8,6 +8,9 @@ released.
 
 ## [Unreleased]
 
+- A session at work right now is marked with a green dot, and the panel's
+  rows have a little room between them.
+
 ## [0.1.1]
 
 - Limits show up within a few seconds of opening Turnscope for the first

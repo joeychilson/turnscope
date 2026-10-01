@@ -2,7 +2,8 @@
 // `Turnscope --snapshot <folder> --fixture contract/feed.json`, as
 // `scripts/screenshots.sh` runs it for the README. With `--open`, it is
 // drawn as `--open` opens it: `account`, the first account in use opened,
-// or `settings`, `agents` or `accounts`, that tab of Settings. Glass needs a
+// `resting`, the accounts not in use listed, or `settings`, `agents` or
+// `accounts`, that tab of Settings. Glass needs a
 // window behind it, so the panel is drawn on the window background instead.
 
 import AppKit
@@ -21,6 +22,7 @@ enum Snapshot {
         let tab = opened.flatMap(Navigation.Tab.init(opening:))
         if let tab { navigation.tab = tab }
         if opened == "account" { navigation.open = store.inUse.first?.id }
+        if opened == "resting" { navigation.restingOpen = true }
         let out = URL(fileURLWithPath: folder)
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         for dark in [false, true] {
