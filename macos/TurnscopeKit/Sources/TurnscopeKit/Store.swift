@@ -55,6 +55,8 @@ public final class Store {
     /// Every account, hidden ones too, as Settings lists them.
     public var all: [Account] { feed?.accounts ?? [] }
     public var agents: [AgentLink] { feed?.agents ?? [] }
+    /// Whether the engine is still reading agents' history for the first time.
+    public var reading: Bool { feed?.reading ?? false }
 
     // MARK: What is asked
 

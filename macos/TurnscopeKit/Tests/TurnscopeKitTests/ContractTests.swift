@@ -19,6 +19,7 @@ private func lines(_ name: String) throws -> [Data] {
 @Test func theFeedIsRead() throws {
     let feed = try Contract.decoder.decode(Feed.self, from: contract("feed.json"))
     #expect(feed.version == Feed.version)
+    #expect(!feed.reading)
     #expect(feed.accounts.map(\.id) == ["claude:a", "chatgpt:b", "supergrok:c", "api:openrouter"])
     let claude = feed.accounts[0]
     #expect(claude.title == "Claude Max")

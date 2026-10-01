@@ -8,6 +8,9 @@ released.
 
 ## [Unreleased]
 
+- While Turnscope reads your agents' history for the first time, the panel
+  says so, and says it is getting your limits rather than that none were
+  found.
 - Opening Turnscope for the first time doesn't send a notification for how
   much of a week is left: only a limit that will run out, or has, is news.
 - Limits show up within a few seconds of opening Turnscope for the first
