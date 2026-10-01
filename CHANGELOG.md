@@ -8,6 +8,8 @@ released.
 
 ## [Unreleased]
 
+## [0.1.2]
+
 - A session at work right now is marked with a green dot, and the panel's
   rows have a little room between them.
 
@@ -56,5 +58,6 @@ The first release.
   `guard` for hooks, `doctor` and `catalog`.
 - Updates with Sparkle, signed with Turnscope's key, from GitHub releases.
 
+[0.1.2]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.2
 [0.1.1]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.1
 [0.1.0]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.0

@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "turnscope"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "jiff",
  "serde",
@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "turnscope-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "base64",
@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "turnscope-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "jiff",
  "serde",
