@@ -8,6 +8,8 @@ released.
 
 ## [Unreleased]
 
+- Limits show up within a few seconds of opening Turnscope for the first
+  time, rather than once all of your agents' history has been read.
 ## [0.1.0]
 
 The first release.

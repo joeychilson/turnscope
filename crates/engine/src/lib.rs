@@ -131,11 +131,26 @@ pub struct Engine {
     /// Whether this process's running engine keeps the data directory
     /// current.
     keeping: AtomicBool,
+    /// While this process reads history in full ([`Engine::scan`]), the
+    /// limits read meanwhile, which the scan records between its groups:
+    /// it holds the ledger throughout, as reading history must, and a first
+    /// read took 10 s (2026-09-30), during which limits read in under one
+    /// waited to be recorded and the app showed no account. `None` while no
+    /// scan runs, when limits are recorded as they are read.
+    waiting: Mutex<Option<Vec<LimitsRead>>>,
     subscribers: Mutex<Vec<async_channel::Sender<Change>>>,
     /// What models and providers are called, and the catalog it was read
     /// from, by when that was published: read at the first question that
     /// needs it, and again once a newer catalog is taken in.
     names: Mutex<Option<(Option<i64>, Arc<Names>)>>,
+}
+
+/// What reading one subscription's limits found, to be recorded.
+struct LimitsRead {
+    subscription: Subscription,
+    reads: Vec<limits::Read>,
+    seen: Vec<limits::Seen>,
+    at: Instant,
 }
 
 /// Prices, as of the catalog they were read with.
@@ -276,6 +291,7 @@ impl Engine {
             keeping: AtomicBool::new(false),
             subscribers: Mutex::new(Vec::new()),
             names: Mutex::new(None),
+            waiting: Mutex::new(None),
         })
     }
 
@@ -288,26 +304,54 @@ impl Engine {
     /// that cannot be read is listed in the report and does not stop the scan.
     pub fn scan(&self) -> Result<ScanReport> {
         let mut ledger = self.writing()?;
+        // Limits read while it holds the ledger wait for it to record them.
+        *self.waiting.lock().unwrap_or_else(PoisonError::into_inner) = Some(Vec::new());
         // A long read, as the first is, shows what it has read so far, the
         // newest history first: after a second, and then after four times as
         // long each time, since each showing works the cache out again.
         let mut caught = Clock::now();
         let mut wait = SHOW_PROGRESS;
         let roots = self.roots();
-        let report = ingest::scan(&self.readers, &roots, &mut ledger, |ledger| {
+        let scanned = ingest::scan(&self.readers, &roots, &mut ledger, |ledger| {
+            self.record_waiting(ledger, false)?;
             if caught.elapsed() >= wait {
                 self.catch_up(ledger)?;
                 caught = Clock::now();
                 wait = wait.saturating_mul(4);
             }
             Ok(())
-        })?;
+        });
+        // Whatever became of the read, the last limits that waited are
+        // recorded and no more wait.
+        let recorded = self.record_waiting(&mut ledger, true);
+        let report = scanned?;
+        recorded?;
         // Recorded before the last catch-up tells subscribers, so what they
         // ask on hearing of it finds the look finished.
         ledger.record_look(Instant::now(), &report.failed)?;
         self.catch_up(&mut ledger)?;
         self.let_go(&ledger)?;
         Ok(report)
+    }
+
+    /// Record the limits waiting for the scan that holds `ledger`, and tell
+    /// subscribers of them; with `last`, as the scan ends, none wait after.
+    /// The weekly recap waits for the next read, since it draws on the
+    /// history the scan is still reading.
+    fn record_waiting(&self, ledger: &mut Ledger, last: bool) -> Result<()> {
+        let waited = {
+            let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+            if last {
+                waiting.take().unwrap_or_default()
+            } else {
+                waiting.as_mut().map(std::mem::take).unwrap_or_default()
+            }
+        };
+        for read in waited {
+            let (alerts, _) = self.record_limits_read(ledger, read, false)?;
+            self.tell_limits(alerts, Vec::new());
+        }
+        Ok(())
     }
 
     /// How complete what the engine answers from is: when every agent's
@@ -634,7 +678,9 @@ impl Engine {
     /// read and what each place a sign-in to it is kept held, and tell
     /// subscribers of the limits, of any sessions whose account that changed,
     /// and, in the process that keeps the data directory, of any alerts they
-    /// give rise to and of the weekly recap when it is due.
+    /// give rise to and of the weekly recap when it is due. While this
+    /// process reads history in full, what was read is left for that read to
+    /// record, within a group of it, rather than wait for it to end.
     ///
     /// # Errors
     ///
@@ -642,38 +688,86 @@ impl Engine {
     /// to `subscription` can't be read, and when the ledger or the cache
     /// can't be read or written.
     pub(crate) fn read_limits(&self, subscription: Subscription) -> Result<()> {
-        let now = Instant::now();
+        let at = Instant::now();
         // The requests are made before the ledger is held, so a slow provider
         // holds up nothing else.
         let folders = self.folders();
-        let (reads, mut seen) = limits::read_subscription(subscription, &folders, &self.home, now)?;
+        let (reads, seen) = limits::read_subscription(subscription, &folders, &self.home, at)?;
+        self.take_limits(LimitsRead {
+            subscription,
+            reads,
+            seen,
+            at,
+        })
+    }
+
+    /// Record `read` and tell subscribers of it, or, while this process
+    /// reads history in full, leave it for that read to record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ledger or the cache can't be read or
+    /// written.
+    fn take_limits(&self, read: LimitsRead) -> Result<()> {
+        {
+            let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(waiting) = waiting.as_mut() {
+                waiting.push(read);
+                return Ok(());
+            }
+        }
         let (alerts, weeks) = {
             let mut ledger = self.writing()?;
-            ledger.record_limits(subscription, &reads, now)?;
-            // A key or unread sign-in found before and not now is gone.
-            if subscription == Subscription::ApiKey {
-                let gone = limits::api::vanished(&seen, &ledger.sign_ins()?, &folders);
-                seen.extend(gone);
-            }
-            // Which account usage drew on rests on what was signed in where.
-            if ledger.record_sign_ins(&seen, now)? {
-                self.catch_up(&mut ledger)?;
-            }
-            // Alerts are the keeper's to send, since it is the app that shows
-            // them: another process, such as an MCP server reading limits
-            // while no app runs, would record as sent alerts no one sees.
-            if self.keeping.load(Ordering::Acquire) {
-                let zone = Zone::system();
-                let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-                let state = limits::current(&ledger, cache.connection(), now)?;
-                let alerts = limits::alerts(&mut ledger, &state, now)?;
-                let weeks =
-                    limits::recap::recap(&mut ledger, cache.connection(), &state, now, &zone)?;
-                (alerts, weeks)
-            } else {
-                (Vec::new(), Vec::new())
-            }
+            self.record_limits_read(&mut ledger, read, true)?
         };
+        self.tell_limits(alerts, weeks);
+        Ok(())
+    }
+
+    /// Record `read` in `ledger`, held for writing, and work out the alerts
+    /// it gives rise to and, with `recap`, the weekly recap when it is due.
+    fn record_limits_read(
+        &self,
+        ledger: &mut Ledger,
+        read: LimitsRead,
+        recap: bool,
+    ) -> Result<(Vec<Alert>, Vec<WeekEnded>)> {
+        let LimitsRead {
+            subscription,
+            reads,
+            mut seen,
+            at,
+        } = read;
+        ledger.record_limits(subscription, &reads, at)?;
+        // A key or unread sign-in found before and not now is gone.
+        if subscription == Subscription::ApiKey {
+            let gone = limits::api::vanished(&seen, &ledger.sign_ins()?, &self.folders());
+            seen.extend(gone);
+        }
+        // Which account usage drew on rests on what was signed in where.
+        if ledger.record_sign_ins(&seen, at)? {
+            self.catch_up(ledger)?;
+        }
+        // Alerts are the keeper's to send, since it is the app that shows
+        // them: another process, such as an MCP server reading limits while
+        // no app runs, would record as sent alerts no one sees.
+        if !self.keeping.load(Ordering::Acquire) {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = limits::current(ledger, cache.connection(), at)?;
+        let alerts = limits::alerts(ledger, &state, at)?;
+        let weeks = if recap {
+            limits::recap::recap(ledger, cache.connection(), &state, at, &Zone::system())?
+        } else {
+            Vec::new()
+        };
+        Ok((alerts, weeks))
+    }
+
+    /// Tell subscribers that limits were read, and of the `alerts` and recap
+    /// `weeks` they gave rise to.
+    fn tell_limits(&self, alerts: Vec<Alert>, weeks: Vec<WeekEnded>) {
         self.publish(Change::Limits);
         for alert in alerts {
             self.publish(Change::Alert(alert));
@@ -681,7 +775,6 @@ impl Engine {
         if !weeks.is_empty() {
             self.publish(Change::Recap(weeks));
         }
-        Ok(())
     }
 
     /// Bring the cache up to `ledger`, which this process holds for writing,
@@ -950,7 +1043,49 @@ mod tests {
     use std::time::Duration;
 
     use crate::limits::{Held, Place, Read, Reported, Seen};
-    use crate::{Agent, AlertKind, Change, Engine, Instant, Subscription};
+    use crate::{Agent, AlertKind, Change, Engine, Instant, LimitsRead, Subscription};
+
+    #[test]
+    fn limits_read_while_history_is_read_in_full_are_recorded_within_it() {
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let engine = Arc::new(Engine::open(data.path(), home.path()).unwrap());
+        // A scan holds the ledger throughout, as a first read of history
+        // does for seconds.
+        let mut scanning = engine.writing().unwrap();
+        *engine.waiting.lock().unwrap() = Some(Vec::new());
+        let read = LimitsRead {
+            subscription: Subscription::ChatGpt,
+            reads: vec![Read {
+                id: "chatgpt:acct-1".into(),
+                label: None,
+                plan: None,
+                agents: vec![Agent::Codex],
+                limits: Ok(vec![Reported {
+                    key: "primary_window".into(),
+                    name: "5 hours".into(),
+                    scope: None,
+                    used: 40.0,
+                    starts: None,
+                    resets: None,
+                }]),
+            }],
+            seen: Vec::new(),
+            at: Instant::from_millis(1_789_000_000_000).unwrap(),
+        };
+        // Handed to the scan at once, rather than waiting for it to end.
+        let (taken, take) = mpsc::channel();
+        let taking = Arc::clone(&engine);
+        std::thread::spawn(move || taken.send(taking.take_limits(read).is_ok()));
+        assert_eq!(take.recv_timeout(Duration::from_secs(10)), Ok(true));
+        // Recorded at the scan's next group, while it still holds the ledger.
+        engine.record_waiting(&mut scanning, false).unwrap();
+        drop(scanning);
+        let accounts = engine.limits().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, "chatgpt:acct-1");
+        assert_eq!(accounts[0].limits[0].left(), Some(60.0));
+    }
 
     #[test]
     fn a_subscription_whose_sign_ins_cant_be_read_is_left_as_it_was() {
