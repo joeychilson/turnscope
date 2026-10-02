@@ -17,6 +17,8 @@ released.
   or answered in a way Turnscope doesn't understand, as an account in use
   does, and is no longer called a key when its limits haven't been read.
 - The panel opens with every account not in use closed again.
+- Grok Build is called Grok Build everywhere, as it is in answers to your
+  agents, rather than Grok in the panel and Settings.
 
 ## [0.1.2]
 
