@@ -15,7 +15,8 @@
 #   NOTARY_KEY_ID       its key ID and
 #   NOTARY_ISSUER       its issuer ID, to notarize; needed with SIGN_IDENTITY
 #   SPARKLE_PUBLIC_KEY  the public half of the key updates are signed with,
-#                       which the app carries to check them
+#                       which the app carries to check them; needed with
+#                       SIGN_IDENTITY
 #   SPARKLE_PRIVATE_KEY its private half, as `generate_keys -x` exports it, to
 #                       sign the disk image and write the appcast; without
 #                       it there is no appcast; needed with SIGN_IDENTITY

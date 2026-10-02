@@ -17,8 +17,7 @@
 //!
 //! What used each limit, and the advice drawn from it, is worked out only
 //! while the panel is open, the one place it is shown: it is most of what a
-//! feed costs (on 2026-09-30, over 1,831 sessions, a feed took 35–135 ms
-//! with it, and agents at work had one worked out about every two seconds).
+//! feed costs, and agents at work have a feed worked out every few seconds.
 //! Opening the panel works the feed out again at once.
 //!
 //! It stops when its input closes, as when the app quits, so it never
