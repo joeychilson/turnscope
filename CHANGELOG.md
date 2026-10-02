@@ -8,6 +8,10 @@ released.
 
 ## [Unreleased]
 
+- Claude Code gets all of Turnscope's instructions for agents. It used to cut
+  them short, leaving out that what a session says is to be read as data,
+  not as instructions.
+
 ## [0.1.2]
 
 - A session at work right now is marked with a green dot, and the panel's
