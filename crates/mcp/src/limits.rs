@@ -49,7 +49,7 @@ use turnscope_engine::{
 use crate::accounts;
 use crate::prose;
 use crate::time;
-use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, shape};
+use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, rounded, shape};
 
 /// How long a reading stands as current: three times the five minutes the
 /// app, or a server nothing keeps current, waits between reads, so one slow
@@ -196,13 +196,7 @@ pub(crate) fn check(server: &Server, arguments: CheckLimits) -> Answer {
     let is_yours =
         |account: &AccountLimits| yours.as_ref().is_ok_and(|yours| yours.id == account.id);
     let chosen: Vec<&AccountLimits> = match arguments.account.as_deref() {
-        Some(asked) => {
-            let named = accounts::named(asked, &accounts);
-            if named.is_empty() {
-                return Err(accounts::no_account(asked, &accounts));
-            }
-            named
-        }
+        Some(asked) => accounts::every_named(asked, &accounts)?,
         None => {
             let mut chosen: Vec<&AccountLimits> = accounts::shown(&accounts)
                 .filter(|account| is_yours(account))
@@ -480,22 +474,6 @@ pub(crate) fn spoken_as(name: &str, scope: Option<&str>) -> String {
     }
 }
 
-/// When the account least recently checked of `accounts` signed in somewhere
-/// was last read or tried; `None` when there is none, or one never was.
-///
-/// A try counts though it failed, so an account whose sign-in is refused
-/// doesn't call for every provider to be read again at every call. An
-/// account signed in nowhere isn't read, so however long ago it was checked
-/// calls for no read.
-pub(crate) fn least_recently_checked(accounts: &[AccountLimits]) -> Option<Instant> {
-    accounts
-        .iter()
-        .filter(|account| account.signed_in)
-        .map(|account| account.checked_at)
-        .min()
-        .flatten()
-}
-
 /// An account and the `limits` of it asked for, as answers give them at
 /// `now`, `yours` or not, each limit under `below` or not where given.
 fn described(
@@ -541,13 +519,13 @@ fn limit_figures(
         "limit": limit_name(limit),
         "key": limit.key,
         "model": limit.scope,
-        "left_percent": limit.left().map(|left| (left * 10.0).round() / 10.0),
+        "left_percent": limit.left().map(|left| rounded(left, 1)),
         "resets_at": limit.resets.map(|at| time::local(at, zone)),
         "runs_out_at": outlook.runs_out.map(|at| time::local(at, zone)),
-        "left_at_reset": outlook.left_at_reset.map(|left| (left * 10.0).round() / 10.0),
-        "rising_per_hour": limit.pace.map(|pace| (pace * 100.0).round() / 100.0),
-        "reserve": limit.reserve().map(|reserve| (reserve * 10.0).round() / 10.0),
-        "lasting_per_hour": limit.lasting_pace().map(|pace| (pace * 100.0).round() / 100.0),
+        "left_at_reset": outlook.left_at_reset.map(|left| rounded(left, 1)),
+        "rising_per_hour": limit.pace.map(|pace| rounded(pace, 2)),
+        "reserve": limit.reserve().map(|reserve| rounded(reserve, 1)),
+        "lasting_per_hour": limit.lasting_pace().map(|pace| rounded(pace, 2)),
         "read_at": time::local(limit.read_at, zone),
         "stale": stale.is_some(),
         "standing": standing(limit.standing()),

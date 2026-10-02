@@ -13,7 +13,7 @@
 //! usage and its shares of limits; its handoff says it can't be read.
 //!
 //! Every part is bounded to fit what an agent takes from a tool: quotes are
-//! cut short with where their rest is read ([`crate::sessions::clipped`]),
+//! cut short with where their rest is read ([`crate::read::clipped`]),
 //! and the files, commands, subagents and windows given are the most
 //! telling few, with how many more there are.
 
@@ -29,8 +29,9 @@ use turnscope_engine::{
 use crate::accounts;
 use crate::limits;
 use crate::prose;
-use crate::sessions::{self, Part};
-use crate::tools::{Answer, Failure, Reply, Server, object, shape, totals_schema};
+use crate::read::{self, Part};
+use crate::sessions;
+use crate::tools::{Answer, Failure, Reply, Server, object, rounded, shape};
 use crate::usage;
 
 /// The most characters of a request a handoff quotes.
@@ -116,7 +117,7 @@ pub(crate) fn output_schema() -> Value {
                 "id": {"type": "string"},
                 "title": {"type": ["string", "null"]},
                 "models": {"type": "array", "items": {"type": "string"}},
-                "usage": totals_schema(),
+                "usage": usage::totals_schema(),
             }), &["id", "usage"])},
             "limits": {"type": "array", "items": shape(json!({
                 "account": {"type": "string"},
@@ -310,7 +311,7 @@ fn told(
             continue;
         }
         if let Some(quote) = quoted {
-            let text = sessions::clipped(&quote.text, most, quote.entry, Part::Text);
+            let text = read::clipped(&quote.text, most, quote.entry, Part::Text);
             said.push(format!("{name}: \"{text}\""));
             data[key] = json!({
                 "entry": quote.entry,
@@ -515,7 +516,7 @@ fn took(
                 "account": share.account,
                 "limit": limits::named_as(&share.name, share.scope.as_deref()),
                 "resets_at": share.resets.map(|at| server.time(at)),
-                "share_percent": (share.share * 100.0).round() / 100.0,
+                "share_percent": rounded(share.share, 2),
                 "whole": share.whole,
             })
         })
@@ -535,11 +536,8 @@ fn took(
         .iter()
         .filter(|share| share.share >= 0.05)
         .map(|share| {
-            let account = match accounts.iter().find(|account| account.id == share.account) {
-                Some(account) if account.hidden => "an account hidden in Turnscope".to_owned(),
-                Some(account) => accounts::name(account),
-                None => share.account.clone(),
-            };
+            let account =
+                accounts::called(&share.account, accounts).unwrap_or_else(|| share.account.clone());
             let when = share.resets.map_or_else(String::new, |at| {
                 format!(" (the window resetting {})", server.clock(at))
             });

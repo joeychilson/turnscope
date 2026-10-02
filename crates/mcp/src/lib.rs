@@ -28,6 +28,7 @@ mod limits;
 mod prompts;
 mod prose;
 mod protocol;
+mod read;
 mod sessions;
 mod time;
 mod tools;

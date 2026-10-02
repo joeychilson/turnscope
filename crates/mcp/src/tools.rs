@@ -30,6 +30,7 @@
 //! first 2,048 characters of a server's instructions and cuts the rest
 //! (seen 2026-10-02), so they stay under that with the shell's tip in them.
 
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
@@ -39,11 +40,11 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use turnscope_engine::{AccountLimits, Agent, Engine, Health, Instant, SessionKey, Span, Zone};
+use turnscope_engine::{AccountLimits, Agent, Engine, Health, Instant, Span, Zone};
 
 use crate::caller::Caller;
 use crate::time::{self, End, MOMENTS};
-use crate::{explain, handoff, limits, sessions, usage};
+use crate::{explain, handoff, limits, prose, read, sessions, usage};
 
 /// How long a scan stands for the calls that follow it, when no running
 /// engine keeps the data current: long enough that a burst of calls scans
@@ -155,7 +156,7 @@ impl Tool {
                  cuts a long entry short and says how to read the rest: given entry, the tool \
                  reads that entry's text, or a tool call's input or output, exactly, from any \
                  character, about 40 KB of text at a time.",
-                sessions::read_schema(),
+                read::read_schema(),
                 None,
             ),
             Tool::GetUsage => (
@@ -248,35 +249,6 @@ pub(crate) fn folder_schema() -> Value {
         "description": "An absolute path, or one from ~/. Only sessions in this folder's \
                         project, or in projects inside it when it is not in one: a repository's \
                         subfolder or worktree stands for the repository.",
-    })
-}
-
-/// The output schema of usage, as [`crate::usage::totals`] gives it.
-pub(crate) fn totals_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "tokens": {
-                "type": "object",
-                "properties": {
-                    "input": {"type": "integer"},
-                    "cache_read": {"type": "integer"},
-                    "cache_write": {"type": "integer"},
-                    "output": {"type": "integer"},
-                    "reasoning": {"type": "integer"},
-                    "total": {"type": "integer"},
-                },
-                "required": ["input", "cache_read", "cache_write", "output", "reasoning", "total"],
-            },
-            "responses": {"type": "integer"},
-            "cost_usd": {"type": ["number", "null"]},
-            "unpriced_usage": {"type": "boolean"},
-            "cost_approximate": {"type": "boolean"},
-            "cost_charged_usd": {"type": "number"},
-            "cost_agent_estimate_usd": {"type": "number"},
-            "outside_conversation_tokens": {"type": "integer"},
-        },
-        "required": ["tokens", "responses", "cost_usd"],
     })
 }
 
@@ -407,7 +379,7 @@ impl Server {
             Tool::ExplainLimit => self.answer(arguments, explain::explain),
             Tool::FindSessions => self.answer(arguments, sessions::find),
             Tool::GetSession => self.answer(arguments, handoff::get),
-            Tool::ReadSession => self.answer(arguments, sessions::read),
+            Tool::ReadSession => self.answer(arguments, read::read),
             Tool::GetUsage => self.answer(arguments, usage::usage),
         }?;
         Ok(match incomplete(&self.engine.health()?) {
@@ -449,7 +421,7 @@ impl Server {
     /// or tried more than five minutes ago; and, when that read failed, why.
     pub(crate) fn accounts(&self) -> Result<(Vec<AccountLimits>, Option<String>), Failure> {
         let accounts = self.engine.limits()?;
-        match self.read_limits_if_stale(limits::least_recently_checked(&accounts))? {
+        match self.read_limits_if_stale(least_recently_checked(&accounts))? {
             None => Ok((accounts, None)),
             Some(read) => Ok((
                 self.engine.limits()?,
@@ -458,6 +430,16 @@ impl Server {
                 }),
             )),
         }
+    }
+
+    /// What the catalog calls each model with usage, by key.
+    pub(crate) fn model_names(&self) -> Result<HashMap<String, String>, Failure> {
+        Ok(self
+            .engine
+            .models()?
+            .into_iter()
+            .filter_map(|info| Some((info.key.as_str().to_owned(), info.name?)))
+            .collect())
     }
 
     /// Read limits when nothing else keeps them current and `oldest`, when
@@ -625,18 +607,6 @@ pub(crate) fn folder(server: &Server, folder: Option<&str>) -> Result<Vec<String
     Ok(vec![server.engine.project_root(&path.to_string_lossy())])
 }
 
-/// The session `id` names, as answers give ids: `agent:id`.
-pub(crate) fn session(id: &str) -> Result<SessionKey, Failure> {
-    SessionKey::parse(id)
-        .filter(|key| !key.native().is_empty())
-        .ok_or_else(|| {
-            Failure(format!(
-                "{id:?} is not a session id; ids look like claude-code:0f6e3f6a-713c-4bad-8f6d-f04fe41bbd84, \
-                 as find_sessions gives them."
-            ))
-        })
-}
-
 /// The `limit` given, or `default`, when it lies from 1 to `most`.
 pub(crate) fn limit(given: Option<u32>, default: u32, most: u32) -> Result<usize, Failure> {
     let value = given.unwrap_or(default);
@@ -691,6 +661,28 @@ fn noted(answer: Reply, why: &str) -> Reply {
     }
 }
 
+/// When the account least recently checked of `accounts` signed in somewhere
+/// was last read or tried; `None` when there is none, or one never was.
+///
+/// A try counts though it failed, so an account whose sign-in is refused
+/// doesn't call for every provider to be read again at every call. An
+/// account signed in nowhere isn't read, so however long ago it was checked
+/// calls for no read.
+fn least_recently_checked(accounts: &[AccountLimits]) -> Option<Instant> {
+    accounts
+        .iter()
+        .filter(|account| account.signed_in)
+        .map(|account| account.checked_at)
+        .min()
+        .flatten()
+}
+
+/// `value` to `places` decimal places, as an answer's figures give it.
+pub(crate) fn rounded(value: f64, places: i32) -> f64 {
+    let scale = 10f64.powi(places);
+    (value * scale).round() / scale
+}
+
 /// The instructions a server gives with its tools: when to use them, and
 /// how to read their answers. `executable`, when known, is how to run a tool
 /// from a shell, and `options` the options the server was started with,
@@ -711,11 +703,7 @@ pub(crate) fn instructions(executable: Option<&str>, options: &[String]) -> Stri
              left, and 0 otherwise."
         )
     });
-    let agents = match Agent::ALL.map(Agent::name).split_last() {
-        Some((last, [])) => (*last).to_owned(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-        None => String::new(),
-    };
+    let agents = prose::list(&Agent::ALL.map(|agent| agent.name().to_owned()));
     format!(
         "Turnscope reads the history and subscription limits of the coding agents on this Mac \
 ({agents}). Use it to pace yourself against the person's limits, to explain what used them, and \

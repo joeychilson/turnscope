@@ -55,13 +55,10 @@ pub fn guard(
     server.bring_up_to_date()?;
     let (all, _) = server.accounts()?;
     let chosen = match account {
-        Some(asked) => {
-            let named = accounts::named(asked, &all);
-            if named.is_empty() {
-                return Ok(Guard::Pass(Some(accounts::no_account(asked, &all).0)));
-            }
-            named
-        }
+        Some(asked) => match accounts::every_named(asked, &all) {
+            Ok(named) => named,
+            Err(why) => return Ok(Guard::Pass(Some(why.0))),
+        },
         None => match accounts::asking(server, &all)?.1 {
             Ok(yours) => vec![yours],
             Err(why) => return Ok(Guard::Pass(Some(why))),

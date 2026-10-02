@@ -53,6 +53,17 @@ pub(crate) fn name(account: &AccountLimits) -> String {
     }
 }
 
+/// What an answer calls the account `id`: its name, or, hidden, only that
+/// it is; `None` when no account has that id.
+pub(crate) fn called(id: &str, accounts: &[AccountLimits]) -> Option<String> {
+    let account = accounts.iter().find(|account| account.id == id)?;
+    Some(if account.hidden {
+        "an account hidden in Turnscope".to_owned()
+    } else {
+        name(account)
+    })
+}
+
 /// The accounts of `accounts` the person hasn't hidden.
 pub(crate) fn shown(accounts: &[AccountLimits]) -> impl Iterator<Item = &AccountLimits> {
     accounts.iter().filter(|account| !account.hidden)
@@ -110,19 +121,28 @@ pub(crate) fn one<'a>(
 /// Claude account, and an email each account signed in with it. Why there
 /// is none when it names none.
 pub(crate) fn ids(asked: &str, accounts: &[AccountLimits]) -> Result<Vec<String>, Failure> {
-    let ids: Vec<String> = named(asked, accounts)
+    Ok(every_named(asked, accounts)?
         .into_iter()
         .map(|account| account.id.clone())
-        .collect();
-    if ids.is_empty() {
+        .collect())
+}
+
+/// Every account `asked` names, as [`named`] finds them, or why there is
+/// none.
+pub(crate) fn every_named<'a>(
+    asked: &str,
+    accounts: &'a [AccountLimits],
+) -> Result<Vec<&'a AccountLimits>, Failure> {
+    let named = named(asked, accounts);
+    if named.is_empty() {
         return Err(no_account(asked, accounts));
     }
-    Ok(ids)
+    Ok(named)
 }
 
 /// Why no account is what `asked` names, with those there are that the
 /// person hasn't hidden.
-pub(crate) fn no_account(asked: &str, accounts: &[AccountLimits]) -> Failure {
+fn no_account(asked: &str, accounts: &[AccountLimits]) -> Failure {
     let names: Vec<String> = shown(accounts)
         .map(|account| format!("{} ({})", name(account), account.id))
         .collect();
@@ -187,7 +207,7 @@ fn callers_folder<'a>(caller: &Caller, folders: &'a [Folder]) -> Result<&'a Fold
 /// The account `caller` draws on, among `accounts`, from its `session`
 /// where one is known and the `folders` read, as the module says; or why
 /// that isn't known.
-pub(crate) fn yours<'a>(
+fn yours<'a>(
     caller: &Caller,
     folders: &[Folder],
     session: Option<&SessionRow>,
