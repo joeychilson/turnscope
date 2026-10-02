@@ -9,33 +9,10 @@ import Testing
 /// request with `error`, as JSON.
 @MainActor
 private func engine(answering error: String) throws -> Engine {
-    let root = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().deletingLastPathComponent()
-    let pretty = try Data(contentsOf: root.appending(path: "contract/feed.json"))
-    let line = try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: pretty))
-    let folder = FileManager.default.temporaryDirectory.appending(path: "turnscope-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    try (#"{"feed":"# + String(decoding: line, as: UTF8.self) + "}\n").write(
-        to: folder.appending(path: "feed"), atomically: true, encoding: .utf8)
-    let url = folder.appending(path: "turnscope")
-    try """
-        #!/bin/sh
-        cat '\(folder.path)/feed'
-        while read -r line; do
-          id=$(printf '%s' "$line" | sed 's/.*"id":\\([0-9]*\\).*/\\1/')
-          printf '{"reply":{"id":%s,"error":%s}}\\n' "$id" '\(error)'
-        done
-        """.write(to: url, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-    return Engine(binary: url)
-}
-
-@MainActor
-private func until(_ done: () -> Bool) async {
-    for _ in 0..<500 where !done() {
-        try? await Task.sleep(for: .milliseconds(10))
-    }
+    let line = try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: contract("feed.json")))
+    let feed = FileManager.default.temporaryDirectory.appending(path: "turnscope-feed-\(UUID().uuidString)")
+    try (#"{"feed":"# + String(decoding: line, as: UTF8.self) + "}\n").write(to: feed, atomically: true, encoding: .utf8)
+    return Engine(binary: try script("cat '\(feed.path)'\n" + replying(error)))
 }
 
 @MainActor

@@ -46,21 +46,11 @@ public struct Account: Decodable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// How a limit stands, from calmest to most urgent.
-public enum Standing: String, Decodable, Comparable, Sendable {
+/// How a limit stands.
+public enum Standing: String, Decodable, Sendable {
     case lasts
     case runningOut = "running_out"
     case usedUp = "used_up"
-
-    private var rank: Int {
-        switch self {
-        case .lasts: 0
-        case .runningOut: 1
-        case .usedUp: 2
-        }
-    }
-
-    public static func < (a: Standing, b: Standing) -> Bool { a.rank < b.rank }
 }
 
 /// Why an account's limits can't be read now.
@@ -188,43 +178,39 @@ public struct Week: Decodable, Equatable, Sendable {
 }
 
 /// A line `turnscope watch` writes.
-public enum Message: Equatable, Sendable {
+enum Message: Decodable, Equatable, Sendable {
     case feed(Feed)
     case alert(Alert)
     case recap([Week])
     case reply(id: Int, error: String?)
 
     /// The line `line` as a message.
-    public static func decode(_ line: Data) throws -> Message {
-        try Contract.decoder.decode(Line.self, from: line).message
+    static func decode(_ line: Data) throws -> Message {
+        try Contract.decoder.decode(Message.self, from: line)
     }
 
     private struct Reply: Decodable { var id: Int; var error: String? }
 
-    private struct Line: Decodable {
-        var message: Message
+    private enum Keys: String, CodingKey { case feed, alert, recap, reply }
 
-        private enum Keys: String, CodingKey { case feed, alert, recap, reply }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: Keys.self)
-            if let feed = try c.decodeIfPresent(Feed.self, forKey: .feed) {
-                message = .feed(feed)
-            } else if let alert = try c.decodeIfPresent(Alert.self, forKey: .alert) {
-                message = .alert(alert)
-            } else if let weeks = try c.decodeIfPresent([Week].self, forKey: .recap) {
-                message = .recap(weeks)
-            } else if let reply = try c.decodeIfPresent(Reply.self, forKey: .reply) {
-                message = .reply(id: reply.id, error: reply.error)
-            } else {
-                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "a line of no kind known"))
-            }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        if let feed = try c.decodeIfPresent(Feed.self, forKey: .feed) {
+            self = .feed(feed)
+        } else if let alert = try c.decodeIfPresent(Alert.self, forKey: .alert) {
+            self = .alert(alert)
+        } else if let weeks = try c.decodeIfPresent([Week].self, forKey: .recap) {
+            self = .recap(weeks)
+        } else if let reply = try c.decodeIfPresent(Reply.self, forKey: .reply) {
+            self = .reply(id: reply.id, error: reply.error)
+        } else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "a line of no kind known"))
         }
     }
 }
 
 /// What the app asks of `turnscope watch`.
-public enum Request: Equatable, Sendable {
+enum Request: Equatable, Sendable {
     case hide(account: String, hidden: Bool)
     case connect(agent: String)
     /// The panel opened or closed: what used each limit is in the feed only
@@ -232,7 +218,7 @@ public enum Request: Equatable, Sendable {
     case panel(open: Bool)
 
     /// The request as the line that asks it, numbered `id`.
-    public func line(id: Int) -> Data {
+    func line(id: Int) -> Data {
         var fields: [String: Any] = ["id": id]
         switch self {
         case .hide(let account, let hidden):

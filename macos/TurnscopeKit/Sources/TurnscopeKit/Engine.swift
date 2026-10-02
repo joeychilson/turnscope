@@ -21,22 +21,22 @@ import os
 @MainActor
 public final class Engine {
     /// Whether the process runs.
-    public enum Phase: Equatable, Sendable {
+    enum Phase: Equatable, Sendable {
         case starting
         case running
         /// It ended, saying `why` last, and waits to start again.
         case failed(why: String)
     }
 
-    public private(set) var phase: Phase = .starting {
+    private(set) var phase: Phase = .starting {
         didSet { onPhase(phase) }
     }
 
     /// Called with each line it writes but replies, which go to their
     /// requests.
-    public var onMessage: (Message) -> Void = { _ in }
+    var onMessage: (Message) -> Void = { _ in }
     /// Called as its phase changes.
-    public var onPhase: (Phase) -> Void = { _ in }
+    var onPhase: (Phase) -> Void = { _ in }
 
     private let binary: URL
     private let arguments: [String]
@@ -111,7 +111,7 @@ public final class Engine {
 
     /// Ask `request` of it, and call `done` with its reply: nil once done, or
     /// why it couldn't be.
-    public func send(_ request: Request, done: @escaping (String?) -> Void = { _ in }) {
+    func send(_ request: Request, done: @escaping (String?) -> Void = { _ in }) {
         guard let input, phase == .running else {
             done("Turnscope's engine isn't running")
             return

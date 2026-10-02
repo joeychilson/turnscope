@@ -11,14 +11,11 @@
 // The engine is the `turnscope` binary in Contents/Helpers, or the one
 // `TURNSCOPE_BINARY` names, as a build from a checkout runs; `--data <dir>`
 // keeps its ledger in a scratch directory, as work in progress should, and
-// `--open` opens the panel once the first feed comes, to look at it: `--open
-// account` with the first account in use open, `--open resting` with the
-// accounts not in use listed, and `--open settings`,
-// `--open agents` or `--open accounts` at that tab of Settings.
-// `--fixture <feed.json>` shows a feed from a file, with no engine, as
-// `contract/feed.json`, and `--snapshot <folder>` draws the panel over it,
-// as `--open` would show it, in light and dark as PNGs, for the README and
-// for review, and quits.
+// `--open` opens the panel once the first feed comes, to look at it, as
+// `Navigation.opening` says. `--fixture <feed.json>` shows a feed from a
+// file, with no engine, as `contract/feed.json`, and `--snapshot <folder>`
+// draws the panel over it, as `--open` would show it, in light and dark as
+// PNGs, for the README and for review, and quits.
 
 import AppKit
 import SwiftUI
@@ -46,10 +43,16 @@ func argument(_ option: String) -> String? {
     return arguments[index + 1]
 }
 
-/// A feed read from the file at `path`, as `--fixture` names one.
-func fixture(_ path: String) -> Feed? {
-    guard let data = FileManager.default.contents(atPath: path) else { return nil }
-    return try? Contract.decoder.decode(Feed.self, from: data)
+/// A store of the feed in the file at `path`, as `--fixture` names one,
+/// with no engine, and words as of the feed's time, so it reads the same
+/// whenever it is drawn.
+@MainActor
+func fixture(_ path: String?) -> Store {
+    let feed = path
+        .flatMap { FileManager.default.contents(atPath: $0) }
+        .flatMap { try? Contract.decoder.decode(Feed.self, from: $0) }
+    Words.frozen = feed?.at
+    return Store(engine: nil, feed: feed)
 }
 
 /// A panel that can take keys, as a borderless one can't by default.
@@ -76,9 +79,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Preference.register()
         if let path = argument("--fixture") {
             engine = nil
-            let feed = fixture(path)
-            Words.frozen = feed?.at
-            store = Store(engine: nil, feed: feed)
+            store = fixture(path)
         } else {
             let engine = Engine(binary: Shell.binary, arguments: Shell.passed)
             self.engine = engine
@@ -113,12 +114,9 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                     guard let self else { return }
                     self.show()
-                    if let tab = opened.flatMap(Navigation.Tab.init(opening:)) {
+                    let first = self.store.inUse.first?.id
+                    if let tab = opened.flatMap({ self.navigation.opening($0, firstInUse: first) }) {
                         self.navigation.go(.settings, tab: tab)
-                    } else if opened == "account" {
-                        self.navigation.open = self.store.inUse.first?.id
-                    } else if opened == "resting" {
-                        self.navigation.restingOpen = true
                     }
                 }
             }
@@ -288,13 +286,6 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// What the app was started with to pass on: `--data <dir>` and `--home <dir>`.
     private static var passed: [String] {
-        let arguments = CommandLine.arguments
-        var passed: [String] = []
-        for option in ["--data", "--home"] {
-            if let index = arguments.firstIndex(of: option), index + 1 < arguments.count {
-                passed += [option, arguments[index + 1]]
-            }
-        }
-        return passed
+        ["--data", "--home"].flatMap { option in argument(option).map { [option, $0] } ?? [] }
     }
 }

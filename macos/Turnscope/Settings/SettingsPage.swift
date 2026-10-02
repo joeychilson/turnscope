@@ -8,6 +8,31 @@ import ServiceManagement
 import SwiftUI
 import TurnscopeKit
 
+/// What the person chose, kept in the app's defaults.
+enum Preference {
+    /// What the menu bar shows: every account in use, or the most urgent.
+    static let menuShows = "menuShows"
+    static let notifyRunningOut = "notifyRunningOut"
+    static let notifyUsedUp = "notifyUsedUp"
+    static let notifyBack = "notifyBack"
+    static let notifyMilestones = "notifyMilestones"
+    static let notifyRecap = "notifyRecap"
+    /// The agents in use the person put away the line asking to connect.
+    static let dismissedConnect = "dismissedConnect"
+
+    /// Each notification's default: on for what asks something of the person.
+    static func register() {
+        UserDefaults.standard.register(defaults: [
+            menuShows: "all",
+            notifyRunningOut: true,
+            notifyUsedUp: true,
+            notifyBack: true,
+            notifyMilestones: false,
+            notifyRecap: false,
+        ])
+    }
+}
+
 struct SettingsPage: View {
     @Environment(Store.self) private var store
     @Environment(Navigation.self) private var navigation
@@ -94,26 +119,19 @@ struct SettingsPage: View {
                 .controlSize(.small)
                 .fixedSize()
             }
-            SettingRow(title: "Open at login") {
-                Switch(label: "Open at login", on: Binding(get: { atLogin }, set: { setAtLogin($0) }))
-            }
+            SettingRow("Open at login", isOn: Binding(get: { atLogin }, set: { setAtLogin($0) }))
         }
     }
 
     private var notifications: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionTitle(text: "Notify me when")
-            SettingRow(title: "A limit will run out", detail: "Before it resets, at this pace") {
-                Switch(label: "A limit will run out", on: $runningOut)
-            }
-            SettingRow(title: "A limit is used up") { Switch(label: "A limit is used up", on: $usedUp) }
-            SettingRow(title: "A used-up limit is back") { Switch(label: "A used-up limit is back", on: $back) }
-            SettingRow(title: "A week or month passes a quarter", detail: "Three quarters, half and a quarter left") {
-                Switch(label: "A week or month passes a quarter", on: $milestones)
-            }
-            SettingRow(title: "The week is over", detail: "A recap on Monday morning") {
-                Switch(label: "The week is over", on: $recap)
-            }
+            SettingRow("A limit will run out", detail: "Before it resets, at this pace", isOn: $runningOut)
+            SettingRow("A limit is used up", isOn: $usedUp)
+            SettingRow("A used-up limit is back", isOn: $back)
+            SettingRow("A week or month passes a quarter", detail: "Three quarters, half and a quarter left",
+                       isOn: $milestones)
+            SettingRow("The week is over", detail: "A recap on Monday morning", isOn: $recap)
             SettingRow(title: "See how they look") {
                 Button(sent ? "Sent" : "Send a Test") {
                     actions.testNotification()
@@ -225,17 +243,9 @@ private struct AccountSwitch: View {
     var account: Account
 
     var body: some View {
-        let words = Words()
         HStack(spacing: 10) {
             Logo(account: account, size: 14).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(account.title).font(.system(size: 13))
-                let subtitle = words.subtitle(account)
-                if !subtitle.isEmpty {
-                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-            }
+            AccountName(account: account, size: 13, subtitle: .secondary)
             Spacer(minLength: 8)
             if account.problem == .signIn {
                 Text("Sign in again").font(.system(size: 11)).foregroundStyle(.tertiary)
@@ -268,10 +278,8 @@ private struct Updates: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if updater.available {
-                SettingRow(title: "Check for updates automatically") {
-                    Switch(label: "Check for updates automatically",
-                           on: Binding(get: { automatic }, set: { automatic = $0; updater.automatic = $0 }))
-                }
+                SettingRow("Check for updates automatically",
+                           isOn: Binding(get: { automatic }, set: { automatic = $0; updater.automatic = $0 }))
             }
             HStack(spacing: 6) {
                 Text("Turnscope \(version)").foregroundStyle(.tertiary)
@@ -292,5 +300,77 @@ private struct Updates: View {
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "(development)"
+    }
+}
+
+/// A section's heading.
+private struct SectionTitle: View {
+    var text: String
+
+    var body: some View {
+        Text(text).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 4)
+    }
+}
+
+/// A setting: its name, what it means under it, and its control at its end.
+private struct SettingRow<Control: View>: View {
+    var title: String
+    var detail: String?
+    @ViewBuilder var control: () -> Control
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13))
+                if let detail {
+                    Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            control()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+extension SettingRow where Control == Switch {
+    /// A setting that is a switch, named as its row is.
+    init(_ title: String, detail: String? = nil, isOn: Binding<Bool>) {
+        self.init(title: title, detail: detail) { Switch(label: title, on: isOn) }
+    }
+}
+
+/// A switch, as small as the rows it sits in.
+private struct Switch: View {
+    var label: String
+    @Binding var on: Bool
+
+    var body: some View {
+        Toggle(label, isOn: $on).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+    }
+}
+
+/// A page's title with the way back beside it.
+private struct PageTitle: View {
+    var title: String
+    var back: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button(action: back) { Image(systemName: "chevron.left") }
+                .buttonStyle(IconButton())
+                .keyboardShortcut(.cancelAction)
+                .help("Back")
+                .accessibilityLabel("Back")
+            Text(title).font(.system(size: 15, weight: .semibold)).fixedSize().accessibilityAddTraits(.isHeader)
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
     }
 }

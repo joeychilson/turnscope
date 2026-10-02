@@ -109,14 +109,7 @@ private struct RestingRow: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Logo(account: account, size: 14).foregroundStyle(usable ? .primary : .secondary)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(account.title).font(.system(size: 12)).foregroundStyle(usable ? .primary : .secondary)
-                    let subtitle = words.subtitle(account)
-                    if !subtitle.isEmpty {
-                        Text(subtitle).font(.system(size: 11)).foregroundStyle(.tertiary)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
-                }
+                AccountName(account: account, title: usable ? .primary : .secondary)
                 Spacer(minLength: 8)
                 if hover {
                     HideButton(account: account).transition(.opacity)
@@ -199,14 +192,7 @@ private struct HiddenRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Logo(account: account, size: 14).foregroundStyle(.tertiary)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(account.title).font(.system(size: 12)).foregroundStyle(.secondary)
-                let subtitle = Words().subtitle(account)
-                if !subtitle.isEmpty {
-                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.tertiary)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-            }
+            AccountName(account: account, title: .secondary)
             Spacer(minLength: 8)
             Button("Show") { withAnimation(spring) { store.setHidden(account.id, false) } }
                 .buttonStyle(PillButton())
