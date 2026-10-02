@@ -131,9 +131,9 @@ private func limit(_ standing: Standing, hours: Int? = 5, left: Double? = 20,
     #expect(words.welcome([]).headline == "No agents found")
     let agents = [AgentLink(id: "claude-code", name: "Claude Code", status: .available),
                   AgentLink(id: "codex", name: "Codex", status: .available),
-                  AgentLink(id: "grok", name: "Grok", status: .connected)]
+                  AgentLink(id: "grok", name: "Grok Build", status: .connected)]
     #expect(words.welcome(agents) == ("No accounts found yet",
-                                      "Once Claude Code, Codex or Grok is signed in, its limits show up here."))
+                                      "Once Claude Code, Codex or Grok Build is signed in, its limits show up here."))
     // While history is still read for the first time, none found is none
     // found yet.
     #expect(words.welcome(agents, reading: true) == ("Getting your limits", "They show up here in a moment."))

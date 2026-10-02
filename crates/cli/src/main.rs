@@ -41,8 +41,8 @@ const USAGE: &str = "usage: turnscope watch [--data <dir>] [--home <dir>]
   call           run one of the MCP server's tools and print its answer
   guard          for a hook: exit 2, saying why on standard error, when your account's limit is
                  under the percent left; exit 0 otherwise, and when that isn't known
-  connect        add the MCP server to an agent, as Claude Code, Codex, OpenCode or Grok, or with
-                 no agent, say which agents have it
+  connect        add the MCP server to an agent, as Claude Code, Codex, OpenCode or Grok
+                 Build, or with no agent, say which agents have it
   doctor         read agents' history into the ledger and report on it
   catalog        write models.dev's api.json as the price catalog the app ships with
 

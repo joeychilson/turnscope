@@ -240,7 +240,7 @@ public struct Words: Sendable {
         }
         guard !agents.isEmpty else {
             return ("No agents found",
-                    "Turnscope reads Claude Code, Codex, OpenCode, Grok and Pi. Sign in to one, and its limits show up here.")
+                    "Turnscope reads Claude Code, Codex, OpenCode, Pi and Grok Build. Sign in to one, and its limits show up here.")
         }
         let names = agents.map(\.name)
         let named = names.count > 1
@@ -328,7 +328,7 @@ public struct Words: Sendable {
         case "codex": "Codex"
         case "opencode": "OpenCode"
         case "pi": "Pi"
-        case "grok": "Grok"
+        case "grok": "Grok Build"
         default: id
         }
     }

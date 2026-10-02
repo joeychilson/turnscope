@@ -17,7 +17,7 @@
 //! `PATH` the person's shell has in a terminal: an interactive login shell's,
 //! since agents' installers add their folders in `~/.zshrc`, which a login
 //! shell alone doesn't read (on this Mac on 2026-09-30, `zsh -lc` found none
-//! of Claude Code, Codex, OpenCode and Grok, and `zsh -ilc` all four, in
+//! of Claude Code, Codex, OpenCode and Grok Build, and `zsh -ilc` all four, in
 //! 0.15 s). Run with that `PATH`, an agent installed as a Node script finds
 //! `node` too. Neither the shell nor the command may hang the request: each
 //! is stopped, with everything it started, after [`SHELL_WAIT`] and
@@ -32,6 +32,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use turnscope_engine::Agent;
 
 use crate::Failure;
 
@@ -71,10 +72,9 @@ pub(crate) enum Status {
     Unsupported,
 }
 
-/// An agent this module knows how to connect.
-struct Agent {
-    id: &'static str,
-    name: &'static str,
+/// How to connect an agent: named as the engine names it.
+struct Connector {
+    agent: Agent,
     /// Its folder in the home, whose presence says it is installed.
     folder: &'static str,
     /// Its command, and the arguments that add a stdio server named
@@ -87,37 +87,33 @@ struct Agent {
     registered: fn(&Path) -> Option<String>,
 }
 
-const AGENTS: [Agent; 4] = [
-    Agent {
-        id: "claude-code",
-        name: "Claude Code",
+const CONNECTORS: [Connector; 4] = [
+    Connector {
+        agent: Agent::ClaudeCode,
         folder: ".claude",
         command: "claude",
         add: &["mcp", "add", "--scope", "user", NAME, "--"],
         remove: Some(&["mcp", "remove", "--scope", "user", NAME]),
         registered: claude,
     },
-    Agent {
-        id: "codex",
-        name: "Codex",
+    Connector {
+        agent: Agent::Codex,
         folder: ".codex",
         command: "codex",
         add: &["mcp", "add", NAME, "--"],
         remove: Some(&["mcp", "remove", NAME]),
         registered: codex,
     },
-    Agent {
-        id: "opencode",
-        name: "OpenCode",
+    Connector {
+        agent: Agent::OpenCode,
         folder: ".config/opencode",
         command: "opencode",
         add: &["mcp", "add", "--global", NAME, "--"],
         remove: None,
         registered: opencode,
     },
-    Agent {
-        id: "grok",
-        name: "Grok",
+    Connector {
+        agent: Agent::Grok,
         folder: ".grok",
         command: "grok",
         add: &["mcp", "add", "--scope", "user", NAME],
@@ -130,13 +126,13 @@ const AGENTS: [Agent; 4] = [
 /// Turnscope server.
 pub(crate) fn links(home: &Path, binary: &Path) -> Vec<Link> {
     let binary = binary.to_string_lossy();
-    let mut links: Vec<Link> = AGENTS
+    let mut links: Vec<Link> = CONNECTORS
         .iter()
-        .filter(|agent| home.join(agent.folder).is_dir())
-        .map(|agent| Link {
-            id: agent.id,
-            name: agent.name,
-            status: match (agent.registered)(home) {
+        .filter(|connector| home.join(connector.folder).is_dir())
+        .map(|connector| Link {
+            id: connector.agent.key(),
+            name: connector.agent.name(),
+            status: match (connector.registered)(home) {
                 Some(command) if command == binary => Status::Connected,
                 Some(_) => Status::Outdated,
                 None => Status::Available,
@@ -145,8 +141,8 @@ pub(crate) fn links(home: &Path, binary: &Path) -> Vec<Link> {
         .collect();
     if home.join(".pi").is_dir() {
         links.push(Link {
-            id: "pi",
-            name: "Pi",
+            id: Agent::Pi.key(),
+            name: Agent::Pi.name(),
             status: Status::Unsupported,
         });
     }
@@ -167,9 +163,9 @@ pub(crate) fn connect(id: &str, binary: &Path) -> Result<(), String> {
 
 /// [`connect`], with the `PATH` the shell `shell` has.
 fn connect_with(id: &str, binary: &Path, shell: &Path) -> Result<(), String> {
-    let agent = AGENTS
+    let agent = CONNECTORS
         .iter()
-        .find(|agent| agent.id == id)
+        .find(|connector| connector.agent.key() == id)
         .ok_or_else(|| format!("Turnscope can't connect {id}"))?;
     let path = shell_path(shell)?;
     let program = locate(agent.command, &path)
@@ -546,7 +542,7 @@ mod tests {
             ".config/opencode/opencode.json",
             r#"{"mcp": {"servers": {"turnscope": {"type": "local", "command": ["/Applications/Turnscope.app/Contents/MacOS/turnscope", "mcp"]}}}}"#,
         );
-        // Grok, as `grok mcp add` writes it, runs this one.
+        // Grok Build, as `grok mcp add` writes it, runs this one.
         write(
             home,
             ".grok/config.toml",
