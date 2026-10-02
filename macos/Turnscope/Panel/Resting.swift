@@ -11,14 +11,13 @@ import SwiftUI
 import TurnscopeKit
 
 struct Resting: View {
+    @Environment(Navigation.self) private var navigation
     var accounts: [Account]
     var hidden: [Account]
-    @Binding var open: Bool
-    @State private var chosen: String?
-    @State private var showHidden = false
 
     var body: some View {
         let words = Words()
+        let open = navigation.restingOpen
         // The feed lists those with room first, the most first.
         let best = accounts.first { $0.problem == nil && $0.decidingLimit?.left != nil }
         let label = accounts.isEmpty ? "\(hidden.count) hidden" : "\(accounts.count) not in use"
@@ -27,8 +26,11 @@ struct Resting: View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 withAnimation(spring) {
-                    open.toggle()
-                    if !open { chosen = nil; showHidden = false }
+                    navigation.restingOpen.toggle()
+                    if !navigation.restingOpen {
+                        navigation.restingChosen = nil
+                        navigation.hiddenShown = false
+                    }
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -51,18 +53,20 @@ struct Resting: View {
             if open {
                 VStack(spacing: 4) {
                     ForEach(accounts) { account in
-                        RestingRow(account: account, open: chosen == account.id) {
-                            withAnimation(spring) { chosen = chosen == account.id ? nil : account.id }
+                        RestingRow(account: account, open: navigation.restingChosen == account.id) {
+                            withAnimation(spring) {
+                                navigation.restingChosen = navigation.restingChosen == account.id ? nil : account.id
+                            }
                         }
                     }
                     if !hidden.isEmpty && !accounts.isEmpty {
                         Button {
-                            withAnimation(spring) { showHidden.toggle() }
+                            withAnimation(spring) { navigation.hiddenShown.toggle() }
                         } label: {
                             HStack(spacing: 8) {
                                 Text("\(hidden.count) hidden").font(.system(size: 12)).foregroundStyle(.tertiary)
                                 Spacer()
-                                Chevron(open: showHidden)
+                                Chevron(open: navigation.hiddenShown)
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
@@ -70,7 +74,7 @@ struct Resting: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if showHidden || accounts.isEmpty {
+                    if navigation.hiddenShown || accounts.isEmpty {
                         ForEach(hidden) { HiddenRow(account: $0) }
                             .transition(appears)
                     }
@@ -130,13 +134,16 @@ private struct RestingRow: View {
                 }
             }
             if open {
-                Group {
-                    if account.problem == .signIn, let trouble = words.trouble(account) {
+                // Its limits, and what stands in the way of reading them, as
+                // an account in use says it; a key with neither carries none.
+                VStack(alignment: .leading, spacing: 10) {
+                    if !account.limits.isEmpty {
+                        LimitRows(limits: account.limits)
+                    }
+                    if let trouble = words.trouble(account) {
                         Text(trouble)
                     } else if account.limits.isEmpty {
                         Text("This key carries no limit to watch.")
-                    } else {
-                        LimitRows(limits: account.limits)
                     }
                 }
                 .font(.system(size: 12))

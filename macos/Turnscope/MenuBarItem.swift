@@ -19,13 +19,13 @@ enum MenuBarItem {
     /// What the image last drawn showed.
     private static var drawn: Shown?
 
-    /// The item's image for `accounts` in use, as of `now`; nil when it
-    /// would show what the last did.
-    static func image(_ accounts: [Account], now: Date = .now, dark: Bool) -> NSImage? {
-        let words = Words(now: now)
+    /// The item's image for `accounts` in use; nil when it would show what
+    /// the last did.
+    static func image(_ accounts: [Account], dark: Bool) -> NSImage? {
+        let words = Words()
         let shown = Array(accounts.prefix(most))
         let figures = shown.map(words.figure)
-        let urgent = shown.contains { $0.standing != .lasts }
+        let urgent = urgent(accounts)
         let showing = Shown(accounts: shown.map { [$0.logo, $0.standing.rawValue] }, figures: figures,
                             dark: urgent && dark)
         guard showing != drawn else { return nil }
@@ -44,7 +44,13 @@ enum MenuBarItem {
     /// Whether the item counts down with the clock for `accounts` in use: a
     /// figure it shows is a time, or becomes one as running out nears.
     static func counts(_ accounts: [Account]) -> Bool {
-        accounts.prefix(most).contains { $0.decidingLimit?.standing ?? .lasts != .lasts }
+        urgent(accounts)
+    }
+
+    /// Whether an account the item shows needs the person: an account stands
+    /// as the limit that decides it does.
+    private static func urgent(_ accounts: [Account]) -> Bool {
+        accounts.prefix(most).contains { $0.standing != .lasts }
     }
 
     /// How many accounts it shows, as the person chose.
@@ -78,7 +84,7 @@ enum MenuBarItem {
                             .foregroundStyle(template ? Color.black : .primary)
                         Text(figure)
                             .font(.system(size: 14, weight: .medium).monospacedDigit())
-                            .foregroundStyle(template ? Color.black : account.standing == .lasts ? .primary : account.standing.color)
+                            .foregroundStyle(template ? Color.black : account.standing.color)
                     }
                 }
             }

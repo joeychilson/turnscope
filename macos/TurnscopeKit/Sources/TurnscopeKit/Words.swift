@@ -15,13 +15,13 @@ public struct Words: Sendable {
     public var now: Date
     public var calendar: Calendar
 
-    /// The time words are as of when none is given: now, unless a fixture
-    /// froze the clock at its feed's time, so what it shows reads the same
-    /// whenever it is drawn. Set once, before anything is drawn.
+    /// The time words are as of, whatever time they are given, when a
+    /// fixture froze the clock at its feed's time, so what it shows reads the
+    /// same whenever it is drawn. Set once, before anything is drawn.
     nonisolated(unsafe) public static var frozen: Date?
 
     public init(now: Date? = nil, calendar: Calendar = .autoupdatingCurrent) {
-        self.now = now ?? Words.frozen ?? .now
+        self.now = Words.frozen ?? now ?? .now
         self.calendar = calendar
     }
 
