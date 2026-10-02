@@ -13,8 +13,13 @@
 //! cost, broken down by kind. Those costs settle what the counts mean: the
 //! output cost divided by `output` alone gives exactly the catalog's output
 //! price, so `reasoning` is part of `output`, and `totalTokens` is input plus
-//! output plus cache reads and writes, so `input` leaves cached input out. A
-//! response is identified by its `responseId`, which a forked session copying
+//! output plus cache reads and writes, so `input` leaves cached input out.
+//! `cacheWrite1h` is the part of `cacheWrite` kept for an hour, which only
+//! Anthropic reports, and which Pi charges at twice the input price
+//! (`calculateCost` and the `Usage` type in pi-ai, Pi 0.99.2, read
+//! 2026-10-02). Measured 2026-10-02: 7 responses, all on 2026-10-01 and
+//! through OpenRouter, carried it, each 0, beside a `totalTokens` that left
+//! it out. A response is identified by its `responseId`, which a forked session copying
 //! the response would carry too, so it is counted once; no forked Pi session
 //! existed on this Mac to show it (2026-09-23).
 //!
@@ -23,7 +28,10 @@
 //! messages of the roles `user`, `assistant` and `toolResult`, with blocks of
 //! `text` from the person, `text`, `thinking` and `toolCall` in responses,
 //! and `text` and `image` in a tool's result; and a response's `usage.cost`
-//! of `input`, `output`, `cacheRead`, `cacheWrite` and `total`.
+//! of `input`, `output`, `cacheRead`, `cacheWrite` and `total`. Since
+//! 2026-10-01, a session opens with a message of the role `system`, with no
+//! text: the sections of Pi's system prompt and the tools it offered (5
+//! sessions, measured 2026-10-02).
 //!
 //! **Titles.** A `session_info` entry holds a name the user gave the session;
 //! otherwise the first prompt titles it.
@@ -103,6 +111,7 @@ const COST_FIELDS: &[&str] = &["cacheRead", "cacheWrite", "input", "output", "to
 const USAGE_FIELDS: &[&str] = &[
     "cacheRead",
     "cacheWrite",
+    "cacheWrite1h",
     "cost",
     "input",
     "output",
@@ -116,7 +125,7 @@ impl AgentReader for Pi {
     }
 
     fn version(&self) -> u32 {
-        4
+        5
     }
 
     fn roots(&self, folder: &Path) -> Vec<PathBuf> {
@@ -400,6 +409,9 @@ fn read_line(bytes: &[u8], offset: u64, state: &mut State, batch: &mut Batch) {
                 }
                 // A tool's result, which the conversation folds into its call.
                 Some("toolResult") => note_blocks(&message, RESULT_BLOCKS, offset, batch),
+                // What Pi's system prompt held and the tools it offered,
+                // which no one said.
+                Some("system") => {}
                 Some(other) => batch.note_unknown("message role", other, offset),
                 None => batch.note(DiagnosticKind::Unreadable, "a message with no role", offset),
             }
@@ -490,10 +502,18 @@ fn observe(
         count("input"),
         count("cacheRead"),
         count("cacheWrite"),
+        super::optional_count(usage.get("cacheWrite1h")),
         count("output"),
         super::optional_count(usage.get("reasoning")),
     );
-    let (Some(input), Some(cache_read), Some(cache_write), Some(output), Some(reasoning)) = counts
+    let (
+        Some(input),
+        Some(cache_read),
+        Some(cache_write),
+        Some(cache_write_1h),
+        Some(output),
+        Some(reasoning),
+    ) = counts
     else {
         batch.note(
             DiagnosticKind::Invalid,
@@ -510,11 +530,19 @@ fn observe(
         );
         return;
     }
+    let Some(cache_write_5m) = cache_write.checked_sub(cache_write_1h) else {
+        batch.note(
+            DiagnosticKind::Invalid,
+            "usage whose hour-long cache writes exceed its cache writes",
+            offset,
+        );
+        return;
+    };
     let tokens = Tokens {
         input,
         cache_read,
-        cache_write_5m: cache_write,
-        cache_write_1h: 0,
+        cache_write_5m,
+        cache_write_1h,
         output,
         reasoning,
     };
@@ -614,6 +642,15 @@ mod tests {
     fn header() -> serde_json::Value {
         json!({"type": "session", "version": 3, "id": SESSION, "timestamp": "2026-09-13T08:50:10.240Z",
                "cwd": "/work/turnscope"})
+    }
+
+    /// The message a session opens with since 2026-10-01: the sections of
+    /// Pi's system prompt and the tools it offered, with no text.
+    fn system() -> serde_json::Value {
+        json!({"type": "message", "id": "s1", "parentId": null, "timestamp": "2026-09-13T08:50:11.000Z",
+               "message": {"role": "system", "content": "", "timestamp": 1_789_289_411_000u64,
+                           "sections": {"base": "You are an expert coding assistant."},
+                           "toolsAdded": [{"name": "read", "description": "Read the contents of a file."}]}})
     }
 
     fn assistant(
@@ -727,6 +764,49 @@ mod tests {
     }
 
     #[test]
+    fn hour_long_cache_writes_are_the_part_of_cache_writes_kept_an_hour() {
+        let dir = tempfile::tempdir().unwrap();
+        // Of 3,000 tokens written to the cache, 1,000 kept for an hour: the
+        // other 2,000 for five minutes. Then 4,000 of 3,000 kept for an
+        // hour, which can't be.
+        let mut split = assistant("a1", "u1", "chatcmpl-1", 4, 50, 0);
+        split["message"]["usage"]["cacheWrite"] = json!(3_000);
+        split["message"]["usage"]["cacheWrite1h"] = json!(1_000);
+        let mut over = assistant("a2", "u1", "chatcmpl-2", 4, 50, 0);
+        over["message"]["usage"]["cacheWrite"] = json!(3_000);
+        over["message"]["usage"]["cacheWrite1h"] = json!(4_000);
+        let (_, batch) = read(dir.path(), &[header(), split, over]);
+        let seen: Vec<&Observation> = batch.observations().collect();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].tokens,
+            Tokens {
+                input: 4,
+                cache_read: 50,
+                cache_write_5m: 2_000,
+                cache_write_1h: 1_000,
+                output: 50,
+                reasoning: 0
+            }
+        );
+        assert_eq!(
+            noted(&batch),
+            [(
+                DiagnosticKind::Invalid,
+                "usage whose hour-long cache writes exceed its cache writes"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_system_message_is_neither_said_nor_noted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, batch) = read(dir.path(), &[header(), system()]);
+        assert_eq!(batch.said().count(), 0);
+        assert!(noted(&batch).is_empty());
+    }
+
+    #[test]
     fn usage_missing_out_of_range_or_at_odds_with_itself_is_not_counted() {
         let dir = tempfile::tempdir().unwrap();
         // One more than 2^50 = 1,125,899,906,842,624; a negative count; no
@@ -794,6 +874,7 @@ mod tests {
             dir.path(),
             &[
                 header(),
+                system(),
                 json!({"type": "message", "id": "u1", "parentId": null, "timestamp": "2026-09-13T08:50:20.000Z",
                        "message": {"role": "user", "content": [{"type": "text", "text": "Explain this project"}]}}),
                 json!({"type": "message", "id": "a1", "parentId": "u1", "timestamp": "2026-09-13T08:50:30.000Z",

@@ -94,7 +94,10 @@
 //! `tool_result`; and `attachment` records, context Claude Code gives the
 //! model, of 37 kinds, 85,568 of them `total_tokens_reminder`. Attachments
 //! are passed over whole, since none is counted, said or shown, and a new
-//! kind comes with most versions. The conversation is a small part of it: of
+//! kind comes with most versions. Since 2026-10-02, a `history-suppression`
+//! record names a `cause`, such as `chokepoint_veto`, and the account it was
+//! against, and nothing said or counted: 312 in one session's log, measured
+//! the same day. The conversation is a small part of it: of
 //! 1.9 GB on 2026-09-23, 12.7 MB was what was said, 0.9 MB thinking and
 //! 631 MB tool input and output, which is what makes indexing what was said
 //! affordable.
@@ -247,6 +250,7 @@ const PASSED_OVER: &[&str] = &[
     "file-history-delta",
     "file-history-snapshot",
     "frame-link",
+    "history-suppression",
     "last-prompt",
     "mode",
     "permission-mode",
@@ -343,7 +347,7 @@ impl AgentReader for ClaudeCode {
     }
 
     fn version(&self) -> u32 {
-        8
+        9
     }
 
     fn roots(&self, folder: &Path) -> Vec<PathBuf> {

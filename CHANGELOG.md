@@ -19,6 +19,8 @@ released.
 - The panel opens with every account not in use closed again.
 - Grok Build is called Grok Build everywhere, as it is in answers to your
   agents, rather than Grok in the panel and Settings.
+- Pi's cache writes kept for an hour are priced as such, at twice the input
+  price, as Claude Code's already are.
 
 ## [0.1.2]
 
