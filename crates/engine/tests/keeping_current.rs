@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use turnscope_engine::{Change, Engine, Filter, Span, UsageQuery, Zone};
 
 use history::claude_code;
-use history::growing::{append, lines};
-use history::home::{Home, write};
+use history::growing::append;
+use history::home::{Home, lines, write};
 use history::running::{OFFLINE, wait_until};
 use history::subagents;
 
@@ -128,8 +128,7 @@ fn a_change_to_a_subagent_names_every_session_above_it() {
         json!({"agentType": "Explore", "description": "Read them",
                "parentAgentId": EXPLORE, "spawnDepth": 2}),
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
 
     // Only the nested subagent writes, and the totals of both sessions above
     // it change with its own, so the change names all three.

@@ -3,13 +3,6 @@
 use std::io::Write as _;
 use std::path::Path;
 
-use serde_json::Value;
-
-/// `records` as the lines of a log, each ending in a newline.
-pub fn lines(records: &[Value]) -> String {
-    records.iter().map(|record| format!("{record}\n")).collect()
-}
-
 /// Add `bytes` to the end of the file at `path`, making the file and its
 /// directory if need be.
 pub fn append(path: &Path, bytes: &[u8]) {

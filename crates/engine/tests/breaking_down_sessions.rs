@@ -140,8 +140,7 @@ fn a_session_breaks_down_by_prompt_and_subagent_and_shares_its_limit() {
         &["2026-09-27T10:00:10Z", "2026-09-27T10:31:00Z"],
     );
     subagent(&home, "a2", "toolu_2", &["2026-09-27T10:00:10Z"]);
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     week(&engine, "2026-09-27T10:15:00Z", 10.0);
     week(&engine, "2026-09-27T10:45:00Z", 30.0);
 
@@ -190,8 +189,7 @@ fn a_session_breaks_down_by_prompt_and_subagent_and_shares_its_limit() {
 fn a_session_no_reading_covers_takes_no_share_and_one_unknown_has_no_breakdown() {
     let home = Home::new();
     write(&claude_code::session(home.path(), SESSION), &session_log());
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let usage = engine
         .session_usage(&SessionKey::new(Agent::ClaudeCode, SESSION))
         .unwrap()
@@ -235,8 +233,7 @@ fn a_limits_window_is_shared_among_sessions_and_what_nothing_here_spent_on() {
             reply,
         ],
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     week(&engine, "2026-09-27T10:15:00Z", 10.0);
     week(&engine, "2026-09-27T10:45:00Z", 30.0);
     week(&engine, "2026-09-27T11:15:00Z", 35.0);
@@ -284,4 +281,71 @@ fn a_limits_window_is_shared_among_sessions_and_what_nothing_here_spent_on() {
     );
     assert_eq!(window.models.len(), 1);
     assert!(close(window.models[0].1, 30.0));
+}
+
+#[test]
+fn a_session_read_without_its_conversation_takes_the_same_shares_unprompted() {
+    let home = Home::new();
+    write(&claude_code::session(home.path(), SESSION), &session_log());
+    subagent(
+        &home,
+        "a1",
+        "toolu_1",
+        &["2026-09-27T10:00:10Z", "2026-09-27T10:31:00Z"],
+    );
+    subagent(&home, "a2", "toolu_2", &["2026-09-27T10:00:10Z"]);
+    let engine = home.scanned();
+    week(&engine, "2026-09-27T10:15:00Z", 10.0);
+    week(&engine, "2026-09-27T10:45:00Z", 30.0);
+
+    let key = SessionKey::new(Agent::ClaudeCode, SESSION);
+    let whole = engine.session_usage(&key).unwrap().unwrap();
+    let without = engine.session_usage_without_prompts(&key).unwrap().unwrap();
+    // No prompt is read, so the 30 the session took of the week, 20 under
+    // the audit and 10 under the fix as the first test works out, is all
+    // unprompted; its subagents and their shares are the same.
+    assert!(without.prompts.is_empty());
+    assert_eq!(without.subagents, whole.subagents);
+    let (week, read) = (&whole.limits[0], &without.limits[0]);
+    assert!(close(read.share, week.share), "{}", read.share);
+    assert!(close(read.unprompted, 30.0), "{}", read.unprompted);
+    assert_eq!(read.subagents.len(), week.subagents.len());
+    for (read, whole) in read.subagents.iter().zip(&week.subagents) {
+        assert!(close(*read, *whole), "{read} {whole}");
+    }
+}
+
+#[test]
+fn a_sessions_largest_context_is_read_without_its_conversation() {
+    let home = Home::new();
+    // Two responses: 1,000 in with 30,000 read from the cache and 2,000
+    // written to it, a context of 33,000; then 500 in with 40,000 read, a
+    // context of 40,500, the larger.
+    let response = |id: &str, time: &str, usage: Value| {
+        claude_code::response(SESSION, None, time, id, "claude-opus-5", usage)
+    };
+    write(
+        &claude_code::session(home.path(), SESSION),
+        &[
+            response(
+                "1",
+                "2026-09-29T10:00:10Z",
+                json!({"input_tokens": 1_000, "cache_read_input_tokens": 30_000,
+                "cache_creation_input_tokens": 2_000, "output_tokens": 50}),
+            ),
+            response(
+                "2",
+                "2026-09-29T10:00:20Z",
+                json!({"input_tokens": 500, "cache_read_input_tokens": 40_000,
+                "cache_creation_input_tokens": 0, "output_tokens": 50}),
+            ),
+        ],
+    );
+    let engine = home.scanned();
+    let key = SessionKey::new(Agent::ClaudeCode, SESSION);
+    let contexts = engine.largest_contexts(std::slice::from_ref(&key)).unwrap();
+    assert_eq!(contexts.get(&key), Some(&40_500));
+    // A session with no response has no context known.
+    let none = SessionKey::new(Agent::Codex, "nothing");
+    assert_eq!(engine.largest_contexts(&[none]).unwrap().len(), 0);
 }

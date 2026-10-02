@@ -95,9 +95,7 @@ fn a_second_accounts_folder_is_read_and_its_sessions_taken_up_there() {
         )],
     );
 
-    let engine = home.open();
-    let report = engine.scan().unwrap();
-    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let engine = home.scanned();
     let claude: Vec<Folder> = engine
         .folders()
         .into_iter()

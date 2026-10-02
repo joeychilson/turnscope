@@ -97,8 +97,7 @@ fn two_accounts_of_one_subscription_keep_the_use_made_where_each_is_signed_in() 
         )],
     );
     std::fs::write(work.join(".claude.json"), "{}").unwrap();
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let now = Instant::parse("2026-09-27T11:00:00Z").unwrap();
     engine
         .record_fixture_limits(
@@ -213,8 +212,7 @@ fn signing_into_another_account_in_one_folder_moves_the_use_made_after() {
     ] {
         write(&claude_code::session(home.path(), session), &responses);
     }
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let signed_in = |id: &str, used: f64, at: &str| {
         let at = Instant::parse(at).unwrap();
         let found = account(
@@ -313,8 +311,7 @@ fn usage_is_told_apart_and_kept_to_the_account_it_drew_on() {
     std::fs::write(other.join(".claude.json"), "{}").unwrap();
     // Read before any look, so all of it is put down to an account only
     // when the looks are recorded.
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     for (id, at) in [
         ("claude:personal", "2026-09-27T09:00:00Z"),
         ("claude:work", "2026-09-27T12:00:00Z"),
@@ -443,8 +440,7 @@ fn use_of_an_api_key_is_an_account_of_its_providers() {
             pi_response("a2", "anthropic", "claude-unlisted-1", 0.25, now),
         ],
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let go = account(
         "opencode-go:go",
         Subscription::OpenCodeGo,

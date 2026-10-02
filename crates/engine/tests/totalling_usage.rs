@@ -10,8 +10,8 @@ mod history {
 
 use serde_json::{Value, json};
 use turnscope_engine::{
-    Bucket, Dimension, Engine, Filter, Instant, ModelKey, SessionOrder, SessionQuery, Span,
-    UsageQuery, Zone,
+    Bucket, Dimension, Filter, Instant, ModelKey, SessionOrder, SessionQuery, Span, UsageQuery,
+    Zone,
 };
 
 use history::claude_code::{self, response};
@@ -32,14 +32,6 @@ fn at(text: &str) -> Instant {
     Instant::parse(text).unwrap()
 }
 
-/// An engine that has read `home`.
-fn engine(home: &Home) -> Engine {
-    let engine = home.open();
-    let report = engine.scan().unwrap();
-    assert!(report.failed.is_empty(), "{:?}", report.failed);
-    engine
-}
-
 #[test]
 fn the_rollup_answers_as_each_response_does() {
     let home = Home::new();
@@ -49,49 +41,23 @@ fn the_rollup_answers_as_each_response_does() {
     // Code's own totals counting 1,000 more input than its transcripts show,
     // which is spread over the quarter hours as usage outside the
     // conversation; a subagent's two responses; and another session's two.
+    // Each at a time of the day, of `model`, reporting `usage`.
+    let on_the_day = |time: &str| format!("2026-09-14T{time}.000Z");
+    let parent =
+        |time: &str, id, model, usage| response(PARENT, None, &on_the_day(time), id, model, usage);
+    let explore = |time: &str, id, model, usage| {
+        response(PARENT, Some(EXPLORE), &on_the_day(time), id, model, usage)
+    };
+    let other =
+        |time: &str, id, model, usage| response(OTHER, None, &on_the_day(time), id, model, usage);
     write(
         &claude_code::session(home.path(), PARENT),
         &[
-            response(
-                PARENT,
-                None,
-                "2026-09-14T12:01:00.000Z",
-                "p1",
-                opus,
-                usage(100, 1_000, 50),
-            ),
-            response(
-                PARENT,
-                None,
-                "2026-09-14T12:05:00.000Z",
-                "p2",
-                opus,
-                usage(200, 2_000, 60),
-            ),
-            response(
-                PARENT,
-                None,
-                "2026-09-14T12:14:59.000Z",
-                "p3",
-                opus,
-                usage(300, 3_000, 70),
-            ),
-            response(
-                PARENT,
-                None,
-                "2026-09-14T12:20:00.000Z",
-                "p4",
-                "claude-mystery-1",
-                usage(400, 0, 80),
-            ),
-            response(
-                PARENT,
-                None,
-                "2026-09-14T12:40:00.000Z",
-                "p5",
-                opus,
-                usage(500, 5_000, 90),
-            ),
+            parent("12:01:00", "p1", opus, usage(100, 1_000, 50)),
+            parent("12:05:00", "p2", opus, usage(200, 2_000, 60)),
+            parent("12:14:59", "p3", opus, usage(300, 3_000, 70)),
+            parent("12:20:00", "p4", "claude-mystery-1", usage(400, 0, 80)),
+            parent("12:40:00", "p5", opus, usage(500, 5_000, 90)),
             // The transcripts' Claude Opus 5: 100 + 200 + 300 + 500 = 1,100
             // input, 11,000 read from the cache and 270 out.
             json!({"type": "cost-state", "sessionId": PARENT, "modelUsage": {opus: {
@@ -102,22 +68,8 @@ fn the_rollup_answers_as_each_response_does() {
     write(
         &subagents::log(home.path(), PARENT, EXPLORE),
         &[
-            response(
-                PARENT,
-                Some(EXPLORE),
-                "2026-09-14T12:03:00.000Z",
-                "e1",
-                "claude-haiku-4-5",
-                usage(10, 100, 5),
-            ),
-            response(
-                PARENT,
-                Some(EXPLORE),
-                "2026-09-14T12:22:00.000Z",
-                "e2",
-                "claude-haiku-4-5",
-                usage(20, 200, 6),
-            ),
+            explore("12:03:00", "e1", "claude-haiku-4-5", usage(10, 100, 5)),
+            explore("12:22:00", "e2", "claude-haiku-4-5", usage(20, 200, 6)),
         ],
     );
     subagents::describe(
@@ -129,25 +81,11 @@ fn the_rollup_answers_as_each_response_does() {
     write(
         &claude_code::session(home.path(), OTHER),
         &[
-            response(
-                OTHER,
-                None,
-                "2026-09-14T12:07:00.000Z",
-                "o1",
-                opus,
-                usage(50, 0, 7),
-            ),
-            response(
-                OTHER,
-                None,
-                "2026-09-14T12:50:00.000Z",
-                "o2",
-                opus,
-                usage(60, 0, 8),
-            ),
+            other("12:07:00", "o1", opus, usage(50, 0, 7)),
+            other("12:50:00", "o2", opus, usage(60, 0, 8)),
         ],
     );
-    let engine = engine(&home);
+    let engine = home.scanned();
     let zone = Zone::named("America/New_York").unwrap();
 
     // The first span falls on quarter hours, so it is read from the rollup
@@ -313,7 +251,7 @@ fn a_local_day_holds_its_usage_across_a_change_of_the_clocks() {
             ),
         ],
     );
-    let engine = engine(&home);
+    let engine = home.scanned();
     let question = UsageQuery {
         span: Span {
             from: Some(at("2026-10-31T04:00:00Z")),
@@ -369,7 +307,7 @@ fn only_the_buckets_with_usage_are_given() {
             ),
         ],
     );
-    let engine = engine(&home);
+    let engine = home.scanned();
     let zone = Zone::named("UTC").unwrap();
     let question = UsageQuery {
         span: Span::default(),
@@ -409,7 +347,7 @@ fn usage_before_1970_is_in_the_quarter_hour_it_was_made_in() {
             usage(0, 0, 1),
         )],
     );
-    let engine = engine(&home);
+    let engine = home.scanned();
     let zone = Zone::named("UTC").unwrap();
     let output = |from: &str, until: &str| {
         let question = UsageQuery {

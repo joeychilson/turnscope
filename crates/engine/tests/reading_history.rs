@@ -1,5 +1,10 @@
 //! Reading history gives the same ledger however the history arrives: read as
-//! it grows or whole, in any order, rewritten, or deleted afterwards.
+//! it grows or whole, in any order, rewritten, or deleted afterwards; and
+//! what the ledger is read into answers the same, the cache built whole or
+//! kept up, usage outside the conversation kept with the report it came
+//! from, and sessions found to run within others or to be reviews counted
+//! where they belong. The tests of these last share this file's histories
+//! of every agent, which is why they are here.
 
 mod history {
     pub mod claude_code;
@@ -18,8 +23,8 @@ use turnscope_engine::{
     SessionQuery, Span, Speaker, Tokens, Totals, UsageQuery, UsageTable, Zone,
 };
 
-use history::growing::{append, lines};
-use history::home::{Home, write};
+use history::growing::append;
+use history::home::{Home, lines, write};
 use history::{claude_code, opencode, pi, subagents};
 
 // The fork's id sorts before its parent's, so a response whose copy were
@@ -568,7 +573,7 @@ fn a_log_cut_short_and_written_past_its_old_end_is_read_again() {
     write(&path, &original);
     let doctor = setup.scan();
     assert_eq!(doctor.agents[0].tokens.output, 50);
-    asked(&setup);
+    assert_eq!(asked(&setup)[1], "Add a file watcher");
 
     // Cut back to its first two lines and written on: another question, a
     // response of 40 out, and one of 5 past where the file ended. The
@@ -1054,24 +1059,19 @@ fn a_cache_is_built_again_for_a_ledger_it_was_not_built_from() {
     let (home, data) = (setup.home.path(), setup.home.data.path());
     drop(setup.engine);
     let put = |(relative, lines): (PathBuf, Vec<Value>)| write(&home.join(relative), &lines);
-    let scanned = || {
-        let engine = setup.home.open();
-        assert!(engine.scan().unwrap().failed.is_empty());
-        engine
-    };
 
     // A copy of the ledger taken before Pi's session was read, restored once
     // the session's file is gone: the cache knew the session, the ledger it
     // is kept beside never did.
     put(background());
-    drop(scanned());
+    drop(setup.home.scanned());
     let copy = data.join("copy.sqlite");
     copy_ledger(&data.join("ledger.sqlite"), &copy);
     put(pi_session());
-    drop(scanned());
+    drop(setup.home.scanned());
     std::fs::remove_file(home.join(pi_session().0)).unwrap();
     replace_ledger(data, &copy);
-    let restored = scanned();
+    let restored = setup.home.scanned();
     assert_eq!(answers(&restored), built_whole(&setup.home));
     drop(restored);
 
