@@ -392,3 +392,43 @@ fn only_the_buckets_with_usage_are_given() {
         ]
     );
 }
+
+#[test]
+fn usage_before_1970_is_in_the_quarter_hour_it_was_made_in() {
+    let home = Home::new();
+    // One response a minute before 1970, at -60,000 ms: in the quarter hour
+    // from 23:45, at -900,000 ms, not in the one from midnight.
+    write(
+        &claude_code::session(home.path(), PARENT),
+        &[response(
+            PARENT,
+            None,
+            "1969-12-31T23:59:00.000Z",
+            "1",
+            "claude-opus-5",
+            usage(0, 0, 1),
+        )],
+    );
+    let engine = engine(&home);
+    let zone = Zone::named("UTC").unwrap();
+    let output = |from: &str, until: &str| {
+        let question = UsageQuery {
+            span: Span {
+                from: Some(at(from)),
+                until: Some(at(until)),
+            },
+            filter: Filter::default(),
+            by: None,
+            every: None,
+        };
+        engine.usage(&question, &zone).unwrap().total.tokens.output
+    };
+    // On quarter hours, read from the rollup; a millisecond off at each
+    // end, the quarter hours cut are read from each response.
+    assert_eq!(output("1969-12-31T23:45:00Z", "1970-01-01T00:00:00Z"), 1);
+    assert_eq!(
+        output("1969-12-31T23:44:59.999Z", "1969-12-31T23:59:59.999Z"),
+        1
+    );
+    assert_eq!(output("1970-01-01T00:00:00Z", "1970-01-01T00:15:00Z"), 0);
+}
