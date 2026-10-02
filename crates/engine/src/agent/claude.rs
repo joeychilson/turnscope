@@ -156,7 +156,7 @@ use serde_json::{Map, Value};
 
 use super::{
     Agent, AgentReader, ArtifactKind, Batch, Checkpoint, DiagnosticKind, ModelTotal, Object,
-    Observation, ReportScope, SessionReport, string,
+    Observation, ReportScope, SessionReport, owned, string, value,
 };
 use crate::error::{Error, Result};
 use crate::handoff::{self, Change, ChangeKind, PlanItem, StepStatus, Work};
@@ -203,6 +203,32 @@ impl Copied {
         })
     }
 
+    /// Where the line of `kind` stands against a fork's copy: with the copy
+    /// being read, `copying`, and whether the file's own person has said
+    /// anything yet, `prompted`, brought up to date. Reading and conversing
+    /// take this one step, so search and the conversation leave out the
+    /// same lines.
+    fn stand(copying: &mut Option<Copied>, prompted: &mut bool, kind: &str, line: &Line) -> Stand {
+        if let Some(parent) = copying.as_ref().map(|copy| copy.parent.clone())
+            && Copied::holds(copying, kind, line.message())
+        {
+            return Stand::Copied(parent);
+        }
+        match kind {
+            "fork-context-ref" => {
+                if !*prompted && copying.is_none() {
+                    *copying = Copied::referred(line);
+                }
+                Stand::Opening
+            }
+            "user" => {
+                *prompted = true;
+                Stand::Own
+            }
+            _ => Stand::Own,
+        }
+    }
+
     /// Whether the line of `kind` carrying `message` belongs to the copy
     /// `copying`, which ends, becoming `None`, with the copy's last line.
     fn holds(copying: &mut Option<Copied>, kind: &str, message: Option<&Message>) -> bool {
@@ -224,6 +250,17 @@ impl Copied {
             _ => false,
         }
     }
+}
+
+/// Where a line stands against a fork's copy of its parent's history.
+enum Stand {
+    /// The file's own.
+    Own,
+    /// The copy's: the session named's history.
+    Copied(String),
+    /// A `fork-context-ref`, which opens a copy before the file's first
+    /// prompt, and holds nothing itself.
+    Opening,
 }
 
 /// How long a subagent's log waits to be read for the description Claude Code
@@ -431,19 +468,8 @@ impl Conversing {
             return;
         };
         let kind = string(line.kind).unwrap_or_default();
-        if kind == "fork-context-ref" {
-            if !self.prompted && self.copying.is_none() {
-                self.copying = Copied::referred(&line);
-            }
-            return;
-        }
-        if Copied::holds(&mut self.copying, &kind, line.message()) {
-            return;
-        }
-        if kind == "user" {
-            self.prompted = true;
-        }
-        if !matches!(kind.as_ref(), "user" | "assistant") {
+        let stand = Copied::stand(&mut self.copying, &mut self.prompted, &kind, &line);
+        if !matches!(stand, Stand::Own) || !matches!(kind.as_ref(), "user" | "assistant") {
             return;
         }
         let Some(message) = line.message() else {
@@ -453,11 +479,7 @@ impl Conversing {
         let synthetic = message.synthetic();
         let model = string(message.model);
         let model = model.as_deref().filter(|_| !synthetic);
-        let content = message
-            .content
-            .and_then(|raw| serde_json::from_str::<Value>(raw.get()).ok())
-            .unwrap_or(Value::Null);
-        let content = &content;
+        let content = &value(message.content);
         let blocks = content.as_array().map(Vec::as_slice).unwrap_or_default();
         let builder = &mut self.builder;
         // A result names the call it answers, and is folded into it. What
@@ -470,18 +492,16 @@ impl Conversing {
             .count();
         for block in blocks.iter().filter(|block| block["type"] == "tool_result") {
             if let Some(id) = block["tool_use_id"].as_str() {
-                let output = text_of(&block["content"]);
-                let head: String = output.chars().take(HEAD).collect();
                 let failed = block["is_error"].as_bool().unwrap_or(false);
-                let call = builder
-                    .answer(id, output, failed)
-                    .map(|call| (call.name.clone(), call.input.clone()));
-                if let Some((name, input)) = call {
-                    let account = || match (results, line.tool_use_result) {
-                        (1, Some(raw)) => serde_json::from_str(raw.get()).unwrap_or(Value::Null),
-                        _ => Value::Null,
+                if let Some(call) = builder.answer(id, text_of(&block["content"]), failed) {
+                    let account = || {
+                        if results == 1 {
+                            value(line.tool_use_result)
+                        } else {
+                            Value::Null
+                        }
                     };
-                    for work in worked(&name, &input, &head, failed, account) {
+                    for work in worked(&call.name, &call.input, &call.head(), failed, account) {
                         builder.worked(at, work);
                     }
                 }
@@ -527,11 +547,6 @@ impl Conversing {
         }
     }
 }
-
-/// How much of a result's text [`worked`] reads: enough for what Claude Code
-/// opens a result with, such as `Exit code 2`, or `Task #3 created
-/// successfully: ` and the task's subject.
-const HEAD: usize = 400;
 
 /// The work a call of Claude Code's tool `name`, given `input`, did, as the
 /// start of its result, `head`, whether that was a failure, and Claude
@@ -898,13 +913,6 @@ impl<'a> Message<'a> {
     }
 }
 
-/// A field's text, owned, when it is a non-empty string.
-fn owned(field: Option<&RawValue>) -> Option<String> {
-    string(field)
-        .filter(|value| !value.is_empty())
-        .map(Cow::into_owned)
-}
-
 /// Read one line into `batch`.
 fn read_line(bytes: &[u8], offset: u64, place: &Place, state: &mut State, batch: &mut Batch) {
     let Ok(line) = serde_json::from_slice::<Line>(bytes) else {
@@ -932,27 +940,22 @@ fn read_line(bytes: &[u8], offset: u64, place: &Place, state: &mut State, batch:
     // A fork's copy of its parent's history: its responses are the parent's,
     // copied before they finished, and its dates, directory and words are the
     // parent's too, so they say nothing of the fork.
-    let parent = state.copying.as_ref().map(|copy| copy.parent.clone());
-    if Copied::holds(&mut state.copying, &kind, line.message()) {
-        if kind == "assistant"
-            && let Some(parent) = parent
-            && let Some(reply) = Reply::read(line.message.as_ref(), offset, batch)
-        {
-            let parent = SessionKey::new(Agent::ClaudeCode, parent);
-            observe(&reply, line.request_id, at, parent, true, offset, batch);
-        }
-        return;
-    }
-
-    match kind.as_ref() {
-        "fork-context-ref" => {
-            if !state.prompted && state.copying.is_none() {
-                state.copying = Copied::referred(&line);
+    match Copied::stand(&mut state.copying, &mut state.prompted, &kind, &line) {
+        Stand::Own => {}
+        Stand::Copied(parent) => {
+            if kind == "assistant"
+                && let Some(reply) = Reply::read(line.message.as_ref(), offset, batch)
+            {
+                let parent = SessionKey::new(Agent::ClaudeCode, parent);
+                observe(&reply, line.request_id, at, parent, true, offset, batch);
             }
             return;
         }
+        Stand::Opening => return,
+    }
+
+    match kind.as_ref() {
         "user" => {
-            state.prompted = true;
             let content = line.message().and_then(Message::content);
             if let Some(Content::Blocks(blocks)) = &content {
                 note_blocks(blocks, USER_BLOCKS, "user content block", offset, batch);
@@ -1686,7 +1689,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::ClaudeCode;
-    use crate::agent::tests::assert_said_as_shown;
+    use crate::agent::tests::{assert_said_as_shown, noted, said};
     use crate::agent::{AgentReader, Batch, Checkpoint, DiagnosticKind, Observation, ReportScope};
     use crate::session::{LinkKind, SessionKey, TitleSource};
     use crate::time::Instant;
@@ -2185,10 +2188,7 @@ mod tests {
         let batch = read(&path);
         // Both are counted, as the credit changes none of their tokens.
         assert_eq!(observations(&batch).len(), 2);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [(
@@ -2270,10 +2270,7 @@ mod tests {
                 ("msg_3:req_3", 300_000, 20, 150_000),
             ]
         );
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [(
@@ -2404,10 +2401,7 @@ mod tests {
         counted.sort_unstable();
         assert_eq!(counted, ["msg_1:req_1", "msg_3:req_3"]);
         assert_eq!(batch.reports().count(), 1);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [
@@ -2481,12 +2475,9 @@ mod tests {
         // said around the blocks not known is said.
         let seen = observations(&batch);
         assert_eq!((seen.len(), seen[0].tokens.total()), (1, 1 + 2 + 3 + 4));
-        let said: Vec<&str> = batch.said().map(|said| said.text.as_str()).collect();
+        let said = said(&batch);
         assert_eq!(said, ["Review the scan", "On it."]);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [
@@ -2539,10 +2530,7 @@ mod tests {
             .collect();
         assert_eq!(counted, ["msg_1:req_1"]);
         assert_eq!(batch.reports().count(), 0);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [
@@ -2658,7 +2646,7 @@ mod tests {
             ],
         );
         let batch = read(&path);
-        let said: Vec<&str> = batch.said().map(|said| said.text.as_str()).collect();
+        let said = said(&batch);
         assert_eq!(said, ["Keep going", "On it."]);
         let (_, facts) = batch.sessions().next().unwrap();
         assert_eq!(
@@ -2706,7 +2694,7 @@ mod tests {
         );
         let batch = read(&path);
         assert_eq!(observations(&batch).len(), 0);
-        let said: Vec<&str> = batch.said().map(|said| said.text.as_str()).collect();
+        let said = said(&batch);
         assert_eq!(said, ["Keep going"]);
         let entries = ClaudeCode::default()
             .conversation(&key(SESSION), std::slice::from_ref(&path))
@@ -2757,10 +2745,7 @@ mod tests {
         let path = session_file(dir.path(), &[pasted, misshapen, unused]);
         let batch = read(&path);
         assert_eq!(observations(&batch).len(), 0);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [

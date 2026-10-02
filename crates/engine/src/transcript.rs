@@ -57,6 +57,21 @@ pub struct ToolCall {
     pub subagent: Option<SessionKey>,
 }
 
+impl ToolCall {
+    /// The start of its result: as much as a reader looks at to tell what
+    /// the call did, enough for what a result opens with, such as `Exit code
+    /// 2`, or `Task #3 created successfully: ` and the task's subject.
+    pub(crate) fn head(&self) -> String {
+        const HEAD: usize = 400;
+        self.output
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .take(HEAD)
+            .collect()
+    }
+}
+
 /// One entry of a conversation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -107,7 +122,9 @@ impl Transcript {
 #[derive(Debug, Default)]
 pub(crate) struct Builder {
     entries: Vec<Entry>,
-    /// Calls not yet answered, by id, at their place in `entries`.
+    /// Calls not yet answered, by id, at their place in `entries`, which is
+    /// always a call's: only [`Builder::call`] adds one, and entries are never
+    /// taken away.
     awaiting: HashMap<String, usize>,
     /// Calls that started a subagent, as [`Transcript::launches`].
     launches: Vec<(u32, String)>,
@@ -175,23 +192,14 @@ impl Builder {
     /// result answering no call is kept as what the agent injected, so
     /// nothing said is lost.
     pub(crate) fn answer(&mut self, id: &str, output: String, failed: bool) -> Option<&ToolCall> {
-        let position = self.awaiting.remove(id).filter(|position| {
-            self.entries
-                .get(*position)
-                .is_some_and(|entry| entry.tool.is_some())
-        });
-        match position {
-            Some(position) => {
-                let tool = self.entries[position].tool.as_mut()?;
-                tool.output = Some(output);
-                tool.failed = failed;
-                Some(tool)
-            }
-            None => {
-                self.say(Speaker::System, None, None, output);
-                None
-            }
-        }
+        let Some(position) = self.awaiting.remove(id) else {
+            self.say(Speaker::System, None, None, output);
+            return None;
+        };
+        let tool = self.entries.get_mut(position)?.tool.as_mut()?;
+        tool.output = Some(output);
+        tool.failed = failed;
+        Some(tool)
     }
 
     /// Record work the agent did, at `at` where it recorded when.

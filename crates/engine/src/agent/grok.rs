@@ -254,14 +254,13 @@ fn say(bytes: &[u8], offset: u64, session: &SessionKey, batch: &mut Batch) {
         return;
     };
     let content = line.get("content").unwrap_or(&Value::Null);
-    let kind = line.get("type").and_then(Value::as_str);
-    if kind == Some("user") {
-        note_parts(content, offset, batch);
-    }
-    match kind {
-        Some("user") if !injected(&line) => {
-            for text in pieces(content) {
-                batch.prompt(session, None, text);
+    match line.get("type").and_then(Value::as_str) {
+        Some("user") => {
+            note_parts(content, offset, batch);
+            if !injected(&line) {
+                for text in pieces(content) {
+                    batch.prompt(session, None, text);
+                }
             }
         }
         Some("assistant") => {
@@ -274,7 +273,6 @@ fn say(bytes: &[u8], offset: u64, session: &SessionKey, batch: &mut Batch) {
             }
             batch.say(session, None, &text_of(content));
         }
-        Some("user") => {}
         Some(other) if HISTORY_PASSED_OVER.contains(&other) => {}
         Some(other) => batch.note_unknown("history line type", other, offset),
         None => batch.note(
@@ -288,21 +286,13 @@ fn say(bytes: &[u8], offset: u64, session: &SessionKey, batch: &mut Batch) {
 /// Note each part of a user line's `content` of a kind not among
 /// [`USER_PARTS`].
 fn note_parts(content: &Value, offset: u64, batch: &mut Batch) {
-    let parts = match content {
-        Value::Array(parts) => parts,
-        Value::String(_) | Value::Null => return,
-        _ => {
-            return batch.note(
-                DiagnosticKind::Unreadable,
-                "a user line whose content is neither text nor parts",
-                offset,
-            );
-        }
-    };
-    for part in parts {
-        let kind = part.get("type").and_then(Value::as_str);
-        batch.note_kind(kind, USER_PARTS, "user content part", offset);
-    }
+    batch.note_parts(
+        Some(content),
+        USER_PARTS,
+        "user content part",
+        "a user line whose content is neither text nor parts",
+        offset,
+    );
 }
 
 /// Whether a user line of a conversation is Grok Build's own, sent as the
@@ -311,10 +301,6 @@ fn injected(line: &Map<String, Value>) -> bool {
     line.get("synthetic_reason")
         .is_some_and(|reason| !reason.is_null())
 }
-
-/// How much of a result's text [`worked`] reads: enough for the exit code a
-/// command's opens with, and the sentence an edit's is.
-const HEAD: usize = 400;
 
 /// The work a call of Grok Build's tool `name`, given `input`, did, as the
 /// start of its result, `head`, says: Grok Build marks no result failed, so
@@ -358,7 +344,7 @@ fn worked(name: &str, input: &str, head: &str) -> Vec<Work> {
                 return unclear();
             };
             let change = if created {
-                Change::new(&path, ChangeKind::Created, Some((handoff::lines(&new), 0)))
+                Change::written(&path, &new, true)
             } else {
                 Change::new(
                     &path,
@@ -374,17 +360,7 @@ fn worked(name: &str, input: &str, head: &str) -> Vec<Work> {
             else {
                 return unclear();
             };
-            let lines = handoff::lines(&content);
-            let change = if created {
-                Change::new(&path, ChangeKind::Created, Some((lines, 0)))
-            } else {
-                // What the file held before isn't recorded.
-                Change {
-                    removed: None,
-                    ..Change::new(&path, ChangeKind::Updated, Some((lines, 0)))
-                }
-            };
-            vec![Work::Changed(change)]
+            vec![Work::Changed(Change::written(&path, &content, created))]
         }
         "todo_write" => {
             let Ok(given) = serde_json::from_str::<Value>(input) else {
@@ -433,15 +409,13 @@ fn converse(bytes: &[u8], builder: &mut Builder) {
     };
     let content = line.get("content").unwrap_or(&Value::Null);
     match line.get("type").and_then(Value::as_str) {
-        Some("system") => builder.say(Speaker::System, None, None, text_of(content)),
-        Some("user") if injected(&line) => {
-            builder.say(Speaker::System, None, None, text_of(content));
-        }
-        Some("user") => {
+        Some("user") if !injected(&line) => {
             for text in pieces(content) {
                 builder.prompt(None, text);
             }
         }
+        // Grok Build's own words, and those it sent as the person's.
+        Some("system" | "user") => builder.say(Speaker::System, None, None, text_of(content)),
         Some("reasoning") => {
             let summary = line.get("summary").map(text_of).unwrap_or_default();
             builder.say(Speaker::Reasoning, None, None, summary);
@@ -473,16 +447,11 @@ fn converse(bytes: &[u8], builder: &mut Builder) {
             }
         }
         Some("tool_result") => {
-            if let Some(id) = line.get("tool_call_id").and_then(Value::as_str) {
-                let output = text_of(content);
-                let head: String = output.chars().take(HEAD).collect();
-                let call = builder
-                    .answer(id, output, false)
-                    .map(|call| (call.name.clone(), call.input.clone()));
-                if let Some((name, input)) = call {
-                    for work in worked(&name, &input, &head) {
-                        builder.worked(None, work);
-                    }
+            if let Some(id) = line.get("tool_call_id").and_then(Value::as_str)
+                && let Some(call) = builder.answer(id, text_of(content), false)
+            {
+                for work in worked(&call.name, &call.input, &call.head()) {
+                    builder.worked(None, work);
                 }
             }
         }
@@ -810,7 +779,7 @@ fn report(bytes: &[u8], session: &SessionKey, batch: &mut Batch) {
         #[serde(rename = "modelUsage", default)]
         model_usage: Option<BTreeMap<String, Value>>,
     }
-    let Some(models) = serde_json::from_slice::<Usage>(bytes)
+    let Some((updated, models)) = serde_json::from_slice::<Usage>(bytes)
         .ok()
         .and_then(|usage| Some((usage.updated_at, usage.session?.model_usage?)))
     else {
@@ -821,7 +790,6 @@ fn report(bytes: &[u8], session: &SessionKey, batch: &mut Batch) {
         );
         return;
     };
-    let (updated, models) = models;
     let mut totals = Vec::with_capacity(models.len());
     for (model, used) in models {
         let Some(used) = Used::read(&used, "session.modelUsage", 0, batch) else {
@@ -861,7 +829,7 @@ mod tests {
 
     use super::{Grok, dollars_of_ticks};
     use crate::Agent;
-    use crate::agent::tests::assert_said_as_shown;
+    use crate::agent::tests::{assert_said_as_shown, noted, said};
     use crate::agent::{
         AgentReader, ArtifactKind, Batch, Checkpoint, DiagnosticKind, Observation, ReportScope,
     };
@@ -1006,10 +974,7 @@ mod tests {
             }
         );
         assert_eq!((seen.len(), seen[0].cost), (1, None));
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         // The usage of the turn cancelled without any is known to be
         // missing, and understood; the others' is not.
         assert_eq!(
@@ -1068,10 +1033,7 @@ mod tests {
             .map(|seen| seen.response.as_str())
             .collect();
         assert_eq!(counted, [format!("{SESSION}:p1:grok-4.6-build")]);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [
@@ -1218,7 +1180,7 @@ mod tests {
         )
         .unwrap();
         let history = folder.join("chat_history.jsonl");
-        let session = crate::session::SessionKey::new(crate::Agent::Grok, SESSION);
+        let session = SessionKey::new(Agent::Grok, SESSION);
         let transcript = Grok
             .conversation(&session, std::slice::from_ref(&history))
             .unwrap();
@@ -1292,12 +1254,9 @@ mod tests {
         for path in [&updates, &history] {
             Grok.read(path, &Checkpoint::default(), &mut batch).unwrap();
         }
-        let said: Vec<&str> = batch.said().map(|said| said.text.as_str()).collect();
+        let said = said(&batch);
         assert_eq!(said, ["Review the frontend"]);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [

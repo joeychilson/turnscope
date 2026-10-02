@@ -1,7 +1,9 @@
 //! The agents Turnscope reads, and what reading one produces.
 //!
-//! Adding an agent means one new module here implementing [`AgentReader`], and
-//! a line in [`readers`]. Nothing else in the engine knows any agent's format.
+//! Adding an agent means one new module here implementing [`AgentReader`], a
+//! line in [`readers`], an [`Agent`] with its key, name, resume command and
+//! folder variable, and its own folder in `folders::own`. Nothing else in
+//! the engine knows any agent's format.
 //! Each reader's module documentation records what was measured of its
 //! agent's files, with the numbers and the date, since those findings are
 //! what its rules rest on.
@@ -835,6 +837,29 @@ impl Batch {
         }
     }
 
+    /// Note each part of `content`, a list of parts, of a kind not among
+    /// `known`, as [`Batch::note_kind`] does for a `what`. Text, or nothing,
+    /// has no parts; content of any other shape is unreadable, as `misshapen`
+    /// says.
+    pub(crate) fn note_parts(
+        &mut self,
+        content: Option<&Value>,
+        known: &[&str],
+        what: &str,
+        misshapen: &str,
+        offset: u64,
+    ) {
+        let parts = match content {
+            Some(Value::Array(parts)) => parts,
+            None | Some(Value::Null | Value::String(_)) => return,
+            Some(_) => return self.note(DiagnosticKind::Unreadable, misshapen, offset),
+        };
+        for part in parts {
+            let kind = part.get("type").and_then(Value::as_str);
+            self.note_kind(kind, known, what, offset);
+        }
+    }
+
     /// Note a value of the field `what`, such as `usage.speed`, that the
     /// reader doesn't know, as `what value`.
     pub(crate) fn note_unknown_value(&mut self, what: &str, value: &str, offset: u64) {
@@ -1042,6 +1067,20 @@ fn string(field: Option<&RawValue>) -> Option<Cow<'_, str>> {
     }
 }
 
+/// A field held unparsed, as owned text, when it is a non-empty string.
+fn owned(field: Option<&RawValue>) -> Option<String> {
+    string(field)
+        .filter(|value| !value.is_empty())
+        .map(Cow::into_owned)
+}
+
+/// A field held unparsed, parsed: null where it is absent or isn't JSON.
+fn value(field: Option<&RawValue>) -> Value {
+    field
+        .and_then(|raw| serde_json::from_str(raw.get()).ok())
+        .unwrap_or(Value::Null)
+}
+
 /// Pass each complete line of the log at `path` from byte `from` to `visit`,
 /// with its offset and `batch`, as [`jsonl::each_line`] does, and note each
 /// line too long to read: what it held is unknown, not nothing. Returns where
@@ -1198,6 +1237,28 @@ pub(crate) mod tests {
         // Without an ordinal or a time, nothing can be placed, so nothing is.
         assert!(!Resumed::takes_back(&resumed, None, minute(15)));
         assert!(!Resumed::takes_back(&resumed, Some(9), None));
+    }
+
+    /// What `batch` noted, as each diagnostic's kind and detail.
+    pub(crate) fn noted(batch: &Batch) -> Vec<(DiagnosticKind, &str)> {
+        batch
+            .diagnostics()
+            .map(|((kind, detail), _)| (*kind, detail.as_str()))
+            .collect()
+    }
+
+    /// What `batch` noted, as each diagnostic's kind and detail and how many
+    /// times it was seen.
+    pub(crate) fn noted_times(batch: &Batch) -> Vec<(DiagnosticKind, &str, u64)> {
+        batch
+            .diagnostics()
+            .map(|((kind, detail), seen)| (*kind, detail.as_str(), seen.count))
+            .collect()
+    }
+
+    /// What `batch` records as said, in order.
+    pub(crate) fn said(batch: &Batch) -> Vec<&str> {
+        batch.said().map(|said| said.text.as_str()).collect()
     }
 
     /// Check that what `reader` records as said in `session`, reading the

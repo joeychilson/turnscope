@@ -148,7 +148,7 @@ use serde_json::{Map, Value};
 
 use super::{
     Agent, AgentReader, ArtifactKind, Batch, Checkpoint, DiagnosticKind, Object, Observation,
-    Resumed, string,
+    Resumed, owned, string, value,
 };
 use crate::error::{Error, Result};
 use crate::handoff::{self, Change, ChangeKind, Goal, PlanItem, StepStatus, Work};
@@ -377,8 +377,8 @@ impl Talk {
         }
         match kind {
             "turn_context" => {
-                if let Some(model) = string(payload.model).filter(|model| !model.is_empty()) {
-                    self.model = Some(model.into_owned());
+                if let Some(model) = owned(payload.model) {
+                    self.model = Some(model);
                 }
             }
             "event_msg" => match string(payload.kind).as_deref() {
@@ -709,11 +709,9 @@ fn worked(item: &Value) -> Vec<Work> {
                 .map(|(path, change)| {
                     let text = |field: &str| change.get(field).and_then(Value::as_str);
                     match (change.get("type").and_then(Value::as_str), text("content")) {
-                        (Some("add"), Some(content)) => Work::Changed(Change::new(
-                            path,
-                            ChangeKind::Created,
-                            Some((handoff::lines(content), 0)),
-                        )),
+                        (Some("add"), Some(content)) => {
+                            Work::Changed(Change::written(path, content, true))
+                        }
                         // What a deleted file held is kept, so its lines are
                         // known.
                         (Some("delete"), Some(content)) => Work::Changed(Change::new(
@@ -770,13 +768,6 @@ fn planned(input: &str) -> Work {
         });
     }
     Work::Planned(items)
-}
-
-/// A field held unparsed, parsed: null where it is absent or isn't JSON.
-fn value(field: Option<&RawValue>) -> Value {
-    field
-        .and_then(|raw| serde_json::from_str(raw.get()).ok())
-        .unwrap_or(Value::Null)
 }
 
 /// The ordinal a spawned subagent's own history starts at, from its
@@ -1555,7 +1546,7 @@ mod tests {
 
     use super::Codex;
     use crate::Agent;
-    use crate::agent::tests::assert_said_as_shown;
+    use crate::agent::tests::{assert_said_as_shown, noted, noted_times, said};
     use crate::agent::{AgentReader, Batch, Checkpoint, DiagnosticKind, Observation};
     use crate::session::{LinkKind, SessionKey, TitleSource};
     use crate::usage::Tokens;
@@ -1846,10 +1837,7 @@ mod tests {
         // 30 in all.
         assert_eq!(batch.observations().count(), 3);
         assert_eq!(sum(&batch), tokens(1_200, 1_800, 150, 30));
-        let noted: Vec<(DiagnosticKind, &str, u64)> = batch
-            .diagnostics()
-            .map(|((kind, detail), seen)| (*kind, detail.as_str(), seen.count))
-            .collect();
+        let noted = noted_times(&batch);
         assert_eq!(
             noted,
             [
@@ -1887,10 +1875,7 @@ mod tests {
         let batch = read(&path);
         assert_eq!(batch.observations().count(), 0);
         assert_eq!(batch.sessions().count(), 0);
-        let noted: Vec<(DiagnosticKind, &str, u64)> = batch
-            .diagnostics()
-            .map(|((kind, detail), seen)| (*kind, detail.as_str(), seen.count))
-            .collect();
+        let noted = noted_times(&batch);
         assert_eq!(
             noted,
             [
@@ -1965,7 +1950,7 @@ mod tests {
             ],
         );
         let batch = read(&path);
-        let said: Vec<&str> = batch.said().map(|said| said.text.as_str()).collect();
+        let said = said(&batch);
         assert_eq!(said, ["Approve: the change is safe."]);
         let entries = Codex::default()
             .conversation(&key(THREAD), std::slice::from_ref(&path))
@@ -2137,10 +2122,7 @@ mod tests {
         unnamed.sort_unstable();
         assert_eq!(named, 64);
         assert_eq!(unnamed, ["resp_65", "the long one"]);
-        let noted: Vec<(DiagnosticKind, &str, u64)> = batch
-            .diagnostics()
-            .map(|((kind, detail), seen)| (*kind, detail.as_str(), seen.count))
-            .collect();
+        let noted = noted_times(&batch);
         assert_eq!(
             noted,
             [(
@@ -2219,12 +2201,9 @@ mod tests {
         // 50 of which 10 reasoning; and the prompt is said.
         assert_eq!(sum(&batch), tokens(400, 600, 50, 10));
         assert!(!batch.observations().next().unwrap().priority);
-        let said: Vec<&str> = batch.said().map(|said| said.text.as_str()).collect();
+        let said = said(&batch);
         assert_eq!(said, ["Make the scan incremental"]);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [
@@ -2277,10 +2256,7 @@ mod tests {
             .map(|seen| seen.response.as_str())
             .collect();
         assert_eq!(counted, ["resp_1"]);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [

@@ -239,11 +239,8 @@ fn converse(bytes: &[u8], builder: &mut Builder) {
                     .lines()
                     .next_back()
                     .and_then(|last| handoff::leading_number(last, "Command exited with code "));
-                let call = builder
-                    .answer(id, output, failed)
-                    .map(|call| (call.name.clone(), call.input.clone()));
-                if let Some((name, input)) = call {
-                    for work in worked(&name, &input, failed, exit) {
+                if let Some(call) = builder.answer(id, output, failed) {
+                    for work in worked(&call.name, &call.input, failed, exit) {
                         builder.worked(at, work);
                     }
                 }
@@ -290,14 +287,7 @@ fn worked(name: &str, input: &str, failed: bool, exit: Option<i64>) -> Vec<Work>
             else {
                 return unclear();
             };
-            vec![Work::Changed(Change {
-                removed: None,
-                ..Change::new(
-                    &path,
-                    ChangeKind::Updated,
-                    Some((handoff::lines(&content), 0)),
-                )
-            })]
+            vec![Work::Changed(Change::written(&path, &content, false))]
         }
         _ => Vec::new(),
     }
@@ -439,22 +429,13 @@ fn read_line(bytes: &[u8], offset: u64, state: &mut State, batch: &mut Batch) {
 
 /// Note each block of `message`'s content of a kind not among `known`.
 fn note_blocks(message: &Map<String, Value>, known: &[&str], offset: u64, batch: &mut Batch) {
-    let blocks = match message.get("content") {
-        Some(Value::Array(blocks)) => blocks,
-        // Text, or nothing, has no blocks.
-        None | Some(Value::Null | Value::String(_)) => return,
-        Some(_) => {
-            return batch.note(
-                DiagnosticKind::Unreadable,
-                "a message whose content is neither text nor blocks",
-                offset,
-            );
-        }
-    };
-    for block in blocks {
-        let kind = block.get("type").and_then(Value::as_str);
-        batch.note_kind(kind, known, "content block", offset);
-    }
+    batch.note_parts(
+        message.get("content"),
+        known,
+        "content block",
+        "a message whose content is neither text nor blocks",
+        offset,
+    );
 }
 
 /// The text a message holds: its content, when that is a string, or the
@@ -610,7 +591,7 @@ mod tests {
 
     use super::Pi;
     use crate::Agent;
-    use crate::agent::tests::assert_said_as_shown;
+    use crate::agent::tests::{assert_said_as_shown, noted, said};
     use crate::agent::{AgentReader, Batch, Checkpoint, DiagnosticKind, Observation};
     use crate::session::{SessionKey, TitleSource};
     use crate::transcript::Speaker;
@@ -630,13 +611,6 @@ mod tests {
         let mut batch = Batch::default();
         Pi.read(&path, &Checkpoint::default(), &mut batch).unwrap();
         (path, batch)
-    }
-
-    fn noted(batch: &Batch) -> Vec<(DiagnosticKind, &str)> {
-        batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect()
     }
 
     fn header() -> serde_json::Value {
@@ -750,7 +724,7 @@ mod tests {
         );
         // The response is still counted and said.
         assert_eq!(batch.observations().count(), 1);
-        let said: Vec<&str> = batch.said().map(|said| said.text.as_str()).collect();
+        let said = said(&batch);
         assert_eq!(said, ["Indexed."]);
         assert_eq!(
             noted(&batch),
