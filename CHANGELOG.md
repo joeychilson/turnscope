@@ -13,6 +13,10 @@ released.
   not as instructions.
 - After you sign into another account, moving your use to the account it
   drew on can no longer stop partway and leave some of it under the old one.
+- An account not in use, opened, says when its provider couldn't be reached
+  or answered in a way Turnscope doesn't understand, as an account in use
+  does, and is no longer called a key when its limits haven't been read.
+- The panel opens with every account not in use closed again.
 
 ## [0.1.2]
 

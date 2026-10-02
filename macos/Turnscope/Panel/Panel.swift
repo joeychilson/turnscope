@@ -86,7 +86,6 @@ private struct FirstPage: View {
     @Environment(Navigation.self) private var navigation
 
     var body: some View {
-        @Bindable var navigation = navigation
         VStack(alignment: .leading, spacing: 0) {
             if store.feed == nil {
                 Opening(failure: store.failure)
@@ -110,7 +109,7 @@ private struct FirstPage: View {
                 }
                 .padding(.horizontal, 8)
                 if !store.resting.isEmpty || !store.hidden.isEmpty {
-                    Resting(accounts: store.resting, hidden: store.hidden, open: $navigation.restingOpen)
+                    Resting(accounts: store.resting, hidden: store.hidden)
                         .padding(.horizontal, 8)
                         .padding(.top, 6)
                 }
@@ -199,7 +198,7 @@ private struct Verdict: View {
     var reading = false
 
     var body: some View {
-        let words = Words(now: Words.frozen ?? navigation.now)
+        let words = Words(now: navigation.now)
         let verdict = agents.map { words.welcome($0, reading: reading) }
             .map { (headline: $0.headline, detail: $0.detail, standing: Standing.lasts) }
             ?? words.verdict(inUse)

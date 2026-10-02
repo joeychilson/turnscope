@@ -36,6 +36,10 @@ final class Navigation {
     var open: String?
     /// Whether the accounts not in use are unfolded.
     var restingOpen = false
+    /// The account not in use opened in place, by id.
+    var restingChosen: String?
+    /// Whether the accounts hidden are listed.
+    var hiddenShown = false
     /// The time the panel's countdowns are as of: set as it opens, and each
     /// minute while it is open, so a closed panel never wakes.
     var now = Date.now
@@ -54,6 +58,8 @@ final class Navigation {
         tab = .general
         open = nil
         restingOpen = false
+        restingChosen = nil
+        hiddenShown = false
     }
 }
 
