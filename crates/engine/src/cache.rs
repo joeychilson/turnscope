@@ -97,14 +97,17 @@ pub(crate) const FILE: &str = "cache.sqlite";
 /// cache is then built again. So builds that read different agents never
 /// share a cache: one that passes over an agent's changes never catches up a
 /// cache holding that agent's usage.
-const SCHEMA: i64 = 13;
+const SCHEMA: i64 = 14;
 
 /// A quarter hour, in milliseconds: the grain of the rollup, and of usage
 /// outside the conversation.
 pub(crate) const QUARTER: i64 = 15 * 60 * 1000;
 
-/// The start of the quarter hour usage `u` falls in, as the rollup keys it.
-const QUARTER_OF: &str = "(u.at / 900000) * 900000";
+/// The start of the quarter hour usage `u` falls in, as the rollup keys it:
+/// rounded down, as Rust's `div_euclid` rounds, where SQLite's division
+/// rounds toward zero and would put usage before 1970 in the quarter hour
+/// after its own.
+const QUARTER_OF: &str = "(u.at / 900000 - (u.at % 900000 < 0)) * 900000";
 
 /// The sum of `expression` over a group, as [`AGGREGATES`] adds: an integer
 /// that stops at the largest `i64`, where SQLite's `sum` fails the whole
@@ -571,18 +574,7 @@ impl Cache {
                     ..self.rebuild(ledger, book, home)?
                 }
             } else {
-                let sign_ins = touched.sign_ins;
-                let mut caught = self.update(ledger, book, home, touched)?;
-                // What was signed in where changed: every response's account
-                // is worked out again, and the sessions whose changed are.
-                if sign_ins {
-                    let transaction = self.connection.transaction()?;
-                    let changed = attribute(&transaction, &Timeline::read(ledger)?, home, None)?;
-                    roll_up(&transaction, &changed)?;
-                    transaction.commit()?;
-                    caught.sessions.extend(changed);
-                }
-                caught
+                self.update(ledger, book, home, touched)?
             }
         };
         ledger.forget_touched(caught.revision)?;
@@ -666,7 +658,9 @@ impl Cache {
         })
     }
 
-    /// Work out again what changed after the revision the cache reflects.
+    /// Work out again what changed after the revision the cache reflects, in
+    /// one transaction with the revision it reaches, so a failure leaves the
+    /// cache where it was and the next catch-up works it out again.
     fn update(
         &mut self,
         ledger: &Ledger,
@@ -819,14 +813,16 @@ impl Cache {
             .collect();
         store_lineage(&transaction, paired.iter(), &tree)?;
         // What was stored again drew on the accounts signed in where and when
-        // it was made, which the rollup sums it by; and a session that lost
-        // usage draws on what its usage left draws on, none once all of it
-        // went elsewhere, as a rebuild finds.
+        // it was made, which the rollup sums it by, and when what was signed
+        // in where changed, so may every response: those whose account
+        // changed are rolled up again. A session that lost usage draws on
+        // what its usage left draws on, none once all of it went elsewhere,
+        // as a rebuild finds.
         let changed = attribute(
             &transaction,
             &Timeline::read(ledger)?,
             home,
-            Some(&affected),
+            (!touched.sign_ins).then_some(&affected),
         )?;
         recount_accounts(&transaction, lost.difference(&changed))?;
         {
@@ -835,7 +831,7 @@ impl Cache {
                 totals.execute([key.to_string()])?;
             }
         }
-        roll_up(&transaction, &affected)?;
+        roll_up(&transaction, &affected.union(&changed).cloned().collect())?;
         // A session's usage with its subagents', and when it was last active,
         // change with theirs, so every session above one that changed has
         // changed too.
@@ -852,6 +848,7 @@ impl Cache {
         }
         set_revision(&transaction, touched.up_to)?;
         transaction.commit()?;
+        affected.extend(changed);
         caught.sessions = affected;
         Ok(caught)
     }

@@ -11,6 +11,8 @@ released.
 - Claude Code gets all of Turnscope's instructions for agents. It used to cut
   them short, leaving out that what a session says is to be read as data,
   not as instructions.
+- After you sign into another account, moving your use to the account it
+  drew on can no longer stop partway and leave some of it under the old one.
 
 ## [0.1.2]
 
