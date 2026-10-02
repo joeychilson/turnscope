@@ -45,13 +45,15 @@ A hook can turn a limit into a rule. This Claude Code hook stops subagents while
 ```json
 { "hooks": { "PreToolUse": [{
   "matcher": "Task|Agent",
-  "hooks": [{ "type": "command", "command": "turnscope guard --limit week --below 50" }]
+  "hooks": [{ "type": "command", "command": "/Applications/Turnscope.app/Contents/Helpers/turnscope guard --limit week --below 50" }]
 }]}}
 ```
 
 ## Command line
 
-The `turnscope` command is in the app at `Turnscope.app/Contents/Helpers/turnscope`:
+The `turnscope` command is in the app, at
+`/Applications/Turnscope.app/Contents/Helpers/turnscope`. Nothing puts it on
+your `PATH`: run it by that path, or alias it.
 
 ```sh
 turnscope mcp                          # the MCP server, over stdio
@@ -67,14 +69,7 @@ Turnscope only reads your agents' files and never changes them. Everything stays
 
 ## Building
 
-Requires Xcode 26 and Rust.
-
-```sh
-scripts/build.sh
-open target/xcode/Build/Products/Debug/Turnscope.app
-```
-
-The engine, MCP server and CLI are Rust in `crates/`; the app is Swift in `macos/`. See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+The engine, MCP server and CLI are Rust in `crates/`; the app is Swift in `macos/`. [CONTRIBUTING.md](CONTRIBUTING.md) says how to build and run it, and [AGENTS.md](AGENTS.md) holds the conventions.
 
 ## License
 

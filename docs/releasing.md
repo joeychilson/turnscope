@@ -66,8 +66,12 @@ Then delete the `.p12` and `.p8` files, keeping your backups of them.
 
 - **Actions**: allowed, with the default workflow permissions left read-only;
   each workflow asks for what it needs, and only the publishing job can write.
-- **Branch protection on main**: require pull requests, and the Verify
-  checks `rust`, `app` and `release-build`.
+- **Main**: a ruleset that blocks deleting it and force pushes to it, and
+  requires a linear history; the repository allows only squash merges, and
+  deletes a branch once it is merged. Changes reach main as pull requests
+  once Verify's checks, `rust`, `app` and `release-build`, pass. Main doesn't
+  require pull requests, as a release's commit is pushed to it directly
+  (step 3).
 - **Tag protection**: a ruleset for tags matching `v*` that only you can
   create, update or delete, since a tag is a release.
 - **Private vulnerability reporting**: on, under Security, as `SECURITY.md`
