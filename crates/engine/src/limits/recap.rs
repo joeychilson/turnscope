@@ -177,6 +177,7 @@ mod tests {
     use super::{WeekEnded, recap};
     use crate::agent::Agent;
     use crate::ledger::Ledger;
+    use crate::ledger::tests::scratch;
     use crate::limits::{PastWindow, Read, Reported, Subscription, state};
     use crate::time::{Instant, Zone};
 
@@ -406,8 +407,7 @@ mod tests {
         // In Tokyo, nine hours ahead, 9 AM that Monday is midnight UTC: at
         // 03:00 UTC, noon there, it is due, where in Los Angeles, 8 PM on
         // Sunday, it isn't yet.
-        let dir = tempfile::tempdir().unwrap();
-        let mut elsewhere = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut elsewhere) = scratch();
         for (when, read) in reads_again() {
             elsewhere
                 .record_limits(Subscription::Claude, &[read], at(when))
@@ -460,8 +460,7 @@ mod tests {
                 ),
             ),
         ];
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         for (when, read) in reads {
             ledger
                 .record_limits(Subscription::Claude, &[read], at(when))
@@ -510,8 +509,7 @@ mod tests {
 
     #[test]
     fn a_limit_of_five_hours_or_a_month_is_no_week() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let limit = |key: &str, starts: &str, resets: &str| Reported {
             key: key.into(),
             name: key.into(),

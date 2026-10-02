@@ -15,9 +15,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::agent::{Agent, SessionReport};
+use crate::agent::{Agent, ReportScope, SessionReport};
 use crate::cache::QUARTER;
 use crate::model::ModelKey;
+use crate::session::{SessionKey, Tree};
 use crate::time::Instant;
 use crate::usage::{Tokens, Usd};
 
@@ -142,6 +143,16 @@ pub(crate) struct Compared {
     pub cost: Option<Usd>,
     /// What the transcripts show.
     pub shown: Shown,
+}
+
+/// The sessions whose transcripts `report` counts: its session's whole tree,
+/// subagents and all, or that session alone, as its scope says.
+pub(crate) fn covered(report: &SessionReport, tree: &Tree) -> Vec<SessionKey> {
+    if report.scope == ReportScope::Tree {
+        tree.below(&report.session)
+    } else {
+        vec![report.session.clone()]
+    }
 }
 
 /// `report` beside `transcripts`, the transcripts of the sessions it covers.

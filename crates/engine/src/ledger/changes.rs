@@ -77,22 +77,20 @@ impl Ledger {
             let kind: String = row.get(0)?;
             let kind =
                 Touch::from_key(&kind).ok_or_else(|| Error::corrupt("touched kind", &kind))?;
-            if kind == Touch::Prices {
-                touched.prices = true;
-                continue;
-            }
-            if kind == Touch::SignIns {
-                touched.sign_ins = true;
-                continue;
-            }
-            let Some(agent) = Agent::from_key(&row.get::<_, String>(1)?) else {
-                continue;
-            };
-            let key: String = row.get(2)?;
-            if kind == Touch::Response {
-                touched.responses.insert((agent, key));
-            } else {
-                touched.sessions.insert(SessionKey::new(agent, key));
+            match kind {
+                Touch::Prices => touched.prices = true,
+                Touch::SignIns => touched.sign_ins = true,
+                Touch::Response | Touch::Session => {
+                    let Some(agent) = Agent::from_key(&row.get::<_, String>(1)?) else {
+                        continue;
+                    };
+                    let key: String = row.get(2)?;
+                    if kind == Touch::Response {
+                        touched.responses.insert((agent, key));
+                    } else {
+                        touched.sessions.insert(SessionKey::new(agent, key));
+                    }
+                }
             }
         }
         Ok(touched)

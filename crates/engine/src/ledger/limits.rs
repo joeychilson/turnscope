@@ -69,8 +69,7 @@ impl Ledger {
         )?;
         for read in reads {
             let agents: Vec<&str> = read.agents.iter().map(|agent| agent.key()).collect();
-            let via = serde_json::to_string(&agents)
-                .map_err(|error| Error::corrupt("account agents", error.to_string()))?;
+            let via = serde_json::Value::from(agents).to_string();
             let (read_at, problem) = match &read.limits {
                 Ok(_) => (Some(at.millis()), None),
                 Err(problem) => (None, Some(problem.key())),
@@ -459,17 +458,12 @@ fn readings(mut rows: rusqlite::Rows) -> Result<Vec<Reading>> {
 mod tests {
     use super::Ledger;
     use crate::agent::Agent;
+    use crate::ledger::tests::scratch;
     use crate::limits::{AlertKind, Read, Reported, Subscription};
     use crate::time::Instant;
 
     fn day(days: i64) -> Instant {
         Instant::from_millis(1_789_000_000_000 + days * 86_400_000).unwrap()
-    }
-
-    fn ledger() -> (tempfile::TempDir, Ledger) {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
-        (dir, ledger)
     }
 
     /// A read of one Claude account whose limits `keys` are each 40% used.
@@ -495,7 +489,7 @@ mod tests {
 
     #[test]
     fn readings_go_after_ninety_days_but_what_the_latest_read_found() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         ledger
             .record_limits(
                 Subscription::Claude,
@@ -532,7 +526,7 @@ mod tests {
 
     #[test]
     fn a_stored_time_out_of_range_is_refused_as_corrupt() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         ledger
             .record_limits(Subscription::Claude, &[read(&["five_hour"])], day(0))
             .unwrap();
@@ -558,7 +552,7 @@ mod tests {
 
     #[test]
     fn an_alert_of_a_kind_a_newer_build_sent_is_passed_over() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         let window = day(1).millis();
         ledger
             .send_alert("claude:", "five_hour", AlertKind::Reached, window, day(0))
@@ -581,7 +575,7 @@ mod tests {
 
     #[test]
     fn what_a_newer_build_recorded_of_accounts_is_passed_over() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         ledger
             .record_limits(Subscription::Claude, &[read(&["five_hour"])], day(0))
             .unwrap();

@@ -312,6 +312,7 @@ mod tests {
     use super::Taken;
     use crate::catalog::Catalog;
     use crate::ledger::Ledger;
+    use crate::ledger::tests::scratch;
     use crate::time::Instant;
 
     fn day(date: &str) -> Instant {
@@ -341,15 +342,9 @@ mod tests {
             .map(|prices| prices.base.output)
     }
 
-    fn ledger() -> (tempfile::TempDir, Ledger) {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
-        (dir, ledger)
-    }
-
     #[test]
     fn a_price_change_takes_effect_from_the_day_models_dev_dates_it() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         let first = ledger.take_catalog(
             &catalog(25.0, "2026-07-24", "2026-07-24", "2026-08-01"),
             "bundled",
@@ -380,7 +375,7 @@ mod tests {
 
     #[test]
     fn a_change_is_dated_no_earlier_than_the_last_catalog_with_the_old_price() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         ledger
             .take_catalog(
                 &catalog(25.0, "2026-07-24", "2026-07-24", "2026-09-01"),
@@ -398,7 +393,7 @@ mod tests {
 
     #[test]
     fn a_change_soon_after_release_corrects_the_price_for_all_usage() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         ledger
             .take_catalog(
                 &catalog(250.0, "2026-09-15", "2026-09-15", "2026-09-16"),
@@ -419,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_model_listed_before_it_was_priced_takes_its_first_prices_for_all_usage() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         // Listed on 2026-08-01, weeks after its release, without prices.
         ledger
             .take_catalog(
@@ -444,7 +439,7 @@ mod tests {
 
     #[test]
     fn a_catalog_fetched_after_the_clock_went_back_is_not_taken_in_but_its_tag_is_kept() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         ledger
             .take_catalog(
                 &catalog(25.0, "2026-07-24", "2026-07-24", "2026-09-20"),
@@ -474,7 +469,7 @@ mod tests {
 
     #[test]
     fn an_older_catalog_changes_nothing_and_a_model_unlisted_or_unpriced_keeps_its_prices() {
-        let (_dir, mut ledger) = ledger();
+        let (_dir, mut ledger) = scratch();
         ledger
             .take_catalog(
                 &catalog(20.0, "2026-07-24", "2026-09-10", "2026-09-20"),

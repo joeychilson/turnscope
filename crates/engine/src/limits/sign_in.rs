@@ -136,10 +136,9 @@ pub(crate) fn stamp(subscription: Subscription, folders: &[Folder], home: &Path)
                 Location::ClaudeKeychain => places.push(home.join(LOGIN_KEYCHAIN)),
                 Location::OpenCode(_) => {
                     let database = crate::agent::opencode::database(&folder.path);
-                    let mut log = database.clone().into_os_string();
-                    log.push("-wal");
+                    let log = crate::sharing::side_file(&database, "-wal");
                     places.push(database);
-                    places.push(log.into());
+                    places.push(log);
                 }
             }
         }
