@@ -210,6 +210,44 @@ mod tests {
     use crate::limits::{AccountRead, Held, Place, Reported, Seen};
     use crate::{Agent, AlertKind, Change, Engine, Instant, Subscription};
 
+    /// A read of the ChatGPT account `chatgpt:acct-1`, signed into Codex,
+    /// whose five hours are `used` percent used, resetting at `resets`.
+    fn chatgpt(used: f64, resets: Option<Instant>) -> AccountRead {
+        AccountRead {
+            id: "chatgpt:acct-1".into(),
+            label: None,
+            plan: None,
+            agents: vec![Agent::Codex],
+            limits: Ok(vec![Reported {
+                key: "primary_window".into(),
+                name: "5 hours".into(),
+                scope: None,
+                used,
+                starts: None,
+                resets,
+            }]),
+        }
+    }
+
+    /// A read of the Claude account `id`, signed into Claude Code, whose
+    /// five hours from 9:00 to 14:00 are `used` percent used.
+    fn claude(id: &str, used: f64) -> AccountRead {
+        AccountRead {
+            id: id.to_owned(),
+            label: None,
+            plan: None,
+            agents: vec![Agent::ClaudeCode],
+            limits: Ok(vec![Reported {
+                key: "five_hour".to_owned(),
+                name: "5 hours".to_owned(),
+                scope: None,
+                used,
+                starts: Some(at(9, 0)),
+                resets: Some(at(14, 0)),
+            }]),
+        }
+    }
+
     #[test]
     fn limits_read_while_history_is_read_in_full_are_recorded_within_it() {
         let home = tempfile::tempdir().unwrap();
@@ -221,20 +259,7 @@ mod tests {
         let queueing = engine.queue_limits();
         let read = LimitsRead {
             subscription: Subscription::ChatGpt,
-            reads: vec![AccountRead {
-                id: "chatgpt:acct-1".into(),
-                label: None,
-                plan: None,
-                agents: vec![Agent::Codex],
-                limits: Ok(vec![Reported {
-                    key: "primary_window".into(),
-                    name: "5 hours".into(),
-                    scope: None,
-                    used: 40.0,
-                    starts: None,
-                    resets: None,
-                }]),
-            }],
+            reads: vec![chatgpt(40.0, None)],
             seen: Vec::new(),
             at: Instant::from_millis(1_789_000_000_000).unwrap(),
         };
@@ -274,20 +299,7 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let engine = Engine::open(data.path(), home.path()).unwrap();
         let read_at = Instant::from_millis(1_789_000_000_000).unwrap();
-        let read = AccountRead {
-            id: "chatgpt:acct-1".into(),
-            label: None,
-            plan: None,
-            agents: vec![Agent::Codex],
-            limits: Ok(vec![Reported {
-                key: "primary_window".into(),
-                name: "5 hours".into(),
-                scope: None,
-                used: 40.0,
-                starts: None,
-                resets: None,
-            }]),
-        };
+        let read = chatgpt(40.0, None);
         engine
             .writing()
             .unwrap()
@@ -315,20 +327,7 @@ mod tests {
         // limits finds it signed out and back.
         let now = Instant::now().millis();
         let minutes = |minutes: i64| Instant::from_millis(now + minutes * 60_000).unwrap();
-        let read = AccountRead {
-            id: "chatgpt:acct-1".into(),
-            label: None,
-            plan: None,
-            agents: vec![Agent::Codex],
-            limits: Ok(vec![Reported {
-                key: "primary_window".into(),
-                name: "5 hours".into(),
-                scope: None,
-                used: 100.0,
-                starts: None,
-                resets: Some(minutes(-10)),
-            }]),
-        };
+        let read = chatgpt(100.0, Some(minutes(-10)));
         {
             let mut ledger = engine.writing().unwrap();
             ledger
@@ -513,26 +512,12 @@ mod tests {
         engine.scan().unwrap();
         // Each account's five hours began at 9:00 and was read at 11:00:
         // personal's had risen 10 points, work's 20.
-        let read = |id: &str, used: f64| AccountRead {
-            id: id.to_owned(),
-            label: None,
-            plan: None,
-            agents: vec![Agent::ClaudeCode],
-            limits: Ok(vec![Reported {
-                key: "five_hour".to_owned(),
-                name: "5 hours".to_owned(),
-                scope: None,
-                used,
-                starts: Some(at(9, 0)),
-                resets: Some(at(14, 0)),
-            }]),
-        };
         {
             let mut ledger = engine.writing().unwrap();
             ledger
                 .record_limits(
                     Subscription::Claude,
-                    &[read("claude:personal", 10.0), read("claude:work", 20.0)],
+                    &[claude("claude:personal", 10.0), claude("claude:work", 20.0)],
                     at(11, 0),
                 )
                 .unwrap();
@@ -580,20 +565,6 @@ mod tests {
         claude_session_of(&own, "unpriced", "claude-nobody-knows-1", &[at(12, 0)]);
         let engine = Engine::open(data.path(), home.path()).unwrap();
         engine.scan().unwrap();
-        let read = |used: f64| AccountRead {
-            id: "claude:personal".to_owned(),
-            label: None,
-            plan: None,
-            agents: vec![Agent::ClaudeCode],
-            limits: Ok(vec![Reported {
-                key: "five_hour".to_owned(),
-                name: "5 hours".to_owned(),
-                scope: None,
-                used,
-                starts: Some(at(9, 0)),
-                resets: Some(at(14, 0)),
-            }]),
-        };
         {
             let mut ledger = engine.writing().unwrap();
             ledger
@@ -601,7 +572,11 @@ mod tests {
                 .unwrap();
             for (when, used) in [(at(11, 0), 10.0), (at(13, 0), 25.0), (at(13, 30), 30.0)] {
                 ledger
-                    .record_limits(Subscription::Claude, &[read(used)], when)
+                    .record_limits(
+                        Subscription::Claude,
+                        &[claude("claude:personal", used)],
+                        when,
+                    )
                     .unwrap();
             }
             engine.catch_up(&mut ledger).unwrap();
