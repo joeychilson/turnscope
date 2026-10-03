@@ -467,8 +467,16 @@ impl Engine {
             ))
         })?;
         // Files the agent deleted since history was last read are gone, as
-        // they would be had it been read since.
-        let artifacts: Vec<PathBuf> = artifacts.into_iter().filter(|path| path.exists()).collect();
+        // they would be had it been read since. A file there but out of
+        // reach, as behind a folder that can't be searched, is no file gone
+        // but one that can't be read, and says so.
+        let mut present = Vec::with_capacity(artifacts.len());
+        for path in artifacts {
+            if path.try_exists().map_err(|error| Error::io(&path, error))? {
+                present.push(path);
+            }
+        }
+        let artifacts = present;
         let reader = self
             .readers
             .iter()
