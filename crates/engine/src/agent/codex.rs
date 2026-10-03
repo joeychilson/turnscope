@@ -267,7 +267,7 @@ impl AgentReader for Codex {
     }
 
     fn version(&self) -> u32 {
-        11
+        12
     }
 
     fn roots(&self, folder: &Path) -> Vec<PathBuf> {
@@ -352,7 +352,7 @@ struct Talk {
 impl Talk {
     /// Add one rollout line to the conversation.
     fn line(&mut self, bytes: &[u8]) {
-        let Ok(line) = serde_json::from_slice::<Line<Payload>>(bytes) else {
+        let Ok(line) = serde_json::from_slice::<Line>(bytes) else {
             return;
         };
         let kind = line.kind.as_deref().unwrap_or_default();
@@ -557,11 +557,10 @@ enum Sender {
     Codex,
 }
 
-/// A rollout line, as far as a reader looks: its payload read as `P`, the
-/// fields of it that reader needs, in the same pass as the line.
+/// A rollout line, as far as this reader looks: its payload's fields held
+/// unparsed, in the same pass as the line.
 #[derive(Deserialize)]
-#[serde(bound(deserialize = "P: Deserialize<'de>"))]
-struct Line<'a, P> {
+struct Line<'a> {
     #[serde(rename = "type", borrow, default)]
     kind: Option<Cow<'a, str>>,
     #[serde(borrow, default)]
@@ -569,14 +568,15 @@ struct Line<'a, P> {
     #[serde(default)]
     ordinal: Option<i64>,
     #[serde(default)]
-    payload: Option<Object<P>>,
+    #[serde(borrow)]
+    payload: Option<Object<Payload<'a>>>,
 }
 
-/// The fields of a line's payload a conversation shows, held unparsed until
-/// one is needed, so the rest, such as a compaction's history or a
-/// reasoning item's encrypted content, is skimmed over rather than copied.
-/// A field of an unexpected type reads as absent, as it would looked up in
-/// parsed JSON.
+/// The fields of a line's payload that reading it and its conversation need,
+/// held unparsed until one is needed, so the rest, such as a compaction's
+/// history or a reasoning item's encrypted content, is skimmed over rather
+/// than copied. A field of an unexpected type reads as absent, as it would
+/// looked up in parsed JSON.
 #[derive(Deserialize)]
 struct Payload<'a> {
     #[serde(rename = "type", borrow, default)]
@@ -609,23 +609,6 @@ struct Payload<'a> {
     item: Option<&'a RawValue>,
     #[serde(borrow, default)]
     goal: Option<&'a RawValue>,
-}
-
-/// The fields of a line's payload that its usage and what was said in it
-/// need, as [`Payload`] holds them. The rest, most of a rollout's bytes,
-/// such as the output of an item completed, is only skimmed over.
-#[derive(Deserialize)]
-struct Skimmed<'a> {
-    #[serde(rename = "type", borrow, default)]
-    kind: Option<&'a RawValue>,
-    #[serde(borrow, default)]
-    role: Option<&'a RawValue>,
-    #[serde(borrow, default)]
-    content: Option<&'a RawValue>,
-    #[serde(borrow, default)]
-    summary: Option<&'a RawValue>,
-    #[serde(borrow, default)]
-    thread_settings: Option<&'a RawValue>,
     #[serde(borrow, default)]
     info: Option<&'a RawValue>,
 }
@@ -1002,7 +985,7 @@ impl Position<'_> {
 
 /// Read one rollout line into `batch`.
 fn read_line(bytes: &[u8], offset: u64, state: &mut State, batch: &mut Batch) {
-    let Ok(line) = serde_json::from_slice::<Line<Skimmed>>(bytes) else {
+    let Ok(line) = serde_json::from_slice::<Line>(bytes) else {
         batch.note(
             DiagnosticKind::Unreadable,
             "a line that is not a JSON object",
@@ -1430,7 +1413,7 @@ struct Part<'a> {
 
 /// Note a response item, at `offset`, of a kind this reader doesn't know,
 /// and each part of its content or summary of a kind it doesn't know.
-fn note_item(item: &Skimmed, offset: u64, batch: &mut Batch) {
+fn note_item(item: &Payload, offset: u64, batch: &mut Batch) {
     let kind = string(item.kind);
     let (parts, known, what) = match kind.as_deref() {
         Some("message" | "agent_message") => (item.content, MESSAGE_PARTS, "message part"),
@@ -1470,7 +1453,7 @@ fn note_item(item: &Skimmed, offset: u64, batch: &mut Batch) {
 /// the thread's numbered history, and title the thread from what the person
 /// first typed.
 fn say(
-    item: &Skimmed,
+    item: &Payload,
     session: &SessionKey,
     position: &Position,
     state: &mut State,

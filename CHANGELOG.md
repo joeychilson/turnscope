@@ -28,6 +28,10 @@ released.
 - When your agents use a model Turnscope has no price for, an agent asking
   what used a limit is told how much of it that use took, rather than
   finding it left out of every figure.
+- A session whose files were deleted since Turnscope last looked is gone for
+  every agent, rather than failing to open for some.
+- A Claude Code session's handoff counts the lines it wrote over a file
+  with, as it does for every other agent.
 
 ## [0.1.2]
 

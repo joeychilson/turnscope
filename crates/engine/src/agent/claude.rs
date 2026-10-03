@@ -604,18 +604,21 @@ fn worked(
                 None => head.starts_with("File created successfully"),
             };
             let content = given.get("content").and_then(Value::as_str);
-            let counted = match (created, content, account.get("structuredPatch")) {
-                (true, Some(content), _) => Some((handoff::lines(content), 0)),
-                (_, _, Some(hunks)) if hunks.is_array() => patched(hunks),
-                // Without Claude Code's account, what the call was given.
-                _ => given_lines(name, &given),
-            };
             let kind = if created {
                 ChangeKind::Created
             } else {
                 ChangeKind::Updated
             };
-            vec![Work::Changed(Change::new(path, kind, counted))]
+            let change = match (content, account.get("structuredPatch")) {
+                (Some(content), _) if created => Change::written(path, content, true),
+                (_, Some(hunks)) if hunks.is_array() => Change::new(path, kind, patched(hunks)),
+                // Without Claude Code's account, a file written whole is
+                // known by what was written.
+                (Some(content), _) if name == "Write" => Change::written(path, content, false),
+                // Otherwise by what the call was given.
+                _ => Change::new(path, kind, given_lines(name, &given)),
+            };
+            vec![Work::Changed(change)]
         }
         "TodoWrite" if !failed => {
             let todos = serde_json::from_str::<Value>(input)

@@ -793,6 +793,50 @@ fn an_opencode_session_deleted_is_gone_and_one_with_no_messages_is_empty() {
 }
 
 #[test]
+fn a_log_deleted_since_history_was_read_is_gone_before_it_is_read_again() {
+    let setup = Setup::new();
+    let (path, lines) = parent_log();
+    setup.put((path.clone(), lines));
+    setup.scan();
+    let key = SessionKey::new(Agent::ClaudeCode, PARENT);
+    assert!(setup.engine.conversation(&key).is_ok());
+
+    // Deleted, and not yet looked for again: gone, as it is once it has
+    // been, and its usage without its prompts rather than a failure.
+    std::fs::remove_file(setup.home.path().join(&path)).unwrap();
+    assert!(matches!(
+        setup.engine.conversation(&key),
+        Err(turnscope_engine::Error::Gone(_))
+    ));
+    let usage = setup.engine.session_usage(&key).unwrap().unwrap();
+    assert!(usage.prompts.is_empty());
+}
+
+#[test]
+fn a_log_that_cant_be_reached_is_an_error_not_gone() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let setup = Setup::new();
+    let (path, lines) = parent_log();
+    setup.put((path.clone(), lines));
+    setup.scan();
+    let key = SessionKey::new(Agent::ClaudeCode, PARENT);
+    // Its folder can no longer be searched: the log is there, out of reach.
+    let folder = setup.home.path().join(&path).parent().unwrap().to_owned();
+    let mode = |mode| std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(mode));
+    mode(0o600).unwrap();
+    let conversation = setup.engine.conversation(&key);
+    let usage = setup.engine.session_usage(&key);
+    mode(0o755).unwrap();
+    assert!(
+        matches!(&conversation, Err(turnscope_engine::Error::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::PermissionDenied),
+        "{conversation:?}"
+    );
+    assert!(usage.is_err(), "not its usage without its prompts");
+}
+
+#[test]
 fn a_grok_session_whose_conversation_is_deleted_is_gone_though_its_summary_stays() {
     let setup = Setup::new();
     let (updates, lines) = grok_session("01a0797e", 1_788_837_070, 1_000, &[]);

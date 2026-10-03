@@ -234,7 +234,6 @@ impl AgentReader for Grok {
         let history = artifacts
             .iter()
             .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(HISTORY))
-            .filter(|history| history.exists())
             .ok_or_else(|| Error::Gone(session.to_string()))?;
         let mut builder = Builder::default();
         jsonl::each_line(history, 0, |line, _| converse(line, &mut builder))?;
