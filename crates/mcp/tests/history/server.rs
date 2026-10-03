@@ -20,7 +20,7 @@ pub fn talk(server: &Server, revision: &str, messages: &[Value]) -> Vec<Value> {
         .map(|message| format!("{message}\n"))
         .collect();
     let mut output = Vec::new();
-    serve(server, &[], Cursor::new(input), &mut output).unwrap();
+    serve(server, None, &[], Cursor::new(input), &mut output).unwrap();
     let mut answers: Vec<Value> = String::from_utf8(output)
         .unwrap()
         .lines()

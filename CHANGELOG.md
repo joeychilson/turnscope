@@ -8,6 +8,12 @@ released.
 
 ## [Unreleased]
 
+- Agents keep using Turnscope when it updates. An agent that started
+  Turnscope before an update used to get only errors from it until the
+  agent was restarted; now it carries on with the new version. Agents
+  started under 0.1.3 or earlier need restarting once more, after this
+  update.
+
 ## [0.1.3]
 
 - Claude Code gets all of Turnscope's instructions for agents. It used to cut

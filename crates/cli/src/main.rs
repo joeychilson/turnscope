@@ -151,14 +151,16 @@ fn options(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, PathBuf),
 /// Answer an agent over the Model Context Protocol until it closes its input.
 /// `given` are the options it was started with, which the server tells
 /// agents to give a tool run from a shell, so that it reads the same ledger
-/// and home.
+/// and home, and gives the newer server an update leaves, which it hands the
+/// session over to.
 fn mcp(data: &Path, home: &Path, given: &[String]) -> Result<(), Failure> {
     let server = turnscope_mcp::Server::new(Engine::open(data, home)?);
     turnscope_mcp::serve(
         &server,
+        std::env::current_exe().ok().as_deref(),
         given,
         std::io::stdin().lock(),
-        std::io::stdout().lock(),
+        std::io::stdout(),
     )?;
     Ok(())
 }
