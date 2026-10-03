@@ -8,6 +8,11 @@ released.
 
 ## [Unreleased]
 
+## [0.2.0]
+
+- Turnscope tells you when a week or a month resets early, as when a
+  provider gives everyone their limit back at once: how much is left, and
+  when the new one resets. It's under "A limit is back" in Settings.
 - Agents keep using Turnscope when it updates. An agent that started
   Turnscope before an update used to get only errors from it until the
   agent was restarted; now it carries on with the new version. Agents
@@ -21,9 +26,6 @@ released.
   only the figures.
 - An agent pacing itself is told how fast a limit that runs out is rising,
   and how fast it could rise and still last.
-- Turnscope tells you when a week or a month resets early, as when a
-  provider gives everyone their limit back at once: how much is left, and
-  when the new one resets. It's under "A limit is back" in Settings.
 
 ## [0.1.3]
 
@@ -104,6 +106,7 @@ The first release.
   `guard` for hooks, `doctor` and `catalog`.
 - Updates with Sparkle, signed with Turnscope's key, from GitHub releases.
 
+[0.2.0]: https://github.com/joeychilson/turnscope/releases/tag/v0.2.0
 [0.1.3]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.3
 [0.1.2]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.2
 [0.1.1]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.1
