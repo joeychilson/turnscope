@@ -52,14 +52,14 @@ const TICK: Duration = Duration::from_secs(60);
 #[serde(rename_all = "snake_case")]
 enum Out<'a> {
     Feed(&'a Feed),
-    Alert(Told),
+    Alert(Notice),
     Recap(Vec<Week>),
     Reply { id: u64, error: Option<String> },
 }
 
 /// An alert, for the app to tell.
 #[derive(Serialize)]
-struct Told {
+struct Notice {
     account: String,
     title: String,
     label: Option<String>,
@@ -281,7 +281,7 @@ impl Watch {
     }
 
     fn write_alert(&self, alert: &Alert) {
-        write(&Out::Alert(Told {
+        write(&Out::Alert(Notice {
             account: alert.account.clone(),
             title: alert.title.clone(),
             label: alert.label.clone(),
@@ -365,7 +365,7 @@ fn write(out: &Out<'_>) {
 mod tests {
     use std::path::Path;
 
-    use super::{Asked, Out, Request, Told, Week, read_request};
+    use super::{Asked, Notice, Out, Request, Week, read_request};
 
     fn contract(name: &str) -> String {
         std::fs::read_to_string(
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn every_line_written_is_the_contract() {
         let lines = [
-            Out::Alert(Told {
+            Out::Alert(Notice {
                 account: "claude:a".into(),
                 title: "Claude Max".into(),
                 label: Some("joey@example.com".into()),
