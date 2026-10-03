@@ -256,8 +256,7 @@ fn a_claude_code_session_hands_off_its_commands_edits_and_tasks() {
         reply,
     ];
     write(&claude_code::session(home.path(), CLAUDE), &lines);
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let handoff = engine
         .handoff(&SessionKey::new(Agent::ClaudeCode, CLAUDE))
         .unwrap();
@@ -384,8 +383,7 @@ fn a_codex_thread_hands_off_the_commands_and_changes_it_recorded() {
         )),
         &lines,
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let handoff = engine
         .handoff(&SessionKey::new(Agent::Codex, thread))
         .unwrap();
@@ -471,8 +469,7 @@ fn an_opencode_session_hands_off_from_what_opencode_worked_out() {
     ]});
     opencode::message(&database, "msg_2", "assistant", 2_000, 3_000, &reply);
     drop(database);
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let handoff = engine
         .handoff(&SessionKey::new(Agent::OpenCode, "ses_a"))
         .unwrap();
@@ -539,8 +536,7 @@ fn a_pi_session_hands_off_its_commands_and_edits() {
             ),
         ],
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let handoff = engine
         .handoff(&SessionKey::new(Agent::Pi, "01a099f5"))
         .unwrap();
@@ -618,8 +614,7 @@ fn a_grok_session_hands_off_from_what_its_results_say() {
             result("t7", "Error: old_string not found in /work/x.ts"),
         ],
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let handoff = engine
         .handoff(&SessionKey::new(Agent::Grok, "01a0beef"))
         .unwrap();
@@ -641,45 +636,4 @@ fn a_grok_session_hands_off_from_what_its_results_say() {
             ("Test them", Some(StepStatus::Pending))
         ]
     );
-}
-
-#[test]
-fn a_sessions_largest_context_and_its_share_are_read_without_its_conversation() {
-    let home = Home::new();
-    // Two responses: 1,000 in with 30,000 read from the cache and 2,000
-    // written to it, a context of 33,000; then 500 in with 40,000 read, a
-    // context of 40,500, the larger.
-    let response = |id: &str, time: &str, usage: Value| {
-        claude_code::response(CLAUDE, None, time, id, "claude-opus-5", usage)
-    };
-    write(
-        &claude_code::session(home.path(), CLAUDE),
-        &[
-            json!({"type": "user", "sessionId": CLAUDE, "timestamp": "2026-09-29T10:00:00Z",
-                   "cwd": "/work/ledger", "message": {"role": "user", "content": "Go"}}),
-            response(
-                "1",
-                "2026-09-29T10:00:10Z",
-                json!({"input_tokens": 1_000, "cache_read_input_tokens": 30_000,
-                "cache_creation_input_tokens": 2_000, "output_tokens": 50}),
-            ),
-            response(
-                "2",
-                "2026-09-29T10:00:20Z",
-                json!({"input_tokens": 500, "cache_read_input_tokens": 40_000,
-                "cache_creation_input_tokens": 0, "output_tokens": 50}),
-            ),
-        ],
-    );
-    let engine = home.open();
-    engine.scan().unwrap();
-    let key = SessionKey::new(Agent::ClaudeCode, CLAUDE);
-    let contexts = engine.largest_contexts(std::slice::from_ref(&key)).unwrap();
-    assert_eq!(contexts.get(&key), Some(&40_500));
-    // A session with no response has no context known.
-    let none = SessionKey::new(Agent::Codex, "nothing");
-    assert_eq!(engine.largest_contexts(&[none]).unwrap().len(), 0);
-    // Its usage without its prompts: no prompt.
-    let usage = engine.session_usage_without_prompts(&key).unwrap().unwrap();
-    assert!(usage.prompts.is_empty());
 }

@@ -99,8 +99,7 @@ fn each_agent_call_names_the_subagent_it_started_whichever_is_read_first() {
     // The parent read first, then its subagents.
     let home = Home::new();
     write(&claude_code::session(home.path(), SESSION), &parent_log());
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     subagent(&home, "a1", "toolu_1");
     subagent(&home, "a2", "toolu_2");
     engine.scan().unwrap();
@@ -110,8 +109,7 @@ fn each_agent_call_names_the_subagent_it_started_whichever_is_read_first() {
     let home = Home::new();
     subagent(&home, "a2", "toolu_2");
     subagent(&home, "a1", "toolu_1");
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     write(&claude_code::session(home.path(), SESSION), &parent_log());
     engine.scan().unwrap();
     assert_eq!(calls(&engine, &claude(SESSION)), expected);
@@ -126,8 +124,7 @@ fn a_start_two_subagents_both_claim_names_neither() {
     // unknown, so the call names neither rather than one at random.
     subagent(&home, "a2", "toolu_2");
     subagent(&home, "a3", "toolu_2");
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     assert_eq!(
         calls(&engine, &claude(SESSION)),
         vec![
@@ -192,8 +189,7 @@ fn each_spawn_names_the_codex_subagent_given_its_task() {
             spawn("call_2", "test_audit"),
         ],
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let codex = |native: &str| SessionKey::new(Agent::Codex, native);
     assert_eq!(
         calls(&engine, &codex("01a0-parent")),

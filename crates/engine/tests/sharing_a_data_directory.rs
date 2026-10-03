@@ -18,8 +18,8 @@ use serde_json::{Value, json};
 use turnscope_engine::{Change, Engine, Filter, SearchQuery, SessionQuery, Span, UsageQuery, Zone};
 
 use history::claude_code;
-use history::growing::{append, lines};
-use history::home::{Home, write};
+use history::growing::append;
+use history::home::{Home, lines, write};
 use history::running::{OFFLINE, wait_until};
 
 const SESSION: &str = "0f6e3f6a-713c-4bad-8f6d-f04fe41bbd84";
@@ -118,6 +118,17 @@ fn one_engine_keeps_the_directory_and_another_takes_over_when_it_stops() {
     assert!(!first.kept().unwrap(), "nothing keeps it once both stop");
 }
 
+/// Delete the cache in `home`'s data directory, with its side files, as a
+/// build of another schema replaces it.
+fn remove_cache(home: &Home) {
+    for suffix in ["", "-wal", "-shm"] {
+        let file = home.data.path().join(format!("cache.sqlite{suffix}"));
+        if file.exists() {
+            std::fs::remove_file(file).unwrap();
+        }
+    }
+}
+
 /// Every token out of all history, as `engine` answers.
 fn output(engine: &Engine) -> u64 {
     let question = UsageQuery {
@@ -139,19 +150,13 @@ fn an_engine_answers_from_a_cache_another_built_in_place_of_its_own() {
     let home = Home::new();
     let path = claude_code::session(home.path(), SESSION);
     write(&path, &exchange(0));
-    let first = home.open();
-    first.scan().unwrap();
+    let first = home.scanned();
     // Asked once, so its connections to the cache are kept for the next.
     assert_eq!(output(&first), 20);
 
     // The cache is replaced, as a build of another schema replaces it: the
     // file goes, and another engine opening the directory builds a new one.
-    for suffix in ["", "-wal", "-shm"] {
-        let file = home.data.path().join(format!("cache.sqlite{suffix}"));
-        if file.exists() {
-            std::fs::remove_file(file).unwrap();
-        }
-    }
+    remove_cache(&home);
     let second = home.open();
     append(&path, lines(&exchange(1)).as_bytes());
     second.scan().unwrap();
@@ -206,8 +211,7 @@ fn an_agent_a_build_does_not_know_is_left_alone_and_passed_over() {
     let home = Home::new();
     let path = claude_code::session(home.path(), SESSION);
     write(&path, &exchange(0));
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let ledger = rusqlite::Connection::open(home.data.path().join("ledger.sqlite")).unwrap();
     ledger.execute_batch(NEWER_AGENT).unwrap();
 
@@ -247,11 +251,6 @@ fn an_agent_a_build_does_not_know_is_left_alone_and_passed_over() {
     };
     answers_of_its_own(&engine);
     drop(engine);
-    for suffix in ["", "-wal", "-shm"] {
-        let file = home.data.path().join(format!("cache.sqlite{suffix}"));
-        if file.exists() {
-            std::fs::remove_file(file).unwrap();
-        }
-    }
+    remove_cache(&home);
     answers_of_its_own(&home.open());
 }

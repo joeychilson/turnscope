@@ -53,9 +53,7 @@ fn each_model_is_named_by_the_catalog_whichever_provider_served_it() {
             pi_response("a4", "xai", "grok-4.6-build", 500),
         ],
     );
-    let engine = home.open();
-    let report = engine.scan().unwrap();
-    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let engine = home.scanned();
 
     let model = |key: &str, name: Option<&str>| ModelInfo {
         key: ModelKey::of(key),
@@ -88,9 +86,7 @@ fn usage_outside_the_conversation_that_names_no_model_is_no_model() {
         .unwrap();
     opencode::message(&database, "msg_1", "assistant", 1_000, 1_000, &message);
     drop(database);
-    let engine = home.open();
-    let report = engine.scan().unwrap();
-    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let engine = home.scanned();
 
     let everything = UsageQuery {
         span: Span::default(),

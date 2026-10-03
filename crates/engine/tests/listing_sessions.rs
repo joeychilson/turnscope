@@ -70,9 +70,7 @@ fn a_session_whose_subagent_alone_matches_is_listed_as_facts_count_it() {
         EXPLORE,
         json!({"agentType": "Explore", "description": "Find the ledger's tests"}),
     );
-    let engine = home.open();
-    let report = engine.scan().unwrap();
-    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let engine = home.scanned();
 
     let haiku = Filter {
         models: vec![ModelKey::of("claude-haiku-5")],
@@ -136,9 +134,7 @@ fn pages_follow_on_without_losing_or_repeating_a_session_among_equal_usage() {
             )],
         );
     }
-    let engine = home.open();
-    let report = engine.scan().unwrap();
-    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let engine = home.scanned();
 
     let largest = |after: Option<String>, limit: usize| {
         let page = engine
@@ -280,9 +276,7 @@ fn tree_rows(
 fn every_session_counts_its_subagents_however_deep_they_run() {
     let home = Home::new();
     three_deep(&home);
-    let engine = home.open();
-    let report = engine.scan().unwrap();
-    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let engine = home.scanned();
 
     let parent = format!("claude-code:{PARENT}");
     let explore = format!("claude-code:{EXPLORE}");
@@ -349,8 +343,7 @@ fn every_session_counts_its_subagents_however_deep_they_run() {
 fn a_subagent_found_later_counts_in_every_session_above_it() {
     let home = Home::new();
     two_deep(&home);
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let parent = format!("claude-code:{PARENT}");
     let explore = format!("claude-code:{EXPLORE}");
     let nested_key = format!("claude-code:{NESTED}");
@@ -414,8 +407,7 @@ fn a_session_whose_usage_is_all_its_subagents_is_listed() {
         EXPLORE,
         json!({"agentType": "Explore", "description": "Find the ledger's tests"}),
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let listed = tree_rows(
         &engine,
         SessionQuery {
@@ -459,8 +451,7 @@ fn a_session_is_as_recent_as_the_latest_work_run_within_it() {
     // recent, though its own last word came first.
     two_deep(&home);
     other(&home, "2026-09-14T12:00:40.000Z");
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let parent = format!("claude-code:{PARENT}");
     let other = format!("claude-code:{OTHER}");
     assert_eq!(
@@ -486,8 +477,7 @@ fn a_session_runs_while_anything_within_it_does() {
     let home = Home::new();
     two_deep(&home);
     other(&home, "2026-09-14T12:00:40.000Z");
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     // Since 12:01: only the session whose subagent worked at 12:01:10, which
     // is listed as its session's work rather than on its own.
     let running = SessionQuery {
@@ -528,8 +518,7 @@ fn in_a_span_a_session_stands_at_its_latest_activity_within_it() {
         ],
     );
     other(&home, "2026-09-14T09:30:00.000Z");
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let span = |from: &str, until: &str| SessionQuery {
         span: Span {
             from: Some(at(from)),
@@ -568,8 +557,7 @@ fn a_page_goes_on_only_in_the_order_it_began_in() {
     let home = Home::new();
     two_deep(&home);
     other(&home, "2026-09-14T12:00:40.000Z");
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let first = engine
         .sessions(&SessionQuery {
             limit: 1,

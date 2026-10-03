@@ -84,9 +84,7 @@ fn setup(prompt: &str) -> (Home, Engine) {
         &claude_lines(prompt),
     );
     write(&codex_path(home.path()), &codex_lines());
-    let engine = home.open();
-    let report = engine.scan().unwrap();
-    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let engine = home.scanned();
     (home, engine)
 }
 
@@ -319,8 +317,7 @@ fn a_filtered_search_finds_an_older_match_behind_hundreds_of_others() {
         "/work/ledger",
         "2026-09-14T09:00:00.000Z",
     );
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
 
     let ledger = turnscope_engine::Filter {
         projects: vec![engine.project_root("/work/ledger")],
@@ -531,8 +528,7 @@ fn what_a_resumed_thread_took_back_is_not_found_whichever_rollout_is_read_first(
     for rollout in [first_try, begun, taken_up_again] {
         rollout(home.path());
     }
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     assert_eq!(found(&engine), shown);
 }
 
@@ -553,8 +549,7 @@ fn what_a_revert_took_back_is_not_found() {
     replied("msg_2", 2_000, "The parser handles escapes");
     asked("msg_3", 3_000, "Rename the tokenizer");
     replied("msg_4", 4_000, "Renamed the tokenizer");
-    let engine = home.open();
-    engine.scan().unwrap();
+    let engine = home.scanned();
     let session = SessionKey::new(Agent::OpenCode, "ses_a");
     let found = |engine: &Engine| -> Vec<bool> {
         ["parser", "tokenizer"]
