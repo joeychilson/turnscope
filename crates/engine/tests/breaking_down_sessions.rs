@@ -267,8 +267,14 @@ fn a_limits_window_is_shared_among_sessions_and_what_nothing_here_spent_on() {
     let projects: Vec<(Option<&str>, f64)> = window
         .projects
         .iter()
-        .map(|(root, share)| (root.as_deref(), *share))
+        .map(|project| (project.root.as_deref(), project.share))
         .collect();
+    let names: Vec<Option<&str>> = window
+        .projects
+        .iter()
+        .map(|project| project.name.as_deref())
+        .collect();
+    assert_eq!(names, [Some("ledger"), Some("atlas")]);
     assert_eq!(projects.len(), 2);
     assert!(
         projects[0].0.is_some_and(|root| root.ends_with("ledger")) && close(projects[0].1, 27.5),

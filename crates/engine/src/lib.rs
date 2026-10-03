@@ -76,7 +76,7 @@ pub use crate::health::{
 pub use crate::ingest::ScanReport;
 pub use crate::limits::{
     AccountLimits, Alert, AlertKind, LimitProblem, LimitState, LimitTrack, LimitWindow, Outlook,
-    PastWindow, Standing, Subscription, WeekEnded,
+    PastWindow, ProjectShare, Standing, Subscription, WeekEnded,
 };
 pub use crate::model::{ModelInfo, ModelKey};
 pub use crate::outside::Counts;

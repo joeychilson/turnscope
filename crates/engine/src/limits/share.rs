@@ -41,6 +41,7 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, params};
 
+use crate::agent::Agent;
 use crate::error::{Error, Result};
 use crate::ledger::{Ledger, Reading};
 use crate::limits::pace::GIVEN_BACK;
@@ -317,11 +318,12 @@ pub struct LimitWindow {
     /// What each session took of it, its subagents' within it, most first,
     /// in points of the limit's percent.
     pub sessions: Vec<(SessionKey, f64)>,
-    /// What each project took of it, by its root directory, and `None` for
-    /// sessions in none, most first.
-    pub projects: Vec<(Option<String>, f64)>,
+    /// What each project took of it, most first.
+    pub projects: Vec<ProjectShare>,
     /// What each model took of it, most first.
     pub models: Vec<(ModelKey, f64)>,
+    /// What each agent's sessions took of it, most first.
+    pub agents: Vec<(Agent, f64)>,
     /// The rises nothing on this Mac spent in: use elsewhere, as on the
     /// provider's website.
     pub elsewhere: f64,
@@ -329,6 +331,18 @@ pub struct LimitWindow {
     /// use, which nothing tells how to share out, so no one's in
     /// particular, and none of it use elsewhere.
     pub unpriced: f64,
+}
+
+/// What one project took of a limit's window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectShare {
+    /// Its root directory; `None` for sessions in no project.
+    pub root: Option<String>,
+    /// Its name, as usage split by project names it; `None` for sessions in
+    /// no project, or a project whose name isn't known.
+    pub name: Option<String>,
+    /// What it took, in points of the limit's percent.
+    pub share: f64,
 }
 
 /// A limit's current window as read: the latest reading, and the points its
@@ -430,9 +444,9 @@ pub(crate) fn window(
     }
     let mut taken = Taken::default();
     for (id, part) in sessions {
-        let (root, project) = counts_in(cache, id)?;
+        let (root, project, name) = counts_in(cache, id)?;
         *taken.sessions.entry(root).or_default() += part;
-        *taken.projects.entry(project).or_default() += part;
+        taken.projects.entry(project).or_insert((name, 0.0)).1 += part;
     }
     taken.models = spending
         .models
@@ -443,19 +457,22 @@ pub(crate) fn window(
     taken.window(current.track(), elsewhere, unpriced).map(Some)
 }
 
-/// The key and project of the session the cache's session `id` counts in:
-/// its own, or the one its subagent ran within.
+/// The key, project root and project name of the session the cache's
+/// session `id` counts in: its own, or the one its subagent ran within.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Ledger`] when the cache cannot be read.
-pub(super) fn counts_in(cache: &Connection, id: i64) -> Result<(String, Option<String>)> {
+pub(super) fn counts_in(
+    cache: &Connection,
+    id: i64,
+) -> Result<(String, Option<String>, Option<String>)> {
     Ok(cache
         .prepare_cached(
-            "SELECT r.key, r.project FROM session s JOIN session r ON r.key = s.root
+            "SELECT r.key, r.project, r.project_name FROM session s JOIN session r ON r.key = s.root
              WHERE s.id = ?1",
         )?
-        .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))?)
+        .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
 }
 
 /// What each session, project and model took of a window, in points of its
@@ -463,7 +480,8 @@ pub(super) fn counts_in(cache: &Connection, id: i64) -> Result<(String, Option<S
 #[derive(Default)]
 struct Taken {
     sessions: HashMap<String, f64>,
-    projects: HashMap<Option<String>, f64>,
+    /// By root, with the project's name.
+    projects: HashMap<Option<String>, (Option<String>, f64)>,
     models: Vec<(String, f64)>,
 }
 
@@ -488,8 +506,18 @@ impl Taken {
             .collect::<Result<Vec<_>>>()?;
         sessions
             .sort_by(|a, b| most(&a.1, &b.1).then_with(|| a.0.to_string().cmp(&b.0.to_string())));
-        let mut projects: Vec<(Option<String>, f64)> = self.projects.into_iter().collect();
-        projects.sort_by(|a, b| most(&a.1, &b.1).then_with(|| a.0.cmp(&b.0)));
+        let mut agents: HashMap<Agent, f64> = HashMap::new();
+        for (key, share) in &sessions {
+            *agents.entry(key.agent()).or_default() += share;
+        }
+        let mut agents: Vec<(Agent, f64)> = agents.into_iter().collect();
+        agents.sort_by(|a, b| most(&a.1, &b.1).then_with(|| a.0.key().cmp(b.0.key())));
+        let mut projects: Vec<ProjectShare> = self
+            .projects
+            .into_iter()
+            .map(|(root, (name, share))| ProjectShare { root, name, share })
+            .collect();
+        projects.sort_by(|a, b| most(&a.share, &b.share).then_with(|| a.root.cmp(&b.root)));
         let mut models: Vec<(ModelKey, f64)> = self
             .models
             .into_iter()
@@ -501,6 +529,7 @@ impl Taken {
             sessions,
             projects,
             models,
+            agents,
             elsewhere,
             unpriced,
         })

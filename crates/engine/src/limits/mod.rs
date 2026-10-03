@@ -53,7 +53,7 @@ pub(crate) mod recording;
 pub(crate) mod share;
 pub use alert::{Alert, AlertKind};
 pub use recap::{PastWindow, WeekEnded};
-pub use share::{LimitTrack, LimitWindow};
+pub use share::{LimitTrack, LimitWindow, ProjectShare};
 mod sign_in;
 
 pub(crate) use self::attribution::{Held, Place, Seen, Span, Timeline};

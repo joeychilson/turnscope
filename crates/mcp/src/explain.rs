@@ -27,8 +27,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use turnscope_engine::{
-    AccountLimits, Agent, Instant, LimitState, LimitWindow, ModelKey, SessionKey, SessionRow,
-    Subscription,
+    AccountLimits, Instant, LimitState, LimitWindow, ModelKey, SessionKey, SessionRow, Subscription,
 };
 
 use crate::accounts;
@@ -232,17 +231,13 @@ pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
                 window
                     .projects
                     .iter()
-                    .map(|(root, share)| {
-                        let name = root.as_deref().map_or_else(
-                            || "no project".to_owned(),
-                            |root| {
-                                root.rsplit('/')
-                                    .find(|part| !part.is_empty())
-                                    .unwrap_or(root)
-                                    .to_owned()
-                            },
-                        );
-                        (root.clone(), name, *share)
+                    .map(|project| {
+                        let name = project
+                            .name
+                            .clone()
+                            .or_else(|| project.root.clone())
+                            .unwrap_or_else(|| "no project".to_owned());
+                        (project.root.clone(), name, project.share)
                     })
                     .collect(),
                 &mut said,
@@ -265,25 +260,20 @@ pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
                     &mut said,
                 )
             }
-            By::Agents => {
-                let mut agents: Vec<(Agent, f64)> = Vec::new();
-                for (key, share) in &window.sessions {
-                    match agents.iter_mut().find(|(agent, _)| *agent == key.agent()) {
-                        Some((_, total)) => *total += share,
-                        None => agents.push((key.agent(), *share)),
-                    }
-                }
-                agents.sort_by(|a, b| b.1.total_cmp(&a.1));
-                named_parts(
-                    agents
-                        .into_iter()
-                        .map(|(agent, share)| {
-                            (Some(agent.key().to_owned()), agent.name().to_owned(), share)
-                        })
-                        .collect(),
-                    &mut said,
-                )
-            }
+            By::Agents => named_parts(
+                window
+                    .agents
+                    .iter()
+                    .map(|(agent, share)| {
+                        (
+                            Some(agent.key().to_owned()),
+                            agent.name().to_owned(),
+                            *share,
+                        )
+                    })
+                    .collect(),
+                &mut said,
+            ),
         };
         data["parts"] = parts.0;
         data["others"] = parts.1;
@@ -653,6 +643,7 @@ mod tests {
             sessions: Vec::new(),
             projects: Vec::new(),
             models: Vec::new(),
+            agents: Vec::new(),
             elsewhere,
             unpriced,
         }
