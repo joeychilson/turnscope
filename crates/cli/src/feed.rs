@@ -266,7 +266,7 @@ fn shown(account: &AccountLimits, told: Told) -> Account {
         in_use: account.in_use,
         hidden: account.hidden,
         problem: account.problem.map(problem),
-        standing: standing(account.standing()),
+        standing: account.standing().key(),
         deciding: account.deciding().map(|limit| limit.key.clone()),
         limits: account.limits.iter().map(limit).collect(),
         used_most: told.used_most,
@@ -293,7 +293,7 @@ fn limit(limit: &LimitState) -> Limit {
             .then(|| limit.lasting_pace())
             .flatten()
             .map(hundredths),
-        standing: standing(limit.standing()),
+        standing: limit.standing().key(),
     }
 }
 
@@ -314,14 +314,6 @@ fn problem(problem: LimitProblem) -> &'static str {
         LimitProblem::Unavailable => "unavailable",
         LimitProblem::Unrecognized => "unrecognized",
         LimitProblem::Unsent => "unsent",
-    }
-}
-
-fn standing(standing: Standing) -> &'static str {
-    match standing {
-        Standing::Lasts => "lasts",
-        Standing::RunningOut => "running_out",
-        Standing::UsedUp => "used_up",
     }
 }
 

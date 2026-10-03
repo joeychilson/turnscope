@@ -291,6 +291,20 @@ pub enum Standing {
     UsedUp,
 }
 
+impl Standing {
+    /// Every standing, calmest first.
+    pub const ALL: [Standing; 3] = [Standing::Lasts, Standing::RunningOut, Standing::UsedUp];
+
+    /// The standing as the feed and the MCP server write it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Standing::Lasts => "lasts",
+            Standing::RunningOut => "running_out",
+            Standing::UsedUp => "used_up",
+        }
+    }
+}
+
 /// Where a limit's recent pace leads ([`LimitState::outlook`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Outlook {

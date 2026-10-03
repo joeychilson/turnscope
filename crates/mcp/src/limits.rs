@@ -56,20 +56,6 @@ use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, round
 /// or skipped read doesn't make a limit unknown.
 const CURRENT_FOR: i64 = 15 * 60 * 1000;
 
-/// How a limit or an account stands, as the figures say it
-/// ([`standing`]), calmest first.
-const STANDINGS: [&str; 3] = ["lasts", "running_out", "used_up"];
-
-/// How a limit or an account stands, by the engine's rule
-/// ([`LimitState::standing`]), as the figures say it.
-fn standing(standing: Standing) -> &'static str {
-    match standing {
-        Standing::Lasts => STANDINGS[0],
-        Standing::RunningOut => STANDINGS[1],
-        Standing::UsedUp => STANDINGS[2],
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CheckLimits {
@@ -116,7 +102,7 @@ pub(crate) fn output_schema() -> Value {
             "stale": {"type": "boolean"},
             "why_stale": {"type": "string"},
             "under": {"type": ["boolean", "null"]},
-            "standing": {"type": "string", "enum": STANDINGS, "description": "used_up; running_out, when at the recent pace it runs out a while before it resets; or lasts."},
+            "standing": {"type": "string", "enum": Standing::ALL.map(Standing::key), "description": "used_up; running_out, when at the recent pace it runs out a while before it resets; or lasts."},
         }),
         &[
             "limit",
@@ -140,7 +126,7 @@ pub(crate) fn output_schema() -> Value {
             "signed_in": {"type": "boolean"},
             "in_use": {"type": "boolean"},
             "problem": {"type": ["string", "null"]},
-            "standing": {"type": "string", "enum": STANDINGS, "description": "As its most urgent limit stands."},
+            "standing": {"type": "string", "enum": Standing::ALL.map(Standing::key), "description": "As its most urgent limit stands."},
             "tightest": {"type": ["string", "null"], "description": "The limit that matters most now: one used up, else the one that runs out soonest, else the one with least left."},
             "limits": {"type": "array", "items": limit},
             "provider": {"type": "string", "description": "An API key's provider, as usage names it."},
@@ -495,7 +481,7 @@ fn described(
         "signed_in": account.signed_in,
         "in_use": account.in_use,
         "problem": account.problem.map(problem),
-        "standing": standing(account.standing()),
+        "standing": account.standing().key(),
         "tightest": account.deciding().map(limit_name),
         "limits": limits.iter().map(|limit| limit_figures(&server.zone, account, limit, below, now)).collect::<Vec<_>>(),
     });
@@ -528,7 +514,7 @@ fn limit_figures(
         "lasting_per_hour": limit.lasting_pace().map(|pace| rounded(pace, 2)),
         "read_at": time::local(limit.read_at, zone),
         "stale": stale.is_some(),
-        "standing": standing(limit.standing()),
+        "standing": limit.standing().key(),
     });
     if let Some(why) = stale {
         value["why_stale"] = json!(why);
