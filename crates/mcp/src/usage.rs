@@ -42,7 +42,7 @@ pub(crate) struct GetUsage {
     account: Option<String>,
     agent: Option<String>,
     model: Option<String>,
-    by: Option<String>,
+    by: Option<Split>,
 }
 
 pub(crate) fn schema() -> Value {
@@ -91,24 +91,37 @@ enum By {
     Dimension(Dimension),
 }
 
-pub(crate) fn usage(server: &Server, arguments: GetUsage) -> Answer {
-    let by = match arguments.by.as_deref() {
-        None => None,
-        Some("day") => Some(By::Time(Bucket::Day)),
-        Some("week") => Some(By::Time(Bucket::Week)),
-        Some("month") => Some(By::Time(Bucket::Month)),
-        Some("project") => Some(By::Dimension(Dimension::Project)),
-        Some("model") => Some(By::Dimension(Dimension::Model)),
-        Some("agent") => Some(By::Dimension(Dimension::Agent)),
-        Some("session") => Some(By::Dimension(Dimension::Session)),
-        Some("account") => Some(By::Dimension(Dimension::Account)),
-        Some(other) => {
-            return Err(Failure(format!(
-                "by takes day, week, month, project, model, agent, account or session; {other:?} \
-                 is none of those."
-            )));
+/// A split as get_usage's `by` names it.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Split {
+    Day,
+    Week,
+    Month,
+    Project,
+    Model,
+    Agent,
+    Account,
+    Session,
+}
+
+impl Split {
+    fn by(self) -> By {
+        match self {
+            Split::Day => By::Time(Bucket::Day),
+            Split::Week => By::Time(Bucket::Week),
+            Split::Month => By::Time(Bucket::Month),
+            Split::Project => By::Dimension(Dimension::Project),
+            Split::Model => By::Dimension(Dimension::Model),
+            Split::Agent => By::Dimension(Dimension::Agent),
+            Split::Account => By::Dimension(Dimension::Account),
+            Split::Session => By::Dimension(Dimension::Session),
         }
-    };
+    }
+}
+
+pub(crate) fn usage(server: &Server, arguments: GetUsage) -> Answer {
+    let by = arguments.by.map(Split::by);
     let span = server.span(arguments.since.as_deref(), arguments.until.as_deref())?;
     let accounts = server.engine.limits()?;
     let model = arguments.model.as_deref().map(ModelKey::of);

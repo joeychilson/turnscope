@@ -33,6 +33,14 @@ const MOST_SESSIONS: u32 = 50;
 /// The most characters of a title a sentence quotes.
 const LONGEST_TITLE: usize = 80;
 
+/// How found sessions come: most recently active first, or most used.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Order {
+    Recent,
+    Usage,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FindSessions {
@@ -43,7 +51,7 @@ pub(crate) struct FindSessions {
     since: Option<String>,
     until: Option<String>,
     running: Option<bool>,
-    order: Option<String>,
+    order: Option<Order>,
     limit: Option<u32>,
     cursor: Option<String>,
 }
@@ -114,14 +122,9 @@ pub(crate) fn figures_schema() -> Value {
 }
 
 pub(crate) fn find(server: &Server, arguments: FindSessions) -> Answer {
-    let order = match arguments.order.as_deref() {
-        None | Some("recent") => SessionOrder::Recent,
-        Some("usage") => SessionOrder::Tokens,
-        Some(other) => {
-            return Err(Failure(format!(
-                "order takes recent or usage; {other:?} is none of those."
-            )));
-        }
+    let order = match arguments.order.unwrap_or(Order::Recent) {
+        Order::Recent => SessionOrder::Recent,
+        Order::Usage => SessionOrder::Tokens,
     };
     let limit = tools::limit(arguments.limit, 10, MOST_SESSIONS)?;
     let mut span = server.span(arguments.since.as_deref(), arguments.until.as_deref())?;

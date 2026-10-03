@@ -244,7 +244,10 @@ fn a_slice_asked_of_what_is_not_there_is_refused() {
     refused(json!({"entry": 1, "part": "output"}), "is not a tool call");
     refused(json!({"entry": 2}), "whose parts are input and output");
     refused(json!({"entry": 1, "from": 4_928}), "has 4927 characters");
-    refused(json!({"entry": 1, "part": "body"}), "part takes text");
+    refused(
+        json!({"entry": 1, "part": "body"}),
+        "unknown variant `body`",
+    );
     refused(json!({"entry": 1, "offset": 1}), "don't come with it");
     refused(json!({"from": 10}), "come with entry");
     // The end itself is where an empty slice starts.

@@ -48,7 +48,7 @@ const PROMPTS: usize = 8;
 pub(crate) struct ExplainLimit {
     account: Option<String>,
     limit: Option<String>,
-    by: Option<String>,
+    by: Option<By>,
     session: Option<String>,
 }
 
@@ -104,7 +104,8 @@ pub(crate) fn output_schema() -> Value {
 }
 
 /// What a window is split by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum By {
     Sessions,
     Projects,
@@ -124,17 +125,7 @@ impl By {
 }
 
 pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
-    let by = match arguments.by.as_deref() {
-        None | Some("sessions") => By::Sessions,
-        Some("projects") => By::Projects,
-        Some("models") => By::Models,
-        Some("agents") => By::Agents,
-        Some(other) => {
-            return Err(Failure(format!(
-                "by takes sessions, projects, models or agents; {other:?} is none of those."
-            )));
-        }
-    };
+    let by = arguments.by.unwrap_or(By::Sessions);
     if arguments.session.is_some() && arguments.by.is_some() {
         return Err(Failure(
             "session breaks one session down by prompt and subagent, so by doesn't come with it."
