@@ -21,6 +21,8 @@ released.
   agents, rather than Grok in the panel and Settings.
 - Pi's cache writes kept for an hour are priced as such, at twice the input
   price, as Claude Code's already are.
+- When Turnscope's engine stops, the panel says why, rather than sometimes
+  only that it stopped.
 
 ## [0.1.2]
 
