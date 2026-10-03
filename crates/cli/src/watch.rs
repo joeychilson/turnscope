@@ -160,7 +160,7 @@ pub(crate) fn run(data: &Path, home: &Path) -> Result<(), Failure> {
     let mut watch = Watch {
         engine: Arc::clone(&engine),
         binary,
-        home: home.to_path_buf(),
+        configs: connect::Configs::of(home),
         events,
         last: None,
         open: false,
@@ -211,7 +211,8 @@ pub(crate) fn run(data: &Path, home: &Path) -> Result<(), Failure> {
 struct Watch {
     engine: Arc<Engine>,
     binary: PathBuf,
-    home: PathBuf,
+    /// Where agents keep their MCP servers, read each feed.
+    configs: connect::Configs,
     events: Sender<Event>,
     /// The last feed written, but for when it was worked out.
     last: Option<Feed>,
@@ -222,7 +223,7 @@ struct Watch {
 impl Watch {
     /// Write the feed, when it says something the last one didn't.
     fn write_feed(&mut self) {
-        let agents = connect::links(&self.home, &self.binary);
+        let agents = connect::links(&self.configs, &self.binary);
         let feed = match feed::read(&self.engine, agents, self.open) {
             Ok(feed) => feed,
             Err(error) => {

@@ -72,6 +72,29 @@ pub(crate) enum Status {
     Unsupported,
 }
 
+/// Where agents keep their MCP servers: the home directory, and Codex's
+/// folder, which `CODEX_HOME` can move out of it.
+pub(crate) struct Configs {
+    home: PathBuf,
+    codex: PathBuf,
+}
+
+impl Configs {
+    /// The home `home`, and Codex's folder as the environment says: where
+    /// `CODEX_HOME` names one, or else in the home.
+    pub(crate) fn of(home: &Path) -> Configs {
+        Configs::at(home, std::env::var_os("CODEX_HOME").map(PathBuf::from))
+    }
+
+    /// The home `home`, and Codex's folder `codex`, or else in the home.
+    fn at(home: &Path, codex: Option<PathBuf>) -> Configs {
+        Configs {
+            home: home.to_path_buf(),
+            codex: codex.unwrap_or_else(|| home.join(".codex")),
+        }
+    }
+}
+
 /// How to connect an agent: named as the engine names it.
 struct Connector {
     agent: Agent,
@@ -83,8 +106,8 @@ struct Connector {
     add: &'static [&'static str],
     /// The arguments that remove that entry, when adding doesn't replace it.
     remove: Option<&'static [&'static str]>,
-    /// The command its entry runs, as its configuration in `home` says.
-    registered: fn(&Path) -> Option<String>,
+    /// The command its entry runs, as its configuration says.
+    registered: fn(&Configs) -> Option<String>,
 }
 
 const CONNECTORS: [Connector; 4] = [
@@ -122,9 +145,10 @@ const CONNECTORS: [Connector; 4] = [
     },
 ];
 
-/// The agents installed in `home`, and whether each runs `binary` as its
-/// Turnscope server.
-pub(crate) fn links(home: &Path, binary: &Path) -> Vec<Link> {
+/// The agents installed in the home of `configs`, and whether each runs
+/// `binary` as its Turnscope server.
+pub(crate) fn links(configs: &Configs, binary: &Path) -> Vec<Link> {
+    let home = &configs.home;
     let binary = binary.to_string_lossy();
     let mut links: Vec<Link> = CONNECTORS
         .iter()
@@ -132,7 +156,7 @@ pub(crate) fn links(home: &Path, binary: &Path) -> Vec<Link> {
         .map(|connector| Link {
             id: connector.agent.key(),
             name: connector.agent.name(),
-            status: match (connector.registered)(home) {
+            status: match (connector.registered)(configs) {
                 Some(command) if command == binary => Status::Connected,
                 Some(_) => Status::Outdated,
                 None => Status::Available,
@@ -203,13 +227,11 @@ fn connect_with(id: &str, binary: &Path, shell: &Path) -> Result<(), String> {
 /// `turnscope connect [<agent>]`: connect one agent, or say which have it.
 pub(crate) fn command(mut args: impl Iterator<Item = String>) -> Result<(), Failure> {
     let binary = std::env::current_exe()?;
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| Failure::Usage("HOME is not set".to_owned()))?;
+    let home = crate::usual_home().ok_or_else(|| Failure::Usage("HOME is not set".to_owned()))?;
     match (args.next(), args.next()) {
         (None, _) => {
             let mut said = String::new();
-            for link in links(&home, &binary) {
+            for link in links(&Configs::of(&home), &binary) {
                 let status = match link.status {
                     Status::Connected => "connected",
                     Status::Outdated => "runs another copy of Turnscope",
@@ -334,8 +356,8 @@ fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> mpsc::Receiver<Ve
 }
 
 /// The command Claude Code's user-wide entry runs.
-fn claude(home: &Path) -> Option<String> {
-    let json = read_json(&home.join(".claude.json"))?;
+fn claude(configs: &Configs) -> Option<String> {
+    let json = read_json(&configs.home.join(".claude.json"))?;
     json.get("mcpServers")?
         .get(NAME)?
         .get("command")?
@@ -344,18 +366,14 @@ fn claude(home: &Path) -> Option<String> {
 }
 
 /// The command Codex's entry runs.
-fn codex(home: &Path) -> Option<String> {
-    let folder = std::env::var_os("CODEX_HOME").map_or_else(|| home.join(".codex"), PathBuf::from);
-    toml_command(
-        &folder.join("config.toml"),
-        &format!("[mcp_servers.{NAME}]"),
-    )
+fn codex(configs: &Configs) -> Option<String> {
+    toml_command(&configs.codex.join("config.toml"))
 }
 
 /// The command OpenCode's global entry runs, where its configuration keeps
 /// servers under `mcp`, or `mcp.servers`.
-fn opencode(home: &Path) -> Option<String> {
-    let json = read_json(&home.join(".config/opencode/opencode.json"))?;
+fn opencode(configs: &Configs) -> Option<String> {
+    let json = read_json(&configs.home.join(".config/opencode/opencode.json"))?;
     let mcp = json.get("mcp")?;
     let entry = mcp
         .get(NAME)
@@ -364,21 +382,19 @@ fn opencode(home: &Path) -> Option<String> {
 }
 
 /// The command Grok's user-wide entry runs.
-fn grok(home: &Path) -> Option<String> {
-    toml_command(
-        &home.join(".grok/config.toml"),
-        &format!("[mcp_servers.{NAME}]"),
-    )
+fn grok(configs: &Configs) -> Option<String> {
+    toml_command(&configs.home.join(".grok/config.toml"))
 }
 
 fn read_json(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
-/// The `command` string of the TOML table `header` in the file at `path`,
-/// read line by line: these tables are written by the agents' own commands,
-/// one key to a line.
-fn toml_command(path: &Path, header: &str) -> Option<String> {
+/// The `command` string of the TOML table of Turnscope's server, as Codex
+/// and Grok Build name it, in the file at `path`, read line by line: these
+/// tables are written by the agents' own commands, one key to a line.
+fn toml_command(path: &Path) -> Option<String> {
+    let header = format!("[mcp_servers.{NAME}]");
     let text = std::fs::read_to_string(path).ok()?;
     let mut lines = text
         .lines()
@@ -400,7 +416,7 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::{Status, connect_with, links, locate, marked_path, run};
+    use super::{Configs, Status, connect_with, links, locate, marked_path, run};
 
     /// An executable script at `path` in `folder`.
     fn script(folder: &Path, name: &str, text: &str) -> std::path::PathBuf {
@@ -555,7 +571,7 @@ mod tests {
             "[mcp_servers.node_repl]\ncommand = \"node\"\n",
         );
         std::fs::create_dir_all(home.join(".pi")).unwrap();
-        let status: Vec<(&str, Status)> = links(home, this)
+        let status: Vec<(&str, Status)> = links(&Configs::at(home, None), this)
             .into_iter()
             .map(|link| (link.id, link.status))
             .collect();
@@ -572,8 +588,34 @@ mod tests {
     }
 
     #[test]
+    fn codex_moved_by_codex_home_is_read_where_it_was_moved() {
+        let home = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let this = Path::new("/t");
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        // The home's own folder has no entry; the one CODEX_HOME names runs
+        // this copy.
+        write(
+            elsewhere.path(),
+            "config.toml",
+            "[mcp_servers.turnscope]\ncommand = \"/t\"\n",
+        );
+        let status = |codex: Option<std::path::PathBuf>| {
+            links(&Configs::at(home.path(), codex), this)
+                .into_iter()
+                .map(|link| (link.id, link.status))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(status(None), [("codex", Status::Available)]);
+        assert_eq!(
+            status(Some(elsewhere.path().to_path_buf())),
+            [("codex", Status::Connected)]
+        );
+    }
+
+    #[test]
     fn an_agent_not_installed_is_not_listed() {
         let home = tempfile::tempdir().unwrap();
-        assert_eq!(links(home.path(), Path::new("/t")), []);
+        assert_eq!(links(&Configs::at(home.path(), None), Path::new("/t")), []);
     }
 }
