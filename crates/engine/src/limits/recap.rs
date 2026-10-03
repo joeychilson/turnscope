@@ -276,13 +276,14 @@ mod tests {
                                      agent TEXT NOT NULL DEFAULT 'claude-code',
                                      model_key TEXT NOT NULL DEFAULT 'claude-opus-5');
                  CREATE INDEX usage_account ON usage (account, at);
-                 CREATE TABLE session (id INTEGER PRIMARY KEY, key TEXT, root TEXT, project TEXT);",
+                 CREATE TABLE session (id INTEGER PRIMARY KEY, key TEXT, root TEXT, project TEXT,
+                                       project_name TEXT);",
             )
             .unwrap();
         for (id, key, root, project) in sessions {
             cache
                 .execute(
-                    "INSERT INTO session VALUES (?1, ?2, ?3, ?4)",
+                    "INSERT INTO session (id, key, root, project) VALUES (?1, ?2, ?3, ?4)",
                     params![id, key, root, project],
                 )
                 .unwrap();
