@@ -92,7 +92,7 @@ use crate::transcript::{Entry, Speaker};
 /// How the index and excerpts divide text into words: at anything but letters
 /// and digits, with case and accents folded away. The ledger's index was
 /// created with the same, and changing it takes a migration that rebuilds it.
-pub(crate) const TOKENIZE: &str = "unicode61 remove_diacritics 2";
+const TOKENIZE: &str = "unicode61 remove_diacritics 2";
 
 /// The table listing an index's words, one to a row, that a search looks its
 /// words' other forms up in: an `fts5vocab` table over the ledger's index,

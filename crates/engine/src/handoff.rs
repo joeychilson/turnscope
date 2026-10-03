@@ -39,7 +39,7 @@ use crate::transcript::{Entry, Speaker};
 /// The most pairs of lines [`replaced_lines`] compares: an edit of two
 /// thousand lines for two thousand, which takes a few milliseconds. Beyond
 /// it, what an edit changed is unknown.
-pub(crate) const MOST_COMPARED: usize = 4_000_000;
+const MOST_COMPARED: usize = 4_000_000;
 
 /// The most files a handoff lists; changes to others are counted in
 /// [`Handoff::files_left_out`].

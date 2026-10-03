@@ -146,7 +146,7 @@ impl Totals {
     /// the cache can hold (`i64::MAX`), as its sums do, so a total comes out
     /// the same in any order; a cost that stops there is past knowing, and
     /// [`Totals::known_cost`] says so.
-    pub fn add(&mut self, other: &Totals) {
+    pub(crate) fn add(&mut self, other: &Totals) {
         self.tokens.add(&other.tokens);
         self.responses = add_counts(self.responses, other.responses);
         self.cost = self.cost.saturating_add(other.cost);
@@ -484,7 +484,7 @@ fn columns(table: &str) -> String {
 }
 
 /// Read the aggregates [`AGGREGATES`] lists, starting at column `at`.
-pub(crate) fn totals(row: &Row, at: usize) -> Result<Totals> {
+fn totals(row: &Row, at: usize) -> Result<Totals> {
     let count = |index: usize| -> Result<u64> { unsigned(row.get(at + index)?, "usage total") };
     let usd = |index: usize, what: &'static str| -> Result<Usd> {
         let nanos: i64 = row.get(at + index)?;

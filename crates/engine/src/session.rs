@@ -89,7 +89,7 @@ impl LinkKind {
     }
 
     /// The kind as the ledger stores it.
-    pub fn key(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
             LinkKind::Subagent => "subagent",
             LinkKind::Review => "review",
