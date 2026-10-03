@@ -3,3 +3,4 @@
 {"reply":{"id":2,"error":"codex isn't on this Mac's PATH"}}
 {"reply":{"id":3,"error":null}}
 {"alert":{"account":"chatgpt:b","title":"ChatGPT Pro Lite","label":null,"limit":"","scope":null,"kind":"sign_in","at":null,"left":null}}
+{"alert":{"account":"chatgpt:b","title":"ChatGPT Pro Lite","label":null,"limit":"Weekly","scope":null,"kind":"reset_early","at":"2026-10-07T09:00:00Z","left":100.0}}

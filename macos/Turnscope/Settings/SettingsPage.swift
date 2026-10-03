@@ -128,7 +128,7 @@ struct SettingsPage: View {
             SectionTitle(text: "Notify me when")
             SettingRow("A limit will run out", detail: "Before it resets, at this pace", isOn: $runningOut)
             SettingRow("A limit is used up", isOn: $usedUp)
-            SettingRow("A used-up limit is back", isOn: $back)
+            SettingRow("A limit is back", detail: "Used up before, or reset early", isOn: $back)
             SettingRow("A week or month passes a quarter", detail: "Three quarters, half and a quarter left",
                        isOn: $milestones)
             SettingRow("The week is over", detail: "A recap on Monday morning", isOn: $recap)

@@ -19,7 +19,7 @@ public struct Feed: Decodable, Equatable, Sendable {
     public var reads: [AgentName]
 
     /// The feed's version this app reads.
-    public static let version = 10
+    public static let version = 11
 }
 
 /// An agent, wherever the feed names one.
@@ -163,6 +163,9 @@ public struct Alert: Decodable, Equatable, Sendable {
         case quarterLeft = "quarter_left"
         /// An account in use can't be read until its sign-in is renewed.
         case signIn = "sign_in"
+        /// A week or a month its provider reset well before it said it
+        /// would.
+        case resetEarly = "reset_early"
     }
 
     public var account: String
@@ -173,7 +176,8 @@ public struct Alert: Decodable, Equatable, Sendable {
     public var limit: String
     public var scope: String?
     public var kind: Kind
-    /// When it runs out, for `runningOut`; when it resets, for the rest.
+    /// When it runs out, for `runningOut`; when it resets, for the rest,
+    /// and for `resetEarly`, when the window it was reset to resets.
     public var at: Date?
     public var left: Double?
 

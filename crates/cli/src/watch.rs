@@ -67,7 +67,8 @@ struct Notice {
     scope: Option<String>,
     kind: &'static str,
     /// When it runs out, for `running_out`; when it resets, for `used_up`,
-    /// `unused` and the quarters left.
+    /// `unused` and the quarters left; and for `reset_early`, when the
+    /// window it was reset to resets in turn.
     at: Option<String>,
     left: Option<f64>,
 }
@@ -314,6 +315,7 @@ fn kind(kind: AlertKind) -> &'static str {
         AlertKind::HalfLeft => "half_left",
         AlertKind::QuarterLeft => "quarter_left",
         AlertKind::SignIn => "sign_in",
+        AlertKind::ResetEarly => "reset_early",
     }
 }
 
@@ -426,6 +428,16 @@ mod tests {
                 kind: "sign_in",
                 at: None,
                 left: None,
+            }),
+            Out::Alert(Notice {
+                account: "chatgpt:b".into(),
+                title: "ChatGPT Pro Lite".into(),
+                label: None,
+                limit: "Weekly".into(),
+                scope: None,
+                kind: "reset_early",
+                at: Some("2026-10-07T09:00:00Z".into()),
+                left: Some(100.0),
             }),
         ];
         let written: String = lines

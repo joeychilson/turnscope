@@ -21,6 +21,9 @@ released.
   only the figures.
 - An agent pacing itself is told how fast a limit that runs out is rising,
   and how fast it could rise and still last.
+- Turnscope tells you when a week or a month resets early, as when a
+  provider gives everyone their limit back at once: how much is left, and
+  when the new one resets. It's under "A limit is back" in Settings.
 
 ## [0.1.3]
 

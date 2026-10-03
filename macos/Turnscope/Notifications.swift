@@ -37,11 +37,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             return
         case .runningOut: wanted = Preference.notifyRunningOut
         case .usedUp: wanted = Preference.notifyUsedUp
-        case .back: wanted = Preference.notifyBack
+        case .back, .resetEarly: wanted = Preference.notifyBack
         case .unused, .threeQuartersLeft, .halfLeft, .quarterLeft: wanted = Preference.notifyMilestones
         }
         let limit = "\(alert.account):\(alert.limit)"
-        if alert.kind == .back {
+        // Room come back makes a warning that it ran out, or would, old news.
+        if alert.kind == .back || alert.kind == .resetEarly {
             UNUserNotificationCenter.current().removeDeliveredNotifications(
                 withIdentifiers: [Alert.Kind.runningOut, .usedUp].map { "\(limit):\($0.rawValue)" })
         }
