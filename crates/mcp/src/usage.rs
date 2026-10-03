@@ -20,7 +20,7 @@ use crate::accounts;
 use crate::prose;
 use crate::tools::{
     self, Answer, Failure, Reply, Server, account_schema, agent_schema, folder_schema, object,
-    rounded, shape, since_schema, until_schema,
+    rounded, since_schema, until_schema,
 };
 
 /// The most rows an answer holds, as the tool's description says: at about
@@ -61,23 +61,6 @@ pub(crate) fn schema() -> Value {
             },
         }),
         &[],
-    )
-}
-
-pub(crate) fn output_schema() -> Value {
-    shape(
-        json!({
-            "since": {"type": ["string", "null"]},
-            "until": {"type": ["string", "null"]},
-            "total": totals_schema(),
-            "rows": {"type": "array", "items": shape(json!({
-                "group": {"type": ["string", "null"]},
-                "label": {"type": ["string", "null"]},
-                "start": {"type": ["string", "null"]},
-                "usage": totals_schema(),
-            }), &["usage"])},
-        }),
-        &["since", "until", "total"],
     )
 }
 
@@ -411,35 +394,6 @@ pub(crate) fn totals(totals: &Totals) -> Value {
         value["outside_conversation_tokens"] = json!(totals.outside);
     }
     value
-}
-
-/// The output schema of usage, as [`totals`] gives it.
-pub(crate) fn totals_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "tokens": {
-                "type": "object",
-                "properties": {
-                    "input": {"type": "integer"},
-                    "cache_read": {"type": "integer"},
-                    "cache_write": {"type": "integer"},
-                    "output": {"type": "integer"},
-                    "reasoning": {"type": "integer"},
-                    "total": {"type": "integer"},
-                },
-                "required": ["input", "cache_read", "cache_write", "output", "reasoning", "total"],
-            },
-            "responses": {"type": "integer"},
-            "cost_usd": {"type": ["number", "null"]},
-            "unpriced_usage": {"type": "boolean"},
-            "cost_approximate": {"type": "boolean"},
-            "cost_charged_usd": {"type": "number"},
-            "cost_agent_estimate_usd": {"type": "number"},
-            "outside_conversation_tokens": {"type": "integer"},
-        },
-        "required": ["tokens", "responses", "cost_usd"],
-    })
 }
 
 /// Money, as answers give it: to a millionth of a dollar, finer than any

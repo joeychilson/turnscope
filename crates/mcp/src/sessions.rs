@@ -22,7 +22,7 @@ use crate::accounts;
 use crate::prose;
 use crate::tools::{
     self, Answer, Failure, Reply, Server, account_schema, agent_schema, folder_schema, object,
-    shape, since_schema, until_schema,
+    since_schema, until_schema,
 };
 use crate::usage;
 
@@ -78,46 +78,6 @@ pub(crate) fn find_schema() -> Value {
             "cursor": {"type": "string", "description": "Where the previous page ended, as its next_cursor gave it."},
         }),
         &[],
-    )
-}
-
-pub(crate) fn find_output_schema() -> Value {
-    let mut session = figures_schema();
-    session["properties"]["passage"] = shape(
-        json!({"entry": {"type": "integer"}, "text": {"type": "string"}, "unavailable": {"type": "string"}}),
-        &[],
-    );
-    session["properties"]["mentions"] = json!({"type": "integer"});
-    shape(
-        json!({
-            "sessions": {"type": "array", "items": session},
-            "next_cursor": {"type": ["string", "null"]},
-        }),
-        &["sessions", "next_cursor"],
-    )
-}
-
-/// The output schema of a session, as [`figures`] gives it.
-pub(crate) fn figures_schema() -> Value {
-    shape(
-        json!({
-            "id": {"type": "string"},
-            "title": {"type": ["string", "null"]},
-            "agent": {"type": "string"},
-            "account": {"type": ["string", "null"], "description": "The account most of its responses drew on; null when that isn't known."},
-            "account_hidden": {"type": "boolean", "description": "It drew on an account the person hid in Turnscope."},
-            "project": {"type": ["string", "null"]},
-            "folder": {"type": ["string", "null"]},
-            "branch": {"type": ["string", "null"]},
-            "started": {"type": ["string", "null"]},
-            "last_active": {"type": ["string", "null"]},
-            "running": {"type": "boolean"},
-            "subagents": {"type": "integer"},
-            "usage": usage::totals_schema(),
-            "parent": {"type": "string"},
-            "transcript_deleted": {"type": "boolean"},
-        }),
-        &["id", "agent", "running", "usage"],
     )
 }
 

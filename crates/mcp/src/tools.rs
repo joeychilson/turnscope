@@ -15,11 +15,10 @@
 //! everything an agent would go on to ask about is in them, each session
 //! with its id, so that one can be asked about again as the sentences
 //! read, and lists are given whole, up to their bounds, a line an item.
-//! The exact figures come beside them as structured content, which a
-//! tool's output schema describes, for clients on protocol revisions that
-//! take it, with the sentences among them as `said`, since such a client
-//! may give its model the structured content alone. A page of a
-//! conversation is text alone.
+//! An agent is given the sentences alone. The exact figures behind them
+//! are worked out beside them, for a person running a tool from a shell
+//! (`turnscope call`), who is shown both. A page of a conversation is text
+//! alone.
 //!
 //! **Who's asking.** The server knows the agent that started it, the folder
 //! it works in and its account ([`crate::Caller`]), so "my limit" and "this
@@ -98,12 +97,10 @@ impl Tool {
         Tool::ALL.into_iter().find(|tool| tool.name() == name)
     }
 
-    /// How `tools/list` describes it; with its output schema when
-    /// `structured`, as the protocol revision spoken takes one. Every tool
-    /// but `read_session`, whose page is text, has one, and every answer may
-    /// carry `history_incomplete`.
-    pub(crate) fn describe(self, structured: bool) -> Value {
-        let (title, description, input, output) = match self {
+    /// How `tools/list` describes it: with no output schema, as its answer
+    /// is text alone ([`crate::protocol`] says why).
+    pub(crate) fn describe(self) -> Value {
+        let (title, description, input) = match self {
             Tool::CheckLimits => (
                 "Check limits",
                 "How much of your subscription limits is left, and whether it lasts: for each \
@@ -114,7 +111,6 @@ impl Tool {
                  left. Limits are read every few minutes: a guide for pacing, not the \
                  provider's enforcement.",
                 limits::schema(),
-                Some(limits::output_schema()),
             ),
             Tool::ExplainLimit => (
                 "Explain a limit",
@@ -126,7 +122,6 @@ impl Tool {
                  approximate: each rise of the limit is shared among the responses that could \
                  have drawn on it, by their cost at list prices.",
                 explain::schema(),
-                Some(explain::output_schema()),
             ),
             Tool::FindSessions => (
                 "Find sessions",
@@ -137,7 +132,6 @@ impl Tool {
                  most of it drew on, folder, branch, when it ran, whether it's running, and what \
                  it used; when searching words, the passage that matched.",
                 sessions::find_schema(),
-                Some(sessions::find_output_schema()),
             ),
             Tool::GetSession => (
                 "Get a session's handoff",
@@ -149,7 +143,6 @@ impl Tool {
                  given latest_in a folder, the latest other session there from any agent; or \
                  given an id from find_sessions, that one.",
                 handoff::schema(),
-                Some(handoff::output_schema()),
             ),
             Tool::ReadSession => (
                 "Read a session",
@@ -161,7 +154,6 @@ impl Tool {
                  reads that entry's text, or a tool call's input or output, exactly, from any \
                  character, about 40 KB of text at a time.",
                 read::read_schema(),
-                None,
             ),
             Tool::GetUsage => (
                 "Get usage",
@@ -170,10 +162,9 @@ impl Tool {
                  agent, account or session, into at most 200 rows. A cost nobody knows the price \
                  of stays unknown.",
                 usage::schema(),
-                Some(usage::output_schema()),
             ),
         };
-        let mut described = json!({
+        json!({
             "name": self.name(),
             "title": title,
             "description": description,
@@ -187,22 +178,7 @@ impl Tool {
                 // them current.
                 "openWorldHint": matches!(self, Tool::CheckLimits | Tool::ExplainLimit),
             },
-        });
-        if structured && let Some(mut output) = output {
-            output["properties"]["history_incomplete"] = json!({
-                "type": "string",
-                "description": "Why the answer may leave some history out.",
-            });
-            output["properties"]["said"] = json!({
-                "type": "string",
-                "description": "The whole answer in sentences, as the text gives it.",
-            });
-            if let Some(required) = output["required"].as_array_mut() {
-                required.push(json!("said"));
-            }
-            described["outputSchema"] = output;
-        }
-        described
+        })
     }
 }
 
@@ -214,17 +190,6 @@ pub(crate) fn object(properties: Value, required: &[&str]) -> Value {
         "properties": properties,
         "required": required,
         "additionalProperties": false,
-    })
-}
-
-/// An output schema of an object with `properties`, of which `required` are
-/// always there. Others may be added as answers grow, so any other property
-/// is allowed.
-pub(crate) fn shape(properties: Value, required: &[&str]) -> Value {
-    json!({
-        "type": "object",
-        "properties": properties,
-        "required": required,
     })
 }
 
@@ -306,8 +271,8 @@ impl From<turnscope_engine::Error> for Failure {
 /// What a tool answers.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Reply {
-    /// Sentences an agent can act on, and the figures beside them, as the
-    /// tool's output schema describes them.
+    /// Sentences an agent can act on, and the figures behind them, which
+    /// only a person running the tool from a shell is shown.
     Answer {
         /// The sentences.
         said: String,
@@ -319,8 +284,8 @@ pub enum Reply {
 }
 
 impl Reply {
-    /// As an agent reads it as text: the sentences alone, which are the
-    /// whole answer, since every character is read at a cost.
+    /// As an agent reads it: the sentences alone, which are the whole
+    /// answer, since every character is read at a cost.
     pub fn compact(self) -> String {
         match self {
             Reply::Answer { said, .. } | Reply::Text(said) => said,
@@ -341,25 +306,6 @@ impl Reply {
         match self {
             Reply::Answer { data, .. } => Some(data),
             Reply::Text(_) => None,
-        }
-    }
-
-    /// As an agent reads it as structured content: the figures, with the
-    /// sentences as `said`, since a client that takes structured content
-    /// may give its model that alone, as Codex does (seen 2026-10-03 in
-    /// `codex-rs/protocol/src/models.rs`, which passes the text over).
-    /// `None` for text alone.
-    pub fn structured(&self) -> Option<Value> {
-        match self {
-            Reply::Answer {
-                said,
-                data: Value::Object(fields),
-            } => {
-                let mut fields = fields.clone();
-                fields.insert("said".to_owned(), Value::String(said.clone()));
-                Some(Value::Object(fields))
-            }
-            Reply::Answer { .. } | Reply::Text(_) => None,
         }
     }
 }

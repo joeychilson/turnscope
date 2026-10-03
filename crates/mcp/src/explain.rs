@@ -34,7 +34,7 @@ use crate::accounts;
 use crate::limits;
 use crate::prose;
 use crate::sessions;
-use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, rounded, shape};
+use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, rounded};
 
 /// How many parts are told apart; the rest are summed as others.
 const PARTS: usize = 5;
@@ -70,35 +70,6 @@ pub(crate) fn schema() -> Value {
             },
         }),
         &[],
-    )
-}
-
-pub(crate) fn output_schema() -> Value {
-    shape(
-        json!({
-            "account": shape(json!({"id": {"type": "string"}, "name": {"type": "string"}}), &["id", "name"]),
-            "limit": shape(json!({
-                "limit": {"type": "string"},
-                "key": {"type": "string"},
-                "since": {"type": ["string", "null"]},
-                "resets_at": {"type": ["string", "null"]},
-                "used_percent": {"type": "number"},
-                "left_percent": {"type": "number"},
-                "ended": {"type": "boolean", "description": "The window reset at resets_at, and the one since isn't read yet: the figures are of the window that ended."},
-            }), &["limit", "key", "used_percent", "left_percent"]),
-            "by": {"type": "string"},
-            "parts": {"type": "array", "items": shape(json!({
-                "key": {"type": ["string", "null"]},
-                "name": {"type": "string"},
-                "share_percent": {"type": "number"},
-            }), &["name", "share_percent"])},
-            "others": shape(json!({"count": {"type": "integer"}, "share_percent": {"type": "number"}}), &["count", "share_percent"]),
-            "elsewhere_percent": {"type": "number"},
-            "unpriced_percent": {"type": "number", "description": "Used on this Mac while only responses with no known price were made, which can't be shared among them."},
-            "approximate": {"type": "boolean"},
-            "session": {"type": "object"},
-        }),
-        &["account", "limit", "by", "parts", "approximate"],
     )
 }
 

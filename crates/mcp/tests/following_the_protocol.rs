@@ -127,70 +127,51 @@ fn the_instructions_say_what_the_tools_are_for_and_how_to_run_them_from_a_shell(
 }
 
 #[test]
-fn structured_content_goes_to_clients_that_take_it() {
+fn every_client_is_given_the_sentences_alone() {
+    // Every agent that connects gives its model a tool's structured content
+    // wherever there is some, so no client, on any revision, is given any,
+    // or told of an output schema.
     let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_usage","arguments":{}}}"#;
     let list = r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#;
-    // From 2025-06-18 on, a tool's figures come as structured content too,
-    // as its output schema describes them; every tool but read_session,
-    // whose page is text, has one.
-    let answers = exchange(&[&initialize(1, "2025-06-18"), call, list]);
-    let result = &answers[1]["result"];
-    let figures = &result["structuredContent"];
-    assert_eq!(figures["total"]["responses"], 0);
-    // The text is the sentences alone, which the figures carry too, for a
-    // client that gives its model the structured content alone.
-    let text = result["content"][0]["text"].as_str().unwrap();
-    assert_eq!(figures["said"], text);
-    assert!(!text.contains('{'), "{text}");
-    let schemas: Vec<bool> = answers[2]["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["outputSchema"]["type"] == "object")
-        .collect();
-    assert_eq!(schemas, [true, true, true, true, false, true]);
-    // Before, the same sentences alone, which are the whole answer.
-    let answers = exchange(&[&initialize(1, "2025-03-26"), call, list]);
-    let result = &answers[1]["result"];
-    assert!(result.get("structuredContent").is_none(), "{result}");
-    assert_eq!(result["content"][0]["text"], figures["said"]);
-    assert!(
-        answers[2]["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|tool| tool.get("outputSchema").is_none())
-    );
-}
-
-#[test]
-fn codex_reads_the_text_as_a_client_before_structured_content_did() {
-    // Codex gives its model a tool's structured content in place of its
-    // text, so it is given none, and its model reads the sentences.
-    let codex = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"codex-mcp-client","title":"Codex","version":"0.153.4"}}}"#;
-    let answers = exchange(&[
-        codex,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_usage","arguments":{}}}"#,
-        r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
-    ]);
-    // The revision it asked for, all the same.
-    assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
-    let result = &answers[1]["result"];
-    assert!(result.get("structuredContent").is_none(), "{result}");
-    assert!(
-        result["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("All of history:"),
-        "{result}"
-    );
-    assert!(
-        answers[2]["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|tool| tool.get("outputSchema").is_none())
-    );
+    let mut said = Vec::new();
+    for revision in ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] {
+        for client in [
+            r#"{"name":"ExampleClient","version":"1.0.0"}"#,
+            r#"{"name":"claude-code","title":"Claude Code","version":"2.1.288"}"#,
+            r#"{"name":"codex-mcp-client","title":"Codex","version":"0.153.4"}"#,
+            r#"{"name":"opencode","version":"0.0.0"}"#,
+            r#"{"name":"grok-shell-turnscope","version":"1.0.41"}"#,
+        ] {
+            let introduced = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"{revision}","capabilities":{{}},"clientInfo":{client}}}}}"#
+            );
+            let answers = exchange(&[&introduced, call, list]);
+            assert_eq!(answers[0]["result"]["protocolVersion"], revision);
+            let result = &answers[1]["result"];
+            assert_eq!(
+                result,
+                &json!({"content": result["content"], "isError": false}),
+                "{revision} {client}"
+            );
+            let text = result["content"][0]["text"].as_str().unwrap();
+            assert!(
+                text.contains("All of history:") && !text.contains('{'),
+                "{text}"
+            );
+            said.push(text.to_owned());
+            assert!(
+                answers[2]["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|tool| tool.get("outputSchema").is_none()),
+                "{revision} {client}"
+            );
+        }
+    }
+    // The same sentences for every one.
+    said.dedup();
+    assert_eq!(said.len(), 1, "{said:?}");
 }
 
 #[test]

@@ -11,7 +11,7 @@ pub fn talk(server: &Server, revision: &str, messages: &[Value]) -> Vec<Value> {
     let handshake = [
         json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
                "params": {"protocolVersion": revision, "capabilities": {"roots": {}},
-                          "clientInfo": {"name": "claude-code", "version": "2.1.284"}}}),
+                          "clientInfo": {"name": "claude-code", "version": "2.1.288"}}}),
         json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     ];
     let input: String = handshake
@@ -31,11 +31,12 @@ pub fn talk(server: &Server, revision: &str, messages: &[Value]) -> Vec<Value> {
     answers
 }
 
-/// What a tool answered, as a client on 2025-06-18 reads it.
+/// What a tool answered: the text an agent is given over the protocol, and
+/// the figures behind it, which `turnscope call` shows a person.
 pub struct Answered {
     /// The text: the sentences, which are the whole answer.
     pub text: String,
-    /// The figures, as structured content, the sentences among them.
+    /// The figures, or null for an answer that has none, as a refusal.
     pub data: Value,
     /// Whether it is an error.
     pub failed: bool,
@@ -48,25 +49,31 @@ impl Answered {
     }
 }
 
-/// `tool`'s answer to `arguments`, over the protocol.
+/// `tool`'s answer to `arguments`: its text over the protocol, and its
+/// figures from the tool itself.
 pub fn call(server: &Server, tool: &str, arguments: Value) -> Answered {
     let answers = talk(
         server,
         "2025-06-18",
         &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                 "params": {"name": tool, "arguments": arguments}})],
+                 "params": {"name": tool, "arguments": arguments.clone()}})],
     );
     let result = &answers[0]["result"];
-    let answered = Answered {
-        text: result["content"][0]["text"].as_str().unwrap().to_owned(),
-        data: result["structuredContent"].clone(),
-        failed: result["isError"].as_bool().unwrap(),
+    // An agent is given the text alone.
+    assert_eq!(
+        result.as_object().map(|fields| fields.len()),
+        Some(2),
+        "{tool}: {result}"
+    );
+    let figures = match server.call(tool, arguments) {
+        Some(Ok(reply)) => reply.data().cloned().unwrap_or(Value::Null),
+        _ => Value::Null,
     };
-    // Whichever a client gives its model, the sentences are the same.
-    if !answered.data.is_null() {
-        assert_eq!(answered.data["said"], answered.text, "{tool}");
+    Answered {
+        text: result["content"][0]["text"].as_str().unwrap().to_owned(),
+        data: figures,
+        failed: result["isError"].as_bool().unwrap(),
     }
-    answered
 }
 
 /// `tool`'s answer to `arguments`, which must not be an error.

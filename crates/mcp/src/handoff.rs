@@ -33,7 +33,7 @@ use crate::limits;
 use crate::prose;
 use crate::read::{self, Part};
 use crate::sessions;
-use crate::tools::{self, Answer, Failure, Reply, Server, object, rounded, shape};
+use crate::tools::{self, Answer, Failure, Reply, Server, object, rounded};
 use crate::usage;
 
 /// The most characters of a request a handoff quotes.
@@ -71,62 +71,6 @@ pub(crate) fn schema() -> Value {
             },
         }),
         &[],
-    )
-}
-
-pub(crate) fn output_schema() -> Value {
-    let quote = shape(
-        json!({"entry": {"type": "integer"}, "at": {"type": ["string", "null"]}, "text": {"type": "string"}}),
-        &["entry", "text"],
-    );
-    let nullable_quote = json!({"anyOf": [quote, {"type": "null"}]});
-    shape(
-        json!({
-            "session": sessions::figures_schema(),
-            "first_request": nullable_quote,
-            "last_request": nullable_quote,
-            "last_reply": nullable_quote,
-            "plan": {"type": "array", "items": shape(json!({
-                "step": {"type": "string"},
-                "status": {"type": ["string", "null"], "enum": ["pending", "in_progress", "completed", "cancelled", null]},
-            }), &["step", "status"])},
-            "goal": {"anyOf": [shape(json!({"objective": {"type": "string"}, "status": {"type": ["string", "null"]}}), &["objective"]), {"type": "null"}]},
-            "files": {"type": "array", "items": shape(json!({
-                "path": {"type": "string"},
-                "added": {"type": ["integer", "null"]},
-                "removed": {"type": ["integer", "null"]},
-                "created": {"type": "boolean"},
-                "deleted": {"type": "boolean"},
-                "moved_to": {"type": ["string", "null"]},
-                "changes": {"type": "integer"},
-            }), &["path", "added", "removed"])},
-            "files_left_out": {"type": "integer"},
-            "commands": {"type": "array", "items": shape(json!({
-                "command": {"type": "string"},
-                "at": {"type": ["string", "null"]},
-                "exit": {"type": ["integer", "null"]},
-                "failed": {"type": ["boolean", "null"]},
-            }), &["command", "failed"])},
-            "commands_run": {"type": "integer"},
-            "commands_failed": {"type": "integer"},
-            "unclear": {"type": "array", "items": shape(json!({"tool": {"type": "string"}, "calls": {"type": "integer"}}), &["tool", "calls"])},
-            "transcript_unavailable": {"type": "string"},
-            "subagents": {"type": "array", "items": shape(json!({
-                "id": {"type": "string"},
-                "title": {"type": ["string", "null"]},
-                "models": {"type": "array", "items": {"type": "string"}},
-                "usage": usage::totals_schema(),
-            }), &["id", "usage"])},
-            "limits": {"type": "array", "items": shape(json!({
-                "account": {"type": "string"},
-                "limit": {"type": "string"},
-                "resets_at": {"type": ["string", "null"]},
-                "share_percent": {"type": "number"},
-                "whole": {"type": "boolean"},
-            }), &["account", "limit", "share_percent"])},
-            "resume": {"type": ["string", "null"]},
-        }),
-        &["session", "files", "commands", "limits", "resume"],
     )
 }
 
