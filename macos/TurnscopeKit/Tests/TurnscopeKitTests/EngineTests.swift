@@ -27,6 +27,22 @@ private let alert = #"{"alert":{"account":"claude:a","title":"Claude Max","label
 }
 
 @MainActor
+@Test func whyAnEngineEndedIsWhatItSaidLastThoughThatComesAfter() async throws {
+    // Something it started says why a moment after it has exited, so its
+    // standard error closes after it is seen to end.
+    let engine = Engine(binary: try script("""
+        (sleep 0.2; echo 'turnscope: the ledger is locked' >&2) &
+        exit 1
+        """))
+    var phases: [Engine.Phase] = []
+    engine.onPhase = { phases.append($0) }
+    engine.start()
+    await until { phases.contains { if case .failed = $0 { true } else { false } } }
+    engine.stop()
+    #expect(phases.contains(.failed(why: "the ledger is locked")), "\(phases)")
+}
+
+@MainActor
 @Test func anEngineThatEndsSaysWhyAndIsStartedAgain() async throws {
     let runs = FileManager.default.temporaryDirectory.appending(path: "runs-\(UUID().uuidString)")
     // The first run leaves half a line and fails; the second writes a whole
