@@ -41,12 +41,12 @@ use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, Row, params_from_iter};
 
 use crate::agent::Agent;
-use crate::cache::{AGGREGATES, QUARTER, capped, capped_sum, quarters};
+use crate::cache::{AGGREGATES, capped, capped_sum, quarters};
 use crate::error::{Error, Result};
 use crate::ledger::{optional_instant, unsigned};
 use crate::model::ModelKey;
 use crate::session::{LinkKind, SessionKey, shell_word};
-use crate::time::{Bucket, Instant, Span, Zone, start_of};
+use crate::time::{Bucket, Instant, QUARTER, Span, Zone, start_of};
 use crate::usage::{Tokens, Usd, add_counts};
 
 /// How usage can be told apart.

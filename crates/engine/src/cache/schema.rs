@@ -10,6 +10,7 @@ use rusqlite::Transaction;
 
 use crate::error::Result;
 use crate::session::SessionKey;
+use crate::time::QUARTER;
 
 /// The schema's version. Increase it with any change to the schema or to how
 /// anything in the cache is worked out, as a new agent's usage in it is; the
@@ -17,16 +18,6 @@ use crate::session::SessionKey;
 /// share a cache: one that passes over an agent's changes never catches up a
 /// cache holding that agent's usage.
 pub(super) const SCHEMA: i64 = 14;
-
-/// A quarter hour, in milliseconds: the grain of the rollup, and of usage
-/// outside the conversation.
-pub(crate) const QUARTER: i64 = 15 * 60 * 1000;
-
-/// The start of the quarter hour usage `u` falls in, as the rollup keys it:
-/// rounded down, as Rust's `div_euclid` rounds, where SQLite's division
-/// rounds toward zero and would put usage before 1970 in the quarter hour
-/// after its own.
-pub(super) const QUARTER_OF: &str = "(u.at / 900000 - (u.at % 900000 < 0)) * 900000";
 
 /// The sum of `expression` over a group, as [`AGGREGATES`] adds: an integer
 /// that stops at the largest `i64`, where SQLite's `sum` fails the whole
@@ -214,8 +205,12 @@ pub(crate) fn quarters(which: &str) -> String {
         .enumerate()
         .map(|(index, expression)| format!("{expression} AS c{}", index + 1))
         .collect();
+    // The start of the quarter hour usage `u` falls in: rounded down, as
+    // `Instant::quarter` rounds, where SQLite's division rounds toward zero
+    // and would put usage before 1970 in the quarter hour after its own.
+    let quarter = format!("(u.at / {QUARTER} - (u.at % {QUARTER} < 0)) * {QUARTER}");
     format!(
-        "SELECT {QUARTER_OF} AS quarter, u.session AS session, u.agent AS agent,
+        "SELECT {quarter} AS quarter, u.session AS session, u.agent AS agent,
                 u.provider AS provider, u.model_key AS model_key, u.kind AS kind,
                 coalesce(u.account, '') AS account, {}
          FROM usage u {which} GROUP BY 1, 2, 4, 5, 6, 7",

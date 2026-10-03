@@ -84,6 +84,19 @@ impl fmt::Display for Instant {
     }
 }
 
+/// A quarter hour, in milliseconds: the grain of the cache's rollup, and of
+/// usage outside the conversation.
+pub(crate) const QUARTER: i64 = 15 * 60 * 1000;
+
+impl Instant {
+    /// The start of the quarter hour this falls in. The first quarter hour
+    /// `jiff` represents begins before the earliest instant it does, and
+    /// that instant is its own quarter hour's start.
+    pub(crate) fn quarter(self) -> Instant {
+        Instant::from_millis(self.0.div_euclid(QUARTER) * QUARTER).unwrap_or(self)
+    }
+}
+
 /// A time zone, which decides where local days and hours begin.
 #[derive(Clone, Debug)]
 pub struct Zone(TimeZone);

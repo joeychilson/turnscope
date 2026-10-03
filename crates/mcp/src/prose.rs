@@ -9,8 +9,8 @@
 
 use std::path::Path;
 
-use jiff::tz::TimeZone;
 use jiff::Zoned;
+use jiff::tz::TimeZone;
 use turnscope_engine::Instant;
 
 /// `at` as a clock reads it, as seen at `now` in `zone`: `4:10 PM` on the

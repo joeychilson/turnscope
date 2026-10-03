@@ -86,7 +86,7 @@ use crate::sharing;
 mod schema;
 mod store;
 
-pub(crate) use schema::{AGGREGATES, QUARTER, capped, capped_sum, quarters};
+pub(crate) use schema::{AGGREGATES, capped, capped_sum, quarters};
 use schema::{SCHEMA, TABLES, active, recount_accounts, roll_up, rollup, session_account, totals};
 use store::{
     Drawn, Ids, Kept, attribute, store_lineage, store_outside, store_response, store_session,
