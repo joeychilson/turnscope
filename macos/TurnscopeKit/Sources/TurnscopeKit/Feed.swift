@@ -16,7 +16,7 @@ public struct Feed: Decodable, Equatable, Sendable {
     public var agents: [AgentLink]
 
     /// The feed's version this app reads.
-    public static let version = 7
+    public static let version = 8
 }
 
 /// An account, as the app shows it. `title` is what it is called before
@@ -32,6 +32,9 @@ public struct Account: Decodable, Equatable, Identifiable, Sendable {
     public var agents: [String]
     public var inUse: Bool
     public var hidden: Bool
+    /// Whether it is an API-key account, its provider's keys, rather than a
+    /// subscription.
+    public var apiKey: Bool
     public var problem: Problem?
     public var standing: Standing
     /// The key of the limit that matters most now.
@@ -167,13 +170,11 @@ public struct Alert: Decodable, Equatable, Sendable {
 
 /// How an account's week went, for the Monday recap.
 public struct Week: Decodable, Equatable, Sendable {
-    public var account: String
     public var title: String
+    /// What tells the account apart from another of the same title.
     public var label: String?
-    public var limit: String
     /// The most of it used, in percent, which can be above 100.
     public var used: Double
-    public var usedUpAt: Date?
     public var project: String?
 }
 

@@ -375,8 +375,11 @@ public struct Words: Sendable {
     /// What the Monday recap says of the week each account had.
     public func recap(_ weeks: [Week]) -> Note {
         let lines = weeks.map { week in
+            // Which it is, when another in the recap is called the same.
+            let twin = weeks.filter { $0.title == week.title }.count > 1
+            let name = twin ? week.label.map { "\(week.title) · \($0)" } ?? week.title : week.title
             let used = "\(Int(week.used.rounded()))%"
-            return "\(week.title) used \(used)" + (week.project.map { ", most on \($0)" } ?? "")
+            return "\(name) used \(used)" + (week.project.map { ", most on \($0)" } ?? "")
         }
         return Note(title: "Last week", body: lines.joined(separator: "\n"), urgent: false)
     }

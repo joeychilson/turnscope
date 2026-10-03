@@ -179,12 +179,26 @@ private func limit(_ standing: Standing, hours: Int? = 5, left: Double? = 20,
                                            urgent: false))
 }
 
+@Test func aRecapTellsTwoAccountsOfOneTitleApartByTheirLabels() {
+    let words = Words()
+    let weeks = [
+        Week(title: "Claude Max", label: "joey@example.com", used: 84, project: "atlas"),
+        Week(title: "Claude Max", label: "joey@work.example", used: 40.4, project: nil),
+        Week(title: "ChatGPT Pro", label: "joey@example.com", used: 12, project: nil),
+    ]
+    #expect(words.recap(weeks).body == """
+        Claude Max · joey@example.com used 84%, most on atlas
+        Claude Max · joey@work.example used 40%
+        ChatGPT Pro used 12%
+        """)
+}
+
 extension Account {
     /// Claude Max in use, with `limits`, the first deciding, and standing as
     /// it does.
     static func with(_ limits: [Limit]) -> Account {
         Account(id: "a", title: "Claude Max", label: nil, logo: "anthropic",
-                agents: ["claude-code"], inUse: true, hidden: false, problem: nil,
+                agents: ["claude-code"], inUse: true, hidden: false, apiKey: false, problem: nil,
                 standing: limits.first?.standing ?? .lasts, deciding: limits.first?.key,
                 limits: limits, usedMost: [], advice: nil)
     }

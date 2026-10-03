@@ -134,7 +134,7 @@ private struct RestingRow: View {
                     }
                     if let trouble = words.trouble(account) {
                         Text(trouble)
-                    } else if account.limits.isEmpty {
+                    } else if account.limits.isEmpty && account.apiKey {
                         Text("This key carries no limit to watch.")
                     }
                 }

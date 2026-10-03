@@ -25,6 +25,7 @@ import Testing
     #expect(claude.advice == .reread(context: 966_000))
     #expect(feed.accounts[2].problem == .signIn)
     #expect(feed.accounts[3].hidden)
+    #expect(feed.accounts.map(\.apiKey) == [false, false, false, true])
     #expect(feed.agents.map(\.status) == [.connected, .available, .outdated, .unsupported])
 }
 
