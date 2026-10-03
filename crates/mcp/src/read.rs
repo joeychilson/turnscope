@@ -42,14 +42,6 @@ const LONGEST_OUTPUT: usize = 2_000;
 /// A slice of one entry holds as much, as its answer writes it.
 const LONGEST_PAGE: usize = 40_000;
 
-/// The schema of a session's id.
-fn session_schema() -> Value {
-    json!({
-        "type": "string",
-        "description": "The session's id, such as claude-code:0f6e3f6a-713c-4bad-8f6d-f04fe41bbd84, from find_sessions.",
-    })
-}
-
 /// How much of a conversation a page shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,7 +71,7 @@ pub(crate) struct ReadSession {
 pub(crate) fn read_schema() -> Value {
     object(
         json!({
-            "session": session_schema(),
+            "session": tools::session_schema(),
             "detail": {
                 "type": "string",
                 "enum": ["conversation", "actions", "full"],

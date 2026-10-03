@@ -31,7 +31,7 @@ use crate::limits;
 use crate::prose;
 use crate::read::{self, Part};
 use crate::sessions;
-use crate::tools::{Answer, Failure, Reply, Server, object, rounded, shape};
+use crate::tools::{self, Answer, Failure, Reply, Server, object, rounded, shape};
 use crate::usage;
 
 /// The most characters of a request a handoff quotes.
@@ -63,10 +63,7 @@ pub(crate) struct GetSession {
 pub(crate) fn schema() -> Value {
     object(
         json!({
-            "session": {
-                "type": "string",
-                "description": "The session's id, such as codex:0199a3f2-…, from find_sessions.",
-            },
+            "session": tools::session_schema(),
             "latest_in": {
                 "type": "string",
                 "description": "A folder, absolute or from ~/: the latest session there from any agent, other than this one.",
