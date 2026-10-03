@@ -33,7 +33,7 @@ use crate::accounts;
 use crate::limits;
 use crate::prose;
 use crate::sessions;
-use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, shape};
+use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, rounded, shape};
 
 /// How many parts are told apart; the rest are summed as others.
 const PARTS: usize = 5;
@@ -220,12 +220,12 @@ pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
             "key": limit.key,
             "since": since.map(|at| server.time(at)),
             "resets_at": window.track.resets.map(|at| server.time(at)),
-            "used_percent": (used * 10.0).round() / 10.0,
-            "left_percent": ((100.0 - used).max(0.0) * 10.0).round() / 10.0,
+            "used_percent": rounded(used, 1),
+            "left_percent": rounded((100.0 - used).max(0.0), 1),
         },
         "by": if arguments.session.is_some() { "session" } else { by.key() },
         "parts": [],
-        "elsewhere_percent": rounded(window.elsewhere),
+        "elsewhere_percent": rounded(window.elsewhere, 2),
         "approximate": true,
     });
     if ended.is_some() {
@@ -257,7 +257,7 @@ pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
                 &mut said,
             ),
             By::Models => {
-                let names = model_names(server)?;
+                let names = server.model_names()?;
                 named_parts(
                     window
                         .models
@@ -321,21 +321,6 @@ fn elsewhere(subscription: Subscription) -> &'static str {
     }
 }
 
-/// A share to a hundredth of a point, for the figures.
-fn rounded(share: f64) -> f64 {
-    (share * 100.0).round() / 100.0
-}
-
-/// What the catalog calls each model with usage, by key.
-pub(crate) fn model_names(server: &Server) -> Result<HashMap<String, String>, Failure> {
-    Ok(server
-        .engine
-        .models()?
-        .into_iter()
-        .filter_map(|info| Some((info.key.as_str().to_owned(), info.name?)))
-        .collect())
-}
-
 /// What `names` calls `model`, or its key where they don't name it.
 fn model_name(names: &HashMap<String, String>, model: &ModelKey) -> String {
     names
@@ -363,7 +348,7 @@ fn named_parts(
         parts
             .iter()
             .take(PARTS)
-            .map(|(key, name, share)| json!({"key": key, "name": name, "share_percent": rounded(*share)}))
+            .map(|(key, name, share)| json!({"key": key, "name": name, "share_percent": rounded(*share, 2)}))
             .collect(),
         others(&shares),
     )
@@ -379,7 +364,7 @@ fn rest(shares: &[f64]) -> (usize, f64) {
 /// The figures of the parts after the first [`PARTS`] of `shares`.
 fn others(shares: &[f64]) -> Value {
     let (count, share) = rest(shares);
-    json!({"count": count, "share_percent": rounded(share)})
+    json!({"count": count, "share_percent": rounded(share, 2)})
 }
 
 /// The window's sessions, most first, each with what drove its share.
@@ -398,7 +383,7 @@ fn by_sessions(
         .map(|row| (row.key.clone(), row))
         .collect();
     let contexts = server.engine.largest_contexts(&keys)?;
-    let names = model_names(server)?;
+    let names = server.model_names()?;
     let now = Instant::now();
     let mut parts = Vec::new();
     for (place, (key, share)) in top.iter().enumerate() {
@@ -434,7 +419,7 @@ fn by_sessions(
         let mut figures = json!({
             "key": key.to_string(),
             "name": row.and_then(|row| row.title.clone()).unwrap_or_else(|| key.to_string()),
-            "share_percent": rounded(*share),
+            "share_percent": rounded(*share, 2),
         });
         if let Some(row) = row {
             let models: Vec<String> = row.models.iter().take(2).map(model_name).collect();
@@ -496,10 +481,10 @@ fn by_sessions(
             figures["responses"] = json!(responses);
             figures["duration_minutes"] = json!(duration.map(|millis| millis / 60_000));
             figures["largest_context_tokens"] = json!(contexts.get(key));
-            figures["cache_read_share"] =
-                json!(reads.map(|reads| (reads * 1000.0).round() / 1000.0));
+            figures["cache_read_share"] = json!(reads.map(|reads| rounded(reads, 3)));
             figures["subagents"] = json!(row.subagents);
-            figures["subagents_share_percent"] = json!(subagents_share.map(rounded));
+            figures["subagents_share_percent"] =
+                json!(subagents_share.map(|share| rounded(share, 2)));
             figures["running"] = json!(sessions::running(row));
             figures["account"] =
                 json!(accounts::of_session(row, accounts).map(|account| account.id.clone()));
@@ -640,7 +625,7 @@ fn session(
     }
     data["session"] = json!({
         "id": row.key.to_string(),
-        "share_percent": rounded(share.share),
+        "share_percent": rounded(share.share, 2),
         "whole": share.whole,
         "prompts": prompts.iter().filter_map(|(place, part)| {
             let prompt = breakdown.prompts.get(*place)?;
@@ -648,17 +633,17 @@ fn session(
                 "said": prose::line(&prompt.said, 300),
                 "at": server.time(prompt.at),
                 "subagents": prompt.subagents,
-                "share_percent": rounded(*part),
+                "share_percent": rounded(*part, 2),
             }))
         }).collect::<Vec<_>>(),
-        "unprompted_percent": rounded(share.unprompted),
+        "unprompted_percent": rounded(share.unprompted, 2),
         "subagents": subagents.iter().filter_map(|(place, part)| {
             let subagent = breakdown.subagents.get(*place)?;
             Some(json!({
                 "id": subagent.key.to_string(),
                 "title": subagent.title,
                 "model": subagent.model.as_ref().map(ModelKey::as_str),
-                "share_percent": rounded(*part),
+                "share_percent": rounded(*part, 2),
             }))
         }).collect::<Vec<_>>(),
     });

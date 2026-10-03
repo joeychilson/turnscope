@@ -17,11 +17,10 @@ use turnscope_engine::{
 };
 
 use crate::accounts;
-use crate::explain;
 use crate::prose;
 use crate::tools::{
     self, Answer, Failure, Reply, Server, account_schema, agent_schema, folder_schema,
-    moment_schema, object, shape, totals_schema,
+    moment_schema, object, rounded, shape,
 };
 
 /// The most rows an answer holds, as the tool's description says: at about
@@ -152,13 +151,7 @@ pub(crate) fn usage(server: &Server, arguments: GetUsage) -> Answer {
         // known to have drawn on after them.
         for row in &mut rows {
             row.label = match group(row) {
-                Some(id) => match accounts.iter().find(|account| account.id == id) {
-                    Some(account) if account.hidden => {
-                        Some("An account hidden in Turnscope".to_owned())
-                    }
-                    Some(account) => Some(accounts::name(account)),
-                    None => None,
-                },
+                Some(id) => accounts::called(id, &accounts).map(|said| prose::capitalized(&said)),
                 None => Some("No account known".to_owned()),
             };
         }
@@ -167,7 +160,7 @@ pub(crate) fn usage(server: &Server, arguments: GetUsage) -> Answer {
     if by == Some(By::Dimension(Dimension::Model)) {
         // Each model by what the catalog calls it, as explain_limit names
         // them; the group stays the key the model argument takes.
-        let names = explain::model_names(server)?;
+        let names = server.model_names()?;
         for row in &mut rows {
             if let Some(name) = group(row).and_then(|key| names.get(key)) {
                 row.label = Some(name.clone());
@@ -382,10 +375,39 @@ pub(crate) fn totals(totals: &Totals) -> Value {
     value
 }
 
+/// The output schema of usage, as [`totals`] gives it.
+pub(crate) fn totals_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tokens": {
+                "type": "object",
+                "properties": {
+                    "input": {"type": "integer"},
+                    "cache_read": {"type": "integer"},
+                    "cache_write": {"type": "integer"},
+                    "output": {"type": "integer"},
+                    "reasoning": {"type": "integer"},
+                    "total": {"type": "integer"},
+                },
+                "required": ["input", "cache_read", "cache_write", "output", "reasoning", "total"],
+            },
+            "responses": {"type": "integer"},
+            "cost_usd": {"type": ["number", "null"]},
+            "unpriced_usage": {"type": "boolean"},
+            "cost_approximate": {"type": "boolean"},
+            "cost_charged_usd": {"type": "number"},
+            "cost_agent_estimate_usd": {"type": "number"},
+            "outside_conversation_tokens": {"type": "integer"},
+        },
+        "required": ["tokens", "responses", "cost_usd"],
+    })
+}
+
 /// Money, as answers give it: to a millionth of a dollar, finer than any
 /// price.
-pub(crate) fn dollars(usd: Usd) -> Value {
-    json!((usd.dollars() * 1e6).round() / 1e6)
+fn dollars(usd: Usd) -> Value {
+    json!(rounded(usd.dollars(), 6))
 }
 
 fn tokens(tokens: &Tokens) -> Value {
