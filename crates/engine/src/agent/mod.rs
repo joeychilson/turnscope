@@ -523,7 +523,7 @@ impl DiagnosticKind {
     }
 
     /// The kind with `key`.
-    pub fn from_key(key: &str) -> Option<DiagnosticKind> {
+    pub(crate) fn from_key(key: &str) -> Option<DiagnosticKind> {
         [
             DiagnosticKind::Unreadable,
             DiagnosticKind::UnknownRecord,
