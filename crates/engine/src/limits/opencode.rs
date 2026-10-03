@@ -7,7 +7,8 @@
 use jiff::ToSpan;
 use serde_json::Value;
 
-use super::{Identity, LimitProblem, Location, PlanLimits, Reader, Source, WEEK};
+use super::sign_in::{FNV, Identity, Location, Source, fnv};
+use super::{LimitProblem, PlanLimits, Reader, WEEK};
 use crate::agent::Agent;
 use crate::time::Instant;
 
@@ -52,7 +53,7 @@ pub(super) const READER: Reader = Reader {
 /// The account a key belongs to, as an FNV-1a hash of the key.
 fn identity(key: &str) -> Identity {
     Identity {
-        key: format!("{:016x}", super::fnv(super::FNV, key.as_bytes())),
+        key: format!("{:016x}", fnv(FNV, key.as_bytes())),
         label: None,
     }
 }

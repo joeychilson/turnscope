@@ -46,7 +46,8 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::{Reader, SignIn, Subscription};
+use super::sign_in::SignIn;
+use super::{Reader, Subscription};
 use crate::agent::Agent;
 use crate::error::Result;
 use crate::folders::Folder;

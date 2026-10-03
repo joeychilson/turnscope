@@ -41,9 +41,9 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use super::attribution::{self, Held, Place, Seen, Span, api_account};
-use super::sign_in::{credentials, json_file};
+use super::sign_in::{SignIn, credentials, json_file, one_account};
 use super::{
-    AccountLimits, AccountRead, LimitProblem, PlanLimits, Reader, SignIn, Subscription, openrouter,
+    AccountLimits, AccountRead, LimitProblem, PlanLimits, Reader, Subscription, openrouter,
 };
 use crate::agent::{self, Agent};
 use crate::error::Result;
@@ -54,7 +54,7 @@ use crate::time::Instant;
 /// read: OpenRouter's, the only provider whose keys do.
 pub(super) const READER: Reader = Reader {
     sources: openrouter::SOURCES,
-    identity: super::one_account,
+    identity: one_account,
     fetch: openrouter::fetch,
 };
 
@@ -316,7 +316,8 @@ mod tests {
     use crate::agent::Agent;
     use crate::folders::{Folder, FolderOrigin};
     use crate::limits::attribution::{Held, Place, Seen, Span};
-    use crate::limits::{LimitProblem, PlanLimits, Reported, SignIn};
+    use crate::limits::sign_in::SignIn;
+    use crate::limits::{LimitProblem, PlanLimits, Reported};
     use crate::time::Instant;
 
     #[test]

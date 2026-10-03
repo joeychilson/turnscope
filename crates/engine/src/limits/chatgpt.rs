@@ -16,7 +16,8 @@
 
 use serde_json::Value;
 
-use super::{Identity, LimitProblem, Location, PlanLimits, Reader, Reported, Source};
+use super::sign_in::{Identity, Location, Source, claims};
+use super::{LimitProblem, PlanLimits, Reader, Reported};
 use crate::agent::Agent;
 use crate::time::Instant;
 
@@ -69,7 +70,7 @@ pub(super) const READER: Reader = Reader {
 
 /// The workspace a token was issued for, labelled with its owner's email.
 fn identity(token: &str) -> Identity {
-    let claims = super::claims(token);
+    let claims = claims(token);
     Identity {
         key: claims["https://api.openai.com/auth"]["chatgpt_account_id"]
             .as_str()

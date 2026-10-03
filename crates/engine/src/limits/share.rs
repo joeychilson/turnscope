@@ -203,6 +203,26 @@ pub(super) fn windows(readings: Vec<Reading>) -> Vec<Vec<Reading>> {
     windows
 }
 
+/// The windows of `account`'s limit `key` read since `since`, oldest first,
+/// each its readings, as [`windows`] tells them apart.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::Ledger`] when the ledger cannot be read.
+pub(super) fn windows_of(
+    ledger: &Ledger,
+    account: &str,
+    key: &str,
+    since: Instant,
+) -> Result<Vec<Vec<Reading>>> {
+    let readings = ledger
+        .readings(account, since)?
+        .into_iter()
+        .filter(|reading| reading.key == key)
+        .collect();
+    Ok(windows(readings))
+}
+
 /// Each stretch between two of `points` that a limit rose in, as when it
 /// starts and ends, in milliseconds, as spending is kept, and how much it
 /// rose: past the most it was read at before, or, after a fall of more than
@@ -324,12 +344,7 @@ fn current(ledger: &Ledger, account: &str, key: &str, now: Instant) -> Result<Op
     let Some(since) = Instant::from_millis(now.millis().saturating_sub(LONGEST).max(0)) else {
         return Ok(None);
     };
-    let readings: Vec<Reading> = ledger
-        .readings(account, since)?
-        .into_iter()
-        .filter(|reading| reading.key == key)
-        .collect();
-    let Some(current) = windows(readings).pop() else {
+    let Some(current) = windows_of(ledger, account, key, since)?.pop() else {
         return Ok(None);
     };
     let Some(latest) = current.last().cloned() else {

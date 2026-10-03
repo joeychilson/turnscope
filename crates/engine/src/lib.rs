@@ -782,7 +782,7 @@ impl Engine {
         }
         let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         let state = limits::current(ledger, cache.connection(), at)?;
-        let alerts = limits::alerts(ledger, &state, at)?;
+        let alerts = limits::alert::alerts(ledger, &state, at)?;
         let weeks = if recap {
             limits::recap::recap(ledger, cache.connection(), &state, at, &Zone::system())?
         } else {
