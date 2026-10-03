@@ -27,8 +27,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use turnscope_engine::{
-    AccountLimits, Agent, Instant, LimitState, LimitWindow, ModelKey, SessionKey, SessionRow,
-    Subscription,
+    AccountLimits, Instant, LimitState, LimitWindow, ModelKey, SessionKey, SessionRow, Subscription,
 };
 
 use crate::accounts;
@@ -48,7 +47,7 @@ const PROMPTS: usize = 8;
 pub(crate) struct ExplainLimit {
     account: Option<String>,
     limit: Option<String>,
-    by: Option<String>,
+    by: Option<By>,
     session: Option<String>,
 }
 
@@ -104,7 +103,8 @@ pub(crate) fn output_schema() -> Value {
 }
 
 /// What a window is split by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum By {
     Sessions,
     Projects,
@@ -124,17 +124,7 @@ impl By {
 }
 
 pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
-    let by = match arguments.by.as_deref() {
-        None | Some("sessions") => By::Sessions,
-        Some("projects") => By::Projects,
-        Some("models") => By::Models,
-        Some("agents") => By::Agents,
-        Some(other) => {
-            return Err(Failure(format!(
-                "by takes sessions, projects, models or agents; {other:?} is none of those."
-            )));
-        }
-    };
+    let by = arguments.by.unwrap_or(By::Sessions);
     if arguments.session.is_some() && arguments.by.is_some() {
         return Err(Failure(
             "session breaks one session down by prompt and subagent, so by doesn't come with it."
@@ -241,17 +231,13 @@ pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
                 window
                     .projects
                     .iter()
-                    .map(|(root, share)| {
-                        let name = root.as_deref().map_or_else(
-                            || "no project".to_owned(),
-                            |root| {
-                                root.rsplit('/')
-                                    .find(|part| !part.is_empty())
-                                    .unwrap_or(root)
-                                    .to_owned()
-                            },
-                        );
-                        (root.clone(), name, *share)
+                    .map(|project| {
+                        let name = project
+                            .name
+                            .clone()
+                            .or_else(|| project.root.clone())
+                            .unwrap_or_else(|| "no project".to_owned());
+                        (project.root.clone(), name, project.share)
                     })
                     .collect(),
                 &mut said,
@@ -274,25 +260,20 @@ pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
                     &mut said,
                 )
             }
-            By::Agents => {
-                let mut agents: Vec<(Agent, f64)> = Vec::new();
-                for (key, share) in &window.sessions {
-                    match agents.iter_mut().find(|(agent, _)| *agent == key.agent()) {
-                        Some((_, total)) => *total += share,
-                        None => agents.push((key.agent(), *share)),
-                    }
-                }
-                agents.sort_by(|a, b| b.1.total_cmp(&a.1));
-                named_parts(
-                    agents
-                        .into_iter()
-                        .map(|(agent, share)| {
-                            (Some(agent.key().to_owned()), agent.name().to_owned(), share)
-                        })
-                        .collect(),
-                    &mut said,
-                )
-            }
+            By::Agents => named_parts(
+                window
+                    .agents
+                    .iter()
+                    .map(|(agent, share)| {
+                        (
+                            Some(agent.key().to_owned()),
+                            agent.name().to_owned(),
+                            *share,
+                        )
+                    })
+                    .collect(),
+                &mut said,
+            ),
         };
         data["parts"] = parts.0;
         data["others"] = parts.1;
@@ -662,6 +643,7 @@ mod tests {
             sessions: Vec::new(),
             projects: Vec::new(),
             models: Vec::new(),
+            agents: Vec::new(),
             elsewhere,
             unpriced,
         }

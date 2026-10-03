@@ -94,7 +94,10 @@ fn sessions_are_found_by_folder_agent_and_period() {
         (json!({"agents": ["codex"]}), "unknown field `agents`"),
         (json!({"agent": "cursor"}), "There is no agent \"cursor\""),
         (json!({"since": "soon"}), "today, yesterday"),
-        (json!({"order": "cost"}), "order takes recent or usage"),
+        (
+            json!({"order": "cost"}),
+            "unknown variant `cost`, expected `recent` or `usage`",
+        ),
         (json!({"limit": 0}), "limit takes 1 to 50"),
     ] {
         let refused = refusal(&server, "find_sessions", arguments.clone());

@@ -677,22 +677,13 @@ fn failed(problem: LimitProblem) -> &'static str {
     }
 }
 
-/// Why the latest read failed, for the agent.
-fn problem(problem: LimitProblem) -> &'static str {
-    match problem {
-        LimitProblem::SignIn => {
-            "Its sign-ins were refused, or have expired until their agent renews them. The limits shown are the last read."
-        }
-        LimitProblem::Unavailable => {
-            "The provider could not be reached or was busy. The limits shown are the last read."
-        }
-        LimitProblem::Unrecognized => {
-            "The provider's reply was not what this version of Turnscope expects, so the usage could not be read. The limits shown are the last read."
-        }
-        LimitProblem::Unsent => {
-            "The request could not be made on this Mac, since /usr/bin/curl could not be run. The limits shown are the last read."
-        }
-    }
+/// Why the latest read failed, for the agent: as [`failed`] says it, the
+/// limits shown being the last read.
+fn problem(problem: LimitProblem) -> String {
+    format!(
+        "{}. The limits shown are the last read.",
+        prose::capitalized(failed(problem))
+    )
 }
 
 /// Why the latest reading of `account`'s `limit` may not be how it stands at

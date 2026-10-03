@@ -155,7 +155,10 @@ fn usage_is_totalled_by_local_day_and_split_as_asked() {
     assert_eq!(project.data["total"]["tokens"]["total"], 13_900);
 
     for (arguments, expected) in [
-        (json!({"by": "colour"}), "by takes day, week, month"),
+        (
+            json!({"by": "colour"}),
+            "unknown variant `colour`, expected one of `day`, `week`",
+        ),
         (
             json!({"model": "claude-opus-6"}),
             "No usage in history is of the model \"claude-opus-6\"",

@@ -234,6 +234,14 @@ pub(crate) fn agent_schema() -> Value {
     })
 }
 
+/// The schema of a session's id.
+pub(crate) fn session_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "The session's id, such as claude-code:0f6e3f6a-713c-4bad-8f6d-f04fe41bbd84, from find_sessions.",
+    })
+}
+
 /// The schema of an account.
 pub(crate) fn account_schema(default: &str) -> Value {
     json!({

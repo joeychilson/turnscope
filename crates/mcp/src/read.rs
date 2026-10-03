@@ -42,16 +42,9 @@ const LONGEST_OUTPUT: usize = 2_000;
 /// A slice of one entry holds as much, as its answer writes it.
 const LONGEST_PAGE: usize = 40_000;
 
-/// The schema of a session's id.
-fn session_schema() -> Value {
-    json!({
-        "type": "string",
-        "description": "The session's id, such as claude-code:0f6e3f6a-713c-4bad-8f6d-f04fe41bbd84, from find_sessions.",
-    })
-}
-
 /// How much of a conversation a page shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum Detail {
     /// What the person and the models said.
     Conversation,
@@ -66,19 +59,19 @@ enum Detail {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReadSession {
     session: String,
-    detail: Option<String>,
+    detail: Option<Detail>,
     find: Option<String>,
     offset: Option<i64>,
     limit: Option<u32>,
     entry: Option<u32>,
-    part: Option<String>,
+    part: Option<Part>,
     from: Option<u64>,
 }
 
 pub(crate) fn read_schema() -> Value {
     object(
         json!({
-            "session": session_schema(),
+            "session": tools::session_schema(),
             "detail": {
                 "type": "string",
                 "enum": ["conversation", "actions", "full"],
@@ -122,16 +115,7 @@ pub(crate) fn read(server: &Server, arguments: ReadSession) -> Answer {
             "part and from read within one entry, so they come with entry.".into(),
         ));
     }
-    let detail = match arguments.detail.as_deref() {
-        None | Some("actions") => Detail::Actions,
-        Some("conversation") => Detail::Conversation,
-        Some("full") => Detail::Full,
-        Some(other) => {
-            return Err(Failure(format!(
-                "detail takes conversation, actions or full; {other:?} is none of those."
-            )));
-        }
-    };
+    let detail = arguments.detail.unwrap_or(Detail::Actions);
     let limit = tools::limit(arguments.limit, 50, 200)?;
     let row = named(server, &arguments.session)?;
     let entries = server.engine.conversation(&row.key)?;
@@ -339,7 +323,8 @@ pub(crate) fn clipped(text: &str, most: usize, index: u32, part: Part) -> String
 }
 
 /// A part of an entry, which read_session reads exactly, a slice at a time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Part {
     /// What was said, thought or injected.
     Text,
@@ -374,16 +359,7 @@ fn read_entry(server: &Server, arguments: ReadSession, index: u32) -> Answer {
                 .into(),
         ));
     }
-    let part = match arguments.part.as_deref() {
-        None | Some("text") => Part::Text,
-        Some("input") => Part::Input,
-        Some("output") => Part::Output,
-        Some(other) => {
-            return Err(Failure(format!(
-                "part takes text, input or output; {other:?} is none of those."
-            )));
-        }
-    };
+    let part = arguments.part.unwrap_or(Part::Text);
     let row = named(server, &arguments.session)?;
     let entries = server.engine.conversation(&row.key)?;
     let entry = entries
