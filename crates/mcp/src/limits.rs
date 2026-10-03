@@ -568,12 +568,23 @@ fn sentence(
                 None => said.push('.'),
             }
         }
-        (Some(out), Some(resets)) => said.push_str(&format!(
-            ". At this pace it runs out around {}, {} before it resets at {}.",
-            server.clock(out),
-            prose::span(resets.millis() - out.millis()),
-            server.clock(resets)
-        )),
+        (Some(out), Some(resets)) => {
+            said.push_str(&format!(
+                ". At this pace it runs out around {}, {} before it resets at {}.",
+                server.clock(out),
+                prose::span(resets.millis() - out.millis()),
+                server.clock(resets)
+            ));
+            // What an agent pacing itself keeps to: how fast it rises now,
+            // and how fast it could and still last.
+            if let (Some(pace), Some(lasting)) = (limit.pace, limit.lasting_pace()) {
+                said.push_str(&format!(
+                    " It is rising {} an hour; under {} an hour, it would last.",
+                    points(pace),
+                    points(lasting)
+                ));
+            }
+        }
         (Some(out), None) => said.push_str(&format!(
             ". At this pace it runs out around {}.",
             server.clock(out)
@@ -602,8 +613,23 @@ fn sentence(
     said
 }
 
-/// An account in brief, as a line says it: its name, agents, and its
-/// tightest limit's share left, or, for `yours`, as marked.
+/// A pace, in points of a limit's percent an hour, as `2.1 points`: to a
+/// tenth, and below a tenth to two places, so a slow one isn't said as none.
+fn points(pace: f64) -> String {
+    if pace.abs() < 0.1 {
+        format!("{pace:.2} points")
+    } else {
+        format!("{pace:.1} points")
+    }
+}
+
+/// An account in brief, as a line says it: its name, agents, or, for
+/// `yours`, as marked, and the share left of each of its `limits` on all
+/// its usage. Where `limits` has none of those, as when a model's limit was
+/// asked for, it says the ones it has, so a limit asked for is never left
+/// out of the line that answers. A reading that can't say how a limit
+/// stands now says why, as a sentence in full does, so the line isn't read
+/// as current.
 fn brief(
     server: &Server,
     account: &AccountLimits,
@@ -618,9 +644,14 @@ fn brief(
     } else if !agents.is_empty() {
         said.push_str(&format!(" ({})", agents.join(", ")));
     }
+    let whole = limits.iter().any(|limit| limit.scope.is_none());
+    let limits: Vec<&LimitState> = limits
+        .iter()
+        .copied()
+        .filter(|limit| !whole || limit.scope.is_none())
+        .collect();
     let parts: Vec<String> = limits
         .iter()
-        .filter(|limit| limit.scope.is_none())
         .map(|limit| {
             let name = spoken(limit);
             match (limit.left(), limit.resets) {
@@ -647,6 +678,16 @@ fn brief(
         said.push_str(&format!(": {}.", parts.join("; ")));
         if let Some(problem) = account.problem {
             said.push_str(&format!(" As last read, since {}.", failed(problem)));
+        } else if let Some((limit, why)) = limits
+            .iter()
+            // One reset since is said to be.
+            .filter(|limit| !limit.refilled)
+            .find_map(|limit| stale(account, limit, now).map(|why| (limit, why)))
+        {
+            said.push_str(&format!(
+                " As read at {}: {why}",
+                server.clock(limit.read_at)
+            ));
         }
     }
     said

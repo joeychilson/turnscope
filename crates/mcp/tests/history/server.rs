@@ -33,21 +33,18 @@ pub fn talk(server: &Server, revision: &str, messages: &[Value]) -> Vec<Value> {
 
 /// What a tool answered, as a client on 2025-06-18 reads it.
 pub struct Answered {
-    /// The text: the sentences, and after them the figures as JSON.
+    /// The text: the sentences, which are the whole answer.
     pub text: String,
-    /// The figures, as structured content.
+    /// The figures, as structured content, the sentences among them.
     pub data: Value,
     /// Whether it is an error.
     pub failed: bool,
 }
 
 impl Answered {
-    /// The sentences, before the figures.
+    /// The sentences.
     pub fn said(&self) -> &str {
-        match self.text.rsplit_once("\n\n{") {
-            Some((said, _)) => said,
-            None => &self.text,
-        }
+        &self.text
     }
 }
 
@@ -60,11 +57,16 @@ pub fn call(server: &Server, tool: &str, arguments: Value) -> Answered {
                  "params": {"name": tool, "arguments": arguments}})],
     );
     let result = &answers[0]["result"];
-    Answered {
+    let answered = Answered {
         text: result["content"][0]["text"].as_str().unwrap().to_owned(),
         data: result["structuredContent"].clone(),
         failed: result["isError"].as_bool().unwrap(),
+    };
+    // Whichever a client gives its model, the sentences are the same.
+    if !answered.data.is_null() {
+        assert_eq!(answered.data["said"], answered.text, "{tool}");
     }
+    answered
 }
 
 /// `tool`'s answer to `arguments`, which must not be an error.

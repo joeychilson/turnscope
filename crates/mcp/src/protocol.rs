@@ -14,8 +14,9 @@
 //! answered, and neither are responses, since the server asks nothing.
 //!
 //! A session starts with `initialize`, which names the revision the client
-//! speaks; its capabilities and who it is go unchecked, since nothing the
-//! server does depends on them (see [`negotiate`]). Until `initialize` has
+//! speaks; its capabilities go unchecked, since nothing the server does
+//! depends on them (see [`negotiate`]), and who it is only decides whether
+//! it is given structured content ([`takes_structured`]). Until `initialize` has
 //! been answered only `ping` is served; after, `initialize` is refused, since
 //! a session is negotiated once. Requests are served from `initialize`'s
 //! answer on, whether or not `notifications/initialized` has come: what that
@@ -29,10 +30,17 @@
 //! (`prompts/list`, `prompts/get`), which change only when an update replaces
 //! this program while it runs: the session is then handed over to the new
 //! one, which the client is told lists them again ([`crate::handover`]).
-//! A tool's answer is text, its sentences and then its figures as JSON; to
-//! a client speaking 2025-06-18 or later, which takes structured content,
-//! the figures also come as `structuredContent`, as the tool's
-//! `outputSchema` describes them.
+//! A tool's answer is text, its sentences, which are the whole answer; to a
+//! client speaking 2025-06-18 or later, which takes structured content, its
+//! figures also come as `structuredContent`, as the tool's `outputSchema`
+//! describes them, with the sentences among them as `said`. Clients give
+//! their model one or the other, never both: Claude Code the text, and Codex
+//! the structured content alone. So the text says the answer once, rather
+//! than repeating the figures after it (which, until 2026-10-03, came to 70%
+//! to 85% of every answer's text); and a client known to give its model the
+//! structured content alone is answered as one before structured content
+//! was, so that its model reads the same text rather than the figures with
+//! the text among them, which came to three times as much.
 
 use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
@@ -57,6 +65,12 @@ const REVISIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11
 /// The first revision that takes a tool's output schema and structured
 /// content. Revisions are dates, so later ones sort after it.
 const STRUCTURED_FROM: &str = "2025-06-18";
+
+/// Clients, by the name their `initialize` gives, that give their model a
+/// tool's structured content in place of its text: Codex
+/// (`codex-rs/protocol/src/models.rs` on 2026-10-03, whose test calls the
+/// text "ignored").
+const STRUCTURED_ALONE: [&str; 1] = ["codex-mcp-client"];
 
 /// The longest message read, in bytes. Every request the tools take is far
 /// shorter; a longer line is refused without being held in memory.
@@ -230,8 +244,8 @@ impl Session<'_> {
             "initialize" => {
                 let revision =
                     negotiate(&params).map_err(|reason| (INVALID_PARAMS, reason.into()))?;
+                self.structured = takes_structured(&params, revision);
                 self.client = Some((params, revision));
-                self.structured = revision >= STRUCTURED_FROM;
                 Ok(json!({
                     "protocolVersion": revision,
                     "capabilities": {
@@ -294,7 +308,7 @@ impl Session<'_> {
                 Ok(match answer {
                     Ok(reply) => {
                         // Only a tool with an output schema answers figures.
-                        let data = reply.data().filter(|_| self.structured).cloned();
+                        let data = reply.structured().filter(|_| self.structured);
                         let mut result = json!({
                             "content": [{"type": "text", "text": reply.compact()}],
                             "isError": false,
@@ -398,14 +412,26 @@ fn is_id(id: &Value) -> bool {
     }
 }
 
+/// Whether a client whose `initialize` gave `params`, speaking `revision`, is
+/// given tools' output schemas and structured content: from the revision
+/// that has them on, but for a client that gives its model the structured
+/// content alone ([`STRUCTURED_ALONE`]), whose model reads the text instead.
+fn takes_structured(params: &Map<String, Value>, revision: &str) -> bool {
+    let name = params
+        .get("clientInfo")
+        .and_then(|client| client.get("name"))
+        .and_then(Value::as_str);
+    revision >= STRUCTURED_FROM && !name.is_some_and(|name| STRUCTURED_ALONE.contains(&name))
+}
+
 /// The revision to speak with a client whose `initialize` gave `params`: the
 /// one it asked for when the server speaks it, and otherwise the newest the
 /// server speaks. Why not, when `params` name no revision.
 ///
 /// The client's capabilities and who it is aren't checked: the server asks
-/// nothing of a client and answers every client alike, so a client that
-/// leaves them out, or gives them in a shape of its own, loses nothing by it,
-/// where refusing it would leave it without the server.
+/// nothing of a client, so a client that leaves them out, or gives them in a
+/// shape of its own, loses nothing by it, where refusing it would leave it
+/// without the server.
 fn negotiate(params: &Map<String, Value>) -> Result<&'static str, &'static str> {
     let Some(Value::String(asked)) = params.get("protocolVersion") else {
         return Err("initialize names the protocolVersion the client speaks, as a string");

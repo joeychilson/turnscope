@@ -43,15 +43,15 @@ fn sessions_are_found_by_folder_agent_and_period() {
     // and $0.071 + $0.0055 = $0.0765.
     assert_eq!(session["usage"]["tokens"]["total"], 13_900);
     assert_eq!(session["usage"]["cost_usd"], json!(0.0765));
-    // The sentences name it, its agent, where and when it ran, and what it
-    // took. Its day is said as seen from now, which moves. Codex's thread
-    // began and ended within a minute.
+    // The sentences name it with its id, which says its agent, where and
+    // when it ran, and what it took. Its day is said as seen from now, which
+    // moves. Codex's thread began and ended within a minute.
     for part in [
-        "2. \"Add a file watcher for the ledger\" \u{b7} Claude Code \u{b7} ~/work/ledger \u{b7} ",
-        " 7:00 AM to 7:01 AM, ended \u{b7} 13.9K tokens",
-        " 4:00 AM, ended \u{b7} 3K tokens",
+        format!("2. \"Add a file watcher for the ledger\" ({claude}) \u{b7} ~/work/ledger \u{b7} "),
+        " 7:00 AM to 7:01 AM, ended \u{b7} 13.9K tokens, $0.08 at list prices".to_owned(),
+        " 4:00 AM, ended \u{b7} 3K tokens, cost unknown".to_owned(),
     ] {
-        assert!(all.said().contains(part), "{}", all.said());
+        assert!(all.said().contains(&part), "{}", all.said());
     }
 
     // A subfolder of the repository stands for the repository, and so does

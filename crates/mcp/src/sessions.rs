@@ -21,8 +21,8 @@ use turnscope_engine::{
 use crate::accounts;
 use crate::prose;
 use crate::tools::{
-    self, Answer, Failure, Reply, Server, account_schema, agent_schema, folder_schema,
-    moment_schema, object, shape,
+    self, Answer, Failure, Reply, Server, account_schema, agent_schema, folder_schema, object,
+    shape, since_schema, until_schema,
 };
 use crate::usage;
 
@@ -66,8 +66,8 @@ pub(crate) fn find_schema() -> Value {
             },
             "agent": agent_schema(),
             "account": account_schema("Only sessions that drew on it, or on any account it names."),
-            "since": moment_schema("Only sessions with usage from then on"),
-            "until": moment_schema("Only sessions with usage before then"),
+            "since": since_schema("Only sessions with usage from then on"),
+            "until": until_schema("Only sessions with usage before then"),
             "running": {"type": "boolean", "description": "Only sessions running now: active, they or their subagents, in the last five minutes."},
             "order": {
                 "type": "string",
@@ -281,13 +281,13 @@ pub(crate) fn running(row: &SessionRow) -> bool {
     row.running(Instant::now())
 }
 
-/// A session on one line, as a sentence says it: `"Title" · Codex · ChatGPT
-/// Pro · ~/work/atlas on hillshade · today 11:02 AM to 12:47 PM, ended ·
-/// 1.2M tokens`.
+/// A session on one line, as a sentence says it: `"Title"
+/// (codex:0199a3f2-...) · ChatGPT Pro · ~/work/atlas on hillshade · today
+/// 11:02 AM to 12:47 PM, ended · 1.2M tokens, $0.84 at list prices`.
 fn line(server: &Server, row: &SessionRow, accounts: &[AccountLimits]) -> String {
-    let mut parts = vec![title(row), row.key.agent().name().to_owned()];
+    let mut parts = vec![called(row)];
     if let Some(account) = accounts::of_session(row, accounts).filter(|account| !account.hidden) {
-        parts.push(accounts::name(account));
+        parts.push(accounts::short(account, accounts));
     }
     if let Some(place) = place(server, row) {
         parts.push(place);
@@ -297,7 +297,11 @@ fn line(server: &Server, row: &SessionRow, accounts: &[AccountLimits]) -> String
     }
     let tokens = row.with_subagents.tokens.total();
     if tokens > 0 {
-        parts.push(format!("{} tokens", prose::tokens(tokens)));
+        parts.push(format!(
+            "{} tokens, {}",
+            prose::tokens(tokens),
+            usage::cost(&row.with_subagents)
+        ));
     }
     parts.join(" \u{b7} ")
 }
@@ -306,6 +310,16 @@ fn line(server: &Server, row: &SessionRow, accounts: &[AccountLimits]) -> String
 pub(crate) fn title(row: &SessionRow) -> String {
     match &row.title {
         Some(title) => format!("\"{}\"", prose::line(title, LONGEST_TITLE)),
+        None => row.key.to_string(),
+    }
+}
+
+/// A session as answers name it, so that it can be asked about again: its
+/// title in quotes and its id, `"Fix the hillshade" (codex:0199a3f2-...)`,
+/// or its id alone without a title. The id says its agent.
+pub(crate) fn called(row: &SessionRow) -> String {
+    match &row.title {
+        Some(_) => format!("{} ({})", title(row), row.key),
         None => row.key.to_string(),
     }
 }

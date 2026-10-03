@@ -19,8 +19,8 @@ use turnscope_engine::{
 use crate::accounts;
 use crate::prose;
 use crate::tools::{
-    self, Answer, Failure, Reply, Server, account_schema, agent_schema, folder_schema,
-    moment_schema, object, rounded, shape,
+    self, Answer, Failure, Reply, Server, account_schema, agent_schema, folder_schema, object,
+    rounded, shape, since_schema, until_schema,
 };
 
 /// The most rows an answer holds, as the tool's description says: at about
@@ -29,9 +29,6 @@ use crate::tools::{
 /// by time gives a row only for each time with usage, so a period of any
 /// length can be split as finely as its usage allows.
 const MOST_ROWS: usize = 200;
-
-/// The most rows the sentences name; the rest are in the figures.
-const ROWS_SAID: usize = 10;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,8 +45,8 @@ pub(crate) struct GetUsage {
 pub(crate) fn schema() -> Value {
     object(
         json!({
-            "since": moment_schema("From then on, or all of history"),
-            "until": moment_schema("Until then, or up to now"),
+            "since": since_schema("From then on, or all of history"),
+            "until": until_schema("Until then, or up to now"),
             "folder": folder_schema(),
             "account": account_schema("Only the usage that draws on it, or on any account it names."),
             "agent": agent_schema(),
@@ -221,31 +218,20 @@ pub(crate) fn usage(server: &Server, arguments: GetUsage) -> Answer {
         }
         let lines: Vec<String> = ordered
             .iter()
-            .take(ROWS_SAID)
             .map(|row| {
                 let name = match (by, row.start) {
                     (Some(By::Time(_)), Some(start)) => {
                         prose::day(start, turnscope_engine::Instant::now(), &server.zone)
                     }
                     (Some(By::Time(_)), None) => "at no time known".to_owned(),
-                    _ => row
-                        .label
-                        .clone()
-                        .or_else(|| group(row).map(str::to_owned))
-                        .unwrap_or_else(|| "none named".to_owned()),
+                    (Some(By::Dimension(dimension)), _) => named(row, dimension),
+                    (None, _) => "none named".to_owned(),
                 };
                 format!("- {name}: {}", amount(&row.totals, false))
             })
             .collect();
-        let mut listed = lines.join("\n");
-        if rows.len() > ROWS_SAID {
-            listed.push_str(&format!(
-                "\n…and {} more in the figures.",
-                rows.len() - ROWS_SAID
-            ));
-        }
-        if !listed.is_empty() {
-            said.push(listed);
+        if !lines.is_empty() {
+            said.push(lines.join("\n"));
         }
     }
     Ok(Reply::Answer {
@@ -290,17 +276,56 @@ fn period(
     }
 }
 
-/// Usage as a sentence says it: its tokens, responses and cost, and, `full`,
-/// how much of it was cache reads.
+/// A row as a sentence names it: what the catalog or its agent calls it,
+/// and, where an argument takes something else, that too, so that it can be
+/// asked about alone: a session's id, a model's key, a project's folder.
+fn named(row: &UsageRow, dimension: Dimension) -> String {
+    let label = row.label.as_deref();
+    match (label, group(row)) {
+        (Some(label), Some(group))
+            if label != group
+                && matches!(
+                    dimension,
+                    Dimension::Session | Dimension::Model | Dimension::Project
+                ) =>
+        {
+            format!("{label} ({group})")
+        }
+        (Some(label), _) => label.to_owned(),
+        (None, Some(group)) => group.to_owned(),
+        (None, None) => "none named".to_owned(),
+    }
+}
+
+/// Usage as a sentence says it: its tokens and cost, and, `full`, the kinds
+/// of tokens and how many responses.
 fn amount(totals: &Totals, full: bool) -> String {
-    let tokens = totals.tokens.total();
-    let mut said = format!("{} tokens", prose::tokens(tokens));
-    if full && tokens > 0 {
-        let reads = totals.tokens.cache_read as f64 / tokens as f64 * 100.0;
+    let tokens = &totals.tokens;
+    let mut said = format!("{} tokens", prose::tokens(tokens.total()));
+    if full && tokens.total() > 0 {
+        let mut kinds = vec![
+            format!("{} input", prose::tokens(tokens.input)),
+            format!("{} output", prose::tokens(tokens.output)),
+        ];
+        if tokens.reasoning > 0 {
+            kinds[1].push_str(&format!(
+                " ({} of it reasoning)",
+                prose::tokens(tokens.reasoning)
+            ));
+        }
+        if tokens.cache_read > 0 {
+            kinds.push(format!("{} cache reads", prose::tokens(tokens.cache_read)));
+        }
+        if tokens.cache_write() > 0 {
+            kinds.push(format!(
+                "{} cache writes",
+                prose::tokens(tokens.cache_write())
+            ));
+        }
         said.push_str(&format!(
-            " ({} of them cache reads), {} responses",
-            prose::percent(reads),
-            totals.responses
+            " ({}), {}",
+            kinds.join(", "),
+            prose::count(totals.responses, "response")
         ));
     }
     said.push_str(", ");
