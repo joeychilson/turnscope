@@ -785,17 +785,22 @@ fn state(ledger: &Ledger, recent: &HashSet<String>, now: Instant) -> Result<Vec<
     let since = Instant::from_millis(now.millis() - DAY).unwrap_or(now);
     let mut accounts = Vec::new();
     for account in ledger.accounts()? {
-        let readings = ledger.readings(&account.id, since)?;
+        // Windows told apart as a window's reckoning tells them
+        // (`share::windows`), so pace and shares agree on what one is.
+        let day = share::windows(ledger.readings(&account.id, since)?);
         let mut rising = false;
         let limits = ledger
             .latest_readings(&account.id)?
             .into_iter()
             .map(|latest| {
-                // This window's recent readings: those of the limit whose
-                // reset is the latest's, give or take a countdown's drift.
-                let window: Vec<(Instant, f64)> = readings
+                // This window's recent readings: the last window of the
+                // limit, which ends with its latest reading, if that was
+                // read within the day.
+                let window: Vec<(Instant, f64)> = day
                     .iter()
-                    .filter(|reading| reading.key == latest.key && same_window(reading, &latest))
+                    .rfind(|window| window.first().is_some_and(|first| first.key == latest.key))
+                    .into_iter()
+                    .flatten()
                     .map(|reading| (reading.at, reading.used))
                     .collect();
                 // Rising now: its last two readings of the last hour.
@@ -848,15 +853,6 @@ pub(crate) fn checked_account(account: &str) -> Result<Subscription> {
         what: "account",
         detail: format!("{account:?} is no account's id"),
     })
-}
-
-/// Whether `reading` is of the window `latest` is of.
-fn same_window(reading: &Reading, latest: &Reading) -> bool {
-    match (reading.resets, latest.resets) {
-        (Some(a), Some(b)) => (a.millis() - b.millis()).abs() <= SAME_WINDOW,
-        (None, None) => true,
-        _ => false,
-    }
 }
 
 /// A limit's state from its latest reading and its window's recent readings.
@@ -1038,6 +1034,27 @@ mod tests {
             let pace = accounts[0].limits[0].pace.unwrap();
             assert!((pace - 240.0 / 13.0).abs() < 1e-9, "{pace} at {now}");
         }
+    }
+
+    #[test]
+    fn a_window_whose_reset_drifts_is_paced_on_every_reading_of_it() {
+        let (_dir, mut ledger) = scratch();
+        // Read at minutes 0, 20 and 40, its reset three minutes later each
+        // time: no two reads drift apart by more than five minutes, so all
+        // three are one window, as its shares are reckoned, though the first
+        // and the last are six apart. Fitted over all three, in hours 0, 1/3
+        // and 2/3 at 10%, 20% and 40%: mean 1/3 and 70/3, deviations
+        // squared sum to 2/9, and their products to (1/3)(40/3) + 0 +
+        // (1/3)(50/3) = 10, so 10 / (2/9) = 45 points an hour. The last two
+        // alone would be 60.
+        for (at, used, resets) in [(0, 10.0, 300), (20, 20.0, 303), (40, 40.0, 306)] {
+            ledger
+                .record_limits(Subscription::Claude, &[read(used, resets)], minute(at))
+                .unwrap();
+        }
+        let accounts = state(&ledger, &HashSet::new(), minute(40)).unwrap();
+        let pace = accounts[0].limits[0].pace.unwrap();
+        assert!((pace - 45.0).abs() < 1e-9, "{pace}");
     }
 
     #[test]
