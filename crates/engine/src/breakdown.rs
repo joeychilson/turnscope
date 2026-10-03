@@ -23,7 +23,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::{Error, Result};
 use crate::ledger::{Ledger, optional_instant, unsigned, usd};
-use crate::limits::share::{self, Spent};
+use crate::limits::SAME_WINDOW;
+use crate::limits::share::{self, LimitTrack, Spent};
 use crate::model::ModelKey;
 use crate::session::SessionKey;
 use crate::time::Instant;
@@ -40,6 +41,24 @@ pub struct SessionUsage {
     pub subagents: Vec<SubagentUsage>,
     /// Its share of each window of each limit it took one of.
     pub limits: Vec<LimitShare>,
+}
+
+impl SessionUsage {
+    /// Its share of `account`'s limit `key` in the window `track` draws, as
+    /// [`crate::Engine::limit_window`] gives it: the share of a window that
+    /// resets when it does, give or take a countdown's drift, or, where
+    /// either reset is unknown, that began when it did; of several, the
+    /// latest reckoned. `None` when it took none of that window.
+    pub fn share_in(&self, account: &str, key: &str, track: &LimitTrack) -> Option<&LimitShare> {
+        self.limits
+            .iter()
+            .filter(|share| share.account == account && share.key == key)
+            .filter(|share| match (share.resets, track.resets) {
+                (Some(a), Some(b)) => (a.millis() - b.millis()).abs() <= SAME_WINDOW,
+                _ => share.starts == track.starts,
+            })
+            .max_by_key(|share| share.through)
+    }
 }
 
 /// One prompt of a session.
@@ -344,4 +363,76 @@ fn responses(cache: &Connection, root: i64) -> Result<Vec<Response>> {
         });
     }
     Ok(responses)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LimitShare, SessionUsage};
+    use crate::limits::share::LimitTrack;
+    use crate::time::Instant;
+
+    fn minute(minutes: i64) -> Instant {
+        Instant::from_millis(1_789_000_000_000 + minutes * 60_000).unwrap()
+    }
+
+    /// A share of `share` points of `account`'s five hours, of the window
+    /// from `starts` to `resets`, reckoned through `through`, in minutes.
+    fn share(
+        account: &str,
+        starts: Option<i64>,
+        resets: Option<i64>,
+        through: i64,
+        share: f64,
+    ) -> LimitShare {
+        LimitShare {
+            account: account.to_owned(),
+            key: "five_hour".to_owned(),
+            name: "5 hours".to_owned(),
+            scope: None,
+            starts: starts.map(minute),
+            resets: resets.map(minute),
+            through: minute(through),
+            whole: true,
+            share,
+            prompts: Vec::new(),
+            unprompted: 0.0,
+            subagents: Vec::new(),
+        }
+    }
+
+    fn track(starts: Option<i64>, resets: Option<i64>) -> LimitTrack {
+        LimitTrack {
+            starts: starts.map(minute),
+            resets: resets.map(minute),
+            points: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_share_is_of_the_window_that_resets_when_the_limits_does() {
+        let usage = SessionUsage {
+            limits: vec![
+                // The window before.
+                share("claude:a", Some(-300), Some(0), -10, 1.0),
+                // This one, reckoned twice, its reset moved two minutes by a
+                // countdown between: the later reckoning is the one.
+                share("claude:a", Some(0), Some(300), 100, 2.0),
+                share("claude:a", Some(2), Some(302), 200, 3.0),
+                // Another account's.
+                share("claude:b", Some(0), Some(300), 250, 4.0),
+            ],
+            ..SessionUsage::default()
+        };
+        let in_window = |starts, resets| {
+            usage
+                .share_in("claude:a", "five_hour", &track(starts, resets))
+                .map(|share| share.share)
+        };
+        assert_eq!(in_window(Some(0), Some(300)), Some(3.0));
+        assert_eq!(in_window(Some(-300), Some(0)), Some(1.0));
+        // Of a window whose reset isn't known, the share begun when it did.
+        assert_eq!(in_window(Some(-300), None), Some(1.0));
+        // A window none was taken of.
+        assert_eq!(in_window(Some(300), Some(600)), None);
+    }
 }

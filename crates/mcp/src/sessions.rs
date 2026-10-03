@@ -14,8 +14,8 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use turnscope_engine::{
-    AccountLimits, Filter, Folder, FolderOrigin, Instant, RUNNING, SearchQuery, SessionKey,
-    SessionOrder, SessionQuery, SessionRow,
+    AccountLimits, Filter, Folder, FolderOrigin, Instant, SearchQuery, SessionKey, SessionOrder,
+    SessionQuery, SessionRow,
 };
 
 use crate::accounts;
@@ -137,14 +137,10 @@ pub(crate) fn find(server: &Server, arguments: FindSessions) -> Answer {
     if let Some(agent) = agent {
         filter.agents = vec![agent];
     }
-    // Running now is being active in the last five minutes.
     let running_since = arguments
         .running
         .unwrap_or(false)
-        .then(|| {
-            let quiet = i64::try_from(RUNNING.as_millis()).unwrap_or(i64::MAX);
-            Instant::from_millis(Instant::now().millis().saturating_sub(quiet))
-        })
+        .then(|| turnscope_engine::running_since(Instant::now()))
         .flatten();
     let words = arguments
         .words
@@ -279,8 +275,7 @@ pub(crate) fn figures(server: &Server, row: &SessionRow, accounts: &[AccountLimi
 
 /// Whether `row` is running now.
 pub(crate) fn running(row: &SessionRow) -> bool {
-    row.running_until()
-        .is_some_and(|until| until > Instant::now())
+    row.running(Instant::now())
 }
 
 /// A session on one line, as a sentence says it: `"Title" · Codex · ChatGPT

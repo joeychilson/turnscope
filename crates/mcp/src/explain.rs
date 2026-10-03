@@ -27,8 +27,8 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use turnscope_engine::{
-    AccountLimits, Agent, Instant, LimitShare, LimitState, LimitWindow, ModelKey, SessionKey,
-    SessionRow, Subscription,
+    AccountLimits, Agent, Instant, LimitState, LimitWindow, ModelKey, SessionKey, SessionRow,
+    Subscription,
 };
 
 use crate::accounts;
@@ -42,10 +42,6 @@ const PARTS: usize = 5;
 
 /// How many prompts of a session are told apart.
 const PROMPTS: usize = 8;
-
-/// How near two windows' resets can be and still be one window: a countdown
-/// moves by a few seconds from read to read.
-const SAME_WINDOW: i64 = 5 * 60 * 1000;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -407,7 +403,7 @@ fn by_sessions(
         let breakdown = server.engine.session_usage_without_prompts(key)?;
         let within = breakdown
             .as_ref()
-            .and_then(|breakdown| this_window(&breakdown.limits, account, limit, window));
+            .and_then(|breakdown| breakdown.share_in(&account.id, &limit.key, &window.track));
         let subagents_share: Option<f64> = within.map(|share| share.subagents.iter().sum());
         let model_name = |model: &ModelKey| model_name(&names, model);
         let mut heading = format!(
@@ -525,23 +521,6 @@ fn by_sessions(
     Ok((Value::Array(parts), others(&shares)))
 }
 
-/// Of a session's `shares`, the one of `limit`'s current `window`.
-fn this_window<'a>(
-    shares: &'a [LimitShare],
-    account: &AccountLimits,
-    limit: &LimitState,
-    window: &LimitWindow,
-) -> Option<&'a LimitShare> {
-    shares
-        .iter()
-        .filter(|share| share.account == account.id && share.key == limit.key)
-        .filter(|share| match (share.resets, window.track.resets) {
-            (Some(a), Some(b)) => (a.millis() - b.millis()).abs() <= SAME_WINDOW,
-            _ => share.starts == window.track.starts,
-        })
-        .max_by_key(|share| share.through)
-}
-
 /// One session's share of the window, by prompt and subagent.
 fn session(
     server: &Server,
@@ -556,7 +535,7 @@ fn session(
         .engine
         .session_usage(&row.key)?
         .ok_or_else(|| Failure(format!("No session has the id {:?}.", row.key.to_string())))?;
-    let Some(share) = this_window(&breakdown.limits, account, limit, window) else {
+    let Some(share) = breakdown.share_in(&account.id, &limit.key, &window.track) else {
         said.push(format!(
             "{} took no share of this window.",
             sessions::title(row)

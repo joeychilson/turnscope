@@ -40,8 +40,8 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 use turnscope_engine::{
-    AccountLimits, Engine, Instant, LimitProblem, LimitState, ModelKey, SessionKey, SessionRow,
-    Standing, Subscription,
+    AccountLimits, Engine, Instant, LimitProblem, LimitState, LimitTrack, ModelKey, SessionKey,
+    SessionRow, Standing, Subscription,
 };
 
 use crate::connect::Link;
@@ -365,16 +365,13 @@ fn tell(
                 project: row.project.clone(),
                 agent: key.agent().key(),
                 share: tenths(*share),
-                active: row.active.is_some_and(|active| {
-                    now.millis().saturating_sub(active.millis())
-                        <= i64::try_from(turnscope_engine::RUNNING.as_millis()).unwrap_or(i64::MAX)
-                }),
+                active: row.running(now),
             })
         })
         .collect();
     let advice = match top.first() {
         Some((key, share)) if *share >= SIZEABLE => match rows.get(key) {
-            Some(row) => advise(engine, account, limit, key, row, *share)?,
+            Some(row) => advise(engine, account, limit, &window.track, key, row, *share)?,
             None => None,
         },
         _ => None,
@@ -383,11 +380,13 @@ fn tell(
 }
 
 /// The advice drawn from the session `key`, whose `row` says what it did,
-/// and which took `share` points of `account`'s `limit`.
+/// and which took `share` points of `account`'s `limit` in the window
+/// `track` draws.
 fn advise(
     engine: &Engine,
     account: &AccountLimits,
     limit: &LimitState,
+    track: &LimitTrack,
     key: &SessionKey,
     row: &SessionRow,
     share: f64,
@@ -413,12 +412,7 @@ fn advise(
     let Some(usage) = engine.session_usage_without_prompts(key)? else {
         return Ok(None);
     };
-    let Some(within) = usage
-        .limits
-        .iter()
-        .filter(|part| part.account == account.id && part.key == limit.key)
-        .max_by_key(|part| part.through)
-    else {
+    let Some(within) = usage.share_in(&account.id, &limit.key, track) else {
         return Ok(None);
     };
     let mut by_model: HashMap<&ModelKey, f64> = HashMap::new();

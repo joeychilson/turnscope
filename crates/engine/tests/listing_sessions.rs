@@ -10,7 +10,7 @@ mod history {
 
 use serde_json::{Value, json};
 use turnscope_engine::{
-    Error, Filter, Instant, ModelKey, SessionKey, SessionOrder, SessionQuery, Span,
+    Error, Filter, Instant, ModelKey, SessionKey, SessionOrder, SessionQuery, Span, running_since,
 };
 
 use history::claude_code::{self, response};
@@ -521,6 +521,15 @@ fn a_session_runs_while_anything_within_it_does() {
         .map(|(key, _)| key)
         .collect();
     assert_eq!(keys, [format!("claude-code:{PARENT}")]);
+    // A row says so as the list asks: running five minutes after 12:01:10,
+    // to the millisecond, and not a millisecond later.
+    let row = &engine.sessions(&running).unwrap().items[0];
+    assert!(row.running(at("2026-09-14T12:06:10.000Z")));
+    assert!(!row.running(at("2026-09-14T12:06:10.001Z")));
+    assert_eq!(
+        running_since(at("2026-09-14T12:06:10.000Z")),
+        Some(at("2026-09-14T12:01:10.000Z"))
+    );
 }
 
 #[test]
