@@ -86,7 +86,7 @@ use crate::error::{Error, Result};
 use crate::ledger::Ledger;
 use crate::query::{self, Filter, Page};
 use crate::session::SessionKey;
-use crate::time::{Instant, Span};
+use crate::time::Span;
 use crate::transcript::{Entry, Speaker};
 
 /// How the index and excerpts divide text into words: at anything but letters
@@ -131,8 +131,6 @@ pub struct SearchHit {
     pub session: SessionKey,
     /// How many entries of its conversation matched.
     pub matches: u64,
-    /// When the last of them was said, where known.
-    pub last: Option<Instant>,
 }
 
 /// A line of a conversation showing why it matched a search.

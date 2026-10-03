@@ -329,7 +329,6 @@ impl Ledger {
             "SELECT s.agent, s.native,
                     CASE WHEN count(*) FILTER (WHERE a.present) > 0
                          THEN count(*) FILTER (WHERE a.present) ELSE count(*) END,
-                    max(d.at),
                     coalesce(max(d.at),
                              (SELECT max(coalesce(f.last, f.started)) FROM session_fact f
                               WHERE f.session_id = d.session_id)) AS placed
@@ -356,9 +355,8 @@ impl Ledger {
             let hit = SearchHit {
                 session,
                 matches: unsigned(row.get(2)?, "matches")?,
-                last: optional_instant(row.get(3)?, "said time")?,
             };
-            found.push((hit, row.get(4)?));
+            found.push((hit, row.get(3)?));
         }
         Ok(found)
     }
