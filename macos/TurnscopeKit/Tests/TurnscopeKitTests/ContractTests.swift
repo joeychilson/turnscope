@@ -26,7 +26,7 @@ import Testing
     #expect(feed.accounts[2].problem == .signIn)
     #expect(feed.accounts[3].hidden)
     #expect(feed.accounts.map(\.apiKey) == [false, false, false, true])
-    #expect(feed.agents.map(\.status) == [.connected, .available, .outdated, .unsupported])
+    #expect(feed.agents.map(\.status) == [.connected, .available, .outdated, .available])
     #expect(feed.agents.map(\.logo) == ["providers/anthropic", "providers/openai", "providers/opencode", "agents/pi"])
     #expect(feed.reads.map(\.name) == ["Claude Code", "Codex", "OpenCode", "Pi", "Grok Build"])
     #expect(feed.accounts[0].agents.map(\.name) == ["Claude Code"])

@@ -4,11 +4,18 @@
 //! **Status.** Whether an agent has the server is read from where it keeps
 //! its MCP servers, every time it is asked, as those files are small and
 //! agents change them: Claude Code's `~/.claude.json`, Codex's
-//! `config.toml` in `$CODEX_HOME` or `~/.codex`, OpenCode's
-//! `~/.config/opencode/opencode.json`, and Grok's `~/.grok/config.toml`.
-//! An agent has it when its entry named `turnscope` runs this binary; one
-//! that runs another, as a copy since moved or a build from a checkout, is
-//! out of date. Pi has no MCP support, by its design.
+//! `~/.codex/config.toml`, OpenCode's `~/.config/opencode/opencode.json`,
+//! Pi's `~/.pi/agent/mcp.json`, and Grok's `~/.grok/config.toml`. An agent
+//! is installed when its folder is there. Claude Code, Codex and Pi can be
+//! pointed at another folder ([`Agent::folder_variable`]), and their own
+//! commands then add servers there, so a folder the variable names is
+//! looked at in place of their own, for both: Claude Code keeps
+//! `.claude.json` in such a folder rather than in the home (seen
+//! 2026-10-03, `claude mcp add --scope user` with `CLAUDE_CONFIG_DIR`
+//! set). An agent has the server when its entry named `turnscope` runs this
+//! binary; one that runs another, as a copy since moved or a build from a
+//! checkout, is out of date. Pi has taken MCP servers since 1.0, with `pi
+//! mcp add`; an older Pi's connecting fails, saying why.
 //!
 //! **Connecting.** Turnscope never writes an agent's files itself: the
 //! person's click runs the agent's own command for adding an MCP server,
@@ -82,38 +89,66 @@ pub(crate) enum Status {
     Outdated,
     /// It has no entry for Turnscope.
     Available,
-    /// It can't use MCP servers.
-    Unsupported,
 }
 
-/// Where agents keep their MCP servers: the home directory, and Codex's
-/// folder, which `CODEX_HOME` can move out of it.
+/// Where agents keep their MCP servers: the home directory, and the folders
+/// agents' variables point them at instead of their own.
 pub(crate) struct Configs {
     home: PathBuf,
-    codex: PathBuf,
+    moved: Vec<(Agent, PathBuf)>,
 }
 
 impl Configs {
-    /// The home `home`, and Codex's folder as the environment says: where
-    /// `CODEX_HOME` names one, or else in the home.
+    /// The home `home`, with the folders the environment's variables
+    /// ([`Agent::folder_variable`]) point agents at, where they are set.
     pub(crate) fn of(home: &Path) -> Configs {
-        Configs::at(home, std::env::var_os("CODEX_HOME").map(PathBuf::from))
+        let moved = Agent::ALL
+            .into_iter()
+            .filter_map(|agent| {
+                let folder = std::env::var_os(agent.folder_variable()?)?;
+                (!folder.is_empty()).then(|| (agent, PathBuf::from(folder)))
+            })
+            .collect();
+        Configs::at(home, moved)
     }
 
-    /// The home `home`, and Codex's folder `codex`, or else in the home.
-    fn at(home: &Path, codex: Option<PathBuf>) -> Configs {
+    /// The home `home`, with agents pointed at the folders `moved` names.
+    fn at(home: &Path, moved: Vec<(Agent, PathBuf)>) -> Configs {
         Configs {
             home: home.to_path_buf(),
-            codex: codex.unwrap_or_else(|| home.join(".codex")),
+            moved,
         }
+    }
+
+    /// The folder `agent` is pointed at, where its variable names one.
+    fn moved(&self, agent: Agent) -> Option<&Path> {
+        self.moved
+            .iter()
+            .find(|(moved, _)| *moved == agent)
+            .map(|(_, folder)| folder.as_path())
+    }
+
+    /// Where `agent` keeps its files: the folder it is pointed at, or else
+    /// its own in the home.
+    fn folder(&self, agent: Agent) -> PathBuf {
+        self.moved(agent).map_or_else(
+            || {
+                self.home.join(match agent {
+                    Agent::ClaudeCode => ".claude",
+                    Agent::Codex => ".codex",
+                    Agent::OpenCode => ".config/opencode",
+                    Agent::Pi => ".pi/agent",
+                    Agent::Grok => ".grok",
+                })
+            },
+            Path::to_path_buf,
+        )
     }
 }
 
 /// How to connect an agent: named as the engine names it.
 struct Connector {
     agent: Agent,
-    /// Its folder in the home, whose presence says it is installed.
-    folder: &'static str,
     /// Its command, and the arguments that add a stdio server named
     /// [`NAME`] before the command to run it.
     command: &'static str,
@@ -124,10 +159,9 @@ struct Connector {
     registered: fn(&Configs) -> Option<String>,
 }
 
-const CONNECTORS: [Connector; 4] = [
+const CONNECTORS: [Connector; 5] = [
     Connector {
         agent: Agent::ClaudeCode,
-        folder: ".claude",
         command: "claude",
         add: &["mcp", "add", "--scope", "user", NAME, "--"],
         remove: Some(&["mcp", "remove", "--scope", "user", NAME]),
@@ -135,7 +169,6 @@ const CONNECTORS: [Connector; 4] = [
     },
     Connector {
         agent: Agent::Codex,
-        folder: ".codex",
         command: "codex",
         add: &["mcp", "add", NAME, "--"],
         remove: Some(&["mcp", "remove", NAME]),
@@ -143,7 +176,6 @@ const CONNECTORS: [Connector; 4] = [
     },
     Connector {
         agent: Agent::OpenCode,
-        folder: ".config/opencode",
         command: "opencode",
         add: &["mcp", "add", "--global", NAME, "--"],
         remove: None,
@@ -151,22 +183,27 @@ const CONNECTORS: [Connector; 4] = [
     },
     Connector {
         agent: Agent::Grok,
-        folder: ".grok",
         command: "grok",
         add: &["mcp", "add", "--scope", "user", NAME],
         remove: None,
         registered: grok,
+    },
+    Connector {
+        agent: Agent::Pi,
+        command: "pi",
+        add: &["mcp", "add", NAME, "--"],
+        remove: None,
+        registered: pi,
     },
 ];
 
 /// The agents installed in the home of `configs`, and whether each runs
 /// `binary` as its Turnscope server.
 pub(crate) fn links(configs: &Configs, binary: &Path) -> Vec<Link> {
-    let home = &configs.home;
     let binary = binary.to_string_lossy();
-    let mut links: Vec<Link> = CONNECTORS
+    CONNECTORS
         .iter()
-        .filter(|connector| home.join(connector.folder).is_dir())
+        .filter(|connector| configs.folder(connector.agent).is_dir())
         .map(|connector| Link {
             id: connector.agent.key(),
             name: connector.agent.name(),
@@ -177,16 +214,7 @@ pub(crate) fn links(configs: &Configs, binary: &Path) -> Vec<Link> {
                 None => Status::Available,
             },
         })
-        .collect();
-    if home.join(".pi").is_dir() {
-        links.push(Link {
-            id: Agent::Pi.key(),
-            name: Agent::Pi.name(),
-            logo: logo(Agent::Pi),
-            status: Status::Unsupported,
-        });
-    }
-    links
+        .collect()
 }
 
 /// Add the server that runs `binary` to the agent `id`, with its own
@@ -252,7 +280,6 @@ pub(crate) fn command(mut args: impl Iterator<Item = String>) -> Result<(), Fail
                     Status::Connected => "connected",
                     Status::Outdated => "runs another copy of Turnscope",
                     Status::Available => "not connected",
-                    Status::Unsupported => "can't use MCP servers",
                 };
                 said.push_str(&format!("{} ({}): {status}\n", link.name, link.id));
             }
@@ -373,23 +400,19 @@ fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> mpsc::Receiver<Ve
 
 /// The command Claude Code's user-wide entry runs.
 fn claude(configs: &Configs) -> Option<String> {
-    let json = read_json(&configs.home.join(".claude.json"))?;
-    json.get("mcpServers")?
-        .get(NAME)?
-        .get("command")?
-        .as_str()
-        .map(str::to_owned)
+    let folder = configs.moved(Agent::ClaudeCode).unwrap_or(&configs.home);
+    servers_command(&folder.join(".claude.json"))
 }
 
 /// The command Codex's entry runs.
 fn codex(configs: &Configs) -> Option<String> {
-    toml_command(&configs.codex.join("config.toml"))
+    toml_command(&configs.folder(Agent::Codex).join("config.toml"))
 }
 
 /// The command OpenCode's global entry runs, where its configuration keeps
 /// servers under `mcp`, or `mcp.servers`.
 fn opencode(configs: &Configs) -> Option<String> {
-    let json = read_json(&configs.home.join(".config/opencode/opencode.json"))?;
+    let json = read_json(&configs.folder(Agent::OpenCode).join("opencode.json"))?;
     let mcp = json.get("mcp")?;
     let entry = mcp
         .get(NAME)
@@ -399,7 +422,23 @@ fn opencode(configs: &Configs) -> Option<String> {
 
 /// The command Grok's user-wide entry runs.
 fn grok(configs: &Configs) -> Option<String> {
-    toml_command(&configs.home.join(".grok/config.toml"))
+    toml_command(&configs.folder(Agent::Grok).join("config.toml"))
+}
+
+/// The command Pi's user-wide entry runs.
+fn pi(configs: &Configs) -> Option<String> {
+    servers_command(&configs.folder(Agent::Pi).join("mcp.json"))
+}
+
+/// The `command` of Turnscope's entry under `mcpServers` in the JSON file at
+/// `path`, as Claude Code and Pi keep their servers.
+fn servers_command(path: &Path) -> Option<String> {
+    let json = read_json(path)?;
+    json.get("mcpServers")?
+        .get(NAME)?
+        .get("command")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 fn read_json(path: &Path) -> Option<serde_json::Value> {
@@ -431,6 +470,8 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
     use std::time::{Duration, Instant};
+
+    use turnscope_engine::Agent;
 
     use super::{Configs, Status, connect_with, links, locate, marked_path, run};
 
@@ -586,8 +627,13 @@ mod tests {
             ".codex/config.toml",
             "[mcp_servers.node_repl]\ncommand = \"node\"\n",
         );
-        std::fs::create_dir_all(home.join(".pi")).unwrap();
-        let status: Vec<(&str, Status)> = links(&Configs::at(home, None), this)
+        // Pi, as `pi mcp add` 1.0.1 writes it, runs this one.
+        write(
+            home,
+            ".pi/agent/mcp.json",
+            "{\n  \"mcpServers\": {\n    \"turnscope\": {\n      \"command\": \"/Applications/Turnscope.app/Contents/Helpers/turnscope\",\n      \"args\": [\n        \"mcp\"\n      ]\n    }\n  }\n}\n",
+        );
+        let status: Vec<(&str, Status)> = links(&Configs::at(home, Vec::new()), this)
             .into_iter()
             .map(|link| (link.id, link.status))
             .collect();
@@ -598,40 +644,86 @@ mod tests {
                 ("codex", Status::Available),
                 ("opencode", Status::Outdated),
                 ("grok", Status::Connected),
-                ("pi", Status::Unsupported),
+                ("pi", Status::Connected),
             ]
         );
     }
 
     #[test]
-    fn codex_moved_by_codex_home_is_read_where_it_was_moved() {
+    fn an_agent_pointed_at_another_folder_is_read_there() {
+        // Claude Code, Codex and Pi pointed at folders of their own, each
+        // with an entry running this copy as its own command writes it, and
+        // none of their folders in the home.
         let home = tempfile::tempdir().unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
         let this = Path::new("/t");
-        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
-        // The home's own folder has no entry; the one CODEX_HOME names runs
-        // this copy.
+        let folder = |name: &str| elsewhere.path().join(name);
         write(
-            elsewhere.path(),
+            &folder("claude"),
+            ".claude.json",
+            r#"{"mcpServers": {"turnscope": {"type": "stdio", "command": "/t", "args": ["mcp"]}}}"#,
+        );
+        write(
+            &folder("codex"),
             "config.toml",
             "[mcp_servers.turnscope]\ncommand = \"/t\"\n",
         );
-        let status = |codex: Option<std::path::PathBuf>| {
-            links(&Configs::at(home.path(), codex), this)
+        write(
+            &folder("pi"),
+            "mcp.json",
+            r#"{"mcpServers": {"turnscope": {"command": "/t", "args": ["mcp"]}}}"#,
+        );
+        let moved = vec![
+            (Agent::ClaudeCode, folder("claude")),
+            (Agent::Codex, folder("codex")),
+            (Agent::Pi, folder("pi")),
+        ];
+        let status = |moved: Vec<(Agent, std::path::PathBuf)>| {
+            links(&Configs::at(home.path(), moved), this)
                 .into_iter()
                 .map(|link| (link.id, link.status))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(status(None), [("codex", Status::Available)]);
         assert_eq!(
-            status(Some(elsewhere.path().to_path_buf())),
-            [("codex", Status::Connected)]
+            status(moved.clone()),
+            [
+                ("claude-code", Status::Connected),
+                ("codex", Status::Connected),
+                ("pi", Status::Connected),
+            ]
+        );
+        // Not pointed anywhere, none is installed.
+        assert_eq!(status(Vec::new()), []);
+        // Their own folders there, with no entry, are passed over for the
+        // folders they are pointed at.
+        for own in [".claude", ".codex", ".pi/agent"] {
+            std::fs::create_dir_all(home.path().join(own)).unwrap();
+        }
+        write(home.path(), ".claude.json", r#"{"mcpServers": {}}"#);
+        assert_eq!(
+            status(moved),
+            [
+                ("claude-code", Status::Connected),
+                ("codex", Status::Connected),
+                ("pi", Status::Connected),
+            ]
+        );
+        assert_eq!(
+            status(Vec::new()),
+            [
+                ("claude-code", Status::Available),
+                ("codex", Status::Available),
+                ("pi", Status::Available),
+            ]
         );
     }
 
     #[test]
     fn an_agent_not_installed_is_not_listed() {
         let home = tempfile::tempdir().unwrap();
-        assert_eq!(links(&Configs::at(home.path(), None), Path::new("/t")), []);
+        assert_eq!(
+            links(&Configs::at(home.path(), Vec::new()), Path::new("/t")),
+            []
+        );
     }
 }

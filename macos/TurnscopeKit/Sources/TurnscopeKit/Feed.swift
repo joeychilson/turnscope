@@ -19,7 +19,7 @@ public struct Feed: Decodable, Equatable, Sendable {
     public var reads: [AgentName]
 
     /// The feed's version this app reads.
-    public static let version = 11
+    public static let version = 12
 }
 
 /// An agent, wherever the feed names one.
@@ -142,7 +142,7 @@ public struct AgentLink: Decodable, Equatable, Identifiable, Sendable {
         case connected
         /// It runs another copy, as one since moved.
         case outdated
-        case available, unsupported
+        case available
     }
 
     public var id: String

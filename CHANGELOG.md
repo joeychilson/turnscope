@@ -8,6 +8,8 @@ released.
 
 ## [Unreleased]
 
+- Pi can use Turnscope too: connect it from Settings › Agents. Pi takes
+  MCP servers from version 1.0 on.
 - Turnscope's answers take agents about a quarter of the room they did.
   Claude Code, OpenCode and Grok Build, like Codex, gave their models the
   figures behind each answer whenever there were any, so 0.2.0's shorter
