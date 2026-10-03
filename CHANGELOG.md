@@ -8,6 +8,11 @@ released.
 
 ## [Unreleased]
 
+- Turnscope's answers take agents about a quarter of the room they did.
+  Claude Code, OpenCode and Grok Build, like Codex, gave their models the
+  figures behind each answer whenever there were any, so 0.2.0's shorter
+  answers never reached them. Now every agent gets the sentences alone.
+
 ## [0.2.0]
 
 - Turnscope tells you when a week or a month resets early, as when a

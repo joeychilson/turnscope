@@ -43,13 +43,13 @@ use jiff::tz::TimeZone;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use turnscope_engine::{
-    AccountLimits, Instant, LimitProblem, LimitState, SessionRow, Standing, Subscription,
+    AccountLimits, Instant, LimitProblem, LimitState, SessionRow, Subscription,
 };
 
 use crate::accounts;
 use crate::prose;
 use crate::time;
-use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, rounded, shape};
+use crate::tools::{Answer, Failure, Reply, Server, account_schema, object, rounded};
 
 /// How long a reading stands as current: three times the five minutes the
 /// app, or a server nothing keeps current, waits between reads, so one slow
@@ -82,90 +82,6 @@ pub(crate) fn schema() -> Value {
             "all": {"type": "boolean", "description": "Include accounts no agent is using now."},
         }),
         &[],
-    )
-}
-
-pub(crate) fn output_schema() -> Value {
-    let limit = shape(
-        json!({
-            "limit": {"type": "string", "description": "Its name, as the limit argument takes it."},
-            "key": {"type": "string"},
-            "model": {"type": ["string", "null"]},
-            "left_percent": {"type": ["number", "null"], "description": "Null when its window reset since it was read."},
-            "resets_at": {"type": ["string", "null"]},
-            "runs_out_at": {"type": ["string", "null"], "description": "When it runs out at the recent pace, if before it resets."},
-            "left_at_reset": {"type": ["number", "null"], "description": "The percent left at the reset at the recent pace, if it lasts."},
-            "rising_per_hour": {"type": ["number", "null"]},
-            "lasting_per_hour": {"type": ["number", "null"], "description": "The fastest it can rise, in points an hour, and still last until it resets: what is left over the time to the reset."},
-            "reserve": {"type": ["number", "null"], "description": "Points of it to spare against spending it evenly through its window until it resets, as of its reading; below zero, how far ahead of that it is used."},
-            "read_at": {"type": "string"},
-            "stale": {"type": "boolean"},
-            "why_stale": {"type": "string"},
-            "under": {"type": ["boolean", "null"]},
-            "standing": {"type": "string", "enum": Standing::ALL.map(Standing::key), "description": "used_up; running_out, when at the recent pace it runs out a while before it resets; or lasts."},
-        }),
-        &[
-            "limit",
-            "key",
-            "left_percent",
-            "resets_at",
-            "read_at",
-            "stale",
-            "standing",
-        ],
-    );
-    let account = shape(
-        json!({
-            "id": {"type": "string"},
-            "name": {"type": "string"},
-            "subscription": {"type": "string"},
-            "plan": {"type": ["string", "null"]},
-            "label": {"type": ["string", "null"]},
-            "agents": {"type": "array", "items": {"type": "string"}},
-            "yours": {"type": "boolean"},
-            "signed_in": {"type": "boolean"},
-            "in_use": {"type": "boolean"},
-            "problem": {"type": ["string", "null"]},
-            "standing": {"type": "string", "enum": Standing::ALL.map(Standing::key), "description": "As its most urgent limit stands."},
-            "tightest": {"type": ["string", "null"], "description": "The limit that matters most now: one used up, else the one that runs out soonest, else the one with least left."},
-            "limits": {"type": "array", "items": limit},
-            "provider": {"type": "string", "description": "An API key's provider, as usage names it."},
-        }),
-        &[
-            "id",
-            "name",
-            "subscription",
-            "agents",
-            "yours",
-            "standing",
-            "limits",
-        ],
-    );
-    let you = shape(
-        json!({
-            "agent": {"type": ["string", "null"]},
-            "folder": {"type": ["string", "null"]},
-            "account": {"type": ["string", "null"]},
-            "account_unknown": {"type": "string"},
-            "session": {"type": ["string", "null"]},
-        }),
-        &["agent", "folder", "account", "session"],
-    );
-    shape(
-        json!({
-            "you": you,
-            "accounts": {"type": "array", "items": account},
-            "below": shape(
-                json!({
-                    "percent": {"type": "number"},
-                    "status": {"type": "string", "enum": ["under", "not_under", "unknown"]},
-                    "why": {"type": "string"},
-                }),
-                &["percent", "status"],
-            ),
-            "read_failed": {"type": "string"},
-        }),
-        &["you", "accounts"],
     )
 }
 

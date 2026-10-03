@@ -14,10 +14,10 @@
 //! answered, and neither are responses, since the server asks nothing.
 //!
 //! A session starts with `initialize`, which names the revision the client
-//! speaks; its capabilities go unchecked, since nothing the server does
-//! depends on them (see [`negotiate`]), and who it is only decides whether
-//! it is given structured content ([`takes_structured`]). Until `initialize` has
-//! been answered only `ping` is served; after, `initialize` is refused, since
+//! speaks; its capabilities and who it is go unchecked, since nothing the
+//! server does depends on them (see [`negotiate`]), though they are given
+//! to the server a session is handed over to. Until `initialize` has been
+//! answered only `ping` is served; after, `initialize` is refused, since
 //! a session is negotiated once. Requests are served from `initialize`'s
 //! answer on, whether or not `notifications/initialized` has come: what that
 //! notification gates is requests from the server, which sends none.
@@ -30,17 +30,22 @@
 //! (`prompts/list`, `prompts/get`), which change only when an update replaces
 //! this program while it runs: the session is then handed over to the new
 //! one, which the client is told lists them again ([`crate::handover`]).
-//! A tool's answer is text, its sentences, which are the whole answer; to a
-//! client speaking 2025-06-18 or later, which takes structured content, its
-//! figures also come as `structuredContent`, as the tool's `outputSchema`
-//! describes them, with the sentences among them as `said`. Clients give
-//! their model one or the other, never both: Claude Code the text, and Codex
-//! the structured content alone. So the text says the answer once, rather
-//! than repeating the figures after it (which, until 2026-10-03, came to 70%
-//! to 85% of every answer's text); and a client known to give its model the
-//! structured content alone is answered as one before structured content
-//! was, so that its model reads the same text rather than the figures with
-//! the text among them, which came to three times as much.
+//! A tool's answer is text, its sentences, which are the whole answer, and
+//! nothing else: no structured content, and no tool declares an output
+//! schema, in any revision. Every agent that connects gives its model a
+//! tool's structured content wherever there is some, so figures sent beside
+//! the sentences are figures its model reads, at three to four times the
+//! sentences' length. Seen 2026-10-03: Claude Code 2.1.288 serializes it as
+//! the result and drops the text (in its code, and in a session's
+//! transcript, eight answers given to its model as 36,667 characters, whose
+//! sentences came to 10,179); Codex does the same
+//! (`codex-rs/protocol/src/models.rs`, whose test calls the text
+//! "ignored"); OpenCode 2.0.8, whose models call tools from code, is given
+//! the structured content as the call's value (in its code, and in a
+//! session's history); and Grok Build 1.0.41 gives its model the text and
+//! then the structured content (in a headless session). Until 2026-10-03
+//! the text also repeated the figures after the sentences, which came to
+//! 70% to 85% of it.
 
 use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
@@ -57,20 +62,8 @@ use crate::tools::{self, Server, Tool};
 ///
 /// What the server offers, tools that take arguments and answer text, and
 /// prompts, is in all four, and what later revisions added to it, such as
-/// titles and annotations, are fields earlier clients pass over. Structured
-/// content, which 2025-06-18 added, is given only from it on
-/// ([`STRUCTURED_FROM`]).
+/// titles and annotations, are fields earlier clients pass over.
 const REVISIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-
-/// The first revision that takes a tool's output schema and structured
-/// content. Revisions are dates, so later ones sort after it.
-const STRUCTURED_FROM: &str = "2025-06-18";
-
-/// Clients, by the name their `initialize` gives, that give their model a
-/// tool's structured content in place of its text: Codex
-/// (`codex-rs/protocol/src/models.rs` on 2026-10-03, whose test calls the
-/// text "ignored").
-const STRUCTURED_ALONE: [&str; 1] = ["codex-mcp-client"];
 
 /// The longest message read, in bytes. Every request the tools take is far
 /// shorter; a longer line is refused without being held in memory.
@@ -112,7 +105,6 @@ pub fn serve(
         program: program.and_then(Program::at),
         options,
         client: None,
-        structured: false,
     };
     let mut line = Vec::new();
     loop {
@@ -155,9 +147,6 @@ struct Session<'a> {
     /// with: `None` until it has been answered, which every request but
     /// `ping` waits for.
     client: Option<(Map<String, Value>, &'static str)>,
-    /// Whether the revision spoken takes tools' output schemas and
-    /// structured content.
-    structured: bool,
 }
 
 impl Session<'_> {
@@ -244,7 +233,6 @@ impl Session<'_> {
             "initialize" => {
                 let revision =
                     negotiate(&params).map_err(|reason| (INVALID_PARAMS, reason.into()))?;
-                self.structured = takes_structured(&params, revision);
                 self.client = Some((params, revision));
                 Ok(json!({
                     "protocolVersion": revision,
@@ -265,7 +253,7 @@ impl Session<'_> {
                 format!("{method} waits for initialize, which starts a session"),
             )),
             "tools/list" => Ok(json!({
-                "tools": Tool::ALL.map(|tool| tool.describe(self.structured)),
+                "tools": Tool::ALL.map(Tool::describe),
             })),
             "prompts/list" => Ok(json!({
                 "prompts": Prompt::ALL.map(Prompt::describe),
@@ -306,18 +294,10 @@ impl Session<'_> {
                     .call(&name, arguments)
                     .ok_or_else(|| (INVALID_PARAMS, format!("there is no tool named {name}")))?;
                 Ok(match answer {
-                    Ok(reply) => {
-                        // Only a tool with an output schema answers figures.
-                        let data = reply.structured().filter(|_| self.structured);
-                        let mut result = json!({
-                            "content": [{"type": "text", "text": reply.compact()}],
-                            "isError": false,
-                        });
-                        if let Some(data) = data {
-                            result["structuredContent"] = data;
-                        }
-                        result
-                    }
+                    Ok(reply) => json!({
+                        "content": [{"type": "text", "text": reply.compact()}],
+                        "isError": false,
+                    }),
                     Err(failure) => json!({
                         "content": [{"type": "text", "text": failure.0}],
                         "isError": true,
@@ -410,18 +390,6 @@ fn is_id(id: &Value) -> bool {
         Value::Number(number) => number.is_i64() || number.is_u64(),
         _ => false,
     }
-}
-
-/// Whether a client whose `initialize` gave `params`, speaking `revision`, is
-/// given tools' output schemas and structured content: from the revision
-/// that has them on, but for a client that gives its model the structured
-/// content alone ([`STRUCTURED_ALONE`]), whose model reads the text instead.
-fn takes_structured(params: &Map<String, Value>, revision: &str) -> bool {
-    let name = params
-        .get("clientInfo")
-        .and_then(|client| client.get("name"))
-        .and_then(Value::as_str);
-    revision >= STRUCTURED_FROM && !name.is_some_and(|name| STRUCTURED_ALONE.contains(&name))
 }
 
 /// The revision to speak with a client whose `initialize` gave `params`: the
