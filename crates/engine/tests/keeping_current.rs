@@ -12,7 +12,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use turnscope_engine::{Change, Engine, Filter, Span, UsageQuery, Zone};
+use turnscope_engine::{Change, Engine, UsageQuery, Zone};
 
 use history::claude_code;
 use history::growing::append;
@@ -43,12 +43,7 @@ fn wait_for_session(changes: &mpsc::Receiver<Change>) -> Duration {
 }
 
 fn output(engine: &Engine) -> u64 {
-    let question = UsageQuery {
-        span: Span::default(),
-        filter: Filter::default(),
-        by: None,
-        every: None,
-    };
+    let question = UsageQuery::default();
     engine
         .usage(&question, &Zone::system())
         .unwrap()

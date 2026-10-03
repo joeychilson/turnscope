@@ -70,7 +70,7 @@ pub use crate::error::{Error, Result};
 pub use crate::folders::{Folder, FolderOrigin};
 pub use crate::handoff::{Command, FileChange, Goal, Handoff, Quote, Step, StepStatus};
 pub use crate::health::{
-    AgentHealth, Check, Comparison, Diagnostic, Difference, Doctor, Health, Prices, Pricing,
+    AgentHealth, Check, Comparison, Diagnostic, Difference, Doctor, Health, PriceSource, Pricing,
     Unpriced,
 };
 pub use crate::ingest::ScanReport;

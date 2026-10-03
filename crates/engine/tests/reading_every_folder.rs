@@ -68,7 +68,8 @@ fn a_second_accounts_folder_is_read_and_its_sessions_taken_up_there() {
         )],
     );
     // Claude Code pointed at ~/.claude-work by CLAUDE_CONFIG_DIR keeps its
-    // history there, and whose sign-in it holds in .claude.json beside it.
+    // history there, and notes which account is signed in in .claude.json
+    // inside it.
     write(
         &claude_log(&work, "work"),
         &[response(

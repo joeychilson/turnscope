@@ -16,7 +16,6 @@
 use std::collections::BTreeMap;
 
 use crate::agent::{Agent, ReportScope, SessionReport};
-use crate::cache::QUARTER;
 use crate::model::ModelKey;
 use crate::session::{SessionKey, Tree};
 use crate::time::Instant;
@@ -85,7 +84,7 @@ impl Shown {
     /// Add a response the transcripts show.
     fn add(&mut self, served: (&str, &str), at: Instant, tokens: &Tokens, recorded: Option<Usd>) {
         self.tokens.add(tokens);
-        let quarter = self.quarters.entry(quarter(at)).or_default();
+        let quarter = self.quarters.entry(at.quarter()).or_default();
         *quarter = quarter.saturating_add(tokens.total());
         if self
             .served
@@ -283,7 +282,7 @@ pub(crate) fn outside(
                 .into_iter()
                 .find(|quarters| !quarters.is_empty())
                 .map_or_else(
-                    || vec![(when.map(quarter), 1)],
+                    || vec![(when.map(Instant::quarter), 1)],
                     |quarters| {
                         quarters
                             .iter()
@@ -361,14 +360,6 @@ fn default_provider(agent: Agent) -> &'static str {
         Agent::Grok => "xai",
         Agent::OpenCode | Agent::Pi => "",
     }
-}
-
-/// The start of the quarter hour `at` falls in: the grain of the rollup,
-/// and of usage outside the conversation. The first quarter hour `jiff`
-/// represents begins before the earliest instant it does, and usage then is
-/// placed at its own instant.
-fn quarter(at: Instant) -> Instant {
-    Instant::from_millis(at.millis().div_euclid(QUARTER) * QUARTER).unwrap_or(at)
 }
 
 /// `total` split in proportion to `weights`, in whole parts that add up to

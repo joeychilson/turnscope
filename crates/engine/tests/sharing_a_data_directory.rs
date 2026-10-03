@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use turnscope_engine::{Change, Engine, Filter, SearchQuery, SessionQuery, Span, UsageQuery, Zone};
+use turnscope_engine::{Change, Engine, SearchQuery, SessionQuery, UsageQuery, Zone};
 
 use history::claude_code;
 use history::growing::append;
@@ -131,12 +131,7 @@ fn remove_cache(home: &Home) {
 
 /// Every token out of all history, as `engine` answers.
 fn output(engine: &Engine) -> u64 {
-    let question = UsageQuery {
-        span: Span::default(),
-        filter: Filter::default(),
-        by: None,
-        every: None,
-    };
+    let question = UsageQuery::default();
     engine
         .usage(&question, &Zone::system())
         .unwrap()

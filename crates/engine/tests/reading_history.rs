@@ -728,7 +728,7 @@ fn table(engine: &Engine, span: Span, filter: Filter, by: Option<Dimension>) -> 
         span,
         filter,
         by,
-        every: None,
+        ..UsageQuery::default()
     };
     engine.usage(&question, &Zone::system()).unwrap()
 }
@@ -1031,10 +1031,9 @@ fn answers(engine: &Engine) -> Vec<String> {
     let mut lines = Vec::new();
     for by in [Dimension::Session, Dimension::Model] {
         let question = UsageQuery {
-            span: Span::default(),
-            filter: Filter::default(),
             by: Some(by),
             every: Some(Bucket::Hour),
+            ..UsageQuery::default()
         };
         let table = engine.usage(&question, &zone).unwrap();
         lines.extend(table.rows.iter().map(|row| format!("{row:?}")));
@@ -1249,10 +1248,8 @@ fn usage_outside_a_conversation_at_no_time_known_counts_in_all_time_and_in_no_sp
     assert_eq!(total(&setup.engine, ages).outside, 0);
     // By month over all time, it is in the total and in no month.
     let question = UsageQuery {
-        span: Span::default(),
-        filter: Filter::default(),
-        by: None,
         every: Some(Bucket::Month),
+        ..UsageQuery::default()
     };
     let table = setup.engine.usage(&question, &Zone::system()).unwrap();
     assert_eq!(table.total.outside, 329_351);

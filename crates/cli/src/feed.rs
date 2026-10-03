@@ -327,8 +327,7 @@ fn standing(standing: Standing) -> &'static str {
 
 /// An instant as the feed writes it: RFC 3339 in UTC, to the second.
 pub(crate) fn time(at: Instant) -> String {
-    jiff::Timestamp::from_second(at.millis().div_euclid(1000))
-        .map_or_else(|_| String::new(), |at| at.to_string())
+    at.timestamp().strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 /// A percent to a tenth of a point.
@@ -449,11 +448,20 @@ mod tests {
 
     use turnscope_engine::{AccountLimits, Agent, Instant, LimitProblem, LimitState, Subscription};
 
-    use super::{Advice, Told, Used, assemble};
+    use super::{Advice, Told, Used, assemble, time};
     use crate::connect::{Link, Status};
 
     fn at(text: &str) -> Instant {
         Instant::parse(text).unwrap()
+    }
+
+    #[test]
+    fn a_time_is_written_to_the_second_it_falls_in() {
+        assert_eq!(time(at("2026-09-14T12:00:00.999Z")), "2026-09-14T12:00:00Z");
+        assert_eq!(
+            time(at("2026-09-14T07:00:00-05:00")),
+            "2026-09-14T12:00:00Z"
+        );
     }
 
     /// A limit read at 12:00, `used` percent used and rising `pace` points

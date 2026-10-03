@@ -25,7 +25,7 @@
 //! What changed goes to every subscriber as a [`Change`]. A line an agent
 //! writes reached subscribers in about 190 ms on 2026-09-23.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -86,10 +86,6 @@ const READ_LIMITS: Duration = Duration::from_secs(5 * 60);
 
 /// Where the catalog is fetched from.
 const MODELS_DEV: &str = "https://models.dev/api.json";
-
-/// The share of the models the last catalog priced that a new catalog must
-/// still price, or it is taken to be broken: nine in ten.
-const KEPT: (usize, usize) = (9, 10);
 
 /// A check of models.dev for new prices.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,7 +219,7 @@ impl Engine {
                 Err(error) => (CatalogOutcome::Refused, error.to_string()),
                 Ok(catalog) => {
                     let last = stored.as_ref().map(|stored| &stored.catalog);
-                    if let Some(reason) = last.and_then(|last| dropped(last, &catalog)) {
+                    if let Some(reason) = last.and_then(|last| catalog.dropped_from(last)) {
                         (CatalogOutcome::Refused, reason)
                     } else {
                         let mut ledger = self.writing()?;
@@ -261,28 +257,6 @@ impl Engine {
         self.writing()?.note_check(&check)?;
         Ok(check)
     }
-}
-
-/// Why `catalog` looks broken beside `last`, the catalog taken in before, if
-/// it does: it no longer prices nine in ten of the models `last` priced, by
-/// provider and model. A listing cut short keeps some providers whole and
-/// drops others, which a count of models alone can miss.
-fn dropped(last: &Catalog, catalog: &Catalog) -> Option<String> {
-    fn priced(catalog: &Catalog) -> HashSet<(&str, &str)> {
-        catalog
-            .models()
-            .filter(|(_, _, model)| model.prices.is_some())
-            .map(|(provider, id, _)| (provider, id))
-            .collect()
-    }
-    let before = priced(last);
-    let kept = before.intersection(&priced(catalog)).count();
-    (kept.saturating_mul(KEPT.1) < before.len().saturating_mul(KEPT.0)).then(|| {
-        format!(
-            "it prices {kept} of the {} models the last catalog priced",
-            before.len()
-        )
-    })
 }
 
 /// Something that changed in what the engine answers.
@@ -1005,47 +979,14 @@ fn guarded<T>(engine: &Engine, what: &str, work: impl FnOnce() -> T) -> Option<T
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::Duration;
 
-    use serde_json::json;
-
-    use std::path::PathBuf;
-
-    use super::{Failing, Seen, dropped, due, remaining, to_watch};
-    use crate::catalog::Catalog;
+    use super::{Failing, Seen, due, remaining, to_watch};
     use crate::time::Instant;
 
     fn second(seconds: i64) -> Instant {
         Instant::from_millis(1_789_000_000_000 + seconds * 1_000).unwrap()
-    }
-
-    /// A catalog pricing each of `models`, by provider and model.
-    fn pricing(models: impl IntoIterator<Item = (&'static str, String)>) -> Catalog {
-        let mut listing = json!({});
-        for (provider, model) in models {
-            listing[provider]["models"][model] = json!({"cost": {"input": 1, "output": 2}});
-        }
-        Catalog::parse(listing.to_string().as_bytes()).unwrap()
-    }
-
-    #[test]
-    fn a_catalog_must_still_price_nine_in_ten_of_the_models_priced_before() {
-        let claude = |n: u8| ("anthropic", format!("claude-{n}"));
-        let gpt = |name: &str| ("openai", name.to_owned());
-        let last = pricing((0..10).map(claude));
-        // Nine of the ten, and another.
-        let nine = pricing((0..9).map(claude).chain([gpt("gpt-6")]));
-        assert_eq!(dropped(&last, &nine), None);
-        // As many models, but two of the ten gone for two others, which a
-        // count of them would take.
-        let eight = pricing((0..8).map(claude).chain([gpt("gpt-6"), gpt("gpt-6-mini")]));
-        assert_eq!(
-            dropped(&last, &eight).as_deref(),
-            Some("it prices 8 of the 10 models the last catalog priced")
-        );
-        // The same models from another provider are other listings.
-        let resold = pricing((0..10).map(|n| ("amazon-bedrock", format!("claude-{n}"))));
-        assert!(dropped(&last, &resold).is_some());
     }
 
     /// What a look saw: sign-ins `sign_ins`, the last read with `1`, at

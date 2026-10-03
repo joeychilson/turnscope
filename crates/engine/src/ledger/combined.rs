@@ -1,8 +1,11 @@
 //! Reading what the artifacts said, combined: each response with its
 //! reports, each session with what every artifact says of it, the links
 //! between sessions, agents' own totals, what was said, for search, and the
-//! project each directory belonged to. Combining is order-independent, in
-//! SQL as in the cache's own versions of each rule.
+//! project each directory belonged to; and, for the doctor, how much of each
+//! agent's history the ledger holds and the trouble found reading it.
+//! Combining is order-independent, in SQL as in the cache's own versions of
+//! each rule. An agent this build doesn't know, as a newer build's, is
+//! passed over.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -12,11 +15,29 @@ use rusqlite::{OptionalExtension, params, params_from_iter};
 use super::{
     Ledger, among_pairs, instant, optional_instant, pairs, session_at, session_pairs, unsigned, usd,
 };
-use crate::agent::{Agent, ModelTotal, ReportScope, SessionReport};
+use crate::agent::{Agent, DiagnosticKind, ModelTotal, ReportScope, SessionReport};
 use crate::error::{Error, Result};
 use crate::search::{self, SearchHit};
 use crate::session::{LinkKind, SessionFacts, SessionKey, Title, TitleSource};
 use crate::usage::{Response, Tokens};
+
+/// Trouble one artifact recorded reading it, as [`crate::agent::Batch`]
+/// notes it.
+#[derive(Clone, Debug)]
+pub(crate) struct Noted {
+    /// The agent whose artifact it is.
+    pub agent: Agent,
+    /// What kind of trouble.
+    pub kind: DiagnosticKind,
+    /// What exactly, as the reader put it.
+    pub detail: String,
+    /// How many times reading the artifact found it.
+    pub count: u64,
+    /// The artifact.
+    pub path: PathBuf,
+    /// The byte offset where it was first found.
+    pub first: u64,
+}
 
 /// A session, with what every artifact says of it combined.
 #[derive(Clone, Debug)]
@@ -34,6 +55,91 @@ pub(crate) struct SessionRecord {
     /// it is the same in whatever order they were read; `None` when none is
     /// left in the ledger.
     pub artifact: Option<PathBuf>,
+}
+
+impl Ledger {
+    /// How many artifacts of each agent the ledger holds, and how many of
+    /// them are no longer where they were.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Ledger`] when the ledger cannot be read, and
+    /// [`Error::Corrupt`] when a stored value is out of range.
+    pub(crate) fn artifact_counts(&self) -> Result<Vec<(Agent, u64, u64)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT agent, count(*), coalesce(sum(present = 0), 0) FROM artifact GROUP BY agent",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut counts = Vec::new();
+        while let Some(row) = rows.next()? {
+            if let Some(agent) = Agent::from_key(&row.get::<_, String>(0)?) {
+                counts.push((
+                    agent,
+                    unsigned(row.get(1)?, "artifacts")?,
+                    unsigned(row.get(2)?, "artifacts absent")?,
+                ));
+            }
+        }
+        Ok(counts)
+    }
+
+    /// How many sessions of each agent something is known of: its facts, or
+    /// a response in it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Ledger`] when the ledger cannot be read, and
+    /// [`Error::Corrupt`] when a stored value is out of range.
+    pub(crate) fn session_counts(&self) -> Result<Vec<(Agent, u64)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT s.agent, count(*) FROM session s
+             WHERE EXISTS (SELECT 1 FROM session_fact f WHERE f.session_id = s.id)
+                OR EXISTS (SELECT 1 FROM observation o WHERE o.session_id = s.id)
+             GROUP BY s.agent",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut counts = Vec::new();
+        while let Some(row) = rows.next()? {
+            if let Some(agent) = Agent::from_key(&row.get::<_, String>(0)?) {
+                counts.push((agent, unsigned(row.get(1)?, "sessions")?));
+            }
+        }
+        Ok(counts)
+    }
+
+    /// The trouble every artifact recorded reading it, by the artifact's
+    /// path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Ledger`] when the ledger cannot be read, and
+    /// [`Error::Corrupt`] when a stored value is out of range or a kind of
+    /// trouble is none this build knows.
+    pub(crate) fn noted(&self) -> Result<Vec<Noted>> {
+        let mut statement = self.connection.prepare(
+            "SELECT a.agent, d.kind, d.detail, d.count, a.path, d.first
+             FROM diagnostic d JOIN artifact a ON a.id = d.artifact_id
+             ORDER BY a.path",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut noted = Vec::new();
+        while let Some(row) = rows.next()? {
+            let Some(agent) = Agent::from_key(&row.get::<_, String>(0)?) else {
+                continue;
+            };
+            let kind: String = row.get(1)?;
+            noted.push(Noted {
+                agent,
+                kind: DiagnosticKind::from_key(&kind)
+                    .ok_or_else(|| Error::corrupt("diagnostic kind", &kind))?,
+                detail: row.get(2)?,
+                count: unsigned(row.get(3)?, "diagnostic count")?,
+                path: PathBuf::from(row.get::<_, String>(4)?),
+                first: unsigned(row.get(5)?, "diagnostic offset")?,
+            });
+        }
+        Ok(noted)
+    }
 }
 
 impl Ledger {

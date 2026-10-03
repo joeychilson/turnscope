@@ -24,7 +24,7 @@ impl Instant {
     pub fn from_millis(millis: i64) -> Option<Instant> {
         jiff::Timestamp::from_millisecond(millis)
             .ok()
-            .map(|at| Instant(at.as_millisecond()))
+            .map(Instant::from)
     }
 
     /// The instant `seconds` after the epoch, when it lies within the years
@@ -32,15 +32,13 @@ impl Instant {
     pub(crate) fn from_seconds(seconds: i64) -> Option<Instant> {
         jiff::Timestamp::from_second(seconds)
             .ok()
-            .map(|at| Instant(at.as_millisecond()))
+            .map(Instant::from)
     }
 
     /// Read RFC 3339 text such as `2026-09-14T08:09:23.404Z`, keeping whole
     /// milliseconds. Text with no offset names no instant and is refused.
     pub fn parse(text: &str) -> Option<Instant> {
-        text.parse::<jiff::Timestamp>()
-            .ok()
-            .map(|at| Instant(at.as_millisecond()))
+        text.parse::<jiff::Timestamp>().ok().map(Instant::from)
     }
 
     /// The start of a UTC day written `2026-07-24`, or of a month written
@@ -51,27 +49,51 @@ impl Instant {
             7 => format!("{text}-01").parse().ok()?,
             _ => return None,
         };
-        let at = date.to_zoned(jiff::tz::TimeZone::UTC).ok()?.timestamp();
-        Some(Instant(at.as_millisecond()))
+        Some(Instant::from(
+            date.to_zoned(jiff::tz::TimeZone::UTC).ok()?.timestamp(),
+        ))
     }
 
     /// Now, by the system clock.
     pub fn now() -> Instant {
-        Instant(jiff::Timestamp::now().as_millisecond())
+        Instant::from(jiff::Timestamp::now())
     }
 
     /// Milliseconds since the epoch.
     pub const fn millis(self) -> i64 {
         self.0
     }
+
+    /// This instant as `jiff` keeps one, which every instant can be, as
+    /// each lies within its range.
+    pub fn timestamp(self) -> Timestamp {
+        Timestamp::from_millisecond(self.0).expect("every instant lies within jiff's range")
+    }
+}
+
+impl From<Timestamp> for Instant {
+    /// The instant `at` is, to the whole millisecond toward the epoch.
+    fn from(at: Timestamp) -> Instant {
+        Instant(at.as_millisecond())
+    }
 }
 
 impl fmt::Display for Instant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match jiff::Timestamp::from_millisecond(self.0) {
-            Ok(at) => write!(f, "{at}"),
-            Err(_) => write!(f, "{}ms", self.0),
-        }
+        write!(f, "{}", self.timestamp())
+    }
+}
+
+/// A quarter hour, in milliseconds: the grain of the cache's rollup, and of
+/// usage outside the conversation.
+pub(crate) const QUARTER: i64 = 15 * 60 * 1000;
+
+impl Instant {
+    /// The start of the quarter hour this falls in. The first quarter hour
+    /// `jiff` represents begins before the earliest instant it does, and
+    /// that instant is its own quarter hour's start.
+    pub(crate) fn quarter(self) -> Instant {
+        Instant::from_millis(self.0.div_euclid(QUARTER) * QUARTER).unwrap_or(self)
     }
 }
 
@@ -91,10 +113,8 @@ impl Zone {
     }
 
     /// The local moment `at` falls in.
-    fn local(&self, at: Instant) -> Option<Zoned> {
-        Timestamp::from_millisecond(at.millis())
-            .ok()
-            .map(|at| at.to_zoned(self.0.clone()))
+    fn local(&self, at: Instant) -> Zoned {
+        at.timestamp().to_zoned(self.0.clone())
     }
 }
 
@@ -154,7 +174,7 @@ fn offset_changes(zone: &Zone, change: &jiff::tz::TimeZoneTransition) -> bool {
 /// the buckets [`next`] steps through come from this one rule, so every
 /// instant falls in a bucket.
 pub(crate) fn start_of(every: Bucket, at: Instant, zone: &Zone) -> Option<Instant> {
-    let local = zone.local(at)?;
+    let local = zone.local(at);
     let start = match every {
         Bucket::Hour => {
             let whole = at.millis() - past_the_hour(&local);
@@ -176,7 +196,7 @@ pub(crate) fn start_of(every: Bucket, at: Instant, zone: &Zone) -> Option<Instan
         }
         Bucket::Month => local.first_of_month().ok()?.start_of_day().ok()?,
     };
-    Instant::from_millis(start.timestamp().as_millisecond())
+    Some(Instant::from(start.timestamp()))
 }
 
 /// The start of the local `every` after the one starting at `start`.
@@ -185,11 +205,10 @@ pub(crate) fn next(every: Bucket, start: Instant, zone: &Zone) -> Option<Instant
         Bucket::Hour => {
             // The next whole hour on the clock as it reads now, or the next
             // change of offset before it.
-            let whole = start.millis() - past_the_hour(&zone.local(start)?) + 3_600_000;
-            let from = Timestamp::from_millisecond(start.millis()).ok()?;
+            let whole = start.millis() - past_the_hour(&zone.local(start)) + 3_600_000;
             let changed = zone
                 .0
-                .following(from)
+                .following(start.timestamp())
                 .take_while(|change| change.timestamp().as_millisecond() < whole)
                 .find(|change| offset_changes(zone, change))
                 .map(|change| change.timestamp().as_millisecond());
@@ -199,24 +218,20 @@ pub(crate) fn next(every: Bucket, start: Instant, zone: &Zone) -> Option<Instant
         Bucket::Week => 1.week(),
         Bucket::Month => 1.month(),
     };
-    let later = zone.local(start)?.checked_add(step).ok()?;
-    start_of(
-        every,
-        Instant::from_millis(later.timestamp().as_millisecond())?,
-        zone,
-    )
+    let later = zone.local(start).checked_add(step).ok()?;
+    start_of(every, Instant::from(later.timestamp()), zone)
 }
 
 /// The latest local Monday at 9 AM at or before `at`, in `zone`: when the
 /// weekly recap is due. Where the clocks skip 9 AM that Monday, the moment
 /// they read after it.
 pub(crate) fn monday_morning(at: Instant, zone: &Zone) -> Option<Instant> {
-    let local = zone.local(at)?;
+    let local = zone.local(at);
     let back = i64::from(local.weekday().to_monday_zero_offset());
     let monday = local.date().checked_sub(back.days()).ok()?;
     let morning = |date: jiff::civil::Date| {
         let zoned = date.at(9, 0, 0, 0).to_zoned(zone.0.clone()).ok()?;
-        Instant::from_millis(zoned.timestamp().as_millisecond())
+        Some(Instant::from(zoned.timestamp()))
     };
     let this = morning(monday)?;
     if this <= at {

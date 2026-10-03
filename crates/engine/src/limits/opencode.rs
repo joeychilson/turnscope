@@ -99,16 +99,10 @@ fn parse(body: &Value) -> Option<PlanLimits> {
 
 /// A calendar month before `at`, in UTC, however long that month was.
 fn month_before(at: Instant) -> Option<Instant> {
-    let zoned = jiff::Timestamp::from_millisecond(at.millis())
-        .ok()?
-        .to_zoned(jiff::tz::TimeZone::UTC);
-    Instant::from_millis(
-        zoned
-            .checked_sub(1.month())
-            .ok()?
-            .timestamp()
-            .as_millisecond(),
-    )
+    let zoned = at.timestamp().to_zoned(jiff::tz::TimeZone::UTC);
+    Some(Instant::from(
+        zoned.checked_sub(1.month()).ok()?.timestamp(),
+    ))
 }
 
 #[cfg(test)]

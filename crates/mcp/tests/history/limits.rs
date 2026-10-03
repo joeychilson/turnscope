@@ -78,13 +78,6 @@ pub fn from_now(now: Instant, minutes: i64) -> Instant {
     Instant::from_millis(now.millis() + minutes * 60_000).unwrap()
 }
 
-/// The time `at`, as agents write one.
-pub fn stamp(at: Instant) -> String {
-    jiff::Timestamp::from_millisecond(at.millis())
-        .unwrap()
-        .to_string()
-}
-
 /// A limit `name`d, with `key`, `used` percent, from `starts` to `resets`.
 fn limit(
     key: &str,
@@ -192,7 +185,7 @@ fn record(engine: &Engine, now: Instant) {
 fn sessions(home: &Path, now: Instant) {
     let reply = |session: &str, agent: Option<&str>, minutes: i64, id: &str, usage: Value| {
         let mut line = json!({"type": "assistant", "sessionId": session,
-            "timestamp": stamp(from_now(now, minutes)), "cwd": format!("/work/{}", if session == ALPHA { "alpha" } else { "beta" }),
+            "timestamp": from_now(now, minutes).to_string(), "cwd": format!("/work/{}", if session == ALPHA { "alpha" } else { "beta" }),
             "requestId": format!("req_{id}"),
             "message": {"id": format!("msg_{id}"), "model": "claude-opus-5", "role": "assistant",
                         "usage": usage, "content": [{"type": "text", "text": "Done."}]}});
@@ -203,7 +196,7 @@ fn sessions(home: &Path, now: Instant) {
         line
     };
     let prompt = |session: &str, minutes: i64, text: &str| {
-        json!({"type": "user", "sessionId": session, "timestamp": stamp(from_now(now, minutes)),
+        json!({"type": "user", "sessionId": session, "timestamp": from_now(now, minutes).to_string(),
                "cwd": format!("/work/{}", if session == ALPHA { "alpha" } else { "beta" }),
                "message": {"role": "user", "content": text}})
     };
@@ -246,7 +239,7 @@ fn sessions(home: &Path, now: Instant) {
         )),
         &[
             json!({"type": "user", "sessionId": BETA, "agentId": HELPER, "isSidechain": true,
-                   "timestamp": stamp(from_now(now, -26)), "cwd": "/work/beta",
+                   "timestamp": from_now(now, -26).to_string(), "cwd": "/work/beta",
                    "message": {"role": "user", "content": "Find the normals"}}),
             reply(
                 BETA,

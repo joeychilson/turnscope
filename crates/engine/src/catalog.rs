@@ -35,7 +35,7 @@
 //! prices of its own: `gpt-6-astra` costs $20 input and $100 output a million
 //! at priority, against $10 and $50.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -188,6 +188,10 @@ pub enum CatalogError {
 /// fewer than this is a partial or broken download.
 const FEWEST_PRICED: usize = 1_000;
 
+/// The share of the models the last catalog priced that a new catalog must
+/// still price, or it is taken to be broken: nine in ten.
+const KEPT: (usize, usize) = (9, 10);
+
 impl Catalog {
     /// The catalog that ships inside the app, as of its build.
     pub(crate) fn bundled() -> Catalog {
@@ -324,6 +328,29 @@ impl Catalog {
             .filter(|model| model.prices.is_some())
             .count()
     }
+
+    /// Why this catalog looks broken beside `last`, the catalog taken in
+    /// before, if it does: it no longer prices nine in ten of the models
+    /// `last` priced, by provider and model. A listing cut short keeps some
+    /// providers whole and drops others, which a count of models alone, as
+    /// [`Catalog::from_models_dev`] checks, can miss.
+    pub(crate) fn dropped_from(&self, last: &Catalog) -> Option<String> {
+        fn priced(catalog: &Catalog) -> HashSet<(&str, &str)> {
+            catalog
+                .models()
+                .filter(|(_, _, model)| model.prices.is_some())
+                .map(|(provider, id, _)| (provider, id))
+                .collect()
+        }
+        let before = priced(last);
+        let kept = before.intersection(&priced(self)).count();
+        (kept.saturating_mul(KEPT.1) < before.len().saturating_mul(KEPT.0)).then(|| {
+            format!(
+                "it prices {kept} of the {} models the last catalog priced",
+                before.len()
+            )
+        })
+    }
 }
 
 /// What models are called, from a catalog.
@@ -437,6 +464,35 @@ mod tests {
             .as_object()
             .unwrap()
             .clone()
+    }
+
+    /// A catalog pricing each of `models`, by provider and model.
+    fn pricing(models: impl IntoIterator<Item = (&'static str, String)>) -> Catalog {
+        let mut listing = json!({});
+        for (provider, model) in models {
+            listing[provider]["models"][model] = json!({"cost": {"input": 1, "output": 2}});
+        }
+        Catalog::parse(listing.to_string().as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn a_catalog_must_still_price_nine_in_ten_of_the_models_priced_before() {
+        let claude = |n: u8| ("anthropic", format!("claude-{n}"));
+        let gpt = |name: &str| ("openai", name.to_owned());
+        let last = pricing((0..10).map(claude));
+        // Nine of the ten, and another.
+        let nine = pricing((0..9).map(claude).chain([gpt("gpt-6")]));
+        assert_eq!(nine.dropped_from(&last), None);
+        // As many models, but two of the ten gone for two others, which a
+        // count of them would take.
+        let eight = pricing((0..8).map(claude).chain([gpt("gpt-6"), gpt("gpt-6-mini")]));
+        assert_eq!(
+            eight.dropped_from(&last).as_deref(),
+            Some("it prices 8 of the 10 models the last catalog priced")
+        );
+        // The same models from another provider are other listings.
+        let resold = pricing((0..10).map(|n| ("amazon-bedrock", format!("claude-{n}"))));
+        assert!(resold.dropped_from(&last).is_some());
     }
 
     #[test]

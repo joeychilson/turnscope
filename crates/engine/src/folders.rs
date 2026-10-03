@@ -1,8 +1,8 @@
 //! Where each agent keeps its history and its sign-ins: its folders.
 //!
 //! An agent keeps both in one folder of its own: Claude Code in `~/.claude`,
-//! with whose sign-in it holds in `~/.claude.json` and the sign-in itself in
-//! the Keychain; Codex in `~/.codex`; OpenCode in `~/.local/share/opencode`;
+//! noting which account is signed in in `~/.claude.json` and keeping the
+//! sign-in itself in the Keychain; Codex in `~/.codex`; OpenCode in `~/.local/share/opencode`;
 //! Pi in `~/.pi/agent`; Grok Build in `~/.grok`. Claude Code, Codex and Pi
 //! can each be pointed at another folder, by the variable
 //! [`Agent::folder_variable`] names, and that is how a second account of one

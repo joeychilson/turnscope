@@ -17,8 +17,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use crate::agent::{Agent, DiagnosticKind};
-use crate::error::{Error, Result};
-use crate::ledger::{Ledger, unsigned};
+use crate::error::Result;
+use crate::ledger::Ledger;
 use crate::model::ModelKey;
 use crate::outside::{self, Counts, Transcripts};
 use crate::price::{self, Basis, PriceBook, Priceable};
@@ -60,12 +60,12 @@ pub struct Doctor {
     /// agent itself says it cost.
     pub pricing: Vec<Pricing>,
     /// Where the prices come from.
-    pub prices: Prices,
+    pub prices: PriceSource,
 }
 
 /// Where the prices come from.
 #[derive(Clone, Debug)]
-pub struct Prices {
+pub struct PriceSource {
     /// When the catalog prices are taken from was read from models.dev.
     pub as_of: Option<Instant>,
     /// Where it came from: `bundled` with the app, or `models.dev`.
@@ -223,7 +223,6 @@ pub struct Check {
 
 /// Put together a report on the ledger, pricing usage from `book`.
 pub(crate) fn doctor(ledger: &Ledger, book: &PriceBook) -> Result<Doctor> {
-    let connection = ledger.connection();
     let mut agents: BTreeMap<Agent, AgentHealth> = BTreeMap::new();
     let health = |agent: Agent| -> AgentHealth {
         AgentHealth {
@@ -238,33 +237,16 @@ pub(crate) fn doctor(ledger: &Ledger, book: &PriceBook) -> Result<Doctor> {
         }
     };
 
-    let mut statement = connection
-        .prepare("SELECT agent, count(*), sum(present = 0) FROM artifact GROUP BY agent")?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let Some(agent) = Agent::from_key(&row.get::<_, String>(0)?) else {
-            continue;
-        };
+    for (agent, artifacts, absent) in ledger.artifact_counts()? {
         let entry = agents.entry(agent).or_insert_with(|| health(agent));
-        entry.artifacts = count(row.get(1)?)?;
-        entry.absent = count(row.get(2)?)?;
+        entry.artifacts = artifacts;
+        entry.absent = absent;
     }
-
-    let mut statement = connection.prepare(
-        "SELECT s.agent, count(*) FROM session s
-         WHERE EXISTS (SELECT 1 FROM session_fact f WHERE f.session_id = s.id)
-            OR EXISTS (SELECT 1 FROM observation o WHERE o.session_id = s.id)
-         GROUP BY s.agent",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let Some(agent) = Agent::from_key(&row.get::<_, String>(0)?) else {
-            continue;
-        };
+    for (agent, sessions) in ledger.session_counts()? {
         agents
             .entry(agent)
             .or_insert_with(|| health(agent))
-            .sessions = count(row.get(1)?)?;
+            .sessions = sessions;
     }
 
     // Each response once, its reports combined as everything else combines
@@ -279,37 +261,21 @@ pub(crate) fn doctor(ledger: &Ledger, book: &PriceBook) -> Result<Doctor> {
         entry.web_searches = entry.web_searches.saturating_add(response.web_searches);
     }
 
-    let mut statement = connection.prepare(
-        "SELECT a.agent, d.kind, d.detail, d.count, a.path, d.first
-         FROM diagnostic d JOIN artifact a ON a.id = d.artifact_id
-         ORDER BY a.path",
-    )?;
-    let mut rows = statement.query([])?;
     let mut diagnostics: BTreeMap<(Agent, DiagnosticKind, String), Diagnostic> = BTreeMap::new();
-    while let Some(row) = rows.next()? {
-        let Some(agent) = Agent::from_key(&row.get::<_, String>(0)?) else {
-            continue;
-        };
-        let kind_key: String = row.get(1)?;
-        let kind = DiagnosticKind::from_key(&kind_key)
-            .ok_or_else(|| Error::corrupt("diagnostic kind", &kind_key))?;
-        let detail: String = row.get(2)?;
-        let times = count(row.get(3)?)?;
-        let path: String = row.get(4)?;
-        let offset = count(row.get(5)?)?;
+    for noted in ledger.noted()? {
         diagnostics
-            .entry((agent, kind, detail.clone()))
+            .entry((noted.agent, noted.kind, noted.detail.clone()))
             .and_modify(|seen| {
-                seen.count = seen.count.saturating_add(times);
+                seen.count = seen.count.saturating_add(noted.count);
                 seen.artifacts += 1;
             })
             .or_insert(Diagnostic {
-                kind,
-                detail,
-                count: times,
+                kind: noted.kind,
+                detail: noted.detail,
+                count: noted.count,
                 artifacts: 1,
-                example: PathBuf::from(path),
-                offset,
+                example: noted.path,
+                offset: noted.first,
             });
     }
     for ((agent, _, _), diagnostic) in diagnostics {
@@ -328,7 +294,7 @@ pub(crate) fn doctor(ledger: &Ledger, book: &PriceBook) -> Result<Doctor> {
     let checks = checks(ledger, &responses)?;
     let pricing = pricing(&responses, &checks, book);
     let stored = ledger.catalog()?;
-    let prices = Prices {
+    let prices = PriceSource {
         as_of: stored.as_ref().and_then(|stored| stored.catalog.as_of()),
         source: stored.map(|stored| stored.source),
         checked: ledger.last_check()?,
@@ -508,9 +474,4 @@ fn checks(ledger: &Ledger, responses: &[Response]) -> Result<Vec<Check>> {
         }
     }
     Ok(checks)
-}
-
-/// A stored count; a sum over no rows is zero.
-fn count(value: Option<i64>) -> Result<u64> {
-    unsigned(value.unwrap_or(0), "count")
 }

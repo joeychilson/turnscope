@@ -40,7 +40,7 @@ pub(crate) fn moment(text: &str, end: End, now: Timestamp, zone: &TimeZone) -> O
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let text = text.to_lowercase();
     if text == "now" {
-        return instant(now);
+        return Some(Instant::from(now));
     }
     let today = now.to_zoned(zone.clone()).date();
     if let Some((first, after)) = stretch(&text, today) {
@@ -48,7 +48,7 @@ pub(crate) fn moment(text: &str, end: End, now: Timestamp, zone: &TimeZone) -> O
             End::Since => first,
             End::Until => after,
         };
-        return instant(day.to_zoned(zone.clone()).ok()?.timestamp());
+        return Some(Instant::from(day.to_zoned(zone.clone()).ok()?.timestamp()));
     }
     if let Some(back) = span_back(&text) {
         let then = match back {
@@ -59,14 +59,16 @@ pub(crate) fn moment(text: &str, end: End, now: Timestamp, zone: &TimeZone) -> O
                 .ok()?
                 .timestamp(),
         };
-        return instant(then);
+        return Some(Instant::from(then));
     }
     if let Ok(exact) = text.parse::<Timestamp>() {
-        return instant(exact);
+        return Some(Instant::from(exact));
     }
     // A time without an offset is the person's own clock's.
     let local = text.parse::<DateTime>().ok()?;
-    instant(local.to_zoned(zone.clone()).ok()?.timestamp())
+    Some(Instant::from(
+        local.to_zoned(zone.clone()).ok()?.timestamp(),
+    ))
 }
 
 /// The stretch of the calendar `text` names, seen from `today`: its first
@@ -188,10 +190,6 @@ fn span_back(text: &str) -> Option<Back> {
     jiff::SignedDuration::try_from_mins(count.checked_mul(minutes)?).map(Back::Exact)
 }
 
-fn instant(at: Timestamp) -> Option<Instant> {
-    Instant::from_millis(at.as_millisecond())
-}
-
 /// `at` in `zone`, as `2026-09-23T14:03:05-05:00`.
 pub(crate) fn local(at: Instant, zone: &TimeZone) -> String {
     written(at, zone, "%Y-%m-%dT%H:%M:%S%:z")
@@ -203,12 +201,9 @@ pub(crate) fn short(at: Instant, zone: &TimeZone) -> String {
 }
 
 fn written(at: Instant, zone: &TimeZone, format: &str) -> String {
-    match Timestamp::from_millisecond(at.millis()) {
-        Ok(at) => Zoned::new(at, zone.clone()).strftime(format).to_string(),
-        // The engine's instants all lie in jiff's range; were one not to, its
-        // count is still exact.
-        Err(_) => format!("{} ms after 1970", at.millis()),
-    }
+    Zoned::new(at.timestamp(), zone.clone())
+        .strftime(format)
+        .to_string()
 }
 
 #[cfg(test)]

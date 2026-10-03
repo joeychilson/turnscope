@@ -340,7 +340,7 @@ fn usage_is_told_apart_and_kept_to_the_account_it_drew_on() {
                     span,
                     filter: filter.clone(),
                     by: Some(Dimension::Account),
-                    every: None,
+                    ..UsageQuery::default()
                 },
                 &Zone::named("UTC").unwrap(),
             )
