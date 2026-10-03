@@ -75,14 +75,11 @@ struct Notice {
 /// How an account's week went, for the recap.
 #[derive(Serialize)]
 struct Week {
-    account: String,
     title: String,
+    /// What tells the account apart from another of the same title.
     label: Option<String>,
-    limit: String,
     /// The most of it used, in percent, which can be above 100.
     used: f64,
-    /// When it was used up, if it was.
-    used_up_at: Option<String>,
     /// The project that took most of it here.
     project: Option<String>,
 }
@@ -297,12 +294,9 @@ impl Watch {
         let weeks = weeks
             .iter()
             .map(|week| Week {
-                account: week.account.clone(),
                 title: week.title.clone(),
                 label: week.label.clone(),
-                limit: week.limit.clone(),
                 used: week.window.used,
-                used_up_at: week.window.reached.map(feed::time),
                 project: week.project.clone(),
             })
             .collect();
@@ -412,12 +406,9 @@ mod tests {
                 left: Some(20.0),
             }),
             Out::Recap(vec![Week {
-                account: "claude:a".into(),
                 title: "Claude Max".into(),
                 label: Some("joey@example.com".into()),
-                limit: "Weekly".into(),
                 used: 84.0,
-                used_up_at: None,
                 project: Some("atlas".into()),
             }]),
             Out::Reply {

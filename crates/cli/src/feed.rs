@@ -48,7 +48,7 @@ use crate::connect::Link;
 
 /// The feed's version, which `contract/feed.json` carries: raised with
 /// every change to its shape.
-pub(crate) const VERSION: u32 = 7;
+pub(crate) const VERSION: u32 = 8;
 
 /// How many sessions that used a window are named.
 const NAMED: usize = 3;
@@ -88,6 +88,9 @@ pub(crate) struct Account {
     pub(crate) agents: Vec<&'static str>,
     pub(crate) in_use: bool,
     pub(crate) hidden: bool,
+    /// Whether it is an API-key account, its provider's keys, rather than
+    /// a subscription.
+    pub(crate) api_key: bool,
     /// Why its limits can't be read now, if they can't.
     pub(crate) problem: Option<&'static str>,
     pub(crate) standing: &'static str,
@@ -247,6 +250,7 @@ fn shown(account: &AccountLimits, told: Told) -> Account {
         agents: account.agents.iter().map(|agent| agent.key()).collect(),
         in_use: account.in_use,
         hidden: account.hidden,
+        api_key: account.subscription == Subscription::ApiKey,
         problem: account.problem.map(problem),
         standing: account.standing().key(),
         deciding: account.deciding().map(|limit| limit.key.clone()),

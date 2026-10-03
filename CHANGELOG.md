@@ -32,6 +32,8 @@ released.
   every agent, rather than failing to open for some.
 - A Claude Code session's handoff counts the lines it wrote over a file
   with, as it does for every other agent.
+- The Monday recap tells two accounts of one plan apart, as the panel does,
+  rather than naming both, say, Claude Max.
 
 ## [0.1.2]
 

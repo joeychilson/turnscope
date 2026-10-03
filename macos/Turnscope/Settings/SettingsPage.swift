@@ -206,8 +206,8 @@ private struct AccountsTab: View {
     @Environment(Store.self) private var store
 
     var body: some View {
-        let keys = store.all.filter { $0.id.hasPrefix("api:") }
-        let subscriptions = store.all.filter { !$0.id.hasPrefix("api:") }
+        let keys = store.all.filter(\.apiKey)
+        let subscriptions = store.all.filter { !$0.apiKey }
         VStack(alignment: .leading, spacing: 18) {
             Text("Found in your agents' sign-ins and keys, which Turnscope only reads. A key two agents share is one account.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)

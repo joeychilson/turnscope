@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "at": "2026-09-30T12:00:00Z",
   "reading": false,
   "accounts": [
@@ -13,6 +13,7 @@
       ],
       "in_use": true,
       "hidden": false,
+      "api_key": false,
       "problem": null,
       "standing": "running_out",
       "deciding": "five_hour",
@@ -70,6 +71,7 @@
       ],
       "in_use": false,
       "hidden": false,
+      "api_key": false,
       "problem": null,
       "standing": "lasts",
       "deciding": "primary_window",
@@ -102,6 +104,7 @@
       ],
       "in_use": false,
       "hidden": false,
+      "api_key": false,
       "problem": "sign_in",
       "standing": "lasts",
       "deciding": null,
@@ -120,6 +123,7 @@
       ],
       "in_use": false,
       "hidden": true,
+      "api_key": true,
       "problem": null,
       "standing": "lasts",
       "deciding": null,
