@@ -198,11 +198,12 @@ pub(crate) fn session_usage(
     }
 
     let mut usage = SessionUsage::default();
-    let place = |response: &Response| -> Option<usize> {
-        if response.session == root {
-            response.spent.at.and_then(prompt_at)
+    // The prompt a response of `session` at `at` answered.
+    let place = |session: i64, at: Option<Instant>| -> Option<usize> {
+        if session == root {
+            at.and_then(prompt_at)
         } else {
-            prompt_of.get(&response.session).copied().flatten()
+            prompt_of.get(&session).copied().flatten()
         }
     };
     // Each subagent's own tokens by model.
@@ -245,10 +246,10 @@ pub(crate) fn session_usage(
     }
 
     // Shares of limits, each response's part summed as its usage was.
-    let spent: Vec<Spent> = responses
-        .iter()
-        .map(|response| response.spent.clone())
-        .collect();
+    let (sessions, spent): (Vec<i64>, Vec<Spent>) = responses
+        .into_iter()
+        .map(|response| (response.session, response.spent))
+        .unzip();
     let subagent_place: HashMap<i64, usize> = subagents
         .iter()
         .enumerate()
@@ -269,17 +270,17 @@ pub(crate) fn session_usage(
             unprompted: 0.,
             subagents: vec![0.; subagents.len()],
         };
-        for (response, part) in responses.iter().zip(shared.each) {
+        for ((session, response), part) in sessions.iter().zip(&spent).zip(shared.each) {
             if part <= 0. {
                 continue;
             }
             limit.share += part;
-            let prompt = place(response);
+            let prompt = place(*session, response.at);
             match prompt.and_then(|index| limit.prompts.get_mut(index)) {
                 Some(prompt) => *prompt += part,
                 None => limit.unprompted += part,
             }
-            if let Some(place) = subagent_place.get(&response.session) {
+            if let Some(place) = subagent_place.get(session) {
                 limit.subagents[*place] += part;
             }
         }
