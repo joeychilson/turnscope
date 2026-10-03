@@ -35,14 +35,16 @@
 //! and kept as any limit's readings are; every key's is a limit of the
 //! account. A key no agent keeps any longer carries none.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 
 use rusqlite::Connection;
 use serde_json::Value;
 
-use super::attribution::{Held, Place, Seen, Span, api_account};
+use super::attribution::{self, Held, Place, Seen, Span, api_account};
 use super::sign_in::{credentials, json_file};
-use super::{AccountLimits, Answer, LimitProblem, Read, Reader, SignIn, Subscription, openrouter};
+use super::{
+    AccountLimits, AccountRead, LimitProblem, PlanLimits, Reader, SignIn, Subscription, openrouter,
+};
 use crate::agent::{self, Agent};
 use crate::error::Result;
 use crate::folders::Folder;
@@ -65,8 +67,8 @@ pub(super) const READER: Reader = Reader {
 pub(super) fn read(
     sign_ins: &[SignIn],
     now: Instant,
-    fetch: impl Fn(&str, Instant) -> Result<Answer, LimitProblem>,
-) -> Vec<Read> {
+    fetch: impl Fn(&str, Instant) -> Result<PlanLimits, LimitProblem>,
+) -> Vec<AccountRead> {
     let mut providers: Vec<&str> = sign_ins.iter().map(|sign_in| sign_in.provider).collect();
     providers.sort_unstable();
     providers.dedup();
@@ -95,7 +97,7 @@ pub(super) fn read(
                     (_, Err(_)) => {}
                 }
             }
-            Read {
+            AccountRead {
                 id: api_account(provider),
                 label: None,
                 plan: None,
@@ -157,16 +159,7 @@ pub(super) fn seen(folders: &[Folder]) -> Result<Vec<Seen>> {
 /// `seen`, what the latest look found, no longer finds anything in: each
 /// found now to hold nothing.
 pub(crate) fn vanished(seen: &[Seen], spans: &[(Place, Span)], folders: &[Folder]) -> Vec<Seen> {
-    let mut latest: HashMap<&Place, &Span> = HashMap::new();
-    for (place, span) in spans {
-        if latest
-            .get(place)
-            .is_none_or(|known| (span.last, span.first) > (known.last, known.first))
-        {
-            latest.insert(place, span);
-        }
-    }
-    let mut gone: Vec<Seen> = latest
+    let mut gone: Vec<Seen> = attribution::latest(spans)
         .into_iter()
         .filter(|(place, span)| {
             matches!(span.held, Held::Key | Held::Other)
@@ -209,7 +202,7 @@ fn held(provider: &str, entry: &Value) -> Held {
     match entry["type"].as_str() {
         Some("key" | "api" | "api_key") => Held::Key,
         // OpenRouter's sign-in gives the agent a key of its own.
-        Some("oauth") if provider == "openrouter" => Held::Key,
+        Some("oauth") if provider == openrouter::PROVIDER => Held::Key,
         _ => Held::Other,
     }
 }
@@ -323,7 +316,7 @@ mod tests {
     use crate::agent::Agent;
     use crate::folders::{Folder, FolderOrigin};
     use crate::limits::attribution::{Held, Place, Seen, Span};
-    use crate::limits::{Answer, LimitProblem, Reported, SignIn};
+    use crate::limits::{LimitProblem, PlanLimits, Reported, SignIn};
     use crate::time::Instant;
 
     #[test]
@@ -393,7 +386,7 @@ mod tests {
         let asked = std::cell::RefCell::new(Vec::new());
         let reads = read(&keys, now, |key, _| {
             asked.borrow_mut().push(key.to_owned());
-            Ok(Answer {
+            Ok(PlanLimits {
                 plan: None,
                 limits: match key {
                     "sk-or-a" => vec![limit("a", 25.0)],
@@ -411,7 +404,7 @@ mod tests {
         // One key refused: the account's answer, not the other key's limit
         // alone.
         let reads = read(&keys, now, |key, _| match key {
-            "sk-or-a" => Ok(Answer {
+            "sk-or-a" => Ok(PlanLimits {
                 plan: None,
                 limits: vec![limit("a", 25.0)],
             }),

@@ -107,7 +107,6 @@ fn week(engine: &turnscope_engine::Engine, read: &str, used: f64) {
             resets: Some(at("2026-10-04T09:00:00Z")),
             read_at: at(read),
             pace: None,
-            runs_out: None,
             refilled: false,
         }],
         read_at: Some(at(read)),

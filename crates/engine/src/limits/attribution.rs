@@ -81,11 +81,11 @@ pub(crate) enum Held {
 /// Providers only a subscription reaches, whose use from a place that held
 /// nothing was of no API key: Pi's ChatGPT sign-in, and OpenCode Go, whose
 /// key is the plan's.
-pub(crate) const SUBSCRIBED: &[&str] = &["openai-codex", "opencode-go"];
+const SUBSCRIBED: &[&str] = &["openai-codex", "opencode-go"];
 
 /// The id of `provider`'s API-key account.
-pub(crate) fn api_account(provider: &str) -> String {
-    format!("{}:{provider}", Subscription::ApiKey.key())
+pub(super) fn api_account(provider: &str) -> String {
+    Subscription::ApiKey.account_id(provider)
 }
 
 /// What one look found a place held.
@@ -127,7 +127,7 @@ impl Timeline {
     }
 
     /// The timeline of `spans`, each of a place.
-    pub(crate) fn of(spans: impl IntoIterator<Item = (Place, Span)>) -> Timeline {
+    fn of(spans: impl IntoIterator<Item = (Place, Span)>) -> Timeline {
         let mut timeline = Timeline::default();
         for (place, span) in spans {
             timeline.looked.insert((place.agent, place.folder.clone()));
@@ -169,22 +169,30 @@ impl Timeline {
     }
 }
 
+/// Each place's latest span of `spans`: the one it was last seen in, the
+/// latest begun of two that ended together, as the ledger orders them.
+pub(super) fn latest(spans: &[(Place, Span)]) -> HashMap<&Place, &Span> {
+    let mut latest: HashMap<&Place, &Span> = HashMap::new();
+    for (place, span) in spans {
+        if latest
+            .get(place)
+            .is_none_or(|known| (span.last, span.first) > (known.last, known.first))
+        {
+            latest.insert(place, span);
+        }
+    }
+    latest
+}
+
 /// Where each account is signed in, from `spans` of every place: each agent
 /// and folder whose place last held a sign-in to it; for an account no
 /// place holds now, those whose place held it last. By agent and then
 /// folder, each once.
-pub(crate) fn folders(spans: &[(Place, Span)]) -> HashMap<String, Vec<(Agent, PathBuf)>> {
-    // Each place's latest span, and, for each account, the latest span of
-    // any place that held it.
-    let mut latest: HashMap<&Place, &Span> = HashMap::new();
+pub(super) fn folders(spans: &[(Place, Span)]) -> HashMap<String, Vec<(Agent, PathBuf)>> {
+    let latest = latest(spans);
+    // For each account, the latest span of any place that held it.
     let mut last_held: HashMap<&str, (i64, Vec<&Place>)> = HashMap::new();
     for (place, span) in spans {
-        let later = latest
-            .get(place)
-            .is_none_or(|known| (span.last, span.first) > (known.last, known.first));
-        if later {
-            latest.insert(place, span);
-        }
         if let Held::Account(account) = &span.held {
             let entry = last_held.entry(account).or_insert((span.last, Vec::new()));
             if span.last > entry.0 {
@@ -287,6 +295,11 @@ pub(super) fn seen(
                 folder: folder.path.clone(),
                 provider: source.provider.to_owned(),
             };
+            // Sources that name one place, as OpenCode's database and its
+            // older file do, find what it holds alike.
+            if seen.iter().any(|known| known.place == place) {
+                continue;
+            }
             let held = sign_ins
                 .iter()
                 .find(|sign_in| {
@@ -295,19 +308,9 @@ pub(super) fn seen(
                         && sign_in.provider == place.provider
                 })
                 .map_or(Held::Nothing, |sign_in| {
-                    let identity = sign_in
-                        .whose
-                        .clone()
-                        .unwrap_or_else(|| (reader.identity)(&sign_in.token));
-                    Held::Account(format!("{}:{}", subscription.key(), identity.key))
+                    Held::Account(subscription.account_id(&sign_in.identity(reader).key))
                 });
-            match seen.iter_mut().find(|known| known.place == place) {
-                // An earlier source that found nothing gives way to a later
-                // one that found a sign-in.
-                Some(known) if known.held == Held::Nothing => known.held = held,
-                Some(_) => {}
-                None => seen.push(Seen { place, held }),
-            }
+            seen.push(Seen { place, held });
         }
     }
     seen

@@ -160,7 +160,6 @@ fn a_window_that_reset_since_it_was_read_is_said_to_have_ended() {
         resets: Some(from_now(now, -60)),
         read_at: from_now(now, -90),
         pace: None,
-        runs_out: None,
         refilled: false,
     };
     let account = AccountLimits {

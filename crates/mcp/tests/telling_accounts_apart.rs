@@ -77,7 +77,6 @@ fn claude(id: &str, home: &Path, folder: &str, used: f64, now: Instant) -> Accou
             resets: Some(from_now(now, 180)),
             read_at: now,
             pace: None,
-            runs_out: None,
             refilled: false,
         }],
         read_at: None,

@@ -74,7 +74,7 @@ pub use crate::health::{
 pub use crate::ingest::ScanReport;
 pub use crate::limits::{
     AccountLimits, Alert, AlertKind, LimitProblem, LimitState, LimitTrack, LimitWindow, Outlook,
-    PastWindow, Standing, Subscription, WeekEnded, plan_name,
+    PastWindow, Standing, Subscription, WeekEnded,
 };
 pub use crate::model::{ModelInfo, ModelKey};
 pub use crate::outside::Counts;
@@ -157,7 +157,7 @@ impl Drop for Queueing<'_> {
 /// What reading one subscription's limits found, to be recorded.
 struct LimitsRead {
     subscription: Subscription,
-    reads: Vec<limits::Read>,
+    reads: Vec<limits::AccountRead>,
     seen: Vec<limits::Seen>,
     at: Instant,
 }
@@ -1001,9 +1001,9 @@ impl Engine {
         accounts: &[AccountLimits],
         at: Instant,
     ) -> Result<()> {
-        let reads: Vec<limits::Read> = accounts
+        let reads: Vec<limits::AccountRead> = accounts
             .iter()
-            .map(|account| limits::Read {
+            .map(|account| limits::AccountRead {
                 id: account.id.clone(),
                 label: account.label.clone(),
                 plan: account.plan.clone(),
@@ -1068,7 +1068,7 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
-    use crate::limits::{Held, Place, Read, Reported, Seen};
+    use crate::limits::{AccountRead, Held, Place, Reported, Seen};
     use crate::{Agent, AlertKind, Change, Engine, Instant, LimitsRead, Subscription};
 
     #[test]
@@ -1082,7 +1082,7 @@ mod tests {
         let queueing = engine.queue_limits();
         let read = LimitsRead {
             subscription: Subscription::ChatGpt,
-            reads: vec![Read {
+            reads: vec![AccountRead {
                 id: "chatgpt:acct-1".into(),
                 label: None,
                 plan: None,
@@ -1135,7 +1135,7 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let engine = Engine::open(data.path(), home.path()).unwrap();
         let read_at = Instant::from_millis(1_789_000_000_000).unwrap();
-        let read = Read {
+        let read = AccountRead {
             id: "chatgpt:acct-1".into(),
             label: None,
             plan: None,
@@ -1189,7 +1189,7 @@ mod tests {
         // limits finds it signed out and back.
         let now = Instant::now().millis();
         let minutes = |minutes: i64| Instant::from_millis(now + minutes * 60_000).unwrap();
-        let read = Read {
+        let read = AccountRead {
             id: "chatgpt:acct-1".into(),
             label: None,
             plan: None,
@@ -1397,7 +1397,7 @@ mod tests {
         engine.scan().unwrap();
         // Each account's five hours began at 9:00 and was read at 11:00:
         // personal's had risen 10 points, work's 20.
-        let read = |id: &str, used: f64| Read {
+        let read = |id: &str, used: f64| AccountRead {
             id: id.to_owned(),
             label: None,
             plan: None,
@@ -1464,7 +1464,7 @@ mod tests {
         claude_session_of(&own, "unpriced", "claude-nobody-knows-1", &[at(12, 0)]);
         let engine = Engine::open(data.path(), home.path()).unwrap();
         engine.scan().unwrap();
-        let read = |used: f64| Read {
+        let read = |used: f64| AccountRead {
             id: "claude:personal".to_owned(),
             label: None,
             plan: None,

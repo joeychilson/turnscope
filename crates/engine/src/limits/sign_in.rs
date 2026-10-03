@@ -395,15 +395,22 @@ pub(super) fn claims(token: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
+impl SignIn {
+    /// Whose it is: as its agent records it, or as `reader` tells from its
+    /// token.
+    pub(super) fn identity(&self, reader: &Reader) -> Identity {
+        self.whose
+            .clone()
+            .unwrap_or_else(|| (reader.identity)(&self.token))
+    }
+}
+
 /// `sign_ins` grouped by the account each belongs to, whose the agent says
 /// it is or as `reader` tells accounts apart, in the order they were found.
 pub(super) fn accounts(reader: &Reader, sign_ins: Vec<SignIn>) -> Vec<(Identity, Vec<SignIn>)> {
     let mut accounts: Vec<(Identity, Vec<SignIn>)> = Vec::new();
-    for mut sign_in in sign_ins {
-        let identity = sign_in
-            .whose
-            .take()
-            .unwrap_or_else(|| (reader.identity)(&sign_in.token));
+    for sign_in in sign_ins {
+        let identity = sign_in.identity(reader);
         match accounts
             .iter_mut()
             .find(|(known, _)| known.key == identity.key)
@@ -448,17 +455,23 @@ pub(crate) fn fingerprint(
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use std::path::{Path, PathBuf};
+    use serde_json::json;
 
     use super::{accounts, claims, output_within, sign_ins, stamp};
     use crate::agent::Agent;
     use crate::folders::{self, Folder, FolderOrigin};
     use crate::limits::{Identity, SignIn, Subscription, Whose};
+
+    /// Write `text` to `path` under `home`, making its folders.
+    fn write(home: &Path, path: &str, text: impl AsRef<[u8]>) {
+        let path = home.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
 
     /// The folders read in `home` with no choice made.
     fn folders(home: &Path) -> Vec<Folder> {
@@ -526,11 +539,6 @@ mod tests {
     #[test]
     fn every_app_a_subscription_is_signed_into_is_found_and_grouped_by_account() {
         let home = tempfile::tempdir().unwrap();
-        let write = |path: &str, text: String| {
-            let path = home.path().join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, text).unwrap();
-        };
         let chatgpt = jwt(json!({
             "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"},
             "https://api.openai.com/profile": {"email": "joey@example.com"},
@@ -538,6 +546,7 @@ mod tests {
         }));
         // Codex keeps its sign-in in a file.
         write(
+            home.path(),
             ".codex/auth.json",
             json!({"tokens": {"access_token": chatgpt}}).to_string(),
         );
@@ -586,6 +595,7 @@ mod tests {
         drop(connection);
         // Pi keeps the same OpenCode Go key in its file.
         write(
+            home.path(),
             ".pi/agent/auth.json",
             json!({"opencode-go": {"type": "api", "key": "go-new"}}).to_string(),
         );
@@ -618,6 +628,7 @@ mod tests {
         let before = stamped();
         assert_eq!(stamped(), before);
         write(
+            home.path(),
             ".grok/auth.json",
             json!({"https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828":
                    {"key": jwt(json!({"sub": "grok-1"}))}})
@@ -630,11 +641,6 @@ mod tests {
     #[test]
     fn a_second_folder_signed_into_another_account_is_another_account() {
         let home = tempfile::tempdir().unwrap();
-        let write = |path: &str, text: String| {
-            let path = home.path().join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, text).unwrap();
-        };
         let signed = |account: &str| {
             json!({"auth_mode": "chatgpt", "tokens": {"access_token": jwt(json!({
                 "https://api.openai.com/auth": {"chatgpt_account_id": account}}))}})
@@ -642,8 +648,12 @@ mod tests {
         };
         // Codex in its own folder signed into one workspace, and pointed by
         // CODEX_HOME at ~/.codex-personal, signed into another.
-        write(".codex/auth.json", signed("acct-work"));
-        write(".codex-personal/auth.json", signed("acct-personal"));
+        write(home.path(), ".codex/auth.json", signed("acct-work"));
+        write(
+            home.path(),
+            ".codex-personal/auth.json",
+            signed("acct-personal"),
+        );
         let stamped = |folders: &[Folder]| stamp(Subscription::ChatGpt, folders, home.path());
         let own_only: Vec<Folder> = folders(home.path())
             .into_iter()
@@ -733,11 +743,6 @@ mod tests {
     #[test]
     fn a_place_that_cant_be_read_is_not_taken_to_keep_no_sign_in() {
         let home = tempfile::tempdir().unwrap();
-        let write = |path: &str, text: &str| {
-            let path = home.path().join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, text).unwrap();
-        };
         // Places that aren't there, or keep none, keep no sign-in: here
         // OpenCode's database from before it kept sign-ins in it.
         let database = home.path().join(".local/share/opencode/opencode.db");
@@ -751,13 +756,21 @@ mod tests {
         assert!(read(Subscription::OpenCodeGo).unwrap().is_empty());
 
         // Codex part way through writing its sign-in.
-        write(".codex/auth.json", r#"{"tokens": {"access_to"#);
+        write(home.path(), ".codex/auth.json", r#"{"tokens": {"access_to"#);
         assert!(read(Subscription::ChatGpt).is_err());
         // OpenCode's database, unreadable.
-        write(".local/share/opencode/opencode.db", "not a database");
+        write(
+            home.path(),
+            ".local/share/opencode/opencode.db",
+            "not a database",
+        );
         assert!(read(Subscription::OpenCodeGo).is_err());
         // Claude Code part way through writing whose sign-in it holds.
-        write(".claude.json", r#"{"oauthAccount": {"accountUu"#);
+        write(
+            home.path(),
+            ".claude.json",
+            r#"{"oauthAccount": {"accountUu"#,
+        );
         assert!(
             claude_json()
                 .read(&claude_code(home.path()), home.path())

@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::{Answer, Identity, LimitProblem, Location, Reader, Source, Whose};
+use super::{HOUR, Identity, LimitProblem, Location, PlanLimits, Reader, Source, WEEK, Whose};
 use crate::agent::Agent;
 use crate::folders::Folder;
 use crate::time::Instant;
@@ -51,10 +51,7 @@ use crate::time::Instant;
 const URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
 /// Five hours, in milliseconds.
-const FIVE_HOURS: i64 = 5 * 3_600_000;
-
-/// A week, in milliseconds.
-const WEEK: i64 = 7 * 24 * 3_600_000;
+const FIVE_HOURS: i64 = 5 * HOUR;
 
 /// Where a Claude sign-in is kept, and how its limits are read.
 pub(super) const READER: Reader = Reader {
@@ -112,35 +109,30 @@ fn config(folder: &Folder, home: &Path) -> PathBuf {
     }
 }
 
-fn fetch(token: &str, _identity: &Identity, _now: Instant) -> Result<Answer, LimitProblem> {
+fn fetch(token: &str, _identity: &Identity, _now: Instant) -> Result<PlanLimits, LimitProblem> {
     super::get(URL, token, &["anthropic-beta: oauth-2025-04-20"], parse)
 }
 
-/// What follows `seven_day_` in the key of a weekly window on something
-/// other than a model, and what the window is called: the plan's use
-/// through other apps signed in with it, which is neither a model's nor all
-/// of it. The answers read here give it only as null.
-const NOT_MODELS: &[(&str, &str)] = &[("oauth_apps", "Other apps weekly")];
-
 /// The limits in a usage answer: `None` when a window it gives doesn't read,
 /// since the windows left would look like all of them.
-fn parse(body: &Value) -> Option<Answer> {
+fn parse(body: &Value) -> Option<PlanLimits> {
     let mut limits = Vec::new();
     for (key, window) in body.as_object()? {
         if super::absent(window) {
             continue;
         }
         let (name, scope) = match key.as_str() {
-            "five_hour" => ("5 hours".to_owned(), None),
-            "seven_day" => ("Weekly".to_owned(), None),
+            "five_hour" => ("5 hours", None),
+            "seven_day" => ("Weekly", None),
             // With no use of its own it is no window, as the week's use by
             // model and what is said of extra usage aren't.
             _ if window.get("utilization").is_none() => continue,
+            // The plan's use through other apps signed in with it, which is
+            // neither a model's nor all of it. The answers read here give it
+            // only as null.
+            "seven_day_oauth_apps" => ("Other apps weekly", None),
             other => match other.strip_prefix("seven_day_") {
-                Some(rest) => match NOT_MODELS.iter().find(|(key, _)| *key == rest) {
-                    Some((_, name)) => ((*name).to_owned(), None),
-                    None => ("Weekly".to_owned(), Some(words(rest))),
-                },
+                Some(rest) => ("Weekly", Some(words(rest))),
                 // Named as what Anthropic tries out is: no window a person
                 // would know by it.
                 None => continue,
@@ -150,13 +142,13 @@ fn parse(body: &Value) -> Option<Answer> {
         let resets = super::optional_instant(&window["resets_at"])?;
         limits.push(super::limit(
             key,
-            &name,
+            name,
             scope,
-            &window["utilization"],
+            window["utilization"].as_f64(),
             super::ending(resets, length),
         )?);
     }
-    Some(Answer { plan: None, limits })
+    Some(PlanLimits { plan: None, limits })
 }
 
 /// A model's key, such as `opus`, as words: `Opus`.

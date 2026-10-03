@@ -10,7 +10,7 @@ use super::{Ledger, instant, optional_instant};
 use crate::agent::Agent;
 use crate::error::{Error, Result};
 use crate::limits::{
-    AlertKind, Held, LimitProblem, Place, Read as LimitRead, SAME_WINDOW, Seen, Span, Subscription,
+    AccountRead, AlertKind, Held, LimitProblem, Place, SAME_WINDOW, Seen, Span, Subscription,
 };
 use crate::time::Instant;
 
@@ -59,7 +59,7 @@ impl Ledger {
     pub(crate) fn record_limits(
         &mut self,
         subscription: Subscription,
-        reads: &[LimitRead],
+        reads: &[AccountRead],
         at: Instant,
     ) -> Result<()> {
         let transaction = self.connection.transaction()?;
@@ -459,7 +459,7 @@ mod tests {
     use super::Ledger;
     use crate::agent::Agent;
     use crate::ledger::tests::scratch;
-    use crate::limits::{AlertKind, Read, Reported, Subscription};
+    use crate::limits::{AccountRead, AlertKind, Reported, Subscription};
     use crate::time::Instant;
 
     fn day(days: i64) -> Instant {
@@ -467,8 +467,8 @@ mod tests {
     }
 
     /// A read of one Claude account whose limits `keys` are each 40% used.
-    fn read(keys: &[&str]) -> Read {
-        Read {
+    fn read(keys: &[&str]) -> AccountRead {
+        AccountRead {
             id: "claude:".into(),
             label: None,
             plan: None,

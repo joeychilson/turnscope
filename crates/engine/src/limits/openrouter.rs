@@ -25,7 +25,7 @@
 
 use serde_json::Value;
 
-use super::{Answer, Identity, LimitProblem, Location, Source};
+use super::{Identity, LimitProblem, Location, PlanLimits, Source};
 use crate::agent::Agent;
 use crate::time::{Bucket, Instant, Zone, next, start_of};
 
@@ -77,17 +77,21 @@ pub(super) const SOURCES: &[Source] = &[
 ];
 
 /// Ask OpenRouter for `key`'s own limit, as of `now`.
-pub(super) fn fetch(key: &str, _identity: &Identity, now: Instant) -> Result<Answer, LimitProblem> {
+pub(super) fn fetch(
+    key: &str,
+    _identity: &Identity,
+    now: Instant,
+) -> Result<PlanLimits, LimitProblem> {
     parse(&super::ask(URL, key, &[])?, key, now).ok_or(LimitProblem::Unrecognized)
 }
 
 /// The limit `key`'s answer gives, as of `now`: none for a key without one,
 /// and `None` when it doesn't read.
-fn parse(body: &Value, key: &str, now: Instant) -> Option<Answer> {
+fn parse(body: &Value, key: &str, now: Instant) -> Option<PlanLimits> {
     let data = body.get("data")?.as_object()?;
     let limit = match data.get("limit") {
         None | Some(Value::Null) => {
-            return Some(Answer {
+            return Some(PlanLimits {
                 plan: None,
                 limits: Vec::new(),
             });
@@ -119,10 +123,10 @@ fn parse(body: &Value, key: &str, now: Instant) -> Option<Answer> {
         None => (None, None),
     };
     let key = format!("key:{:016x}", super::fnv(super::FNV, key.as_bytes()));
-    let used = Value::from(spent / limit * 100.0);
-    Some(Answer {
+    let used = spent / limit * 100.0;
+    Some(PlanLimits {
         plan: None,
-        limits: vec![super::limit(&key, name, None, &used, window)?],
+        limits: vec![super::limit(&key, name, None, Some(used), window)?],
     })
 }
 

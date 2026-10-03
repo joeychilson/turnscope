@@ -102,7 +102,6 @@ fn limit(
         resets: Some(window.1),
         read_at: window.0,
         pace: None,
-        runs_out: None,
         refilled: false,
     }
 }

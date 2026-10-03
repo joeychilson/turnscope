@@ -506,7 +506,6 @@ mod tests {
             resets: Some(at(resets)),
             read_at: at("2026-09-30T12:00:00Z"),
             pace: Some(pace),
-            runs_out: None,
             refilled: false,
         }
     }
