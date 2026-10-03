@@ -23,7 +23,7 @@ Download the latest [release](https://github.com/joeychilson/turnscope/releases/
 - **Panel**: whether you can keep going, each account's limits, and what used them.
 - **Notifications**: when a limit will run out, is used up, or is back.
 - **Multiple accounts**: every subscription and API key counts on its own, including second accounts in their own config folders.
-- **MCP server**: connect Claude Code, Codex, OpenCode or Grok from Settings › Agents.
+- **MCP server**: connect Claude Code, Codex, OpenCode, Pi or Grok Build from Settings › Agents.
 
 Gray means you're fine. Amber means a limit will run out before it resets. Red means it has.
 

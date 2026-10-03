@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "at": "2026-09-30T12:00:00Z",
   "reading": false,
   "accounts": [
@@ -179,7 +179,7 @@
       "id": "pi",
       "name": "Pi",
       "logo": "agents/pi",
-      "status": "unsupported"
+      "status": "available"
     }
   ],
   "reads": [

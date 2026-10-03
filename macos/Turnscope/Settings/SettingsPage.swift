@@ -194,8 +194,6 @@ private struct AgentRow: View {
                 .foregroundStyle(.secondary)
         case .available, .outdated:
             ConnectButton(agent: agent)
-        case .unsupported:
-            Text("\(agent.name) doesn't use MCP").font(.system(size: 12)).foregroundStyle(.tertiary)
         }
     }
 }

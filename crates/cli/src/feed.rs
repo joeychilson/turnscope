@@ -48,7 +48,7 @@ use crate::connect::Link;
 
 /// The feed's version, which `contract/feed.json` carries: raised with
 /// every change to its shape.
-pub(crate) const VERSION: u32 = 11;
+pub(crate) const VERSION: u32 = 12;
 
 /// How many sessions that used a window are named.
 const NAMED: usize = 3;
@@ -609,7 +609,7 @@ mod tests {
                 id: "pi",
                 name: "Pi",
                 logo: crate::connect::logo(Agent::Pi),
-                status: Status::Unsupported,
+                status: Status::Available,
             },
         ];
         // Given out of order, to be put in order.
