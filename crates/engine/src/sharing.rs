@@ -32,8 +32,8 @@
 //!   ended without, as one that crashed does.
 //!
 //! Both are `flock` locks, which the system releases however a process ends.
-//! The databases share a write-ahead log, and every connection waits its turn
-//! while another writes.
+//! Each database is shared through its own write-ahead log, and every
+//! connection waits its turn while another writes.
 //!
 //! **Versions.** Builds of different versions can share a directory, as an
 //! MCP server started before an update does with the app after it. An
@@ -189,6 +189,14 @@ pub(crate) fn share(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "temp_store", "MEMORY")?;
     connection.pragma_update(None, "journal_size_limit", 4 << 20)?;
     Ok(())
+}
+
+/// A file SQLite keeps beside the database at `path`: its write-ahead log,
+/// `-wal`, or the log's index, `-shm`.
+pub(crate) fn side_file(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 /// Open the database at `path` for reading only, as it stands: nothing is

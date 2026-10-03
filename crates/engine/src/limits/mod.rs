@@ -1359,6 +1359,7 @@ mod tests {
     };
     use crate::agent::Agent;
     use crate::ledger::Ledger;
+    use crate::ledger::tests::scratch;
     use crate::net::NetError;
     use crate::time::Instant;
 
@@ -1387,8 +1388,7 @@ mod tests {
 
     #[test]
     fn a_pace_stands_as_of_its_latest_reading_while_no_other_comes() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         // 30% at minute 0, 40% at 45 and 50% at 60: in hours 0, 3/4 and 1,
         // mean 7/12, and mean use 40. The hours' deviations squared sum to
         // (49 + 4 + 25)/144 = 13/24, and their products with use's to
@@ -1409,8 +1409,7 @@ mod tests {
 
     #[test]
     fn a_rising_limit_warns_once_before_it_runs_out_and_once_when_it_does() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let quiet = HashSet::new();
         // 60% to 90% over half an hour: 60 points an hour, so the rest runs out
         // ten minutes after the last reading, long before the reset at 300.
@@ -1510,8 +1509,7 @@ mod tests {
 
     #[test]
     fn an_account_signed_out_keeps_its_last_limits_and_says_so() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         ledger
             .record_limits(Subscription::Claude, &[read(40.0, 300)], minute(0))
             .unwrap();
@@ -1540,8 +1538,7 @@ mod tests {
 
     #[test]
     fn a_limit_its_provider_stops_reporting_is_no_longer_shown() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let weekly = Reported {
             key: "seven_day".into(),
             name: "Weekly".into(),
@@ -1600,8 +1597,7 @@ mod tests {
 
     #[test]
     fn a_limit_used_up_on_an_account_signed_out_is_back_when_its_window_ends() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let quiet = HashSet::new();
         // Used up in the window that resets at minute 300, then signed out
         // of, as when Claude Code is switched to another account.
@@ -1644,8 +1640,7 @@ mod tests {
 
     #[test]
     fn a_limit_back_long_ago_is_no_news() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let quiet = HashSet::new();
         ledger
             .record_limits(Subscription::Claude, &[read(100.0, 300)], minute(0))
@@ -1678,8 +1673,7 @@ mod tests {
     /// The alerts `reads` give rise to, each recorded at its minute: the
     /// minute and the kind of each.
     fn alerted(reads: Vec<(i64, Read)>) -> Vec<(i64, AlertKind)> {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let mut sent = Vec::new();
         for (at, read) in reads {
             ledger
@@ -1796,8 +1790,7 @@ mod tests {
 
     #[test]
     fn use_counts_against_the_account_it_drew_on() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let chatgpt = |id: &str, agents: Vec<Agent>| Read {
             id: id.into(),
             label: None,

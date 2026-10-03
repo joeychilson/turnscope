@@ -75,7 +75,7 @@ use std::sync::LazyLock;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::agent::{self, AgentReader, ReportScope, SessionReport};
+use crate::agent::{self, AgentReader, SessionReport};
 use crate::error::{Error, Result};
 use crate::folders;
 use crate::ledger::{Ledger, SessionRecord, instant, stored, unsigned, usd};
@@ -125,11 +125,8 @@ pub(crate) fn capped_sum(expression: &str) -> String {
 /// `expression`, a number, as an integer that stops at the largest `i64`,
 /// where SQLite would turn it to floating point.
 pub(crate) fn capped(expression: &str) -> String {
-    format!("CAST(min({expression}, {MOST}.0) AS INTEGER)")
+    format!("CAST(min({expression}, {}.0) AS INTEGER)", i64::MAX)
 }
-
-/// The largest `i64`, where sums stop, as SQL writes it.
-pub(crate) const MOST: &str = "9223372036854775807";
 
 /// The aggregates every figure of usage is added up with, over usage `u`: a
 /// session's totals, the rollup's `c1` to `c13`, and usage answered from each
@@ -414,17 +411,12 @@ impl Cache {
                 return Cache::at(path, connection);
             }
             // A newer build's cache is left for it, as its ledger is.
-            if schema > SCHEMA {
-                return Err(Error::NewerCache {
-                    found: schema,
-                    known: SCHEMA,
-                });
-            }
+            refuse_newer(schema)?;
         }
         for stale in [
             path.to_path_buf(),
-            with_suffix(path, "-wal"),
-            with_suffix(path, "-shm"),
+            sharing::side_file(path, "-wal"),
+            sharing::side_file(path, "-shm"),
         ] {
             match std::fs::remove_file(&stale) {
                 Ok(()) => {}
@@ -448,11 +440,7 @@ impl Cache {
             return None;
         }
         let connection = connect(path).ok()?;
-        let schema: i64 = connection
-            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| {
-                row.get(0)
-            })
-            .ok()?;
+        let schema = meta(&connection, "schema").ok()?;
         Some((connection, schema))
     }
 
@@ -467,16 +455,7 @@ impl Cache {
     /// at.
     pub(crate) fn reader(path: &Path) -> Result<Cache> {
         let connection = sharing::reader(path)?;
-        let schema: i64 =
-            connection.query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| {
-                row.get(0)
-            })?;
-        if schema > SCHEMA {
-            return Err(Error::NewerCache {
-                found: schema,
-                known: SCHEMA,
-            });
-        }
+        refuse_newer(meta(&connection, "schema")?)?;
         Cache::at(path, connection)
     }
 
@@ -526,21 +505,12 @@ impl Cache {
         // refused, and an older one's built anew. Nothing is written through
         // a connection to a file no longer there, and the ledger forgets
         // nothing on its behalf.
-        if file_at(&self.path)? != Some(self.file) {
+        if !self.current()? {
             let path = self.path.clone();
             *self = Cache::open(&path)?;
         }
-        let reached: i64 = self.connection.query_row(
-            "SELECT value FROM meta WHERE key = 'revision'",
-            [],
-            |row| row.get(0),
-        )?;
-        let built_from: Option<i64> = self
-            .connection
-            .query_row("SELECT value FROM meta WHERE key = 'ledger'", [], |row| {
-                row.get(0)
-            })
-            .optional()?;
+        let reached = meta(&self.connection, "revision")?;
+        let built_from = meta(&self.connection, "ledger").optional()?;
         // A cache built from another ledger, as from one deleted and made
         // anew, or from a later state of this one, as when a copy of it is
         // restored, holds what this ledger doesn't say.
@@ -644,11 +614,8 @@ impl Cache {
         transaction.execute(&rollup("1"), [])?;
         transaction.execute(&active(""), [])?;
         transaction.execute(&session_account(""), [])?;
-        transaction.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES ('ledger', ?1)",
-            [ledger.identity()?],
-        )?;
-        set_revision(&transaction, revision)?;
+        set_meta(&transaction, "ledger", ledger.identity()?)?;
+        set_meta(&transaction, "revision", revision)?;
         transaction.commit()?;
         Ok(Caught {
             revision,
@@ -693,10 +660,6 @@ impl Cache {
         wanted.extend(ledger.responses_in(&uncounted)?);
         let responses = ledger.responses_of(&wanted)?;
         let mut ids = Ids::default();
-        let mut caught = Caught {
-            revision: touched.up_to,
-            ..Caught::default()
-        };
 
         let transaction = self.connection.transaction()?;
         // The sessions the touched responses belonged to before, and belong to
@@ -732,23 +695,24 @@ impl Cache {
         {
             // A session found to be a review since is counted nowhere, with
             // whatever of it was counted before.
-            let mut forget_rollup = transaction.prepare_cached(CLEAR_ROLLUP)?;
-            let mut forget_usage = transaction.prepare_cached(
-                "DELETE FROM usage WHERE session = (SELECT id FROM session WHERE key = ?1)",
-            )?;
+            let mut id_of = transaction.prepare_cached("SELECT id FROM session WHERE key = ?1")?;
+            let mut forget_rollup =
+                transaction.prepare_cached("DELETE FROM rollup WHERE session = ?1")?;
+            let mut forget_usage =
+                transaction.prepare_cached("DELETE FROM usage WHERE session = ?1")?;
             let mut forget_lineage = transaction
                 .prepare_cached("DELETE FROM lineage WHERE ?1 IN (session, ancestor)")?;
-            let mut forget = transaction.prepare_cached("DELETE FROM session WHERE key = ?1")?;
-            let mut id_of = transaction.prepare_cached("SELECT id FROM session WHERE key = ?1")?;
+            let mut forget = transaction.prepare_cached("DELETE FROM session WHERE id = ?1")?;
             for key in affected.iter().filter(|key| skipped.contains(*key)) {
-                let key = key.to_string();
-                forget_rollup.execute([&key])?;
-                forget_usage.execute([&key])?;
-                let id: Option<i64> = id_of.query_row([&key], |row| row.get(0)).optional()?;
+                let id: Option<i64> = id_of
+                    .query_row([key.to_string()], |row| row.get(0))
+                    .optional()?;
                 if let Some(id) = id {
+                    forget_rollup.execute([id])?;
+                    forget_usage.execute([id])?;
                     forget_lineage.execute([id])?;
+                    forget.execute([id])?;
                 }
-                forget.execute([&key])?;
             }
         }
 
@@ -846,11 +810,14 @@ impl Cache {
                 active.execute([key.to_string()])?;
             }
         }
-        set_revision(&transaction, touched.up_to)?;
+        set_meta(&transaction, "revision", touched.up_to)?;
         transaction.commit()?;
         affected.extend(changed);
-        caught.sessions = affected;
-        Ok(caught)
+        Ok(Caught {
+            revision: touched.up_to,
+            sessions: affected,
+            ..Caught::default()
+        })
     }
 }
 
@@ -870,19 +837,32 @@ fn file_at(path: &Path) -> Result<Option<(u64, u64)>> {
     }
 }
 
-/// `path` with `suffix` appended to its file name.
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(suffix);
-    PathBuf::from(name)
+/// Keep `value` as the cache's `key` in its meta table, as [`meta`] reads it.
+fn set_meta(transaction: &Transaction, key: &str, value: i64) -> Result<()> {
+    transaction.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )?;
+    Ok(())
 }
 
-/// Record the ledger revision the cache reflects.
-fn set_revision(transaction: &Transaction, revision: i64) -> Result<()> {
-    transaction.execute(
-        "UPDATE meta SET value = ?1 WHERE key = 'revision'",
-        [revision],
-    )?;
+/// The cache's `key` in its meta table: its schema, the revision it has
+/// reached, or the ledger it was built from.
+fn meta(connection: &Connection, key: &str) -> rusqlite::Result<i64> {
+    connection.query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+        row.get(0)
+    })
+}
+
+/// Refuse a cache a newer build made, of `schema`: what it holds is that
+/// build's, which this build's questions would misread.
+fn refuse_newer(schema: i64) -> Result<()> {
+    if schema > SCHEMA {
+        return Err(Error::NewerCache {
+            found: schema,
+            known: SCHEMA,
+        });
+    }
     Ok(())
 }
 
@@ -1168,7 +1148,7 @@ fn attribute(
     Ok(changed)
 }
 
-/// The sessions among `records` that review a request for approval, as
+/// The sessions `parents` says review a request for approval, as
 /// Codex's reviews do, rather than doing any of the work: the ledger keeps
 /// what they said, and nothing counts them. They use a model of their own,
 /// with no price, and say only whether an action may go ahead.
@@ -1194,11 +1174,7 @@ fn store_outside(
 ) -> Result<()> {
     let root = report.session.to_string();
     let root_id = ids.of(transaction, &report.session, tree)?;
-    let covered = if report.scope == ReportScope::Tree {
-        tree.below(&report.session)
-    } else {
-        vec![report.session.clone()]
-    };
+    let covered = outside::covered(report, tree);
     let mut transcripts = Transcripts::default();
     {
         let mut read = transaction.prepare_cached(
@@ -1297,11 +1273,12 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{Cache, SCHEMA};
-    use crate::agent::{Agent, ArtifactKind, Batch, Checkpoint, Observation};
+    use super::{Cache, Caught, SCHEMA};
+    use crate::agent::{Agent, Batch, Observation};
     use crate::catalog::Catalog;
     use crate::error::Error;
-    use crate::ledger::{FileState, Ledger, Read};
+    use crate::ledger::tests::{read, scratch};
+    use crate::ledger::{Ledger, Read};
     use crate::limits::{Held, Place, Seen};
     use crate::session::{LinkKind, SessionKey, SessionLink};
     use crate::time::Instant;
@@ -1318,25 +1295,10 @@ mod tests {
             .read_at(Instant::from_date(as_of).unwrap())
     }
 
-    /// A read of `agent`'s log at `path` that found `batch`.
-    fn read(agent: Agent, path: &str, batch: Batch) -> Read {
-        Read {
-            agent,
-            path: PathBuf::from(path),
-            kind: ArtifactKind::Log,
-            file: FileState {
-                device: 1,
-                inode: 1,
-                size: 0,
-                modified: 0,
-                fingerprint: Vec::new(),
-                closing: None,
-            },
-            reader_version: 1,
-            reset: false,
-            checkpoint: Checkpoint::default(),
-            batch,
-        }
+    /// Bring `cache` up to `ledger`, at its prices, for a home of /home.
+    fn catch_up(ledger: &mut Ledger, cache: &mut Cache) -> Caught {
+        let book = ledger.price_book().unwrap();
+        cache.catch_up(ledger, &book, Path::new("/home")).unwrap()
     }
 
     /// What found the response `key` of `session`, from `provider`'s
@@ -1419,14 +1381,9 @@ mod tests {
 
     #[test]
     fn a_session_whose_response_went_to_another_draws_on_none_as_a_rebuild_finds() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (dir, mut ledger) = scratch();
         let mut cache = Cache::open(&dir.path().join("cache.sqlite")).unwrap();
         let at = Instant::parse("2026-09-14T12:00:00Z").unwrap();
-        let catch_up = |ledger: &mut Ledger, cache: &mut Cache| {
-            let book = ledger.price_book().unwrap();
-            cache.catch_up(ledger, &book, Path::new("/home")).unwrap()
-        };
         // ~/.claude held a sign-in to claude:work throughout.
         let place = Place {
             agent: Agent::ClaudeCode,
@@ -1473,8 +1430,7 @@ mod tests {
 
     #[test]
     fn a_session_no_longer_a_review_is_counted_again_as_a_rebuild_counts_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (dir, mut ledger) = scratch();
         let mut cache = Cache::open(&dir.path().join("cache.sqlite")).unwrap();
         ledger
             .take_catalog(&catalog(25.0, "2026-09-02"), "bundled", None)
@@ -1486,10 +1442,6 @@ mod tests {
                 .connection()
                 .query_row("SELECT count(*) FROM usage", [], |row| row.get(0))
                 .unwrap()
-        };
-        let catch_up = |ledger: &mut Ledger, cache: &mut Cache| {
-            let book = ledger.price_book().unwrap();
-            cache.catch_up(ledger, &book, Path::new("/home")).unwrap();
         };
         // The child's one response, counted.
         ledger
@@ -1526,13 +1478,8 @@ mod tests {
 
     #[test]
     fn a_parent_another_artifact_takes_a_child_from_is_caught_up_as_a_rebuild_finds() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (dir, mut ledger) = scratch();
         let mut cache = Cache::open(&dir.path().join("cache.sqlite")).unwrap();
-        let catch_up = |ledger: &mut Ledger, cache: &mut Cache| {
-            let book = ledger.price_book().unwrap();
-            cache.catch_up(ledger, &book, Path::new("/home")).unwrap()
-        };
         let active = |cache: &Cache, session: &str| -> Option<i64> {
             cache
                 .connection()
@@ -1598,8 +1545,7 @@ mod tests {
 
     #[test]
     fn a_cost_keeps_what_part_of_it_was_charged_or_estimated() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (dir, mut ledger) = scratch();
         let mut cache = Cache::open(&dir.path().join("cache.sqlite")).unwrap();
         ledger
             .take_catalog(&catalog(25.0, "2026-09-02"), "bundled", None)
@@ -1645,8 +1591,7 @@ mod tests {
 
     #[test]
     fn new_prices_reach_every_cost() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (dir, mut ledger) = scratch();
         let mut cache = Cache::open(&dir.path().join("cache.sqlite")).unwrap();
         ledger.write(&[response("msg_1")], Instant::now()).unwrap();
         let mut catch_up = |ledger: &mut Ledger| {
@@ -1675,7 +1620,7 @@ mod tests {
     /// `schema` leaves one.
     fn cache_of_schema(path: &Path, schema: i64) {
         for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(super::with_suffix(path, suffix));
+            let _ = std::fs::remove_file(crate::sharing::side_file(path, suffix));
         }
         rusqlite::Connection::open(path)
             .unwrap()

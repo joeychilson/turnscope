@@ -46,7 +46,7 @@
 use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, Mutex, PoisonError, mpsc};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant as Clock};
 
 use rayon::prelude::*;
@@ -265,54 +265,70 @@ fn weight(read: &Finished) -> usize {
 
 /// Room for finished reads to wait in, by weight.
 struct Budget {
-    /// The weight waiting, and whether the writer has gone.
-    state: Mutex<(usize, bool)>,
+    state: Mutex<Waiting>,
     room: Condvar,
     most: usize,
+}
+
+/// What waits for the writer.
+#[derive(Default)]
+struct Waiting {
+    /// The weight of the reads waiting.
+    weight: usize,
+    /// Whether the writer has gone, so none waits for room again.
+    closed: bool,
 }
 
 impl Budget {
     fn new(most: usize) -> Budget {
         Budget {
-            state: Mutex::new((0, false)),
+            state: Mutex::new(Waiting::default()),
             room: Condvar::new(),
             most,
         }
     }
 
+    fn waiting(&self) -> MutexGuard<'_, Waiting> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Wait until `weight` more fits, or nothing waits, or the writer has
     /// gone, and count it in.
     fn take(&self, weight: usize) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while state.0 > 0 && state.0.saturating_add(weight) > self.most && !state.1 {
-            state = self
+        let mut waiting = self.waiting();
+        while waiting.weight > 0
+            && waiting.weight.saturating_add(weight) > self.most
+            && !waiting.closed
+        {
+            waiting = self
                 .room
-                .wait(state)
+                .wait(waiting)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        state.0 = state.0.saturating_add(weight);
+        waiting.weight = waiting.weight.saturating_add(weight);
     }
 
     /// Count `weight` out, as written.
     fn give(&self, weight: usize) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.0 = state.0.saturating_sub(weight);
+        let mut waiting = self.waiting();
+        waiting.weight = waiting.weight.saturating_sub(weight);
+        self.room.notify_all();
+    }
+
+    /// Let every reader waiting for room go, as the writer has gone.
+    fn close(&self) {
+        self.waiting().closed = true;
         self.room.notify_all();
     }
 }
 
-/// Lets every reader waiting for room go when the writer has gone, however
-/// it ends, so none waits for room that will never come.
+/// Closes the budget when the writer has gone, however it ends, so no
+/// reader waits for room that will never come.
 struct Closing<'a>(&'a Budget);
 
 impl Drop for Closing<'_> {
     fn drop(&mut self) {
-        self.0
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .1 = true;
-        self.0.room.notify_all();
+        self.0.close();
     }
 }
 
@@ -599,13 +615,11 @@ fn state_of(path: &Path, kind: ArtifactKind, metadata: &fs::Metadata) -> FileSta
         fingerprint: Vec::new(),
         closing: None,
     };
-    if kind == ArtifactKind::Database {
-        let mut wal = path.as_os_str().to_owned();
-        wal.push("-wal");
-        if let Ok(log) = fs::metadata(PathBuf::from(wal)) {
-            state.size = state.size.saturating_add(log.size());
-            state.modified = state.modified.max(modified(&log));
-        }
+    if kind == ArtifactKind::Database
+        && let Ok(log) = fs::metadata(crate::sharing::side_file(path, "-wal"))
+    {
+        state.size = state.size.saturating_add(log.size());
+        state.modified = state.modified.max(modified(&log));
     }
     state
 }

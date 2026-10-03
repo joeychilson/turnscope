@@ -12,7 +12,7 @@ use std::collections::{BTreeSet, HashMap};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::changes::{Touch, touch_artifact, touch_batch, touch_replaced_parents};
-use super::{Read, pairs, stored};
+use super::{Read, among_pairs, session_pairs, stored};
 use crate::agent::{Agent, ArtifactKind, Batch};
 use crate::error::{Error, Result};
 use crate::session::SessionKey;
@@ -441,18 +441,20 @@ fn store_holding(
     artifact: i64,
     batch: &Batch,
 ) -> Result<()> {
-    // The sessions held, as `?2` names them.
-    const HELD: &str = "SELECT id FROM session WHERE (agent, native) IN
-                            (SELECT value ->> 0, value ->> 1 FROM json_each(?2))";
     let Some(holding) = batch.holding() else {
         return Ok(());
     };
-    let held = pairs(holding.iter().map(|key| (key.agent().key(), key.native())));
+    // The sessions held, as `?2` names them.
+    let held_sessions = format!(
+        "SELECT id FROM session WHERE (agent, native) {}",
+        among_pairs(2)
+    );
+    let held = session_pairs(holding);
     // The sessions it speaks of and doesn't hold.
     let unheld = format!(
         "SELECT session_id FROM session_fact WHERE artifact_id = ?1
          UNION SELECT session_id FROM observation WHERE artifact_id = ?1
-         EXCEPT {HELD}"
+         EXCEPT {held_sessions}"
     );
     // Those it holds again, and those it holds no more.
     transaction
@@ -460,12 +462,12 @@ fn store_holding(
             "INSERT INTO touched (revision, kind, agent, key)
              SELECT ?3, ?4, s.agent, s.native FROM session s
              WHERE s.id IN (SELECT session_id FROM session_absent WHERE artifact_id = ?1)
-               AND s.id IN ({HELD})"
+               AND s.id IN ({held_sessions})"
         ))?
         .execute(params![artifact, held, revision, Touch::Session.key()])?;
     transaction
         .prepare_cached(&format!(
-            "DELETE FROM session_absent WHERE artifact_id = ?1 AND session_id IN ({HELD})"
+            "DELETE FROM session_absent WHERE artifact_id = ?1 AND session_id IN ({held_sessions})"
         ))?
         .execute(params![artifact, held])?;
     transaction

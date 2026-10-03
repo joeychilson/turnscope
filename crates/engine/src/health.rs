@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-use crate::agent::{Agent, DiagnosticKind, ReportScope};
+use crate::agent::{Agent, DiagnosticKind};
 use crate::error::{Error, Result};
 use crate::ledger::{Ledger, unsigned};
 use crate::model::ModelKey;
@@ -481,11 +481,7 @@ fn checks(ledger: &Ledger, responses: &[Response]) -> Result<Vec<Check>> {
 
     let mut checks = Vec::new();
     for report in ledger.reports()? {
-        let covered = if report.scope == ReportScope::Tree {
-            tree.below(&report.session)
-        } else {
-            vec![report.session.clone()]
-        };
+        let covered = outside::covered(&report, &tree);
         let mut transcripts = Transcripts::default();
         for response in covered
             .iter()

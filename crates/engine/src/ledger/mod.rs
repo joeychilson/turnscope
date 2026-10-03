@@ -353,16 +353,13 @@ impl Ledger {
     ///
     /// Returns [`Error::Ledger`] when the ledger cannot be read.
     pub(crate) fn responses_in(&self, sessions: &[SessionKey]) -> Result<HashSet<(Agent, String)>> {
-        let wanted = pairs(
-            sessions
-                .iter()
-                .map(|session| (session.agent().key(), session.native())),
-        );
-        let mut statement = self.connection.prepare_cached(
+        let wanted = session_pairs(sessions);
+        let mut statement = self.connection.prepare_cached(&format!(
             "SELECT DISTINCT o.agent, o.response FROM observation o
              JOIN session s ON s.id = o.session_id
-             WHERE (s.agent, s.native) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?1))",
-        )?;
+             WHERE (s.agent, s.native) {}",
+            among_pairs(1)
+        ))?;
         let mut rows = statement.query([wanted])?;
         let mut keys = HashSet::new();
         while let Some(row) = rows.next()? {
@@ -494,11 +491,7 @@ impl Ledger {
         keys: impl IntoIterator<Item = &'a SessionKey>,
         parents: &HashMap<SessionKey, (SessionKey, LinkKind)>,
     ) -> Result<Vec<SessionRecord>> {
-        let wanted = pairs(
-            keys.into_iter()
-                .map(|key| (key.agent().key(), key.native())),
-        );
-        self.records(Some(&wanted), parents)
+        self.records(Some(&session_pairs(keys)), parents)
     }
 
     /// The sessions `wanted` names, as [`pairs`] of their agents and native
@@ -508,12 +501,14 @@ impl Ledger {
         wanted: Option<&str>,
         parents: &HashMap<SessionKey, (SessionKey, LinkKind)>,
     ) -> Result<Vec<SessionRecord>> {
-        const WANTED: &str = "IN (SELECT id FROM session WHERE (agent, native) IN
-                                  (SELECT value ->> 0, value ->> 1 FROM json_each(?1)))";
+        let wanted_sessions = format!(
+            "IN (SELECT id FROM session WHERE (agent, native) {})",
+            among_pairs(1)
+        );
         let (sessions, facts) = if wanted.is_some() {
             (
-                format!("WHERE s.id {WANTED}"),
-                format!("WHERE f.session_id {WANTED}"),
+                format!("WHERE s.id {wanted_sessions}"),
+                format!("WHERE f.session_id {wanted_sessions}"),
             )
         } else {
             (String::new(), String::new())
@@ -700,20 +695,16 @@ impl Ledger {
         &self,
         keys: impl IntoIterator<Item = &'a SessionKey>,
     ) -> Result<Vec<SessionReport>> {
-        let wanted = pairs(
-            keys.into_iter()
-                .map(|key| (key.agent().key(), key.native())),
-        );
-        self.reported(Some(&wanted))
+        self.reported(Some(&session_pairs(keys)))
     }
 
     /// The own totals of the sessions `wanted` names, as [`pairs`] of their
     /// agents and native ids, or of every session.
     fn reported(&self, wanted: Option<&str>) -> Result<Vec<SessionReport>> {
         let condition = if wanted.is_some() {
-            "WHERE (s.agent, s.native) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?1))"
+            format!("WHERE (s.agent, s.native) {}", among_pairs(1))
         } else {
-            ""
+            String::new()
         };
         let mut statement = self.connection.prepare(&format!(
             "SELECT s.agent, s.native, r.artifact_id, r.scope, r.at, r.model, r.input, r.cache_read,
@@ -812,9 +803,9 @@ impl Ledger {
     /// or every response, with their reports combined.
     fn merged(&self, wanted: Option<&str>) -> Result<Vec<Response>> {
         let condition = if wanted.is_some() {
-            "WHERE (o.agent, o.response) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?1))"
+            format!("WHERE (o.agent, o.response) {}", among_pairs(1))
         } else {
-            ""
+            String::new()
         };
         let mut statement = self.connection.prepare(&format!(
             "SELECT o.agent, o.response,
@@ -909,6 +900,20 @@ fn pairs<'a>(pairs: impl Iterator<Item = (&'a str, &'a str)>) -> String {
     serde_json::Value::Array(pairs).to_string()
 }
 
+/// The sessions `keys`, as [`pairs`] of their agents' keys and native ids.
+fn session_pairs<'a>(keys: impl IntoIterator<Item = &'a SessionKey>) -> String {
+    pairs(
+        keys.into_iter()
+            .map(|key| (key.agent().key(), key.native())),
+    )
+}
+
+/// SQL testing two columns against the [`pairs`] parameter number
+/// `parameter` names, as `(agent, native) IN …` does.
+fn among_pairs(parameter: usize) -> String {
+    format!("IN (SELECT value ->> 0, value ->> 1 FROM json_each(?{parameter}))")
+}
+
 /// The session whose agent's key and native id are in columns `at` and the
 /// next of `row`: `None` for an agent this build doesn't know.
 fn session_at(row: &rusqlite::Row, at: usize) -> Result<Option<SessionKey>> {
@@ -975,7 +980,7 @@ pub(crate) fn stored(value: u64) -> Result<i64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::PathBuf;
 
     use super::{FileState, Ledger, MIGRATIONS, Read};
@@ -987,10 +992,17 @@ mod tests {
     use crate::time::Instant;
     use crate::usage::Tokens;
 
-    /// A read of the Claude Code log at `path`, which found `batch`.
-    fn read(path: &str, batch: Batch) -> Read {
+    /// A ledger of its own, in a folder kept as long as it is.
+    pub(crate) fn scratch() -> (tempfile::TempDir, Ledger) {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        (dir, ledger)
+    }
+
+    /// A read of `agent`'s log at `path` that found `batch`.
+    pub(crate) fn read(agent: Agent, path: &str, batch: Batch) -> Read {
         Read {
-            agent: Agent::ClaudeCode,
+            agent,
             path: PathBuf::from(path),
             kind: ArtifactKind::Log,
             file: FileState {
@@ -1042,10 +1054,11 @@ mod tests {
             batch
         };
         let ledger = |order: [(&str, Batch); 2]| {
-            let dir = tempfile::tempdir().unwrap();
-            let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+            let (dir, mut ledger) = scratch();
             for (path, batch) in order {
-                ledger.write(&[read(path, batch)], at).unwrap();
+                ledger
+                    .write(&[read(Agent::ClaudeCode, path, batch)], at)
+                    .unwrap();
             }
             (dir, ledger)
         };
@@ -1093,8 +1106,7 @@ mod tests {
 
     #[test]
     fn a_change_of_a_kind_no_write_records_is_corrupt() {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, ledger) = scratch();
         ledger
             .connection()
             .execute_batch(
@@ -1132,8 +1144,7 @@ mod tests {
             });
             batch
         };
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         // One file reports the response as its session's own, and later as a
         // copy another session made; another file, of a session whose key
         // sorts first, only copied it.
@@ -1142,7 +1153,9 @@ mod tests {
             ("/own.jsonl", observed("copier", true)),
             ("/copy.jsonl", observed("a-copier", true)),
         ] {
-            ledger.write(&[read(path, batch)], at).unwrap();
+            ledger
+                .write(&[read(Agent::ClaudeCode, path, batch)], at)
+                .unwrap();
         }
         let responses = ledger.responses().unwrap();
         assert_eq!(responses.len(), 1);
@@ -1151,8 +1164,7 @@ mod tests {
 
     #[test]
     fn a_session_whose_words_have_no_time_is_found_by_when_it_was_active() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let at = |text: &str| Instant::parse(text).unwrap();
         let key = |native: &str| SessionKey::new(Agent::ClaudeCode, native);
         // One session said it at 09:00; another, recording no time for what
@@ -1168,7 +1180,10 @@ mod tests {
         untimed
             .session_mut(&key("untimed"))
             .saw(at("2026-09-14T12:00:00Z"));
-        let reads = [read("/timed.jsonl", timed), read("/untimed.jsonl", untimed)];
+        let reads = [
+            read(Agent::ClaudeCode, "/timed.jsonl", timed),
+            read(Agent::ClaudeCode, "/untimed.jsonl", untimed),
+        ];
         ledger.write(&reads, at("2026-09-14T12:00:00Z")).unwrap();
 
         let found: Vec<SessionKey> = ledger
@@ -1182,8 +1197,7 @@ mod tests {
 
     #[test]
     fn a_report_of_a_scope_no_reader_gives_is_corrupt() {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, ledger) = scratch();
         ledger
             .connection()
             .execute_batch(
@@ -1207,8 +1221,7 @@ mod tests {
 
     #[test]
     fn a_link_given_anew_touches_the_parent_it_came_from_before() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(&dir.path().join("ledger.sqlite")).unwrap();
+        let (_dir, mut ledger) = scratch();
         let key = |native: &str| SessionKey::new(Agent::ClaudeCode, native);
         let linking = |parent: &str| {
             let mut batch = Batch::default();
@@ -1218,7 +1231,7 @@ mod tests {
                 kind: LinkKind::Subagent,
                 launch: None,
             });
-            read("/child.jsonl", batch)
+            read(Agent::ClaudeCode, "/child.jsonl", batch)
         };
         ledger.write(&[linking("first")], Instant::now()).unwrap();
         let after = ledger.revision().unwrap();
