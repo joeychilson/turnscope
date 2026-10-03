@@ -43,6 +43,9 @@ import Testing
     #expect(messages[3] == .reply(id: 3, error: nil))
     guard case .alert(let signIn) = messages[4] else { Issue.record("not an alert"); return }
     #expect(signIn.kind == .signIn)
+    guard case .alert(let early) = messages[5] else { Issue.record("not an alert"); return }
+    #expect(early.kind == .resetEarly)
+    #expect(early.left == 100)
 }
 
 @Test func everyRequestIsWrittenAsTheContractHasIt() throws {

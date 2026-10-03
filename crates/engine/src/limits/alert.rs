@@ -3,6 +3,19 @@
 //! when the last alert about it said it was reached. Beside them go
 //! milestones of a week or a month: each quarter of it used, and a
 //! subscription's that resets within a day with more than half of it left.
+//!
+//! **Early resets.** A provider may reset a week or a month before it said
+//! it would, giving everyone their limit back at once, as OpenAI has done
+//! with ChatGPT's. That is news of its own, room no one counted on: the
+//! reading before the latest was of a window longer than a day, with a
+//! reset still ahead when the latest was taken, and the latest is of another
+//! window, with at least [`GIVEN_BACK`] points less used ([`reset_early`]).
+//! The window before is what says it was a week or a month, as the latest
+//! may give none: Claude gives no reset for a week not yet begun. A limit
+//! that had run out is said to be back instead, which says as much, and so
+//! is one of which it was said that it would, where its new window gives a
+//! reset. Readings are taken every five minutes while an account is
+//! signed in, so an early reset is told within minutes of it.
 //! An account's first reading, as every account's is when Turnscope first
 //! runs, says only that a limit runs out or ran out: how much is left is
 //! where it stands, not news, and its milestones are kept as told.
@@ -33,6 +46,10 @@ const BACK_WITHIN: i64 = HOUR;
 /// signed in.
 const FRESH: i64 = 30 * 60 * 1000;
 
+/// How many points of a week or a month an early reset gives back to be
+/// news: a tenth of it. Less is room no one would miss.
+const GIVEN_BACK: f64 = 10.0;
+
 /// What an alert says of a limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertKind {
@@ -55,11 +72,14 @@ pub enum AlertKind {
     /// An account in use can't be read, its sign-in refused or expired
     /// until its agent renews it. Of the account, not of one limit.
     SignIn,
+    /// A week or a month its provider reset well before it said it would,
+    /// giving back at least a tenth of it.
+    ResetEarly,
 }
 
 impl AlertKind {
     /// Every kind.
-    const ALL: [AlertKind; 8] = [
+    const ALL: [AlertKind; 9] = [
         AlertKind::RunningOut,
         AlertKind::Reached,
         AlertKind::Available,
@@ -68,6 +88,7 @@ impl AlertKind {
         AlertKind::HalfLeft,
         AlertKind::QuarterLeft,
         AlertKind::SignIn,
+        AlertKind::ResetEarly,
     ];
 
     /// The kind as stored.
@@ -81,6 +102,7 @@ impl AlertKind {
             AlertKind::HalfLeft => "left-50",
             AlertKind::QuarterLeft => "left-25",
             AlertKind::SignIn => "sign-in",
+            AlertKind::ResetEarly => "reset-early",
         }
     }
 
@@ -98,12 +120,16 @@ impl AlertKind {
         )
     }
 
-    /// Whether it says a limit runs out, ran out or is back, which decides
-    /// whether a reset is news; the milestones said beside them don't.
+    /// Whether it says a limit runs out, ran out or is back, as an early
+    /// reset says it is, which decides whether a reset is news; the
+    /// milestones said beside them don't.
     pub(crate) fn of_running_out(self) -> bool {
         matches!(
             self,
-            AlertKind::RunningOut | AlertKind::Reached | AlertKind::Available
+            AlertKind::RunningOut
+                | AlertKind::Reached
+                | AlertKind::Available
+                | AlertKind::ResetEarly
         )
     }
 }
@@ -125,7 +151,9 @@ pub struct Alert {
     /// What the alert says.
     pub kind: AlertKind,
     /// When it runs out, for [`AlertKind::RunningOut`]; when it resets, for
-    /// [`AlertKind::Reached`], [`AlertKind::Unused`] and the quarters left.
+    /// [`AlertKind::Reached`], [`AlertKind::Unused`] and the quarters left,
+    /// and for [`AlertKind::ResetEarly`], when the window it was reset to
+    /// resets in turn.
     pub when: Option<Instant>,
     /// How much of it was used, in percent, by the reading the alert was
     /// worked out from; `None` where that is unknown, as for a window that
@@ -216,6 +244,12 @@ pub(crate) fn alerts(
                     _ => None,
                 }
             };
+            // A week or a month reset early is said when nothing above was,
+            // which, of one that ran out or would have, says it is back.
+            let due = match due {
+                None if !limit.refilled => reset_early(ledger, &account.id, limit)?,
+                due => due,
+            };
             // A warning that it runs out, or ran out, says all a quarter
             // crossed in the same read would: the quarter is kept as told,
             // and not said.
@@ -242,6 +276,43 @@ pub(crate) fn alerts(
         }
     }
     Ok(alerts)
+}
+
+/// That `account`'s `limit` was reset early, as its kind, when its new
+/// window resets, and that window: when the reading before its latest was
+/// of a window longer than a day, giving a reset more than a countdown's
+/// drift after the latest was taken, and the latest is of another window,
+/// or of one not yet begun, with at least [`GIVEN_BACK`] points less used.
+/// `None` otherwise, as of a window that reset when it said it would, or of
+/// five hours.
+fn reset_early(
+    ledger: &Ledger,
+    account: &str,
+    limit: &LimitState,
+) -> Result<Option<(AlertKind, Option<Instant>, i64)>> {
+    let Some(used) = limit.used else {
+        return Ok(None);
+    };
+    let Some(before) = ledger.reading_before(account, &limit.key, limit.read_at)? else {
+        return Ok(None);
+    };
+    // The window reset is the one before, which says how long it is: the
+    // latest gives none for a window not yet begun.
+    let (Some(began), Some(was_due)) = (before.starts, before.resets) else {
+        return Ok(None);
+    };
+    if was_due.millis() - began.millis() <= DAY {
+        return Ok(None);
+    }
+    let ahead = was_due.millis() - limit.read_at.millis() > SAME_WINDOW;
+    let another = limit
+        .resets
+        .is_none_or(|resets| (resets.millis() - was_due.millis()).abs() > SAME_WINDOW);
+    let given_back = before.used - used >= GIVEN_BACK;
+    Ok((ahead && another && given_back).then(|| {
+        let window = limit.resets.unwrap_or(limit.read_at).millis();
+        (AlertKind::ResetEarly, limit.resets, window)
+    }))
 }
 
 /// The milestones of `account`'s `limit`, a week or a month if `long`, due
@@ -649,6 +720,88 @@ mod tests {
             }]),
             ..read(0.0, 300)
         }
+    }
+
+    #[test]
+    fn a_week_reset_early_is_said_once_and_only_when_it_gives_back_room() {
+        // What is said of running out or being back; the milestones beside
+        // it are another test's.
+        let said = |reads| -> Vec<(i64, AlertKind)> {
+            alerted(reads)
+                .into_iter()
+                .filter(|(_, kind)| kind.of_running_out())
+                .collect()
+        };
+        let four_days = 4 * DAY;
+        // 38% used four days into the week, 0.4 points an hour, lasting the
+        // 62 left past its reset three days on. Five minutes later the
+        // provider gives a new week, begun then, with nothing used: 38
+        // points back, three days early, said once however often it is read.
+        assert_eq!(
+            said(vec![
+                (four_days, weekly(38.0, 0)),
+                (four_days + 5, weekly(0.0, four_days + 5)),
+                (four_days + 10, weekly(0.0, four_days + 5)),
+            ]),
+            [(four_days + 5, AlertKind::ResetEarly)]
+        );
+        // Claude gives no reset for a week not yet begun, so the new week
+        // says nothing of how long it is: the one before says it is a week.
+        // Said once, and not again as the new week begins.
+        let unbegun = |used: f64| {
+            let mut read = weekly(used, 0);
+            for limit in read.limits.iter_mut().flatten() {
+                (limit.starts, limit.resets) = (None, None);
+            }
+            read
+        };
+        assert_eq!(
+            said(vec![
+                (four_days, weekly(38.0, 0)),
+                (four_days + 5, unbegun(0.0)),
+                (four_days + 10, unbegun(0.0)),
+                (four_days + 60, weekly(2.0, four_days + 55)),
+            ]),
+            [(four_days + 5, AlertKind::ResetEarly)]
+        );
+        // A week that resets when it said it would is no news, and neither is
+        // one reset early with 8 points used, under a tenth of it.
+        assert_eq!(
+            said(vec![
+                (four_days, weekly(38.0, 0)),
+                (WEEK + 5, weekly(1.0, WEEK)),
+            ]),
+            []
+        );
+        assert_eq!(
+            said(vec![(four_days, weekly(38.0, 0)), (WEEK + 5, unbegun(0.0))]),
+            []
+        );
+        assert_eq!(
+            said(vec![
+                (four_days, weekly(8.0, 0)),
+                (four_days + 5, weekly(0.0, four_days + 5)),
+            ]),
+            []
+        );
+        // A week used up and reset early is back, which says it.
+        assert_eq!(
+            said(vec![
+                (four_days, weekly(100.0, 0)),
+                (four_days + 5, weekly(0.0, four_days + 5)),
+            ]),
+            [
+                (four_days, AlertKind::Reached),
+                (four_days + 5, AlertKind::Available)
+            ]
+        );
+        // Five hours reset early are no news: they reset within the day,
+        // whether the new five hours have begun or not.
+        assert_eq!(
+            said(vec![(100, read(40.0, 300)), (105, read(0.0, 405))]),
+            []
+        );
+        assert_eq!(said(vec![(100, read(40.0, 300)), (105, unset(0.0))]), []);
     }
 
     #[test]

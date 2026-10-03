@@ -171,6 +171,26 @@ impl Ledger {
         readings(statement.query(params![account, since.millis()])?)
     }
 
+    /// The reading of `account`'s limit `key` taken last before `at`: what
+    /// the read before one at `at` found of it. `None` when none was.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Ledger`] when the ledger cannot be read, and
+    /// [`Error::Corrupt`] when a reading's time is out of range.
+    pub(crate) fn reading_before(
+        &self,
+        account: &str,
+        key: &str,
+        at: Instant,
+    ) -> Result<Option<Reading>> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT key, name, scope, at, used, starts, resets FROM limit_reading
+             WHERE account = ?1 AND key = ?2 AND at < ?3 ORDER BY at DESC LIMIT 1",
+        )?;
+        Ok(readings(statement.query(params![account, key, at.millis()])?)?.pop())
+    }
+
     /// Whether `account`'s limits have been read at one time only, as every
     /// account's are when Turnscope first runs.
     ///

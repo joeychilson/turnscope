@@ -358,6 +358,10 @@ public struct Words: Sendable {
                         body: body(alert.at.map { "Back \(clock($0))" }), urgent: true)
         case .back:
             return Note(title: "\(alert.title) is back", body: body("The \(limit) limit reset"), urgent: false)
+        case .resetEarly:
+            return Note(title: "\(alert.title)'s \(limit) reset early",
+                        body: body("\(percent(alert.left)) left", alert.at.map { "Resets \(clock($0))" }),
+                        urgent: false)
         case .unused, .threeQuartersLeft, .halfLeft, .quarterLeft:
             return Note(title: "\(percent(alert.left)) of \(alert.title)'s \(limit) left",
                         body: body(alert.at.map { "Resets \(clock($0))" }), urgent: false)

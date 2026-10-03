@@ -174,6 +174,12 @@ private func limit(_ standing: Standing, hours: Int? = 5, left: Double? = 20,
     var scoped = unused
     (scoped.kind, scoped.scope, scoped.left, scoped.label) = (.halfLeft, "Opus", 50, nil)
     #expect(words.note(scoped).title == "50% of Claude Max's Opus week left")
+    // A week reset early: what is left of the new one, and when it resets.
+    var early = unused
+    (early.kind, early.left) = (.resetEarly, 100)
+    #expect(words.note(early) == .init(title: "Claude Max's week reset early",
+                                       body: "joey@example.com\n100% left\nResets tomorrow 9 AM",
+                                       urgent: false))
 }
 
 @Test func aRefusedSignInSaysWhereToSignIn() {
