@@ -213,9 +213,8 @@ impl Source {
     fn all_time() -> Source {
         Source {
             table: format!(
-                "(SELECT quarter, session, agent, provider, model_key, kind, account, {} FROM rollup
-                  UNION ALL {}) r",
-                columns("rollup"),
+                "({} UNION ALL {}) r",
+                from_rollup(),
                 quarters("WHERE u.at IS NULL")
             ),
             ..Source::rollup()
@@ -273,11 +272,8 @@ impl Source {
                 cuts.push((from.millis(), until.millis()));
             }
             _ => {
-                let mut whole = String::from(
-                    "SELECT quarter, session, agent, provider, model_key, kind, account, ",
-                );
-                whole.push_str(&columns("rollup"));
-                whole.push_str(" FROM rollup WHERE 1");
+                let mut whole = from_rollup();
+                whole.push_str(" WHERE 1");
                 if let Some(first) = whole_from {
                     whole.push_str(" AND quarter >= ?");
                     values.push(Sql::Integer(first));
@@ -473,6 +469,15 @@ fn tokens(table: &str) -> String {
 /// turn to floating point and reading the order fails.
 fn tokens_ordered(table: &str) -> String {
     capped(&tokens(table))
+}
+
+/// The rollup's quarter-hour sums, each with what it sums by and its named
+/// aggregates, as a `SELECT` a condition can follow.
+fn from_rollup() -> String {
+    format!(
+        "SELECT quarter, session, agent, provider, model_key, kind, account, {} FROM rollup",
+        columns("rollup")
+    )
 }
 
 /// The named aggregates of `table`, in order.
@@ -847,10 +852,9 @@ fn listed(connection: &Connection, question: &SessionQuery) -> Result<Page<Sessi
     // accounts; otherwise every session is, those without usage included.
     // Claude Code's Explore subagents run Haiku, so a session can have usage
     // of Haiku only through them.
-    let bounded = question.span.from.is_some()
-        || question.span.until.is_some()
-        || !question.filter.models.is_empty()
-        || !question.filter.accounts.is_empty();
+    let spanned = question.span.from.is_some() || question.span.until.is_some();
+    let bounded =
+        spanned || !question.filter.models.is_empty() || !question.filter.accounts.is_empty();
     let mut values: Vec<Sql> = Vec::new();
 
     // Each session's own usage in the span, and each session's with every
@@ -895,7 +899,6 @@ fn listed(connection: &Connection, question: &SessionQuery) -> Result<Page<Sessi
     // When a session was last active: within the span, for a list of one,
     // exactly when its latest activity of all falls in the span, and
     // otherwise the end of its tree's last quarter hour of usage in the span.
-    let spanned = question.span.from.is_some() || question.span.until.is_some();
     let activity = if spanned {
         let mut within = String::from("s.active IS NOT NULL");
         let mut last = format!("tree.q + {}", QUARTER - 1);
