@@ -63,7 +63,7 @@ pub(super) const READER: Reader = Reader {
 /// account's: the limits of all its keys, each key asked once however many
 /// agents keep it. Read whole or not at all: a key that gets no answer is
 /// the account's answer, as its other keys' limits would look like all of
-/// them.
+/// them, and the keys after it are not asked.
 pub(super) fn read(
     sign_ins: &[SignIn],
     now: Instant,
@@ -89,14 +89,13 @@ pub(super) fn read(
                 .collect();
             keys.sort_unstable();
             keys.dedup();
-            let mut limits = Ok(Vec::new());
-            for key in keys {
-                match (fetch(key, now), &mut limits) {
-                    (Ok(answer), Ok(limits)) => limits.extend(answer.limits),
-                    (Err(problem), Ok(_)) => limits = Err(problem),
-                    (_, Err(_)) => {}
-                }
-            }
+            // The first key that gets no answer ends the read: the keys
+            // after it are not asked.
+            let limits = keys
+                .into_iter()
+                .map(|key| fetch(key, now).map(|answer| answer.limits))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|limits| limits.concat());
             AccountRead {
                 id: api_account(provider),
                 label: None,
@@ -412,6 +411,14 @@ mod tests {
             _ => Err(LimitProblem::SignIn),
         });
         assert_eq!(reads[0].limits, Err(LimitProblem::SignIn));
+        // The first refused, the second is not asked.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let reads = read(&keys, now, |key, _| {
+            asked.borrow_mut().push(key.to_owned());
+            Err(LimitProblem::Unavailable)
+        });
+        assert_eq!(asked.into_inner(), ["sk-or-a"]);
+        assert_eq!(reads[0].limits, Err(LimitProblem::Unavailable));
     }
 
     #[test]

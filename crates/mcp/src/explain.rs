@@ -4,8 +4,10 @@
 //! who used it, so the engine shares each rise between two readings among
 //! the responses that could have drawn on it, by what each cost at list
 //! prices ([`turnscope_engine::Engine::limit_window`]); a rise while nothing
-//! here spent is use elsewhere, as in the provider's apps or on its website.
-//! Shares are approximate, and say so.
+//! here spent is use elsewhere, as in the provider's apps or on its website,
+//! and a rise while only responses with no known price were made here is
+//! this Mac's but no one's in particular, said apart from both. Shares are
+//! approximate, and say so.
 //!
 //! **Why.** Beside each session's share is what drove it, as the person can
 //! change it: the model; how many responses; how large its context grew,
@@ -97,6 +99,7 @@ pub(crate) fn output_schema() -> Value {
             }), &["name", "share_percent"])},
             "others": shape(json!({"count": {"type": "integer"}, "share_percent": {"type": "number"}}), &["count", "share_percent"]),
             "elsewhere_percent": {"type": "number"},
+            "unpriced_percent": {"type": "number", "description": "Used on this Mac while only responses with no known price were made, which can't be shared among them."},
             "approximate": {"type": "boolean"},
             "session": {"type": "object"},
         }),
@@ -226,6 +229,7 @@ pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
         "by": if arguments.session.is_some() { "session" } else { by.key() },
         "parts": [],
         "elsewhere_percent": rounded(window.elsewhere, 2),
+        "unpriced_percent": rounded(window.unpriced, 2),
         "approximate": true,
     });
     if ended.is_some() {
@@ -297,17 +301,32 @@ pub(crate) fn explain(server: &Server, arguments: ExplainLimit) -> Answer {
         data["parts"] = parts.0;
         data["others"] = parts.1;
     }
-    if window.elsewhere >= 0.05 {
-        said.push(format!(
-            "Not on this Mac ({}): {}.",
-            elsewhere(account.subscription),
-            prose::share(window.elsewhere)
-        ));
-    }
+    said.extend(unshared(&window, account.subscription));
     Ok(Reply::Answer {
         said: said.join("\n"),
         data,
     })
+}
+
+/// What of `window` no part took, each a sentence when it is at least a
+/// tenth of a point as rounded: use off this Mac, and use on it with no
+/// known price to share it out by.
+fn unshared(window: &LimitWindow, subscription: Subscription) -> Vec<String> {
+    let mut said = Vec::new();
+    if window.elsewhere >= 0.05 {
+        said.push(format!(
+            "Not on this Mac ({}): {}.",
+            elsewhere(subscription),
+            prose::share(window.elsewhere)
+        ));
+    }
+    if window.unpriced >= 0.05 {
+        said.push(format!(
+            "On this Mac, by models with no known price, so not shared out: {}.",
+            prose::share(window.unpriced)
+        ));
+    }
+    said
 }
 
 /// Where use off this Mac comes from, for a subscription.
@@ -648,4 +667,40 @@ fn session(
         }).collect::<Vec<_>>(),
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use turnscope_engine::{LimitTrack, LimitWindow, Subscription};
+
+    use super::unshared;
+
+    /// A window nothing here took, with `elsewhere` and `unpriced`.
+    fn window(elsewhere: f64, unpriced: f64) -> LimitWindow {
+        LimitWindow {
+            track: LimitTrack {
+                starts: None,
+                resets: None,
+                points: Vec::new(),
+            },
+            sessions: Vec::new(),
+            projects: Vec::new(),
+            models: Vec::new(),
+            elsewhere,
+            unpriced,
+        }
+    }
+
+    #[test]
+    fn what_no_part_took_is_said_apart_where_it_is_more_than_rounding() {
+        assert_eq!(
+            unshared(&window(12.0, 3.0), Subscription::Claude),
+            [
+                "Not on this Mac (Claude apps and the web): 12.0%.",
+                "On this Mac, by models with no known price, so not shared out: 3.0%."
+            ]
+        );
+        // Under 0.05 is not said.
+        assert!(unshared(&window(0.04, 0.04), Subscription::Claude).is_empty());
+    }
 }

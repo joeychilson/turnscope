@@ -60,6 +60,7 @@ fn a_window_is_explained_by_the_sessions_that_took_it_and_why() {
     // From its prompt 31 minutes ago to its last reply 20 minutes ago.
     assert_eq!(beta["duration_minutes"], 11);
     assert_eq!(data["elsewhere_percent"], json!(0.0));
+    assert_eq!(data["unpriced_percent"], json!(0.0));
     assert_eq!(data["approximate"], true);
     let said = explained.said();
     // Each session with its project, agent and the day it ran, which is
