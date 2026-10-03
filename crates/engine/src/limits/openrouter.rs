@@ -117,7 +117,7 @@ fn parse(body: &Value, key: &str, now: Instant) -> Option<PlanLimits> {
     };
     let window = match every {
         Some(every) => {
-            let utc = Zone::named("UTC")?;
+            let utc = Zone::from(jiff::tz::TimeZone::UTC);
             let starts = start_of(every, now, &utc)?;
             (Some(starts), Some(next(every, starts, &utc)?))
         }

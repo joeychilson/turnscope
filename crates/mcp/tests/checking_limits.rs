@@ -17,8 +17,7 @@ use history::server::{answer, refusal};
 
 /// `at` as the figures give it, in UTC.
 fn utc(at: Instant) -> String {
-    jiff::Timestamp::from_millisecond(at.millis())
-        .unwrap()
+    at.timestamp()
         .to_zoned(jiff::tz::TimeZone::UTC)
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string()

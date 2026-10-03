@@ -27,15 +27,9 @@ fn from_now(now: Instant, minutes: i64) -> Instant {
 }
 
 /// `at` as agents write a time.
-fn stamp(at: Instant) -> String {
-    jiff::Timestamp::from_millisecond(at.millis())
-        .unwrap()
-        .to_string()
-}
-
 /// A Claude Code reply in `session`, in /work/atlas, at `at`.
 fn reply(session: &str, id: &str, at: Instant) -> Value {
-    json!({"type": "assistant", "sessionId": session, "timestamp": stamp(at),
+    json!({"type": "assistant", "sessionId": session, "timestamp": at.to_string(),
            "cwd": "/work/atlas", "requestId": format!("req_{id}"),
            "message": {"id": format!("msg_{id}"), "model": "claude-opus-5", "role": "assistant",
                        "usage": {"input_tokens": 1_000, "output_tokens": 100},

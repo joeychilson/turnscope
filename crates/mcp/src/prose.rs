@@ -10,16 +10,14 @@
 use std::path::Path;
 
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, Zoned};
+use jiff::Zoned;
 use turnscope_engine::Instant;
 
 /// `at` as a clock reads it, as seen at `now` in `zone`: `4:10 PM` on the
 /// same day, `Thu 9:00 AM` within six days either way, `Oct 3, 9:00 AM`
 /// otherwise in the same year, and `Oct 3 2025, 9:00 AM` in another.
 pub(crate) fn clock(at: Instant, now: Instant, zone: &TimeZone) -> String {
-    let (Some(at), Some(now)) = (zoned(at, zone), zoned(now, zone)) else {
-        return format!("{} ms after 1970", at.millis());
-    };
+    let (at, now) = (zoned(at, zone), zoned(now, zone));
     let days = (at.date() - now.date()).get_days();
     let time = at.strftime("%-I:%M %p").to_string();
     if days == 0 {
@@ -36,9 +34,7 @@ pub(crate) fn clock(at: Instant, now: Instant, zone: &TimeZone) -> String {
 /// The day of `at` as the person would say it, as seen at `now` in `zone`:
 /// `today`, `yesterday`, a weekday within six days, or a date.
 pub(crate) fn day(at: Instant, now: Instant, zone: &TimeZone) -> String {
-    let (Some(at), Some(now)) = (zoned(at, zone), zoned(now, zone)) else {
-        return format!("{} ms after 1970", at.millis());
-    };
+    let (at, now) = (zoned(at, zone), zoned(now, zone));
     match (at.date() - now.date()).get_days() {
         0 => "today".to_owned(),
         -1 => "yesterday".to_owned(),
@@ -50,16 +46,11 @@ pub(crate) fn day(at: Instant, now: Instant, zone: &TimeZone) -> String {
 
 /// The time of day of `at` in `zone`, as `11:02 AM`.
 pub(crate) fn hour(at: Instant, zone: &TimeZone) -> String {
-    match zoned(at, zone) {
-        Some(at) => at.strftime("%-I:%M %p").to_string(),
-        None => format!("{} ms after 1970", at.millis()),
-    }
+    zoned(at, zone).strftime("%-I:%M %p").to_string()
 }
 
-fn zoned(at: Instant, zone: &TimeZone) -> Option<Zoned> {
-    Timestamp::from_millisecond(at.millis())
-        .ok()
-        .map(|at| at.to_zoned(zone.clone()))
+fn zoned(at: Instant, zone: &TimeZone) -> Zoned {
+    at.timestamp().to_zoned(zone.clone())
 }
 
 /// A length of time, `millis` long, as `45m`, `1h 30m`, `18h` or `2d 3h`;
