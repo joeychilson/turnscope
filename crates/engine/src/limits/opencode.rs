@@ -7,7 +7,7 @@
 use jiff::ToSpan;
 use serde_json::Value;
 
-use super::{Answer, Identity, LimitProblem, Location, Reader, Source, WEEK};
+use super::{Identity, LimitProblem, Location, PlanLimits, Reader, Source, WEEK};
 use crate::agent::Agent;
 use crate::time::Instant;
 
@@ -57,14 +57,14 @@ fn identity(key: &str) -> Identity {
     }
 }
 
-fn fetch(key: &str, _identity: &Identity, _now: Instant) -> Result<Answer, LimitProblem> {
+fn fetch(key: &str, _identity: &Identity, _now: Instant) -> Result<PlanLimits, LimitProblem> {
     super::get(URL, key, &[], parse)
 }
 
 /// The limits in a usage answer: `None` when a window it gives doesn't read.
 /// A rolling window is always the last five hours, so it has no start that
 /// how much of it has passed could be told from.
-fn parse(body: &Value) -> Option<Answer> {
+fn parse(body: &Value) -> Option<PlanLimits> {
     let usage = &body["usage"];
     let mut limits = Vec::new();
     for (key, name) in [
@@ -90,7 +90,7 @@ fn parse(body: &Value) -> Option<Answer> {
             span,
         )?);
     }
-    Some(Answer {
+    Some(PlanLimits {
         plan: Some("Go".to_owned()),
         limits,
     })

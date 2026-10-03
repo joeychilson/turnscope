@@ -22,7 +22,7 @@
 
 use serde_json::Value;
 
-use super::{Answer, Identity, LimitProblem, Location, Reader, Source};
+use super::{Identity, LimitProblem, Location, PlanLimits, Reader, Source};
 use crate::agent::Agent;
 use crate::time::Instant;
 
@@ -98,14 +98,14 @@ fn identity(token: &str) -> Identity {
     }
 }
 
-fn fetch(token: &str, _identity: &Identity, _now: Instant) -> Result<Answer, LimitProblem> {
+fn fetch(token: &str, _identity: &Identity, _now: Instant) -> Result<PlanLimits, LimitProblem> {
     super::get(URL, token, HEADERS, parse)
 }
 
 /// The pool in a billing answer: how much is used, and when the period ends.
 /// `None` when a period it gives doesn't read, or it gives neither a period
 /// nor how much is used.
-fn parse(body: &Value) -> Option<Answer> {
+fn parse(body: &Value) -> Option<PlanLimits> {
     let config = body.get("config")?.as_object()?;
     let period = match config.get("currentPeriod") {
         None | Some(Value::Null) => None,
@@ -135,7 +135,7 @@ fn parse(body: &Value) -> Option<Answer> {
         period.map(|(_, resets)| resets),
     );
     let limit = super::limit("pool", &name, None, used, window)?;
-    Some(Answer {
+    Some(PlanLimits {
         plan: None,
         limits: vec![limit],
     })

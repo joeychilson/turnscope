@@ -43,7 +43,7 @@ use serde_json::Value;
 use super::attribution::{self, Held, Place, Seen, Span, api_account};
 use super::sign_in::{credentials, json_file};
 use super::{
-    AccountLimits, AccountRead, Answer, LimitProblem, Reader, SignIn, Subscription, openrouter,
+    AccountLimits, AccountRead, LimitProblem, PlanLimits, Reader, SignIn, Subscription, openrouter,
 };
 use crate::agent::{self, Agent};
 use crate::error::Result;
@@ -67,7 +67,7 @@ pub(super) const READER: Reader = Reader {
 pub(super) fn read(
     sign_ins: &[SignIn],
     now: Instant,
-    fetch: impl Fn(&str, Instant) -> Result<Answer, LimitProblem>,
+    fetch: impl Fn(&str, Instant) -> Result<PlanLimits, LimitProblem>,
 ) -> Vec<AccountRead> {
     let mut providers: Vec<&str> = sign_ins.iter().map(|sign_in| sign_in.provider).collect();
     providers.sort_unstable();
@@ -316,7 +316,7 @@ mod tests {
     use crate::agent::Agent;
     use crate::folders::{Folder, FolderOrigin};
     use crate::limits::attribution::{Held, Place, Seen, Span};
-    use crate::limits::{Answer, LimitProblem, Reported, SignIn};
+    use crate::limits::{LimitProblem, PlanLimits, Reported, SignIn};
     use crate::time::Instant;
 
     #[test]
@@ -386,7 +386,7 @@ mod tests {
         let asked = std::cell::RefCell::new(Vec::new());
         let reads = read(&keys, now, |key, _| {
             asked.borrow_mut().push(key.to_owned());
-            Ok(Answer {
+            Ok(PlanLimits {
                 plan: None,
                 limits: match key {
                     "sk-or-a" => vec![limit("a", 25.0)],
@@ -404,7 +404,7 @@ mod tests {
         // One key refused: the account's answer, not the other key's limit
         // alone.
         let reads = read(&keys, now, |key, _| match key {
-            "sk-or-a" => Ok(Answer {
+            "sk-or-a" => Ok(PlanLimits {
                 plan: None,
                 limits: vec![limit("a", 25.0)],
             }),

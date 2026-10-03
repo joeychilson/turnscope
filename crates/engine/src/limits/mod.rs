@@ -739,7 +739,7 @@ struct Reader {
     /// The account a token belongs to.
     identity: fn(&str) -> Identity,
     /// Ask the provider for an account's limits with one of its tokens.
-    fetch: fn(&str, &Identity, Instant) -> Result<Answer, LimitProblem>,
+    fetch: fn(&str, &Identity, Instant) -> Result<PlanLimits, LimitProblem>,
 }
 
 /// One place an agent keeps a sign-in to a subscription, in each of its
@@ -825,8 +825,9 @@ fn one_account(_token: &str) -> Identity {
     }
 }
 
-/// What a provider answered for one account.
-struct Answer {
+/// What a provider answered for one account: its plan, when the answer
+/// names one, and the limits on it.
+struct PlanLimits {
     plan: Option<String>,
     limits: Vec<Reported>,
 }
@@ -1250,8 +1251,8 @@ fn get(
     url: &str,
     token: &str,
     headers: &[&str],
-    parse: impl FnOnce(&Value) -> Option<Answer>,
-) -> Result<Answer, LimitProblem> {
+    parse: impl FnOnce(&Value) -> Option<PlanLimits>,
+) -> Result<PlanLimits, LimitProblem> {
     parse(&ask(url, token, headers)?)
         .filter(|answer| !answer.limits.is_empty())
         .ok_or(LimitProblem::Unrecognized)

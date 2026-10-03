@@ -16,7 +16,7 @@
 
 use serde_json::Value;
 
-use super::{Answer, Identity, LimitProblem, Location, Reader, Reported, Source};
+use super::{Identity, LimitProblem, Location, PlanLimits, Reader, Reported, Source};
 use crate::agent::Agent;
 use crate::time::Instant;
 
@@ -81,7 +81,7 @@ fn identity(token: &str) -> Identity {
     }
 }
 
-fn fetch(token: &str, identity: &Identity, now: Instant) -> Result<Answer, LimitProblem> {
+fn fetch(token: &str, identity: &Identity, now: Instant) -> Result<PlanLimits, LimitProblem> {
     // Picks the workspace when one person belongs to several.
     let workspace = format!("ChatGPT-Account-Id: {}", identity.key);
     let headers: &[&str] = if identity.key.is_empty() {
@@ -94,7 +94,7 @@ fn fetch(token: &str, identity: &Identity, now: Instant) -> Result<Answer, Limit
 
 /// The limits in a usage answer: `None` when a window it gives doesn't
 /// read, or a limit on particular models doesn't say which.
-fn parse(body: &Value, now: Instant) -> Option<Answer> {
+fn parse(body: &Value, now: Instant) -> Option<PlanLimits> {
     let mut limits = windows(&body["rate_limit"], None, now)?;
     match &body["additional_rate_limits"] {
         Value::Null => {}
@@ -112,7 +112,7 @@ fn parse(body: &Value, now: Instant) -> Option<Answer> {
         }
         _ => return None,
     }
-    Some(Answer {
+    Some(PlanLimits {
         plan: body["plan_type"].as_str().map(str::to_owned),
         limits,
     })

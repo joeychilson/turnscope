@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::{Answer, HOUR, Identity, LimitProblem, Location, Reader, Source, WEEK, Whose};
+use super::{HOUR, Identity, LimitProblem, Location, PlanLimits, Reader, Source, WEEK, Whose};
 use crate::agent::Agent;
 use crate::folders::Folder;
 use crate::time::Instant;
@@ -109,13 +109,13 @@ fn config(folder: &Folder, home: &Path) -> PathBuf {
     }
 }
 
-fn fetch(token: &str, _identity: &Identity, _now: Instant) -> Result<Answer, LimitProblem> {
+fn fetch(token: &str, _identity: &Identity, _now: Instant) -> Result<PlanLimits, LimitProblem> {
     super::get(URL, token, &["anthropic-beta: oauth-2025-04-20"], parse)
 }
 
 /// The limits in a usage answer: `None` when a window it gives doesn't read,
 /// since the windows left would look like all of them.
-fn parse(body: &Value) -> Option<Answer> {
+fn parse(body: &Value) -> Option<PlanLimits> {
     let mut limits = Vec::new();
     for (key, window) in body.as_object()? {
         if super::absent(window) {
@@ -148,7 +148,7 @@ fn parse(body: &Value) -> Option<Answer> {
             super::ending(resets, length),
         )?);
     }
-    Some(Answer { plan: None, limits })
+    Some(PlanLimits { plan: None, limits })
 }
 
 /// A model's key, such as `opus`, as words: `Opus`.
