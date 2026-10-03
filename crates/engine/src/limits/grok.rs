@@ -122,13 +122,12 @@ fn parse(body: &Value) -> Option<Answer> {
     };
     let name = period.map_or_else(
         || "Usage".to_owned(),
-        |(starts, resets)| super::span((resets.millis() - starts.millis()) / 1_000),
+        |(starts, resets)| super::window_name((resets.millis() - starts.millis()) / 1_000),
     );
-    let zero = Value::from(0.0);
     let used = match (config.get("creditUsagePercent"), period) {
-        (Some(used), _) => used,
+        (Some(used), _) => used.as_f64(),
         // Left out because it is zero, where the period it is of is given.
-        (None, Some(_)) => &zero,
+        (None, Some(_)) => Some(0.0),
         (None, None) => return None,
     };
     let window = (

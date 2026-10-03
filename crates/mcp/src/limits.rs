@@ -804,7 +804,6 @@ mod tests {
             resets: Instant::parse(resets),
             read_at: Instant::parse(read).unwrap(),
             pace,
-            runs_out: None,
             refilled: false,
         }
     }
@@ -847,32 +846,6 @@ mod tests {
         }
         assert!(matches(&opus, "Opus weekly"));
         assert!(!matches(&opus, "week"));
-    }
-
-    #[test]
-    fn a_pace_says_when_a_limit_runs_out_or_what_is_left_at_its_reset() {
-        let read = "2026-09-29T12:00:00Z";
-        // 82% used, rising 12 points an hour: the 18 left last 1.5 hours,
-        // to 13:30, before the 15:00 reset.
-        let five = reading("5 hours", 82.0, read, Some(12.0), "2026-09-29T15:00:00Z");
-        assert_eq!(
-            five.outlook().runs_out,
-            Instant::parse("2026-09-29T13:30:00Z")
-        );
-        // 38% used, rising half a point an hour, 40 hours to its reset: 20
-        // more points, so 42% left at it.
-        let week = reading("Weekly", 38.0, read, Some(0.5), "2026-10-01T04:00:00Z");
-        assert_eq!(week.outlook().left_at_reset, Some(42.0));
-        assert_eq!(week.outlook().runs_out, None);
-        // Not rising: what is left now is left at the reset.
-        let flat = reading("Weekly", 38.0, read, Some(0.0), "2026-10-01T04:00:00Z");
-        assert_eq!(flat.outlook().left_at_reset, Some(62.0));
-        // No pace yet: neither.
-        let new = reading("Weekly", 38.0, read, None, "2026-10-01T04:00:00Z");
-        assert_eq!(new.outlook().left_at_reset, None);
-        // The tightest is the one that runs out first.
-        let both = account(read, vec![week, five]);
-        assert_eq!(both.deciding().unwrap().name, "5 hours");
     }
 
     #[test]

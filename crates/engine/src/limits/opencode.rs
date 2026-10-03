@@ -7,7 +7,7 @@
 use jiff::ToSpan;
 use serde_json::Value;
 
-use super::{Answer, Identity, LimitProblem, Location, Reader, Source};
+use super::{Answer, Identity, LimitProblem, Location, Reader, Source, WEEK};
 use crate::agent::Agent;
 use crate::time::Instant;
 
@@ -61,9 +61,6 @@ fn fetch(key: &str, _identity: &Identity, _now: Instant) -> Result<Answer, Limit
     super::get(URL, key, &[], parse)
 }
 
-/// A week, in milliseconds.
-const WEEK: i64 = 7 * 24 * 3_600_000;
-
 /// The limits in a usage answer: `None` when a window it gives doesn't read.
 /// A rolling window is always the last five hours, so it has no start that
 /// how much of it has passed could be told from.
@@ -85,7 +82,13 @@ fn parse(body: &Value) -> Option<Answer> {
             "weekly" => super::ending(resets, WEEK),
             _ => (resets.and_then(month_before), resets),
         };
-        limits.push(super::limit(key, name, None, &window["percent"], span)?);
+        limits.push(super::limit(
+            key,
+            name,
+            None,
+            window["percent"].as_f64(),
+            span,
+        )?);
     }
     Some(Answer {
         plan: Some("Go".to_owned()),

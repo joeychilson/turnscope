@@ -27,13 +27,10 @@ use rusqlite::Connection;
 
 use super::history::{self, PastWindow};
 use super::share::{counts_in, spending_by};
-use super::{AccountLimits, Subscription, pace};
+use super::{AccountLimits, DAY, Subscription, WEEK};
 use crate::error::Result;
 use crate::ledger::Ledger;
 use crate::time::{Instant, Zone, monday_morning};
-
-/// A week's length.
-const WEEK: i64 = 7 * pace::DAY;
 
 /// An account's week that ended, as the weekly recap tells it.
 #[derive(Clone, Debug, PartialEq)]
@@ -86,7 +83,7 @@ pub(crate) fn recap(
     let from = before.millis();
     // A week told of resets after `from` and lasts at most eight days, so
     // it began after this.
-    let Some(since) = Instant::from_millis(from - WEEK - pace::DAY) else {
+    let Some(since) = Instant::from_millis(from - WEEK - DAY) else {
         return Ok(Vec::new());
     };
     let mut weeks = Vec::new();
@@ -136,7 +133,7 @@ fn a_week(window: &PastWindow) -> bool {
         .starts
         .zip(window.resets)
         .is_some_and(|(starts, resets)| {
-            (WEEK - pace::DAY..=WEEK + pace::DAY).contains(&(resets.millis() - starts.millis()))
+            (WEEK - DAY..=WEEK + DAY).contains(&(resets.millis() - starts.millis()))
         })
 }
 
@@ -178,7 +175,7 @@ mod tests {
     use crate::agent::Agent;
     use crate::ledger::Ledger;
     use crate::ledger::tests::scratch;
-    use crate::limits::{PastWindow, Read, Reported, Subscription, state};
+    use crate::limits::{AccountRead, PastWindow, Reported, Subscription, state};
     use crate::time::{Instant, Zone};
 
     fn at(text: &str) -> Instant {
@@ -187,8 +184,8 @@ mod tests {
 
     /// A read of `id`'s weekly limit, `used` percent, in the week from
     /// `starts` to `resets`.
-    fn week(id: &str, used: f64, starts: &str, resets: &str) -> Read {
-        Read {
+    fn week(id: &str, used: f64, starts: &str, resets: &str) -> AccountRead {
+        AccountRead {
             id: id.to_owned(),
             label: None,
             plan: None,
@@ -484,7 +481,7 @@ mod tests {
     }
 
     /// Work's week of the test above, alone.
-    fn reads_again() -> Vec<(&'static str, Read)> {
+    fn reads_again() -> Vec<(&'static str, AccountRead)> {
         vec![
             (
                 "2026-09-22T12:00:00Z",
@@ -537,7 +534,7 @@ mod tests {
             ),
         ];
         for (when, limits) in reads {
-            let read = Read {
+            let read = AccountRead {
                 limits: Ok(limits.to_vec()),
                 ..week("claude:work", 0.0, when, when)
             };

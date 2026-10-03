@@ -55,7 +55,7 @@ pub(crate) mod attribution;
 mod chatgpt;
 mod claude;
 mod grok;
-pub(crate) mod history;
+mod history;
 mod opencode;
 mod openrouter;
 mod pace;
@@ -89,9 +89,14 @@ use crate::time::Instant;
 /// read to read.
 pub(crate) const SAME_WINDOW: i64 = 5 * 60 * 1000;
 
+/// An hour, a day and a week, in milliseconds.
+const HOUR: i64 = 60 * 60 * 1000;
+const DAY: i64 = 24 * HOUR;
+const WEEK: i64 = 7 * DAY;
+
 /// How soon after a window ends that a limit of an account signed in nowhere
 /// is back is still news: an hour.
-const BACK_WITHIN: i64 = 60 * 60 * 1000;
+const BACK_WITHIN: i64 = HOUR;
 
 /// How recently an agent must have used a provider for an account signed
 /// into it to be in use: half an hour.
@@ -102,7 +107,8 @@ const IN_USE: i64 = 30 * 60 * 1000;
 /// signed in.
 const FRESH: i64 = 30 * 60 * 1000;
 
-/// An account's limits, as the window and the menu bar show them.
+/// An account's limits, as the panel, the menu bar and the MCP server give
+/// them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccountLimits {
     /// The account's stable id.
@@ -175,8 +181,6 @@ pub struct LimitState {
     /// average since it began while readings cover too little of the day
     /// (`limits::pace`).
     pub pace: Option<f64>,
-    /// When it runs out at that pace, if it is rising.
-    pub runs_out: Option<Instant>,
     /// Whether its window has reset since it was read, so it is full again.
     pub refilled: bool,
 }
@@ -223,13 +227,12 @@ impl LimitState {
         if millis <= 0 {
             return None;
         }
-        Some(self.left()? / (millis as f64 / 3_600_000.0))
+        Some(self.left()? / (millis as f64 / HOUR as f64))
     }
 
-    /// When it runs out at its pace, as kept or else worked out from its
-    /// reading.
+    /// When it runs out at its pace, if it is rising.
     fn runs_out_at(&self) -> Option<Instant> {
-        self.runs_out.or_else(|| self.reaches(100.0))
+        self.reaches(100.0)
     }
 
     /// How it stands: the one rule the app, the MCP server and alerts share.
@@ -252,7 +255,7 @@ impl LimitState {
             // only running out within a day is worth hurrying for: a trickle
             // that empties it in months isn't.
             (Some(runs_out), None)
-                if runs_out.millis().saturating_sub(self.read_at.millis()) <= pace::DAY =>
+                if runs_out.millis().saturating_sub(self.read_at.millis()) <= DAY =>
             {
                 Standing::RunningOut
             }
@@ -288,7 +291,7 @@ impl LimitState {
             };
         };
         let hours =
-            resets.millis().saturating_sub(self.read_at.millis()).max(0) as f64 / 3_600_000.0;
+            resets.millis().saturating_sub(self.read_at.millis()).max(0) as f64 / HOUR as f64;
         Outlook {
             left_at_reset: Some((100.0 - used - pace.max(0.0) * hours).clamp(0.0, 100.0)),
             ..none
@@ -420,21 +423,25 @@ fn provider_name(id: &str) -> String {
         "github-copilot" => "GitHub Copilot",
         "amazon-bedrock" => "Amazon Bedrock",
         "huggingface" => "Hugging Face",
-        _ => {
-            return id
-                .split(['_', '-', ' '])
-                .filter(|word| !word.is_empty())
-                .map(|word| {
-                    let mut characters = word.chars();
-                    characters.next().map_or_else(String::new, |first| {
-                        first.to_uppercase().chain(characters).collect()
-                    })
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-        }
+        _ => return titled(id),
     };
     known.to_owned()
+}
+
+/// `key`'s words, however it joins them, each begun with a capital:
+/// `super_heavy` is Super Heavy.
+fn titled(key: &str) -> String {
+    key.split(['_', '-', ' '])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut letters = word.chars();
+            letters
+                .next()
+                .map(|first| first.to_uppercase().chain(letters).collect())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
 }
 
 /// What an alert says of a limit.
@@ -550,7 +557,7 @@ pub enum Subscription {
 
 impl Subscription {
     /// Every subscription.
-    pub const ALL: [Subscription; 5] = [
+    pub(crate) const ALL: [Subscription; 5] = [
         Subscription::Claude,
         Subscription::ChatGpt,
         Subscription::SuperGrok,
@@ -569,8 +576,14 @@ impl Subscription {
         }
     }
 
+    /// The id of its account `key`: the subscription's key, a colon, and
+    /// the account's, as the ledger keeps accounts by.
+    pub(crate) fn account_id(self, key: &str) -> String {
+        format!("{}:{key}", self.key())
+    }
+
     /// The subscription with `key`.
-    pub fn from_key(key: &str) -> Option<Subscription> {
+    pub(crate) fn from_key(key: &str) -> Option<Subscription> {
         Subscription::ALL
             .into_iter()
             .find(|subscription| subscription.key() == key)
@@ -617,7 +630,7 @@ impl Subscription {
 /// [`AccountLimits::plan`] holds it: `max` is Max, `prolite` Pro Lite, in any
 /// case. A key not known here is called by its words, however it joins
 /// them, each begun with a capital: `super_heavy` is Super Heavy.
-pub fn plan_name(key: &str) -> String {
+fn plan_name(key: &str) -> String {
     let known = match key.to_ascii_lowercase().as_str() {
         "prolite" | "pro_lite" | "pro-lite" => Some("Pro Lite"),
         "max" => Some("Max"),
@@ -630,23 +643,7 @@ pub fn plan_name(key: &str) -> String {
         "heavy" => Some("Heavy"),
         _ => None,
     };
-    let capitalized = |word: &str| -> String {
-        let mut letters = word.chars();
-        letters
-            .next()
-            .map(|first| first.to_uppercase().chain(letters).collect())
-            .unwrap_or_default()
-    };
-    known.map_or_else(
-        || {
-            key.split(['_', '-', ' '])
-                .filter(|word| !word.is_empty())
-                .map(capitalized)
-                .collect::<Vec<_>>()
-                .join(" ")
-        },
-        str::to_owned,
-    )
+    known.map_or_else(|| titled(key), str::to_owned)
 }
 
 /// Why an account's limits could not be read.
@@ -721,7 +718,7 @@ pub(crate) struct Reported {
 
 /// An account and what was read of it.
 #[derive(Clone, Debug)]
-pub(crate) struct Read {
+pub(crate) struct AccountRead {
     /// The account's stable id: its subscription and the identity its tokens
     /// share.
     pub id: String,
@@ -869,7 +866,7 @@ pub(crate) fn read_subscription(
     folders: &[Folder],
     home: &Path,
     now: Instant,
-) -> Result<(Vec<Read>, Vec<Seen>)> {
+) -> Result<(Vec<AccountRead>, Vec<Seen>)> {
     let reader = subscription.reader();
     let found = sign_ins(subscription, folders, home)?;
     // Keys are read each for its own limit, as their provider's account,
@@ -907,8 +904,8 @@ pub(crate) fn read_subscription(
                 .ok()
                 .and_then(|answer| answer.plan.clone())
                 .or_else(|| held.iter().find_map(|sign_in| sign_in.plan.clone()));
-            Read {
-                id: format!("{}:{}", subscription.key(), identity.key),
+            AccountRead {
+                id: subscription.account_id(&identity.key),
                 label: identity.label,
                 plan,
                 agents,
@@ -983,7 +980,7 @@ fn recent_use(connection: &Connection, since: Instant) -> Result<HashSet<String>
 ///
 /// Returns an error when the ledger cannot be read.
 fn state(ledger: &Ledger, recent: &HashSet<String>, now: Instant) -> Result<Vec<AccountLimits>> {
-    let since = Instant::from_millis(now.millis() - pace::DAY).unwrap_or(now);
+    let since = Instant::from_millis(now.millis() - DAY).unwrap_or(now);
     let mut accounts = Vec::new();
     for account in ledger.accounts()? {
         let readings = ledger.readings(&account.id, since)?;
@@ -1000,9 +997,8 @@ fn state(ledger: &Ledger, recent: &HashSet<String>, now: Instant) -> Result<Vec<
                     .map(|reading| (reading.at, reading.used))
                     .collect();
                 // Rising now: its last two readings of the last hour.
-                let recent =
-                    window.partition_point(|(at, _)| now.millis() - at.millis() > pace::HOUR);
-                rising |= window[recent..]
+                let last_hour = window.partition_point(|(at, _)| now.millis() - at.millis() > HOUR);
+                rising |= window[last_hour..]
                     .windows(2)
                     .last()
                     .is_some_and(|pair| pair[1].1 > pair[0].1);
@@ -1073,7 +1069,6 @@ fn limit_state(latest: Reading, window: &[(Instant, f64)], now: Instant) -> Limi
             .map(|(starts, resets)| resets.millis() - starts.millis());
         pace::pace(window, latest.starts, length)
     };
-    let runs_out = pace.and_then(|pace| pace::reaches(latest.used, pace, latest.at, 100.0));
     LimitState {
         key: latest.key,
         name: latest.name,
@@ -1083,7 +1078,6 @@ fn limit_state(latest: Reading, window: &[(Instant, f64)], now: Instant) -> Limi
         resets: if refilled { None } else { latest.resets },
         read_at: latest.at,
         pace,
-        runs_out,
         refilled,
     }
 }
@@ -1113,7 +1107,7 @@ pub(crate) fn alerts(
             let long = limit
                 .starts
                 .zip(limit.resets)
-                .is_some_and(|(starts, resets)| resets.millis() - starts.millis() > pace::DAY);
+                .is_some_and(|(starts, resets)| resets.millis() - starts.millis() > DAY);
             let due = if limit.refilled {
                 // An account signed in nowhere isn't read again, so that a
                 // limit it used up is back is known only from its window
@@ -1224,7 +1218,7 @@ fn milestones(
     due.extend(quarter.map(|kind| (kind, Some(resets), resets.millis())));
     let unused = account.subscription != Subscription::ApiKey
         && used < 50.0
-        && resets.millis() - now.millis() <= pace::DAY
+        && resets.millis() - now.millis() <= DAY
         && limit.standing() != Standing::RunningOut;
     if unused {
         due.push((AlertKind::Unused, Some(resets), resets.millis()));
@@ -1303,16 +1297,14 @@ fn limit(
     key: &str,
     name: &str,
     scope: Option<String>,
-    used: &Value,
+    used: Option<f64>,
     window: (Option<Instant>, Option<Instant>),
 ) -> Option<Reported> {
     Some(Reported {
         key: key.to_owned(),
         name: name.to_owned(),
         scope,
-        used: used
-            .as_f64()
-            .filter(|used| used.is_finite() && *used >= 0.0)?,
+        used: used.filter(|used| used.is_finite() && *used >= 0.0)?,
         starts: window.0,
         resets: window.1,
     })
@@ -1328,18 +1320,18 @@ fn ending(resets: Option<Instant>, length: i64) -> (Option<Instant>, Option<Inst
 }
 
 /// A window's length, said the way a person would say it.
-fn span(seconds: i64) -> String {
-    const HOUR: i64 = 3_600;
-    const DAY: i64 = 24 * HOUR;
-    if seconds < 23 * HOUR {
-        return match ((seconds + HOUR / 2) / HOUR).max(1) {
+fn window_name(seconds: i64) -> String {
+    const HOUR_S: i64 = HOUR / 1_000;
+    const DAY_S: i64 = DAY / 1_000;
+    if seconds < 23 * HOUR_S {
+        return match ((seconds + HOUR_S / 2) / HOUR_S).max(1) {
             1 => "Hourly".to_owned(),
             hours => format!("{hours} hours"),
         };
     }
     // Rounded to whole days, because a window that crosses a clock change is
     // an hour long or short.
-    match seconds.saturating_add(DAY / 2) / DAY {
+    match seconds.saturating_add(DAY_S / 2) / DAY_S {
         1 => "Daily".to_owned(),
         7 => "Weekly".to_owned(),
         28..=31 => "Monthly".to_owned(),
@@ -1354,8 +1346,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AccountLimits, AlertKind, LimitProblem, LimitState, Read, Reported, Standing, Subscription,
-        alerts, get, instant_of, milestones, plan_name, recent_use, span, state,
+        AccountLimits, AccountRead, AlertKind, LimitProblem, LimitState, Reported, Standing,
+        Subscription, alerts, get, instant_of, milestones, plan_name, recent_use, state,
+        window_name,
     };
     use crate::agent::Agent;
     use crate::ledger::Ledger;
@@ -1369,8 +1362,8 @@ mod tests {
 
     /// A read of one Claude account whose five-hour limit is `used` percent
     /// full, in the window that resets at minute `resets`.
-    fn read(used: f64, resets: i64) -> Read {
-        Read {
+    fn read(used: f64, resets: i64) -> AccountRead {
+        AccountRead {
             id: "claude:".into(),
             label: None,
             plan: Some("max".into()),
@@ -1422,7 +1415,7 @@ mod tests {
         let accounts = state(&ledger, &quiet, now).unwrap();
         let limit = &accounts[0].limits[0];
         assert!((limit.pace.unwrap() - 60.0).abs() < 1e-6);
-        assert_eq!(limit.runs_out, Some(minute(40)));
+        assert_eq!(limit.reaches(100.0), Some(minute(40)));
         assert!(accounts[0].in_use, "a limit that rose is in use");
 
         let sent = alerts(&mut ledger, &accounts, now).unwrap();
@@ -1463,17 +1456,6 @@ mod tests {
 
     #[test]
     fn a_week_warned_of_is_full_again_when_it_resets_and_five_hours_are_not() {
-        let week = |used: f64, resets: i64| Read {
-            limits: Ok(vec![Reported {
-                key: "seven_day".into(),
-                name: "Weekly".into(),
-                scope: None,
-                used,
-                starts: Some(minute(resets - WEEK)),
-                resets: Some(minute(resets)),
-            }]),
-            ..read(used, resets)
-        };
         // What is said of running out; the milestones beside it are
         // another test's.
         let said = |reads| -> Vec<(i64, AlertKind)> {
@@ -1487,10 +1469,10 @@ mod tests {
         // said once. The next week, read with 1% used, is full again, once.
         assert_eq!(
             said(vec![
-                (0, week(60.0, WEEK)),
-                (30, week(70.0, WEEK)),
-                (WEEK + 5, week(1.0, 2 * WEEK)),
-                (WEEK + 5, week(1.0, 2 * WEEK)),
+                (0, weekly(60.0, 0)),
+                (30, weekly(70.0, 0)),
+                (WEEK + 5, weekly(1.0, WEEK)),
+                (WEEK + 5, weekly(1.0, WEEK)),
             ]),
             [(0, AlertKind::RunningOut), (WEEK + 5, AlertKind::Available)]
         );
@@ -1575,7 +1557,7 @@ mod tests {
             .unwrap();
         assert_eq!(shown(&ledger, 5), [("five_hour".to_owned(), minute(5))]);
         // A read that fails leaves what the last one found.
-        let refused = Read {
+        let refused = AccountRead {
             limits: Err(LimitProblem::SignIn),
             ..read(45.0, 300)
         };
@@ -1661,7 +1643,7 @@ mod tests {
 
     /// `read`, its reset moved by `seconds`, as a countdown moves it from
     /// read to read.
-    fn drifting(mut read: Read, seconds: i64) -> Read {
+    fn drifting(mut read: AccountRead, seconds: i64) -> AccountRead {
         for limit in read.limits.iter_mut().flatten() {
             limit.resets = limit
                 .resets
@@ -1672,7 +1654,7 @@ mod tests {
 
     /// The alerts `reads` give rise to, each recorded at its minute: the
     /// minute and the kind of each.
-    fn alerted(reads: Vec<(i64, Read)>) -> Vec<(i64, AlertKind)> {
+    fn alerted(reads: Vec<(i64, AccountRead)>) -> Vec<(i64, AlertKind)> {
         let (_dir, mut ledger) = scratch();
         let mut sent = Vec::new();
         for (at, read) in reads {
@@ -1726,7 +1708,7 @@ mod tests {
 
     /// A read of the account of [`read`] whose five-hour limit is `used`
     /// percent full, in a window whose reset its provider doesn't give.
-    fn unset(used: f64) -> Read {
+    fn unset(used: f64) -> AccountRead {
         let mut read = read(used, 300);
         for limit in read.limits.iter_mut().flatten() {
             (limit.starts, limit.resets) = (None, None);
@@ -1791,7 +1773,7 @@ mod tests {
     #[test]
     fn use_counts_against_the_account_it_drew_on() {
         let (_dir, mut ledger) = scratch();
-        let chatgpt = |id: &str, agents: Vec<Agent>| Read {
+        let chatgpt = |id: &str, agents: Vec<Agent>| AccountRead {
             id: id.into(),
             label: None,
             plan: None,
@@ -1877,8 +1859,8 @@ mod tests {
 
     /// A read of the account of [`read`] whose weekly limit is `used`
     /// percent full, in the window from minute `starts`, a week long.
-    fn weekly(used: f64, starts: i64) -> Read {
-        Read {
+    fn weekly(used: f64, starts: i64) -> AccountRead {
+        AccountRead {
             limits: Ok(vec![Reported {
                 key: "seven_day".into(),
                 name: "Weekly".into(),
@@ -1990,24 +1972,15 @@ mod tests {
             resets: Some(minute(WEEK)),
             read_at: now,
             pace: None,
-            runs_out: None,
             refilled: false,
         };
         let account = AccountLimits {
             id: "claude:".into(),
-            subscription: Subscription::Claude,
-            label: None,
-            plan: None,
             agents: vec![Agent::ClaudeCode],
-            signed_in: true,
-            limits: Vec::new(),
             read_at: Some(now),
             checked_at: Some(now),
-            problem: None,
             in_use: false,
-            hidden: false,
-            provider: None,
-            folders: Vec::new(),
+            ..account(Vec::new())
         };
         let kinds = |account: &AccountLimits, limit: &LimitState, long: bool| -> Vec<AlertKind> {
             milestones(account, limit, long, now)
@@ -2037,7 +2010,6 @@ mod tests {
         // the reset 18 hours off.
         let rising = LimitState {
             pace: Some(5.0),
-            runs_out: Some(minute(WEEK - 4 * 60)),
             ..limit.clone()
         };
         assert_eq!(
@@ -2083,12 +2055,12 @@ mod tests {
 
     #[test]
     fn a_window_is_named_as_a_person_would_say_it() {
-        assert_eq!(span(5 * 3_600), "5 hours");
-        assert_eq!(span(3_600), "Hourly");
-        assert_eq!(span(7 * 86_400), "Weekly");
+        assert_eq!(window_name(5 * 3_600), "5 hours");
+        assert_eq!(window_name(3_600), "Hourly");
+        assert_eq!(window_name(7 * 86_400), "Weekly");
         // A week that crosses a clock change is an hour long or short.
-        assert_eq!(span(7 * 86_400 + 3_600), "Weekly");
-        assert_eq!(span(30 * 86_400), "Monthly");
+        assert_eq!(window_name(7 * 86_400 + 3_600), "Weekly");
+        assert_eq!(window_name(30 * 86_400), "Monthly");
     }
 
     #[test]
@@ -2104,6 +2076,26 @@ mod tests {
 
     /// A limit read at minute 0, `used` percent used and rising `pace`
     /// points an hour, in a window of `hours` that started then.
+    /// A Claude account in use, `a`, holding `limits`.
+    fn account(limits: Vec<LimitState>) -> AccountLimits {
+        AccountLimits {
+            id: "a".into(),
+            subscription: Subscription::Claude,
+            label: None,
+            plan: None,
+            agents: Vec::new(),
+            signed_in: true,
+            limits,
+            read_at: None,
+            checked_at: None,
+            problem: None,
+            in_use: true,
+            hidden: false,
+            provider: None,
+            folders: Vec::new(),
+        }
+    }
+
     fn paced(used: f64, pace: f64, hours: i64) -> LimitState {
         LimitState {
             key: "k".into(),
@@ -2114,9 +2106,42 @@ mod tests {
             resets: Some(minute(hours * 60)),
             read_at: minute(0),
             pace: Some(pace),
-            runs_out: None,
             refilled: false,
         }
+    }
+
+    #[test]
+    fn a_pace_says_when_a_limit_runs_out_or_what_is_left_at_its_reset() {
+        // Read at minute 0. 82% used, rising 12 points an hour: the 18 left
+        // last 1.5 hours, to minute 90, before the reset 3 hours on.
+        let five = LimitState {
+            key: "five_hour".into(),
+            name: "5 hours".into(),
+            ..paced(82.0, 12.0, 3)
+        };
+        assert_eq!(five.outlook().runs_out, Some(minute(90)));
+        // 38% used, rising half a point an hour, 40 hours to its reset: 20
+        // more points, so 42% left at it.
+        let week = LimitState {
+            key: "seven_day".into(),
+            name: "Weekly".into(),
+            ..paced(38.0, 0.5, 40)
+        };
+        assert_eq!(week.outlook().left_at_reset, Some(42.0));
+        assert_eq!(week.outlook().runs_out, None);
+        // Not rising: what is left now is left at the reset.
+        assert_eq!(paced(38.0, 0.0, 40).outlook().left_at_reset, Some(62.0));
+        // No pace yet: neither.
+        let new = LimitState {
+            pace: None,
+            ..paced(38.0, 0.0, 40)
+        };
+        assert_eq!(new.outlook().left_at_reset, None);
+        // The tightest is the one that runs out first.
+        assert_eq!(
+            account(vec![week, five]).deciding().unwrap().name,
+            "5 hours"
+        );
     }
 
     #[test]
@@ -2214,22 +2239,6 @@ mod tests {
 
     #[test]
     fn an_account_stands_as_the_limit_that_matters() {
-        let account = |limits: Vec<LimitState>| AccountLimits {
-            id: "a".into(),
-            subscription: Subscription::Claude,
-            label: None,
-            plan: None,
-            agents: Vec::new(),
-            signed_in: true,
-            limits,
-            read_at: None,
-            checked_at: None,
-            problem: None,
-            in_use: true,
-            hidden: false,
-            provider: None,
-            folders: Vec::new(),
-        };
         // The week on all usage lasts; the Opus week, on one model, is used
         // up. What matters is the week, and so the account lasts.
         let opus = LimitState {
@@ -2244,22 +2253,6 @@ mod tests {
 
     #[test]
     fn the_limit_that_matters_is_used_up_then_soonest_out_then_least_left() {
-        let account = |limits: Vec<LimitState>| AccountLimits {
-            id: "a".into(),
-            subscription: Subscription::Claude,
-            label: None,
-            plan: None,
-            agents: Vec::new(),
-            signed_in: true,
-            limits,
-            read_at: None,
-            checked_at: None,
-            problem: None,
-            in_use: true,
-            hidden: false,
-            provider: None,
-            folders: Vec::new(),
-        };
         let named = |name: &str, limit: LimitState| LimitState {
             key: name.into(),
             name: name.into(),
@@ -2289,23 +2282,17 @@ mod tests {
 
     #[test]
     fn an_account_is_titled_by_its_plan_or_its_providers_api() {
-        let account = |subscription, plan: Option<&str>, provider: Option<&str>| AccountLimits {
-            id: "a".into(),
-            subscription,
-            label: Some("joey@example.com".into()),
-            plan: plan.map(str::to_owned),
-            agents: Vec::new(),
-            signed_in: true,
-            limits: Vec::new(),
-            read_at: None,
-            checked_at: None,
-            problem: None,
-            in_use: false,
-            hidden: false,
-            provider: provider.map(str::to_owned),
-            folders: Vec::new(),
+        let title = |subscription, plan: Option<&str>, provider: Option<&str>| {
+            AccountLimits {
+                subscription,
+                label: Some("joey@example.com".into()),
+                plan: plan.map(str::to_owned),
+                in_use: false,
+                provider: provider.map(str::to_owned),
+                ..account(Vec::new())
+            }
+            .title()
         };
-        let title = |subscription, plan, provider| account(subscription, plan, provider).title();
         assert_eq!(title(Subscription::Claude, Some("max"), None), "Claude Max");
         assert_eq!(title(Subscription::Claude, None, None), "Claude");
         // A plan the subscription is named for is said once.

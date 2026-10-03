@@ -48,7 +48,6 @@ fn account(
             resets: None,
             read_at: now,
             pace: None,
-            runs_out: None,
             refilled: false,
         }],
         read_at: Some(now),
@@ -66,6 +65,23 @@ fn accounts(engine: &Engine) -> Vec<AccountLimits> {
     let mut accounts = engine.limits().unwrap();
     accounts.sort_by(|a, b| a.id.cmp(&b.id));
     accounts
+}
+
+/// Each session, by its native id, with the account it drew on most, in
+/// order.
+fn accounts_of_sessions(engine: &Engine) -> Vec<(String, Option<String>)> {
+    let mut sessions: Vec<(String, Option<String>)> = engine
+        .sessions(&SessionQuery {
+            empty: true,
+            ..SessionQuery::default()
+        })
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|row| (row.key.native().to_owned(), row.account))
+        .collect();
+    sessions.sort();
+    sessions
 }
 
 #[test]
@@ -124,20 +140,7 @@ fn two_accounts_of_one_subscription_keep_the_use_made_where_each_is_signed_in() 
         )
         .unwrap();
 
-    let sessions: Vec<(String, Option<String>)> = {
-        let mut sessions: Vec<(String, Option<String>)> = engine
-            .sessions(&SessionQuery {
-                empty: true,
-                ..SessionQuery::default()
-            })
-            .unwrap()
-            .items
-            .into_iter()
-            .map(|row| (row.key.native().to_owned(), row.account))
-            .collect();
-        sessions.sort();
-        sessions
-    };
+    let sessions = accounts_of_sessions(&engine);
     assert_eq!(
         sessions,
         [
@@ -238,17 +241,7 @@ fn signing_into_another_account_in_one_folder_moves_the_use_made_after() {
     );
     engine.scan().unwrap();
 
-    let mut sessions: Vec<(String, Option<String>)> = engine
-        .sessions(&SessionQuery {
-            empty: true,
-            ..SessionQuery::default()
-        })
-        .unwrap()
-        .items
-        .into_iter()
-        .map(|row| (row.key.native().to_owned(), row.account))
-        .collect();
-    sessions.sort();
+    let sessions = accounts_of_sessions(&engine);
     let personal = || Some("claude:personal".to_owned());
     let work = || Some("claude:work".to_owned());
     assert_eq!(
@@ -478,19 +471,15 @@ fn a_keys_own_limit_is_drawn_from_its_readings() {
     // ago, was read 30% used an hour ago, and then 45% now.
     let now = Instant::now();
     let hours_ago = |hours: i64| Instant::from_millis(now.millis() - hours * 3_600_000).unwrap();
-    let read = |used: f64, at: Instant| AccountLimits {
-        id: "api:openrouter".to_owned(),
-        subscription: Subscription::ApiKey,
-        provider: Some("openrouter".to_owned()),
-        limits: vec![LimitState {
-            key: "key:abc".to_owned(),
-            name: "Monthly key limit".to_owned(),
-            starts: Some(hours_ago(2)),
-            read_at: at,
-            ..account("", Subscription::ApiKey, Agent::Pi, Vec::new(), used, at).limits[0].clone()
-        }],
-        agents: Vec::new(),
-        ..account("", Subscription::ApiKey, Agent::Pi, Vec::new(), used, at)
+    let read = |used: f64, at: Instant| {
+        let mut read = account("", Subscription::ApiKey, Agent::Pi, Vec::new(), used, at);
+        read.id = "api:openrouter".to_owned();
+        read.provider = Some("openrouter".to_owned());
+        read.agents = Vec::new();
+        read.limits[0].key = "key:abc".to_owned();
+        read.limits[0].name = "Monthly key limit".to_owned();
+        read.limits[0].starts = Some(hours_ago(2));
+        read
     };
     engine
         .record_fixture_limits(

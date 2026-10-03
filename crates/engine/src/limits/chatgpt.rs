@@ -155,9 +155,9 @@ fn windows(rate: &Value, scope: Option<&str>, now: Instant) -> Option<Vec<Report
         };
         limits.push(super::limit(
             &stable,
-            &super::span(seconds),
+            &super::window_name(seconds),
             scope.map(str::to_owned),
-            &window["used_percent"],
+            window["used_percent"].as_f64(),
             super::ending(resets, seconds.checked_mul(1_000)?),
         )?);
     }

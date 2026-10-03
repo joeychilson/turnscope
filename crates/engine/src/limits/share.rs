@@ -43,15 +43,15 @@ use rusqlite::{Connection, params};
 
 use crate::error::{Error, Result};
 use crate::ledger::{Ledger, Reading};
-use crate::limits::SAME_WINDOW;
 use crate::limits::pace::GIVEN_BACK;
+use crate::limits::{DAY, SAME_WINDOW};
 use crate::model::ModelKey;
 use crate::session::SessionKey;
 use crate::time::Instant;
 
 /// How far back readings are looked for a window a response fell in: the
 /// longest window a subscription has, a month, and a day beside.
-const LONGEST: i64 = 32 * 24 * 60 * 60 * 1000;
+const LONGEST: i64 = 32 * DAY;
 
 /// A response whose share of limits is asked.
 #[derive(Clone, Debug)]
@@ -129,28 +129,30 @@ pub(crate) fn shares(ledger: &Ledger, cache: &Connection, spent: &[Spent]) -> Re
             };
             // Only a window the responses spent in is theirs to share.
             if !spent.iter().any(|spent| {
-                drawing(spent)
-                    && spent
-                        .at
-                        .is_some_and(|at| at.millis() > from && at.millis() <= through)
+                drawing(spent) && spent.at.is_some_and(|at| at > from && at <= through)
             }) {
                 continue;
             }
             // What each response priced spent, as its time and cost: those
             // with no price take no share.
-            let everyone: Vec<(i64, i64)> =
-                spending_by(cache, &account.id, latest.scope.as_deref(), from, through)?
-                    .rows
-                    .iter()
-                    .filter_map(|row| Some((row.at, row.cost?)))
-                    .collect();
+            let everyone: Vec<(i64, i64)> = spending_by(
+                cache,
+                &account.id,
+                latest.scope.as_deref(),
+                from.millis(),
+                through.millis(),
+            )?
+            .rows
+            .iter()
+            .filter_map(|row| Some((row.at, row.cost?)))
+            .collect();
             let each = shared_out(&points, &everyone, spent, &drawing);
             let whole = latest.starts.is_some()
                 || !spent.iter().any(|spent| {
                     drawing(spent)
                         && spent
                             .at
-                            .is_some_and(|at| at.millis() <= from && at.millis() > from - LONGEST)
+                            .is_some_and(|at| at <= from && at.millis() > from.millis() - LONGEST)
                 });
             shared.push(Shared {
                 account: account.id.clone(),
@@ -159,7 +161,7 @@ pub(crate) fn shares(ledger: &Ledger, cache: &Connection, spent: &[Spent]) -> Re
                 scope: latest.scope.clone(),
                 starts: latest.starts,
                 resets: latest.resets,
-                through: Instant::from_millis(through).unwrap_or(latest.at),
+                through,
                 whole,
                 each,
             });
@@ -189,7 +191,7 @@ pub(super) fn windows(readings: Vec<Reading>) -> Vec<Vec<Reading>> {
                 last.key == reading.key
                     && match (last.resets, reading.resets) {
                         (Some(a), Some(b)) => (a.millis() - b.millis()).abs() <= SAME_WINDOW,
-                        (None, None) => reading.used >= last.used - 1.0,
+                        (None, None) => reading.used >= last.used - GIVEN_BACK,
                         _ => false,
                     }
             });
@@ -202,10 +204,10 @@ pub(super) fn windows(readings: Vec<Reading>) -> Vec<Vec<Reading>> {
 }
 
 /// Each stretch between two of `points` that a limit rose in, as when it
-/// starts and ends, in milliseconds, and how much it rose: past the most it
-/// was read at before, or, after a fall of more than a step of rounding,
-/// past where it fell to.
-fn rises(points: &[(i64, f64)]) -> Vec<(i64, i64, f64)> {
+/// starts and ends, in milliseconds, as spending is kept, and how much it
+/// rose: past the most it was read at before, or, after a fall of more than
+/// a step of rounding, past where it fell to.
+fn rises(points: &[(Instant, f64)]) -> Vec<(i64, i64, f64)> {
     let mut rises = Vec::new();
     let Some(&(_, first)) = points.first() else {
         return rises;
@@ -216,7 +218,7 @@ fn rises(points: &[(i64, f64)]) -> Vec<(i64, i64, f64)> {
         if after < before - GIVEN_BACK {
             most = after;
         } else if after > most {
-            rises.push((from, until, after - most));
+            rises.push((from.millis(), until.millis(), after - most));
             most = after;
         }
     }
@@ -225,20 +227,16 @@ fn rises(points: &[(i64, f64)]) -> Vec<(i64, i64, f64)> {
 
 /// A window's rise over time: from none at its start, where that is known
 /// and comes before its first reading, and then each reading, as instants
-/// in milliseconds and percents used.
-fn points(window: &[Reading]) -> Vec<(i64, f64)> {
+/// and percents used.
+fn points(window: &[Reading]) -> Vec<(Instant, f64)> {
     let mut points = Vec::with_capacity(window.len() + 1);
     let starts = window.last().and_then(|latest| latest.starts);
     if let (Some(starts), Some(first)) = (starts, window.first())
         && starts < first.at
     {
-        points.push((starts.millis(), 0.0));
+        points.push((starts, 0.0));
     }
-    points.extend(
-        window
-            .iter()
-            .map(|reading| (reading.at.millis(), reading.used)),
-    );
+    points.extend(window.iter().map(|reading| (reading.at, reading.used)));
     points
 }
 
@@ -246,7 +244,7 @@ fn points(window: &[Reading]) -> Vec<(i64, f64)> {
 /// out among `everyone` who spent in its stretch, by cost; `spent` being
 /// among them, those that `drawing` admits take theirs.
 fn shared_out(
-    points: &[(i64, f64)],
+    points: &[(Instant, f64)],
     everyone: &[(i64, i64)],
     spent: &[Spent],
     drawing: &dyn Fn(&Spent) -> bool,
@@ -314,10 +312,10 @@ pub struct LimitWindow {
 }
 
 /// A limit's current window as read: the latest reading, and the points its
-/// readings draw, in milliseconds.
+/// readings draw.
 struct Current {
     latest: Reading,
-    points: Vec<(i64, f64)>,
+    points: Vec<(Instant, f64)>,
 }
 
 /// The current window of `account`'s limit `key`, as of `now`; `None` when
@@ -345,20 +343,12 @@ fn current(ledger: &Ledger, account: &str, key: &str, now: Instant) -> Result<Op
 }
 
 impl Current {
-    fn track(self) -> Result<LimitTrack> {
-        let instant = |millis: i64| {
-            Instant::from_millis(millis)
-                .ok_or_else(|| Error::corrupt("limit reading", millis.to_string()))
-        };
-        Ok(LimitTrack {
+    fn track(self) -> LimitTrack {
+        LimitTrack {
             starts: self.latest.starts,
             resets: self.latest.resets,
-            points: self
-                .points
-                .into_iter()
-                .map(|(at, used)| Ok((instant(at)?, used)))
-                .collect::<Result<Vec<_>>>()?,
-        })
+            points: self.points,
+        }
     }
 }
 
@@ -388,8 +378,8 @@ pub(crate) fn window(
         cache,
         account,
         current.latest.scope.as_deref(),
-        from,
-        through,
+        from.millis(),
+        through.millis(),
     )?;
     let spent = &spending.rows;
     let mut sessions: HashMap<i64, f64> = HashMap::new();
@@ -435,9 +425,7 @@ pub(crate) fn window(
         .zip(models)
         .filter_map(|(model, part)| Some((model, part?)))
         .collect();
-    taken
-        .window(current.track()?, elsewhere, unpriced)
-        .map(Some)
+    taken.window(current.track(), elsewhere, unpriced).map(Some)
 }
 
 /// The key and project of the session the cache's session `id` counts in:
@@ -626,7 +614,7 @@ mod tests {
             reading(4, 30.0, Some(0), 168),
         ];
         let points = points(&window);
-        assert_eq!(points.first(), Some(&(DAY, 0.0)));
+        assert_eq!(points.first(), Some(&(at(0), 0.0)));
         let everyone = vec![(DAY + HOUR, 1), (DAY + HOUR, 3), (DAY + 3 * HOUR, 3)];
         let ours = vec![spent(1, Some(1)), spent(3, Some(3))];
         let each = shared_out(&points, &everyone, &ours, &|_| true);
@@ -680,7 +668,7 @@ mod tests {
     #[test]
     fn a_window_whose_start_is_unknown_rises_only_from_its_first_reading() {
         let window = vec![reading(2, 10.0, None, 168), reading(4, 30.0, None, 168)];
-        assert_eq!(points(&window).first(), Some(&(DAY + 2 * HOUR, 10.0)));
+        assert_eq!(points(&window).first(), Some(&(at(2), 10.0)));
     }
 
     #[test]

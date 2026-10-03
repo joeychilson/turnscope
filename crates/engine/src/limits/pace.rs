@@ -31,20 +31,13 @@
 //! the last day's, is not seen, so a longer window's average then counts
 //! its use from its start, and is lower than the use since the fall.
 
+use super::{DAY, HOUR};
 use crate::time::Instant;
-
-/// The stretch of readings a pace is fitted over for a window of a day or
-/// less: the last hour.
-pub(super) const HOUR: i64 = 60 * 60 * 1000;
-
-/// The stretch of readings a pace is fitted over for a longer window: the
-/// last day, the most any pace is fitted over.
-pub(super) const DAY: i64 = 24 * HOUR;
 
 /// The stretch a pace is fitted over for a window `length` long, where it
 /// is known: the last day for a window longer than a day, the last hour
 /// for any other.
-fn span(length: Option<i64>) -> i64 {
+fn stretch(length: Option<i64>) -> i64 {
     match length {
         Some(length) if length > DAY => DAY,
         _ => HOUR,
@@ -84,7 +77,7 @@ pub(super) fn pace(
         .windows(2)
         .rposition(|pair| pair[1].1 < pair[0].1 - GIVEN_BACK)
         .map_or(0, |fell| fell + 1);
-    let over = span(length);
+    let over = stretch(length);
     let recent: Vec<(Instant, f64)> = readings[since..]
         .iter()
         .filter(|(at, _)| latest.millis() - at.millis() <= over)
@@ -101,7 +94,7 @@ pub(super) fn pace(
         } else {
             (starts?, 0.0)
         };
-        let hours = (latest.millis() - from.millis()).max(DAY) as f64 / 3_600_000.0;
+        let hours = (latest.millis() - from.millis()).max(DAY) as f64 / HOUR as f64;
         return Some(((used - base) / hours).max(0.0));
     }
     fitted(&recent)
@@ -113,10 +106,10 @@ fn fitted(readings: &[(Instant, f64)]) -> Option<f64> {
     let recent: Vec<(f64, f64)> = readings
         .iter()
         // Hours since the epoch fit an f64 exactly to well below a second.
-        .map(|(at, used)| (at.millis() as f64 / 3_600_000.0, *used))
+        .map(|(at, used)| (at.millis() as f64 / HOUR as f64, *used))
         .collect();
     let (first, last) = (recent.first()?, recent.last()?);
-    if (last.0 - first.0) * 3_600_000.0 < LEAST as f64 {
+    if (last.0 - first.0) * (HOUR as f64) < LEAST as f64 {
         return None;
     }
     let count = recent.len() as f64;
@@ -144,13 +137,13 @@ pub(super) fn reaches(used: f64, pace: f64, at: Instant, share: f64) -> Option<I
     // To the nearest millisecond, so a fitted pace a hair from exact does not
     // move the moment by one.
     (hours < 8_760_000.0)
-        .then(|| Instant::from_millis(at.millis() + (hours * 3_600_000.0).round() as i64))
+        .then(|| Instant::from_millis(at.millis() + (hours * HOUR as f64).round() as i64))
         .flatten()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DAY, HOUR, pace, reaches, span};
+    use super::{DAY, HOUR, pace, reaches, stretch};
     use crate::time::Instant;
 
     fn at(minutes: i64) -> Instant {
@@ -265,9 +258,9 @@ mod tests {
         assert!((daily - 126.375 / 414.6875).abs() < 1e-6, "{daily}");
         // A week's window is paced over a day; five hours', or one of no
         // known length, over an hour.
-        assert_eq!(span(WEEK), DAY);
-        assert_eq!(span(FIVE_HOURS), HOUR);
-        assert_eq!(span(None), HOUR);
+        assert_eq!(stretch(WEEK), DAY);
+        assert_eq!(stretch(FIVE_HOURS), HOUR);
+        assert_eq!(stretch(None), HOUR);
     }
 
     #[test]

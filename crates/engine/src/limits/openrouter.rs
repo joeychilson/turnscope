@@ -119,10 +119,10 @@ fn parse(body: &Value, key: &str, now: Instant) -> Option<Answer> {
         None => (None, None),
     };
     let key = format!("key:{:016x}", super::fnv(super::FNV, key.as_bytes()));
-    let used = Value::from(spent / limit * 100.0);
+    let used = spent / limit * 100.0;
     Some(Answer {
         plan: None,
-        limits: vec![super::limit(&key, name, None, &used, window)?],
+        limits: vec![super::limit(&key, name, None, Some(used), window)?],
     })
 }
 
