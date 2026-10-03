@@ -297,14 +297,20 @@ fn model_name(names: &HashMap<String, String>, model: &ModelKey) -> String {
 }
 
 /// Parts, each its key, name and share, most first: the first [`PARTS`] said
-/// a line each and given, the rest summed as others. The figures of the
+/// a line each and given, the rest summed as others. A line says a part's
+/// key beside its name where they differ, as other tools' arguments take
+/// it: a model's key, an agent's, a project's folder. The figures of the
 /// parts and of the others.
 fn named_parts(
     parts: Vec<(Option<String>, String, f64)>,
     said: &mut Vec<String>,
 ) -> (Value, Value) {
-    for (place, (_, name, share)) in parts.iter().take(PARTS).enumerate() {
-        said.push(format!("{}. {name}: {}.", place + 1, prose::share(*share)));
+    for (place, (key, name, share)) in parts.iter().take(PARTS).enumerate() {
+        let named = match key {
+            Some(key) if key != name && !key.is_empty() => format!("{name} ({key})"),
+            _ => name.clone(),
+        };
+        said.push(format!("{}. {named}: {}.", place + 1, prose::share(*share)));
     }
     let shares: Vec<f64> = parts.iter().map(|(_, _, share)| *share).collect();
     let (count, share) = rest(&shares);

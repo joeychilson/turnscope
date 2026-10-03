@@ -13,7 +13,8 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use turnscope_engine::{
-    Bucket, Dimension, Filter, ModelKey, Tokens, Totals, UsageQuery, UsageRow, UsageTable, Usd,
+    Agent, Bucket, Dimension, Filter, ModelKey, Tokens, Totals, UsageQuery, UsageRow, UsageTable,
+    Usd,
 };
 
 use crate::accounts;
@@ -160,6 +161,15 @@ pub(crate) fn usage(server: &Server, arguments: GetUsage) -> Answer {
             }
         }
     }
+    if by == Some(By::Dimension(Dimension::Agent)) {
+        // Each agent by its name; the group stays the key the agent
+        // argument takes.
+        for row in &mut rows {
+            if let Some(agent) = group(row).and_then(Agent::from_key) {
+                row.label = Some(agent.name().to_owned());
+            }
+        }
+    }
     if rows.len() > MOST_ROWS {
         return Err(Failure(format!(
             "That splits into {} rows, more than {MOST_ROWS}; narrow the period, or split by a \
@@ -261,7 +271,8 @@ fn period(
 
 /// A row as a sentence names it: what the catalog or its agent calls it,
 /// and, where an argument takes something else, that too, so that it can be
-/// asked about alone: a session's id, a model's key, a project's folder.
+/// asked about alone: a session's id, a model's key, an agent's key, a
+/// project's folder.
 fn named(row: &UsageRow, dimension: Dimension) -> String {
     let label = row.label.as_deref();
     match (label, group(row)) {
@@ -269,7 +280,7 @@ fn named(row: &UsageRow, dimension: Dimension) -> String {
             if label != group
                 && matches!(
                     dimension,
-                    Dimension::Session | Dimension::Model | Dimension::Project
+                    Dimension::Session | Dimension::Model | Dimension::Agent | Dimension::Project
                 ) =>
         {
             format!("{label} ({group})")

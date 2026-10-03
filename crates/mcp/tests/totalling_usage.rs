@@ -107,11 +107,23 @@ fn usage_is_totalled_by_local_day_and_split_as_asked() {
     // As agents say it, a week back from now.
     answer(&server, "get_usage", json!({"since": "past week"}));
 
+    // Each agent by its name, and its key, as the agent argument takes it.
     let agents = answer(&server, "get_usage", json!({"by": "agent"}));
     assert_eq!(
         groups(&agents.data, "group"),
         [json!("claude-code"), json!("codex")]
     );
+    assert_eq!(
+        groups(&agents.data, "label"),
+        [json!("Claude Code"), json!("Codex")]
+    );
+    for line in ["\n- Claude Code (claude-code): ", "\n- Codex (codex): "] {
+        assert!(
+            agents.said().contains(line),
+            "{line:?} in {}",
+            agents.said()
+        );
+    }
     let sessions = answer(
         &server,
         "get_usage",
