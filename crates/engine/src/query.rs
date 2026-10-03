@@ -146,7 +146,7 @@ impl Totals {
     /// the cache can hold (`i64::MAX`), as its sums do, so a total comes out
     /// the same in any order; a cost that stops there is past knowing, and
     /// [`Totals::known_cost`] says so.
-    pub fn add(&mut self, other: &Totals) {
+    pub(crate) fn add(&mut self, other: &Totals) {
         self.tokens.add(&other.tokens);
         self.responses = add_counts(self.responses, other.responses);
         self.cost = self.cost.saturating_add(other.cost);
@@ -213,9 +213,8 @@ impl Source {
     fn all_time() -> Source {
         Source {
             table: format!(
-                "(SELECT quarter, session, agent, provider, model_key, kind, account, {} FROM rollup
-                  UNION ALL {}) r",
-                columns("rollup"),
+                "({} UNION ALL {}) r",
+                from_rollup(),
                 quarters("WHERE u.at IS NULL")
             ),
             ..Source::rollup()
@@ -273,11 +272,8 @@ impl Source {
                 cuts.push((from.millis(), until.millis()));
             }
             _ => {
-                let mut whole = String::from(
-                    "SELECT quarter, session, agent, provider, model_key, kind, account, ",
-                );
-                whole.push_str(&columns("rollup"));
-                whole.push_str(" FROM rollup WHERE 1");
+                let mut whole = from_rollup();
+                whole.push_str(" WHERE 1");
                 if let Some(first) = whole_from {
                     whole.push_str(" AND quarter >= ?");
                     values.push(Sql::Integer(first));
@@ -475,6 +471,15 @@ fn tokens_ordered(table: &str) -> String {
     capped(&tokens(table))
 }
 
+/// The rollup's quarter-hour sums, each with what it sums by and its named
+/// aggregates, as a `SELECT` a condition can follow.
+fn from_rollup() -> String {
+    format!(
+        "SELECT quarter, session, agent, provider, model_key, kind, account, {} FROM rollup",
+        columns("rollup")
+    )
+}
+
 /// The named aggregates of `table`, in order.
 fn columns(table: &str) -> String {
     (1..=AGGREGATES.len())
@@ -484,7 +489,7 @@ fn columns(table: &str) -> String {
 }
 
 /// Read the aggregates [`AGGREGATES`] lists, starting at column `at`.
-pub(crate) fn totals(row: &Row, at: usize) -> Result<Totals> {
+fn totals(row: &Row, at: usize) -> Result<Totals> {
     let count = |index: usize| -> Result<u64> { unsigned(row.get(at + index)?, "usage total") };
     let usd = |index: usize, what: &'static str| -> Result<Usd> {
         let nanos: i64 = row.get(at + index)?;
@@ -603,10 +608,47 @@ pub(crate) fn admitted(
         .filter(|session| named.is_empty() || named.contains(session))
         .cloned()
         .collect();
-    let mut admitted = HashSet::new();
+    Ok(held(connection, &candidates, span, filter, false)?
+        .into_iter()
+        .map(|row| row.key)
+        .collect())
+}
+
+/// The sessions `keys` name, subagents and sessions without usage among
+/// them, with their usage for all time and the models each used, by key:
+/// none for none, and none for a key no session has.
+///
+/// # Errors
+///
+/// Returns [`Error::Ledger`] when the cache cannot be read, and
+/// [`Error::Corrupt`] when a stored value is out of range.
+pub(crate) fn rows(
+    connection: &Connection,
+    keys: &[SessionKey],
+) -> Result<HashMap<SessionKey, SessionRow>> {
+    Ok(
+        held(connection, keys, &Span::default(), &Filter::default(), true)?
+            .into_iter()
+            .map(|row| (row.key.clone(), row))
+            .collect(),
+    )
+}
+
+/// Which of `sessions` a list over `span` and `filter` holds, subagents and
+/// sessions without usage among them, with the models each used when
+/// `models`: none for none, where a list naming no sessions would hold
+/// every one.
+fn held(
+    connection: &Connection,
+    sessions: &[SessionKey],
+    span: &Span,
+    filter: &Filter,
+    models: bool,
+) -> Result<Vec<SessionRow>> {
+    let mut rows = Vec::new();
     // A page lists at most 1,000 sessions, and a list of as many named
     // sessions lists no more, so each is one page.
-    for chunk in candidates.chunks(1_000) {
+    for chunk in sessions.chunks(1_000) {
         let question = SessionQuery {
             span: *span,
             filter: Filter {
@@ -618,10 +660,13 @@ pub(crate) fn admitted(
             limit: 1_000,
             ..SessionQuery::default()
         };
-        let page = listed(connection, &question)?;
-        admitted.extend(page.items.into_iter().map(|row| row.key));
+        let mut page = listed(connection, &question)?;
+        if models {
+            models_of(connection, &mut page.items)?;
+        }
+        rows.extend(page.items);
     }
-    Ok(admitted)
+    Ok(rows)
 }
 
 /// How a list of sessions is ordered.
@@ -807,10 +852,9 @@ fn listed(connection: &Connection, question: &SessionQuery) -> Result<Page<Sessi
     // accounts; otherwise every session is, those without usage included.
     // Claude Code's Explore subagents run Haiku, so a session can have usage
     // of Haiku only through them.
-    let bounded = question.span.from.is_some()
-        || question.span.until.is_some()
-        || !question.filter.models.is_empty()
-        || !question.filter.accounts.is_empty();
+    let spanned = question.span.from.is_some() || question.span.until.is_some();
+    let bounded =
+        spanned || !question.filter.models.is_empty() || !question.filter.accounts.is_empty();
     let mut values: Vec<Sql> = Vec::new();
 
     // Each session's own usage in the span, and each session's with every
@@ -855,7 +899,6 @@ fn listed(connection: &Connection, question: &SessionQuery) -> Result<Page<Sessi
     // When a session was last active: within the span, for a list of one,
     // exactly when its latest activity of all falls in the span, and
     // otherwise the end of its tree's last quarter hour of usage in the span.
-    let spanned = question.span.from.is_some() || question.span.until.is_some();
     let activity = if spanned {
         let mut within = String::from("s.active IS NOT NULL");
         let mut last = format!("tree.q + {}", QUARTER - 1);
@@ -1050,20 +1093,20 @@ mod tests {
     use super::{Totals, tokens_ordered};
     use crate::usage::Usd;
 
-    /// Each row of aggregates `rows`, as `(c2..c6 tokens, c8 cost, c9
-    /// unpriced)`, as `expression` of the table `t` orders it.
-    fn ordered(expression: &str, rows: &[([i64; 5], i64, i64)]) -> Vec<i64> {
+    /// Each of `rows`, its token aggregates c2 to c6, as `expression` of the
+    /// table `t` orders it.
+    fn ordered(expression: &str, rows: &[[i64; 5]]) -> Vec<i64> {
         let connection = Connection::open_in_memory().unwrap();
         connection
-            .execute_batch("CREATE TABLE t (c2 INTEGER, c3 INTEGER, c4 INTEGER, c5 INTEGER, c6 INTEGER, c8 INTEGER, c9 INTEGER)")
+            .execute_batch(
+                "CREATE TABLE t (c2 INTEGER, c3 INTEGER, c4 INTEGER, c5 INTEGER, c6 INTEGER)",
+            )
             .unwrap();
-        for (tokens, cost, unpriced) in rows {
+        for tokens in rows {
             connection
                 .execute(
-                    "INSERT INTO t VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        tokens[0], tokens[1], tokens[2], tokens[3], tokens[4], cost, unpriced
-                    ],
+                    "INSERT INTO t VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![tokens[0], tokens[1], tokens[2], tokens[3], tokens[4]],
                 )
                 .unwrap();
         }
@@ -1083,10 +1126,7 @@ mod tests {
         // i64::MAX (about 9.22e18), where SQLite's sum turns to floating point.
         let huge = 3_000_000_000_000_000_000;
         assert_eq!(
-            ordered(
-                &tokens_ordered("t"),
-                &[([1, 2, 3, 4, 5], 0, 0), ([huge; 5], 0, 0)]
-            ),
+            ordered(&tokens_ordered("t"), &[[1, 2, 3, 4, 5], [huge; 5]]),
             [15, i64::MAX]
         );
     }

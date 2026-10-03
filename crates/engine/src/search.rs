@@ -86,13 +86,13 @@ use crate::error::{Error, Result};
 use crate::ledger::Ledger;
 use crate::query::{self, Filter, Page};
 use crate::session::SessionKey;
-use crate::time::{Instant, Span};
+use crate::time::Span;
 use crate::transcript::{Entry, Speaker};
 
 /// How the index and excerpts divide text into words: at anything but letters
 /// and digits, with case and accents folded away. The ledger's index was
 /// created with the same, and changing it takes a migration that rebuilds it.
-pub(crate) const TOKENIZE: &str = "unicode61 remove_diacritics 2";
+const TOKENIZE: &str = "unicode61 remove_diacritics 2";
 
 /// The table listing an index's words, one to a row, that a search looks its
 /// words' other forms up in: an `fts5vocab` table over the ledger's index,
@@ -131,8 +131,6 @@ pub struct SearchHit {
     pub session: SessionKey,
     /// How many entries of its conversation matched.
     pub matches: u64,
-    /// When the last of them was said, where known.
-    pub last: Option<Instant>,
 }
 
 /// A line of a conversation showing why it matched a search.

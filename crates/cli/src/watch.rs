@@ -128,7 +128,7 @@ pub(crate) fn run(data: &Path, home: &Path) -> Result<(), Failure> {
         read_limits: true,
     })?;
     relay(&events, "changes", move |events| {
-        while let Ok(change) = changes.recv_blocking() {
+        while let Ok(change) = changes.recv() {
             if events.send(Event::Change(change)).is_err() {
                 return;
             }

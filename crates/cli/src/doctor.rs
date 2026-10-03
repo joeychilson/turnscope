@@ -10,9 +10,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use turnscope_engine::{
-    CatalogOutcome, Check, Counts, Diagnostic, Doctor, Engine, Pricing, ScanReport, Usd,
-};
+use turnscope_engine::{Check, Counts, Diagnostic, Doctor, Engine, Pricing, ScanReport, Usd};
 
 use crate::{Failure, show};
 
@@ -74,12 +72,7 @@ fn write_doctor(out: &mut String, report: &Doctor) {
             .map_or_else(|| "an unknown date".to_owned(), |at| at.to_string())
     );
     if let Some(check) = &prices.checked {
-        let found = match check.outcome {
-            CatalogOutcome::Unchanged => "unchanged",
-            CatalogOutcome::Updated => "updated",
-            CatalogOutcome::Refused => "refused",
-            CatalogOutcome::Unreachable => "unreachable",
-        };
+        let found = check.outcome.key();
         let _ = writeln!(
             out,
             "Last checked models.dev at {}: {found} {}",

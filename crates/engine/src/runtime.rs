@@ -119,8 +119,8 @@ pub enum CatalogOutcome {
 }
 
 impl CatalogOutcome {
-    /// The outcome as stored.
-    pub(crate) fn key(self) -> &'static str {
+    /// The outcome as stored, and as the doctor reports it.
+    pub fn key(self) -> &'static str {
         match self {
             CatalogOutcome::Unchanged => "unchanged",
             CatalogOutcome::Updated => "updated",

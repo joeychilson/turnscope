@@ -29,10 +29,10 @@
 //! of their own ([`api`]). Whether the person hid an account is kept in the
 //! ledger and given with the account.
 //!
-//! Every reading is kept in the ledger, so how fast a limit is rising is
-//! known as soon as the app opens. What a new reading gives rise to is the
-//! app's alone to send: alerts ([`alert`]), and from Monday morning the
-//! weekly recap ([`recap`]).
+//! Every reading is kept in the ledger ([`recording`]), so how fast a limit
+//! is rising is known as soon as the app opens. What a new reading gives
+//! rise to is the app's alone to send: alerts ([`alert`]), and from Monday
+//! morning the weekly recap ([`recap`]).
 //!
 //! The tests read answers shaped like the providers', never new requests to
 //! them.
@@ -42,11 +42,14 @@ pub(crate) mod api;
 pub(crate) mod attribution;
 mod chatgpt;
 mod claude;
+#[cfg(feature = "fixture")]
+mod fixture;
 mod grok;
 mod opencode;
 mod openrouter;
 mod pace;
 pub(crate) mod recap;
+pub(crate) mod recording;
 pub(crate) mod share;
 pub use alert::{Alert, AlertKind};
 pub use recap::{PastWindow, WeekEnded};

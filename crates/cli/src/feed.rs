@@ -40,8 +40,8 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 use turnscope_engine::{
-    AccountLimits, Engine, Filter, Instant, LimitProblem, LimitState, ModelKey, SessionKey,
-    SessionQuery, SessionRow, Standing, Subscription,
+    AccountLimits, Engine, Instant, LimitProblem, LimitState, ModelKey, SessionKey, SessionRow,
+    Standing, Subscription,
 };
 
 use crate::connect::Link;
@@ -353,7 +353,8 @@ fn tell(
         return Ok(Told::default());
     };
     let top: Vec<(SessionKey, f64)> = window.sessions.iter().take(NAMED).cloned().collect();
-    let rows = rows_of(engine, top.iter().map(|(key, _)| key.clone()).collect())?;
+    let keys: Vec<SessionKey> = top.iter().map(|(key, _)| key.clone()).collect();
+    let rows = engine.session_rows(&keys)?;
     let used_most = top
         .iter()
         .filter_map(|(key, share)| {
@@ -445,32 +446,6 @@ fn small(model: &ModelKey) -> bool {
     ["haiku", "mini", "nano", "flash", "lite"]
         .iter()
         .any(|word| name.contains(word))
-}
-
-/// The sessions `keys` as the engine lists them.
-fn rows_of(
-    engine: &Engine,
-    keys: Vec<SessionKey>,
-) -> turnscope_engine::Result<HashMap<SessionKey, SessionRow>> {
-    if keys.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let limit = keys.len();
-    Ok(engine
-        .sessions(&SessionQuery {
-            filter: Filter {
-                sessions: keys,
-                ..Filter::default()
-            },
-            subagents: true,
-            empty: true,
-            limit,
-            ..SessionQuery::default()
-        })?
-        .items
-        .into_iter()
-        .map(|row| (row.key.clone(), row))
-        .collect())
 }
 
 #[cfg(test)]

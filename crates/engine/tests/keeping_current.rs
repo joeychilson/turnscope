@@ -8,7 +8,7 @@ mod history {
     pub mod subagents;
 }
 
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -35,7 +35,7 @@ fn response(id: &str, output: u64) -> Value {
 }
 
 /// Wait for a change naming the session, and say how long it took.
-fn wait_for_session(changes: &async_channel::Receiver<Change>) -> Duration {
+fn wait_for_session(changes: &mpsc::Receiver<Change>) -> Duration {
     wait_until("a change names the session", || {
         matches!(changes.try_recv(), Ok(Change::History { sessions, .. })
             if sessions.iter().any(|session| session.native() == SESSION))

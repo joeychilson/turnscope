@@ -9,7 +9,9 @@ mod history {
 }
 
 use serde_json::{Value, json};
-use turnscope_engine::{Error, Filter, Instant, ModelKey, SessionOrder, SessionQuery, Span};
+use turnscope_engine::{
+    Error, Filter, Instant, ModelKey, SessionKey, SessionOrder, SessionQuery, Span,
+};
 
 use history::claude_code::{self, response};
 use history::home::{Home, write};
@@ -37,11 +39,9 @@ fn at(text: &str) -> Instant {
     Instant::parse(text).unwrap()
 }
 
-#[test]
-fn a_session_whose_subagent_alone_matches_is_listed_as_facts_count_it() {
-    let home = Home::new();
-    // The parent asks Claude Opus 5 at 12:00, and its Explore subagent runs
-    // Claude Haiku 5 at 12:20.
+/// A session that asks Claude Opus 5 at 12:00, and its Explore subagent,
+/// which runs Claude Haiku 5 at 12:20.
+fn explored(home: &Home) {
     write(
         &claude_code::session(home.path(), PARENT),
         &[response(
@@ -70,6 +70,12 @@ fn a_session_whose_subagent_alone_matches_is_listed_as_facts_count_it() {
         EXPLORE,
         json!({"agentType": "Explore", "description": "Find the ledger's tests"}),
     );
+}
+
+#[test]
+fn a_session_whose_subagent_alone_matches_is_listed_as_facts_count_it() {
+    let home = Home::new();
+    explored(&home);
     let engine = home.scanned();
 
     let haiku = Filter {
@@ -107,6 +113,32 @@ fn a_session_whose_subagent_alone_matches_is_listed_as_facts_count_it() {
         // read from the cache and 5 out.
         assert_eq!(rows, [(format!("claude-code:{PARENT}"), 0, 537)]);
     }
+}
+
+#[test]
+fn sessions_asked_for_by_key_are_as_a_list_shows_them_and_none_for_none() {
+    let home = Home::new();
+    explored(&home);
+    let engine = home.scanned();
+    let listed = engine
+        .sessions(&SessionQuery {
+            subagents: true,
+            ..every_session()
+        })
+        .unwrap()
+        .items;
+    assert_eq!(listed.len(), 2, "the session and its subagent");
+    let keys: Vec<SessionKey> = listed.iter().map(|row| row.key.clone()).collect();
+    let rows = engine.session_rows(&keys).unwrap();
+    assert_eq!(rows.len(), 2);
+    for row in &listed {
+        assert_eq!(&rows[&row.key], row);
+    }
+    // Asking for none is no question of every session; a key no session
+    // has finds nothing.
+    assert!(engine.session_rows(&[]).unwrap().is_empty());
+    let unknown = SessionKey::parse("claude-code:00000000-0000-4000-8000-000000000000").unwrap();
+    assert!(engine.session_rows(&[unknown]).unwrap().is_empty());
 }
 
 #[test]
