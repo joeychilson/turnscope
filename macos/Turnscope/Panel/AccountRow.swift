@@ -193,7 +193,7 @@ private struct UsedMost: View {
                                         .accessibilityLabel("Active now")
                                 }
                             }
-                            Text([used.project, words.agentName(used.agent)].compactMap { $0 }.joined(separator: " · "))
+                            Text([used.project, used.agent.name].compactMap { $0 }.joined(separator: " · "))
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 8)

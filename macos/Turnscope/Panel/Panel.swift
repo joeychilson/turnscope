@@ -139,13 +139,13 @@ private struct ConnectNudge: View {
     @AppStorage(Preference.dismissedConnect) private var dismissed = ""
 
     var body: some View {
-        let used = Set(store.inUse.flatMap(\.agents))
+        let used = Set(store.inUse.flatMap { $0.agents.map(\.id) })
         let away = Set(dismissed.split(separator: ",").map(String.init))
         if let agent = store.agents.first(where: {
             used.contains($0.id) && !away.contains($0.id) && ($0.status == .available || $0.status == .outdated)
         }) {
             HStack(spacing: 8) {
-                Logo(agent: agent.id, size: 13).foregroundStyle(.secondary)
+                Logo(agent: agent, size: 13).foregroundStyle(.secondary)
                 Text(agent.status == .outdated ? "\(agent.name) runs an older Turnscope" : "\(agent.name) can't see your limits")
                     .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: 6)
@@ -197,7 +197,7 @@ private struct Verdict: View {
     var body: some View {
         let words = Words(now: navigation.now)
         let verdict = store.all.isEmpty
-            ? words.welcome(store.agents, reading: store.reading)
+            ? words.welcome(store.agents, reads: store.feed?.reads ?? [], reading: store.reading)
             : words.verdict(store.inUse)
         VStack(alignment: .leading, spacing: 4) {
             Text(verdict.headline)

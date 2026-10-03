@@ -169,7 +169,7 @@ private struct AgentRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 10) {
-                Logo(agent: agent.id, size: 14).foregroundStyle(.secondary)
+                Logo(agent: agent, size: 14).foregroundStyle(.secondary)
                 Text(agent.name).font(.system(size: 13))
                 Spacer(minLength: 8)
                 status
