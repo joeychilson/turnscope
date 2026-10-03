@@ -22,7 +22,8 @@
 
 use serde_json::Value;
 
-use super::{Identity, LimitProblem, Location, PlanLimits, Reader, Source};
+use super::sign_in::{Identity, Location, Source, claims};
+use super::{LimitProblem, PlanLimits, Reader};
 use crate::agent::Agent;
 use crate::time::Instant;
 
@@ -90,10 +91,7 @@ pub(super) const READER: Reader = Reader {
 /// The account a token was issued to.
 fn identity(token: &str) -> Identity {
     Identity {
-        key: super::claims(token)["sub"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned(),
+        key: claims(token)["sub"].as_str().unwrap_or_default().to_owned(),
         label: None,
     }
 }

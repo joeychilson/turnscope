@@ -4,12 +4,17 @@
 //! An account's week is its limit on all of its use, not one model's, whose
 //! windows last a week, give or take a day. The recap tells of the window of
 //! it that reset in the seven days before Monday 9 AM, as its readings said
-//! it ended ([`super::history`]): the most of it used, and when it was used
-//! up, if it was. Beside that goes the project that took most of what this
-//! Mac's agents spent of the account then at list prices, which is what a
-//! window's reckoning shares its rises by ([`super::share`]). Readings are
-//! taken only while Turnscope runs, so a week none were taken in has nothing
-//! to tell.
+//! it ended: the most of it used, and when a reading first found it used
+//! up, if one did. Its readings are told apart from the next window's as a
+//! window's reckoning tells them ([`super::share`]): they belong together
+//! while their resets agree. Beside that goes the project that took most of
+//! what this Mac's agents spent of the account then at list prices, which is
+//! what a window's reckoning shares its rises by.
+//!
+//! Readings are taken only while Turnscope runs, so a week none were taken
+//! in has nothing to tell, and one whose last hours no reading saw says only
+//! as much as was read; one read after it was used up says so however
+//! little was read before.
 //!
 //! It is due from Monday 9 AM until the next, and sent once in that time,
 //! the first time an account has a week to tell. The weeks it told of are
@@ -25,11 +30,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use rusqlite::Connection;
 
-use super::history::{self, PastWindow};
-use super::share::{counts_in, spending_by};
+use super::share::{counts_in, spending_by, windows_of};
 use super::{AccountLimits, DAY, Subscription, WEEK};
 use crate::error::Result;
-use crate::ledger::Ledger;
+use crate::ledger::{Ledger, Reading};
 use crate::time::{Instant, Zone, monday_morning};
 
 /// An account's week that ended, as the weekly recap tells it.
@@ -51,6 +55,20 @@ pub struct WeekEnded {
     /// account that week at list prices, as its folder; `None` when nothing
     /// priced was spent here, or the most went to no project known.
     pub project: Option<String>,
+}
+
+/// How a window of a limit that reset ended, as read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PastWindow {
+    /// When it started, where known.
+    pub starts: Option<Instant>,
+    /// When it reset, where known.
+    pub resets: Option<Instant>,
+    /// The most of it any reading found used, in percent, which can be
+    /// above 100.
+    pub used: f64,
+    /// When a reading first found it used up, if one did.
+    pub reached: Option<Instant>,
 }
 
 /// The weeks the weekly recap due at `now` in `zone` tells of, from
@@ -89,7 +107,7 @@ pub(crate) fn recap(
     let mut weeks = Vec::new();
     for account in accounts.iter().filter(|account| !account.hidden) {
         for limit in account.limits.iter().filter(|limit| limit.scope.is_none()) {
-            let ended = history::reset_by(ledger, &account.id, &limit.key, since, morning)?;
+            let ended = reset_by(ledger, &account.id, &limit.key, since, morning)?;
             let Some(window) = ended.into_iter().rev().find(|window| {
                 a_week(window) && window.resets.is_some_and(|at| at.millis() > from)
             }) else {
@@ -125,6 +143,48 @@ pub(crate) fn recap(
         .collect();
     ledger.send_recap(&told, now)?;
     Ok(weeks)
+}
+
+/// The windows of `account`'s limit `key` that reset by `by`, oldest first,
+/// as their readings from `since` on said each ended, the latest among them
+/// when it has reset, though no reading since may follow yet.
+/// A window that began before `since` is told only from what was read of it
+/// after.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::Ledger`] when the ledger cannot be read.
+fn reset_by(
+    ledger: &Ledger,
+    account: &str,
+    key: &str,
+    since: Instant,
+    by: Instant,
+) -> Result<Vec<PastWindow>> {
+    Ok(windows_of(ledger, account, key, since)?
+        .iter()
+        .filter_map(|window| summed(window))
+        .filter(|window| window.resets.is_some_and(|resets| resets <= by))
+        .collect())
+}
+
+/// How the window of `readings` ended; `None` for a window with none.
+fn summed(readings: &[Reading]) -> Option<PastWindow> {
+    let last = readings.last()?;
+    let used = readings
+        .iter()
+        .map(|reading| reading.used)
+        .filter(|used| used.is_finite())
+        .fold(0., f64::max);
+    Some(PastWindow {
+        starts: last.starts,
+        resets: last.resets,
+        used,
+        reached: readings
+            .iter()
+            .find(|reading| reading.used >= 100.)
+            .map(|reading| reading.at),
+    })
 }
 
 /// Whether `window` lasted a week, give or take a day.
@@ -171,11 +231,12 @@ mod tests {
 
     use rusqlite::{Connection, params};
 
-    use super::{WeekEnded, recap};
+    use super::{PastWindow, WeekEnded, recap, summed};
     use crate::agent::Agent;
-    use crate::ledger::Ledger;
     use crate::ledger::tests::scratch;
-    use crate::limits::{AccountRead, PastWindow, Reported, Subscription, state};
+    use crate::ledger::{Ledger, Reading};
+    use crate::limits::share::windows;
+    use crate::limits::{AccountRead, HOUR, Reported, Subscription, state};
     use crate::time::{Instant, Zone};
 
     fn at(text: &str) -> Instant {
@@ -549,6 +610,79 @@ mod tests {
         assert_eq!(
             recap(&mut ledger, &cache(&[], &[]), &accounts, now, &utc).unwrap(),
             []
+        );
+    }
+
+    /// How each window of `readings` ended, oldest first.
+    fn ended(readings: Vec<Reading>) -> Vec<PastWindow> {
+        windows(readings)
+            .iter()
+            .filter_map(|window| summed(window))
+            .collect()
+    }
+
+    /// 2026-09-03T09:00:00Z, a Thursday.
+    const WEEK_START: i64 = 1_788_426_000_000;
+
+    /// `hours` on from [`WEEK_START`].
+    fn hour(hours: i64) -> Instant {
+        Instant::from_millis(WEEK_START + hours * HOUR).unwrap()
+    }
+
+    /// A reading of a weekly limit `used` percent at `hours`, in the week
+    /// starting `week` weeks on from the first.
+    fn reading(week: i64, hours: i64, used: f64) -> Reading {
+        let starts = week * 168;
+        Reading {
+            key: "seven_day".to_owned(),
+            name: "Weekly".to_owned(),
+            scope: None,
+            at: hour(starts + hours),
+            used,
+            starts: Some(hour(starts)),
+            resets: Some(hour(starts + 168)),
+        }
+    }
+
+    #[test]
+    fn each_window_ends_at_the_most_read_of_it() {
+        // Week 0 is read at 20%, 55% and 80%: it ended with 80 used, never
+        // used up. Week 1 reads 40%, then 100% at hour 150, then 100% again:
+        // used up at hour 168 + 150 = 318. Week 2 is read once, at 3%. A
+        // reading lower than the one before, as rounding gives, doesn't
+        // lower the most.
+        let readings = vec![
+            reading(0, 10, 20.),
+            reading(0, 90, 55.),
+            reading(0, 120, 54.),
+            reading(0, 160, 80.),
+            reading(1, 20, 40.),
+            reading(1, 150, 100.),
+            reading(1, 160, 100.),
+            reading(2, 5, 3.),
+        ];
+        assert_eq!(
+            ended(readings),
+            vec![
+                PastWindow {
+                    starts: Some(hour(0)),
+                    resets: Some(hour(168)),
+                    used: 80.,
+                    reached: None,
+                },
+                PastWindow {
+                    starts: Some(hour(168)),
+                    resets: Some(hour(336)),
+                    used: 100.,
+                    reached: Some(hour(318)),
+                },
+                PastWindow {
+                    starts: Some(hour(336)),
+                    resets: Some(hour(504)),
+                    used: 3.,
+                    reached: None,
+                },
+            ]
         );
     }
 }

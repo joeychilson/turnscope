@@ -43,7 +43,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::{HOUR, Identity, LimitProblem, Location, PlanLimits, Reader, Source, WEEK, Whose};
+use super::sign_in::{Identity, Location, Source, Whose, one_account};
+use super::{HOUR, LimitProblem, PlanLimits, Reader, WEEK};
 use crate::agent::Agent;
 use crate::folders::Folder;
 use crate::time::Instant;
@@ -73,7 +74,7 @@ pub(super) const READER: Reader = Reader {
             label: "/oauthAccount/emailAddress",
         }),
     }],
-    identity: super::one_account,
+    identity: one_account,
     fetch,
 };
 

@@ -25,7 +25,8 @@
 
 use serde_json::Value;
 
-use super::{Identity, LimitProblem, Location, PlanLimits, Source};
+use super::sign_in::{FNV, Identity, Location, Source, fnv};
+use super::{LimitProblem, PlanLimits};
 use crate::agent::Agent;
 use crate::time::{Bucket, Instant, Zone, next, start_of};
 
@@ -122,7 +123,7 @@ fn parse(body: &Value, key: &str, now: Instant) -> Option<PlanLimits> {
         }
         None => (None, None),
     };
-    let key = format!("key:{:016x}", super::fnv(super::FNV, key.as_bytes()));
+    let key = format!("key:{:016x}", fnv(FNV, key.as_bytes()));
     let used = spent / limit * 100.0;
     Some(PlanLimits {
         plan: None,

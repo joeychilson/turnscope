@@ -2,7 +2,7 @@
 //! telling when any of them changed.
 
 use std::io::{self, ErrorKind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -11,7 +11,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 
-use super::{Identity, Location, Reader, SignIn, Source, Subscription, Whose, claude, instant_of};
+use super::{Reader, Subscription, claude, instant_of};
+use crate::agent::Agent;
 use crate::error::{Error, Result};
 use crate::folders::Folder;
 use crate::time::Instant;
@@ -30,6 +31,89 @@ const KEYCHAIN_WAIT: Duration = Duration::from_secs(20);
 /// How often a process run with [`output_within`] is looked at to see
 /// whether it has ended.
 const POLL: Duration = Duration::from_millis(10);
+
+/// One place an agent keeps a sign-in to a subscription, in each of its
+/// folders.
+pub(super) struct Source {
+    /// The agent.
+    pub(super) agent: Agent,
+    /// The provider the agent's usage names when it uses the sign-in, as
+    /// Pi's names `openai-codex` for its ChatGPT sign-in: what tells its use
+    /// of the subscription from its use of an API key.
+    pub(super) provider: &'static str,
+    /// Where it keeps it in a folder of its.
+    pub(super) location: Location,
+    /// JSON pointer to the token.
+    pub(super) token: &'static str,
+    /// JSON pointer to when the token expires, where the agent records it.
+    pub(super) expires: Option<&'static str>,
+    /// JSON pointer to the plan, where the agent records it.
+    pub(super) plan: Option<&'static str>,
+    /// Where the agent records whose sign-in it holds, for tokens that don't
+    /// say.
+    pub(super) whose: Option<Whose>,
+}
+
+/// Where an agent records the account it is signed into, beside the
+/// sign-in itself.
+pub(super) struct Whose {
+    /// The JSON file it records it in for a folder of its, given the home
+    /// directory.
+    pub(super) file: fn(&Folder, &Path) -> PathBuf,
+    /// JSON pointers to what identifies the account, joined in order; any
+    /// the file leaves out are left out.
+    pub(super) id: &'static [&'static str],
+    /// JSON pointer to what tells the account apart, such as its email
+    /// address.
+    pub(super) label: &'static str,
+}
+
+/// Where an app keeps a sign-in, in a folder of its.
+pub(super) enum Location {
+    /// A JSON file in the folder.
+    File(&'static str),
+    /// The login Keychain item, its password JSON, Claude Code keeps its
+    /// sign-in for the folder in, named as [`claude::service`] names it.
+    ClaudeKeychain,
+    /// OpenCode's database in the folder, which keeps a row in `credential`
+    /// for each sign-in to the provider named, its `value` JSON. Of several
+    /// to one provider, OpenCode uses those marked `active`, and so do
+    /// limits.
+    OpenCode(&'static str),
+}
+
+/// A sign-in found on this Mac.
+pub(super) struct SignIn {
+    pub(super) agent: Agent,
+    /// The agent's folder it was found in.
+    pub(super) folder: PathBuf,
+    /// The provider the agent's usage names when it uses it.
+    pub(super) provider: &'static str,
+    pub(super) token: String,
+    pub(super) expires: Option<Instant>,
+    pub(super) plan: Option<String>,
+    /// Whose it is, where the agent records it.
+    pub(super) whose: Option<Identity>,
+}
+
+/// The account a token belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Identity {
+    /// The same for every token to the account; empty when tokens do not say.
+    pub(super) key: String,
+    /// What tells the account apart from others of the subscription.
+    pub(super) label: Option<String>,
+}
+
+/// The account of a token that doesn't say whose it is: the same for every
+/// such token, as for Claude's without Claude Code's record of whose they
+/// are, and for a provider's keys, which draw on its one API-key account.
+pub(super) fn one_account(_token: &str) -> Identity {
+    Identity {
+        key: String::new(),
+        label: None,
+    }
+}
 
 /// Where FNV-1a starts.
 pub(super) const FNV: u64 = 0xcbf2_9ce4_8422_2325;
@@ -461,10 +545,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{accounts, claims, output_within, sign_ins, stamp};
+    use super::{Identity, SignIn, Whose, accounts, claims, output_within, sign_ins, stamp};
     use crate::agent::Agent;
     use crate::folders::{self, Folder, FolderOrigin};
-    use crate::limits::{Identity, SignIn, Subscription, Whose};
+    use crate::limits::Subscription;
 
     /// Write `text` to `path` under `home`, making its folders.
     fn write(home: &Path, path: &str, text: impl AsRef<[u8]>) {
