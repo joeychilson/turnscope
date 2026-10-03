@@ -456,7 +456,7 @@ mod tests {
 
     use turnscope_engine::{AccountLimits, Agent, Instant, LimitProblem, LimitState, Subscription};
 
-    use super::{Advice, Told, Used, assemble, time};
+    use super::{Advice, Named, Told, Used, assemble, time};
     use crate::connect::{Link, Status};
 
     fn at(text: &str) -> Instant {
