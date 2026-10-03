@@ -230,6 +230,21 @@ impl Change {
             moved_to: None,
         }
     }
+
+    /// `path` written whole with `content`: every line of it added, to a
+    /// file it `created` or one it wrote over, of which the lines removed
+    /// are unknown, since what the file held before isn't recorded.
+    pub(crate) fn written(path: &str, content: &str, created: bool) -> Change {
+        let added = Some((lines(content), 0));
+        if created {
+            Change::new(path, ChangeKind::Created, added)
+        } else {
+            Change {
+                removed: None,
+                ..Change::new(path, ChangeKind::Updated, added)
+            }
+        }
+    }
 }
 
 /// What a change did to its file.

@@ -82,6 +82,10 @@
 //!   lines aren't known. A call that didn't complete changed nothing.
 //! - The plan is `todowrite`'s whole list of `todos`, read as its tool
 //!   describes it, since none was here.
+//! - Earlier versions of OpenCode called `shell` `bash`, and had a
+//!   `multiedit` beside `edit`. Neither was in this Mac's history
+//!   (2026-10-02), so each is read as the tool it was, `shell` or `edit`,
+//!   unmeasured.
 //!
 //! **What it writes.** Messages are of 7 types (2026-09-27): `assistant`,
 //! `user`, `synthetic`, `idle`, `system`, `shell` and `compaction`, and an
@@ -388,13 +392,8 @@ fn converse(kind: &str, at: Option<Instant>, data: &Map<String, Value>, builder:
 /// it: what it was given (`input`), whether it finished (`status`), and
 /// what OpenCode worked out of it (`metadata`).
 ///
-/// Commands are `shell`'s, whose metadata has the exit code once one
-/// finished and a status of `running` while one goes on in the background.
-/// Files are changed by `edit` and `patch`, whose metadata lists each file
-/// with the lines it gained and lost (`additions`, `deletions`) and whether
-/// it was `added`, `modified` or `deleted`; and by `write`, which records
-/// only the new content and whether it created the file. The plan is
-/// `todowrite`'s whole list.
+/// What each tool records is in the module documentation's **Work, for a
+/// handoff**.
 fn worked(name: &str, state: &Value) -> Vec<Work> {
     let unclear = || vec![Work::Unclear(name.to_owned())];
     let input = state.get("input");
@@ -480,24 +479,8 @@ fn worked(name: &str, state: &Value) -> Vec<Work> {
                 return unclear();
             };
             let said = state.get("content").map(text_of).unwrap_or_default();
-            let change = if said.starts_with("Created file successfully") {
-                Change::new(
-                    path,
-                    ChangeKind::Created,
-                    Some((handoff::lines(content), 0)),
-                )
-            } else {
-                // What the file held before isn't recorded.
-                Change {
-                    removed: None,
-                    ..Change::new(
-                        path,
-                        ChangeKind::Updated,
-                        Some((handoff::lines(content), 0)),
-                    )
-                }
-            };
-            vec![Work::Changed(change)]
+            let created = said.starts_with("Created file successfully");
+            vec![Work::Changed(Change::written(path, content, created))]
         }
         "todowrite" if status == Some("completed") => {
             let todos = input
@@ -632,7 +615,7 @@ fn read_sessions(
                 child: session.clone(),
                 parent: key(parent),
                 kind,
-                // The `task` call that started a subagent names its session.
+                // The call that started a subagent names its session.
                 launch: (kind == LinkKind::Subagent).then(|| session.native().to_owned()),
             });
         }
@@ -910,7 +893,7 @@ mod tests {
 
     use super::OpenCode;
     use crate::Agent;
-    use crate::agent::tests::assert_said_as_shown;
+    use crate::agent::tests::{assert_said_as_shown, noted, said};
     use crate::agent::{AgentReader, Batch, Checkpoint, DiagnosticKind, Observation, ReportScope};
     use crate::session::{LinkKind, SessionKey, TitleSource};
     use crate::usage::{Tokens, Usd};
@@ -1117,10 +1100,7 @@ mod tests {
             .map(|report| report.session.native())
             .collect();
         assert_eq!(reported, ["ses_a"]);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [
@@ -1162,8 +1142,9 @@ mod tests {
             })
             .collect();
         links.sort();
-        // A subagent is known to the `task` call that started it by its own
-        // session's id; a fork was started by no call.
+        // A subagent is known to the call that started it, here a `task`
+        // call as earlier versions made, by its own session's id; a fork was
+        // started by no call.
         assert_eq!(
             links,
             [
@@ -1481,12 +1462,9 @@ mod tests {
 
         // Both replies are counted, and the second's text is said.
         assert_eq!(batch.observations().count(), 2);
-        let said: Vec<&str> = batch.said().map(|said| said.text.as_str()).collect();
+        let said = said(&batch);
         assert_eq!(said, ["The scan reads each file once."]);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [
@@ -1527,10 +1505,7 @@ mod tests {
         assert_eq!(checkpoint, from);
         assert_eq!(batch.observations().count(), 0);
         assert_eq!(batch.said().count(), 0);
-        let noted: Vec<(DiagnosticKind, &str)> = batch
-            .diagnostics()
-            .map(|((kind, detail), _)| (*kind, detail.as_str()))
-            .collect();
+        let noted = noted(&batch);
         assert_eq!(
             noted,
             [(
