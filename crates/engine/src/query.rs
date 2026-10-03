@@ -1093,20 +1093,20 @@ mod tests {
     use super::{Totals, tokens_ordered};
     use crate::usage::Usd;
 
-    /// Each row of aggregates `rows`, as `(c2..c6 tokens, c8 cost, c9
-    /// unpriced)`, as `expression` of the table `t` orders it.
-    fn ordered(expression: &str, rows: &[([i64; 5], i64, i64)]) -> Vec<i64> {
+    /// Each of `rows`, its token aggregates c2 to c6, as `expression` of the
+    /// table `t` orders it.
+    fn ordered(expression: &str, rows: &[[i64; 5]]) -> Vec<i64> {
         let connection = Connection::open_in_memory().unwrap();
         connection
-            .execute_batch("CREATE TABLE t (c2 INTEGER, c3 INTEGER, c4 INTEGER, c5 INTEGER, c6 INTEGER, c8 INTEGER, c9 INTEGER)")
+            .execute_batch(
+                "CREATE TABLE t (c2 INTEGER, c3 INTEGER, c4 INTEGER, c5 INTEGER, c6 INTEGER)",
+            )
             .unwrap();
-        for (tokens, cost, unpriced) in rows {
+        for tokens in rows {
             connection
                 .execute(
-                    "INSERT INTO t VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        tokens[0], tokens[1], tokens[2], tokens[3], tokens[4], cost, unpriced
-                    ],
+                    "INSERT INTO t VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![tokens[0], tokens[1], tokens[2], tokens[3], tokens[4]],
                 )
                 .unwrap();
         }
@@ -1126,10 +1126,7 @@ mod tests {
         // i64::MAX (about 9.22e18), where SQLite's sum turns to floating point.
         let huge = 3_000_000_000_000_000_000;
         assert_eq!(
-            ordered(
-                &tokens_ordered("t"),
-                &[([1, 2, 3, 4, 5], 0, 0), ([huge; 5], 0, 0)]
-            ),
+            ordered(&tokens_ordered("t"), &[[1, 2, 3, 4, 5], [huge; 5]]),
             [15, i64::MAX]
         );
     }
