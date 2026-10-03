@@ -25,6 +25,9 @@ released.
   only that it stopped.
 - Connecting an agent from the panel or from Settings says the same thing,
   and if it fails, the button's tooltip says why.
+- When your agents use a model Turnscope has no price for, an agent asking
+  what used a limit is told how much of it that use took, rather than
+  finding it left out of every figure.
 
 ## [0.1.2]
 
