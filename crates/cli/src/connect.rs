@@ -55,7 +55,21 @@ pub(crate) struct Link {
     /// The agent's id, as the engine names it: "claude-code".
     pub(crate) id: &'static str,
     pub(crate) name: &'static str,
+    /// Its logo, within the app's logos: "providers/anthropic".
+    pub(crate) logo: &'static str,
     pub(crate) status: Status,
+}
+
+/// The logo `agent` is shown with, within the app's logos: its own where it
+/// has one, else its maker's.
+pub(crate) fn logo(agent: Agent) -> &'static str {
+    match agent {
+        Agent::ClaudeCode => "providers/anthropic",
+        Agent::Codex => "providers/openai",
+        Agent::OpenCode => "providers/opencode",
+        Agent::Pi => "agents/pi",
+        Agent::Grok => "providers/xai",
+    }
 }
 
 /// Whether an agent has the server.
@@ -156,6 +170,7 @@ pub(crate) fn links(configs: &Configs, binary: &Path) -> Vec<Link> {
         .map(|connector| Link {
             id: connector.agent.key(),
             name: connector.agent.name(),
+            logo: logo(connector.agent),
             status: match (connector.registered)(configs) {
                 Some(command) if command == binary => Status::Connected,
                 Some(_) => Status::Outdated,
@@ -167,6 +182,7 @@ pub(crate) fn links(configs: &Configs, binary: &Path) -> Vec<Link> {
         links.push(Link {
             id: Agent::Pi.key(),
             name: Agent::Pi.name(),
+            logo: logo(Agent::Pi),
             status: Status::Unsupported,
         });
     }

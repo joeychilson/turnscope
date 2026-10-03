@@ -128,16 +128,21 @@ private func limit(_ standing: Standing, hours: Int? = 5, left: Double? = 20,
 }
 
 @Test func beforeAnyAccountTheWelcomeSaysWhy() {
-    #expect(words.welcome([]).headline == "No agents found")
-    let agents = [AgentLink(id: "claude-code", name: "Claude Code", status: .available),
-                  AgentLink(id: "codex", name: "Codex", status: .available),
-                  AgentLink(id: "grok", name: "Grok Build", status: .connected)]
-    #expect(words.welcome(agents) == ("No accounts found yet",
-                                      "Once Claude Code, Codex or Grok Build is signed in, its limits show up here.",
-                                      .lasts))
+    // The agents Turnscope reads, as the feed names them.
+    let reads = [AgentName(id: "claude-code", name: "Claude Code"), AgentName(id: "codex", name: "Codex"),
+                 AgentName(id: "pi", name: "Pi")]
+    #expect(words.welcome([], reads: reads)
+        == ("No agents found",
+            "Turnscope reads Claude Code, Codex and Pi. Sign in to one, and its limits show up here.", .lasts))
+    let agents = [AgentLink(id: "claude-code", name: "Claude Code", logo: "providers/anthropic", status: .available),
+                  AgentLink(id: "codex", name: "Codex", logo: "providers/openai", status: .available),
+                  AgentLink(id: "grok", name: "Grok Build", logo: "providers/xai", status: .connected)]
+    #expect(words.welcome(agents, reads: reads) == ("No accounts found yet",
+                                                    "Once Claude Code, Codex or Grok Build is signed in, its limits show up here.",
+                                                    .lasts))
     // While history is still read for the first time, none found is none
     // found yet.
-    #expect(words.welcome(agents, reading: true)
+    #expect(words.welcome(agents, reads: reads, reading: true)
         == ("Getting your limits", "They show up here in a moment.", .lasts))
 }
 
@@ -198,7 +203,8 @@ extension Account {
     /// it does.
     static func with(_ limits: [Limit]) -> Account {
         Account(id: "a", title: "Claude Max", label: nil, logo: "anthropic",
-                agents: ["claude-code"], inUse: true, hidden: false, apiKey: false, problem: nil,
+                agents: [AgentName(id: "claude-code", name: "Claude Code")], inUse: true,
+                hidden: false, apiKey: false, problem: nil,
                 standing: limits.first?.standing ?? .lasts, deciding: limits.first?.key,
                 limits: limits, usedMost: [], advice: nil)
     }

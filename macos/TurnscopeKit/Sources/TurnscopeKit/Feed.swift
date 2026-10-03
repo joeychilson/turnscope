@@ -13,10 +13,21 @@ public struct Feed: Decodable, Equatable, Sendable {
     /// first time, so what it has found may not be all there is.
     public var reading: Bool
     public var accounts: [Account]
+    /// The agents installed here, and whether each has Turnscope's server.
     public var agents: [AgentLink]
+    /// Every agent Turnscope reads, installed or not.
+    public var reads: [AgentName]
 
     /// The feed's version this app reads.
-    public static let version = 9
+    public static let version = 10
+}
+
+/// An agent, wherever the feed names one.
+public struct AgentName: Decodable, Equatable, Sendable {
+    /// As the engine names it: "claude-code".
+    public var id: String
+    /// "Claude Code".
+    public var name: String
 }
 
 /// An account, as the app shows it. `title` is what it is called before
@@ -28,8 +39,8 @@ public struct Account: Decodable, Equatable, Identifiable, Sendable {
     public var label: String?
     /// A provider's id, naming its logo: "anthropic".
     public var logo: String
-    /// The agents signed into it, by id: "claude-code".
-    public var agents: [String]
+    /// The agents signed into it, or that keep its key.
+    public var agents: [AgentName]
     public var inUse: Bool
     public var hidden: Bool
     /// Whether it is an API-key account, its provider's keys, rather than a
@@ -93,7 +104,7 @@ public struct Used: Decodable, Equatable, Identifiable, Sendable {
     public var session: String
     public var title: String?
     public var project: String?
-    public var agent: String
+    public var agent: AgentName
     /// What it took, in points of the limit's percent.
     public var share: Double
     public var active: Bool
@@ -136,6 +147,8 @@ public struct AgentLink: Decodable, Equatable, Identifiable, Sendable {
 
     public var id: String
     public var name: String
+    /// Its logo, within the app's logos: "providers/anthropic".
+    public var logo: String
     public var status: Status
 }
 

@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "at": "2026-09-30T12:00:00Z",
   "reading": false,
   "accounts": [
@@ -9,7 +9,10 @@
       "label": "joey@example.com",
       "logo": "anthropic",
       "agents": [
-        "claude-code"
+        {
+          "id": "claude-code",
+          "name": "Claude Code"
+        }
       ],
       "in_use": true,
       "hidden": false,
@@ -50,7 +53,10 @@
           "session": "claude-code:s1",
           "title": "Rethink the architecture",
           "project": "atlas",
-          "agent": "claude-code",
+          "agent": {
+            "id": "claude-code",
+            "name": "Claude Code"
+          },
           "share": 12.5,
           "active": true
         }
@@ -66,8 +72,14 @@
       "label": null,
       "logo": "openai",
       "agents": [
-        "codex",
-        "opencode"
+        {
+          "id": "codex",
+          "name": "Codex"
+        },
+        {
+          "id": "opencode",
+          "name": "OpenCode"
+        }
       ],
       "in_use": false,
       "hidden": false,
@@ -99,8 +111,14 @@
       "label": null,
       "logo": "xai",
       "agents": [
-        "grok",
-        "pi"
+        {
+          "id": "grok",
+          "name": "Grok Build"
+        },
+        {
+          "id": "pi",
+          "name": "Pi"
+        }
       ],
       "in_use": false,
       "hidden": false,
@@ -118,8 +136,14 @@
       "label": null,
       "logo": "openrouter",
       "agents": [
-        "opencode",
-        "pi"
+        {
+          "id": "opencode",
+          "name": "OpenCode"
+        },
+        {
+          "id": "pi",
+          "name": "Pi"
+        }
       ],
       "in_use": false,
       "hidden": true,
@@ -136,22 +160,48 @@
     {
       "id": "claude-code",
       "name": "Claude Code",
+      "logo": "providers/anthropic",
       "status": "connected"
     },
     {
       "id": "codex",
       "name": "Codex",
+      "logo": "providers/openai",
       "status": "available"
     },
     {
       "id": "opencode",
       "name": "OpenCode",
+      "logo": "providers/opencode",
       "status": "outdated"
     },
     {
       "id": "pi",
       "name": "Pi",
+      "logo": "agents/pi",
       "status": "unsupported"
+    }
+  ],
+  "reads": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code"
+    },
+    {
+      "id": "codex",
+      "name": "Codex"
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode"
+    },
+    {
+      "id": "pi",
+      "name": "Pi"
+    },
+    {
+      "id": "grok",
+      "name": "Grok Build"
     }
   ]
 }

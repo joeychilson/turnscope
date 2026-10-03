@@ -40,15 +40,15 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 use turnscope_engine::{
-    AccountLimits, Engine, Instant, LimitProblem, LimitState, LimitTrack, ModelKey, SessionKey,
-    SessionRow, Standing, Subscription,
+    AccountLimits, Agent, Engine, Instant, LimitProblem, LimitState, LimitTrack, ModelKey,
+    SessionKey, SessionRow, Standing, Subscription,
 };
 
 use crate::connect::Link;
 
 /// The feed's version, which `contract/feed.json` carries: raised with
 /// every change to its shape.
-pub(crate) const VERSION: u32 = 9;
+pub(crate) const VERSION: u32 = 10;
 
 /// How many sessions that used a window are named.
 const NAMED: usize = 3;
@@ -70,7 +70,28 @@ pub(crate) struct Feed {
     /// first time ([`turnscope_engine::Health::looked`]).
     pub(crate) reading: bool,
     pub(crate) accounts: Vec<Account>,
+    /// The agents installed here, and whether each has Turnscope's server.
     pub(crate) agents: Vec<Link>,
+    /// Every agent Turnscope reads, installed or not.
+    pub(crate) reads: Vec<Named>,
+}
+
+/// An agent, wherever the feed names one: its id and what it is called.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub(crate) struct Named {
+    /// As the engine names it: "claude-code".
+    pub(crate) id: &'static str,
+    /// "Claude Code".
+    pub(crate) name: &'static str,
+}
+
+impl Named {
+    fn of(agent: Agent) -> Named {
+        Named {
+            id: agent.key(),
+            name: agent.name(),
+        }
+    }
 }
 
 /// An account, as the app shows it.
@@ -84,8 +105,8 @@ pub(crate) struct Account {
     pub(crate) label: Option<String>,
     /// The logo it is shown with, a provider's id: "anthropic", "openai".
     pub(crate) logo: String,
-    /// The agents signed into it, or that keep its key, by their ids.
-    pub(crate) agents: Vec<&'static str>,
+    /// The agents signed into it, or that keep its key.
+    pub(crate) agents: Vec<Named>,
     pub(crate) in_use: bool,
     pub(crate) hidden: bool,
     /// Whether it is an API-key account, its provider's keys, rather than
@@ -133,7 +154,7 @@ pub(crate) struct Used {
     pub(crate) session: String,
     pub(crate) title: Option<String>,
     pub(crate) project: Option<String>,
-    pub(crate) agent: &'static str,
+    pub(crate) agent: Named,
     /// What it took, in points of the limit's percent.
     pub(crate) share: f64,
     /// Whether it did something within the engine's while of now.
@@ -209,6 +230,7 @@ pub(crate) fn assemble(
         reading,
         accounts,
         agents,
+        reads: Agent::ALL.into_iter().map(Named::of).collect(),
     }
 }
 
@@ -247,7 +269,7 @@ fn shown(account: &AccountLimits, told: Told) -> Account {
         title: account.title(),
         label: account.label.clone(),
         logo: logo(account),
-        agents: account.agents.iter().map(|agent| agent.key()).collect(),
+        agents: account.agents.iter().copied().map(Named::of).collect(),
         in_use: account.in_use,
         hidden: account.hidden,
         api_key: account.subscription == Subscription::ApiKey,
@@ -340,7 +362,7 @@ fn tell(
                 session: key.to_string(),
                 title: row.title.clone(),
                 project: row.project.clone(),
-                agent: key.agent().key(),
+                agent: Named::of(key.agent()),
                 share: tenths(*share),
                 active: row.running(now),
             })
@@ -557,7 +579,7 @@ mod tests {
                     session: "claude-code:s1".into(),
                     title: Some("Rethink the architecture".into()),
                     project: Some("atlas".into()),
-                    agent: "claude-code",
+                    agent: Named::of(Agent::ClaudeCode),
                     share: 12.5,
                     active: true,
                 }],
@@ -568,21 +590,25 @@ mod tests {
             Link {
                 id: "claude-code",
                 name: "Claude Code",
+                logo: crate::connect::logo(Agent::ClaudeCode),
                 status: Status::Connected,
             },
             Link {
                 id: "codex",
                 name: "Codex",
+                logo: crate::connect::logo(Agent::Codex),
                 status: Status::Available,
             },
             Link {
                 id: "opencode",
                 name: "OpenCode",
+                logo: crate::connect::logo(Agent::OpenCode),
                 status: Status::Outdated,
             },
             Link {
                 id: "pi",
                 name: "Pi",
+                logo: crate::connect::logo(Agent::Pi),
                 status: Status::Unsupported,
             },
         ];

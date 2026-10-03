@@ -199,7 +199,7 @@ public struct Words: Sendable {
         // they are keys that carry none.
         guard let limit = account.decidingLimit else {
             if let refused = inUse.first(where: { $0.problem == .signIn }) {
-                let open = refused.agents.first.map { "Open \(agentName($0)) to sign in. " } ?? ""
+                let open = refused.agents.first.map { "Open \($0.name) to sign in. " } ?? ""
                 return ("Sign in to \(refused.title) again", open + "Its limits can't be read until then.", .lasts)
             }
             return ("You can keep going", "No limit applies to what is in use.", .lasts)
@@ -230,21 +230,25 @@ public struct Words: Sendable {
     /// for the first time, that limits are on their way, since none found may
     /// only mean none found yet; after, that no agent it reads is here, or
     /// that those here aren't signed in.
-    public func welcome(_ agents: [AgentLink], reading: Bool = false)
+    public func welcome(_ agents: [AgentLink], reads: [AgentName], reading: Bool = false)
         -> (headline: String, detail: String, standing: Standing) {
         if reading {
             return ("Getting your limits", "They show up here in a moment.", .lasts)
         }
         guard !agents.isEmpty else {
             return ("No agents found",
-                    "Turnscope reads Claude Code, Codex, OpenCode, Pi and Grok Build. Sign in to one, and its limits show up here.",
+                    "Turnscope reads \(list(reads.map(\.name), "and")). Sign in to one, and its limits show up here.",
                     .lasts)
         }
-        let names = agents.map(\.name)
-        let named = names.count > 1
-            ? "\(names.dropLast().joined(separator: ", ")) or \(names[names.count - 1])"
-            : names[0]
-        return ("No accounts found yet", "Once \(named) is signed in, its limits show up here.", .lasts)
+        return ("No accounts found yet",
+                "Once \(list(agents.map(\.name), "or")) is signed in, its limits show up here.", .lasts)
+    }
+
+    /// `names` as a sentence lists them, the last after `last`: "Codex,
+    /// OpenCode or Pi".
+    private func list(_ names: [String], _ last: String) -> String {
+        guard let final = names.last, names.count > 1 else { return names.first ?? "" }
+        return "\(names.dropLast().joined(separator: ", ")) \(last) \(final)"
     }
 
     /// Why an account's limits can't be read now, in a sentence; nil when
@@ -253,7 +257,7 @@ public struct Words: Sendable {
         switch account.problem {
         case nil: nil
         case .signIn:
-            "Its sign-in was refused. Open \(account.agents.first.map(agentName) ?? "its agent") to sign in again."
+            "Its sign-in was refused. Open \(account.agents.first?.name ?? "its agent") to sign in again."
         case .unavailable: "Its provider couldn't be reached just now, so these figures may be out of date."
         case .unrecognized: "Its provider answered in a way this version of Turnscope doesn't understand."
         case .unsent: "Turnscope couldn't ask its provider just now."
@@ -322,19 +326,7 @@ public struct Words: Sendable {
     public func subtitle(_ account: Account) -> String? {
         if let label = account.label { return label }
         guard !account.agents.isEmpty else { return nil }
-        return "via " + account.agents.map(agentName).joined(separator: ", ")
-    }
-
-    /// An agent's name, from its id.
-    public func agentName(_ id: String) -> String {
-        switch id {
-        case "claude-code": "Claude Code"
-        case "codex": "Codex"
-        case "opencode": "OpenCode"
-        case "pi": "Pi"
-        case "grok": "Grok Build"
-        default: id
-        }
+        return "via " + account.agents.map(\.name).joined(separator: ", ")
     }
 
     // MARK: Notifications
@@ -389,7 +381,7 @@ public struct Words: Sendable {
 
     /// What is said once an account in use can't be read for its sign-in.
     public func signIn(_ account: Account) -> Note {
-        let agents = account.agents.map(agentName)
+        let agents = account.agents.map(\.name)
         let open = agents.first.map { "Open \($0) to sign in again" } ?? "Sign in again"
         return Note(title: "\(account.title): sign in again",
                     body: [account.label, open].compactMap { $0 }.joined(separator: "\n"), urgent: false)

@@ -23,16 +23,6 @@ enum Logos {
         return image
     }
 
-    /// An agent's logo: its own where it has one, else its maker's.
-    static func agent(_ id: String) -> NSImage {
-        switch id {
-        case "claude-code": image("providers/anthropic")
-        case "codex": image("providers/openai")
-        case "grok": image("providers/xai")
-        case "pi": image("agents/pi")
-        default: image("providers/\(id)")
-        }
-    }
 }
 
 /// A logo, drawn in the text's color.
@@ -45,8 +35,8 @@ struct Logo: View {
         self.size = size
     }
 
-    init(agent: String, size: CGFloat = 16) {
-        image = Logos.agent(agent)
+    init(agent: AgentLink, size: CGFloat = 16) {
+        image = Logos.image(agent.logo)
         self.size = size
     }
 
