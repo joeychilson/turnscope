@@ -10,14 +10,8 @@ name: Release
 # the run rather than change what people may have downloaded. The release is
 # made as a draft with everything attached and only then published, so no
 # copy is ever offered a release that is half there; a failed run leaves at
-# most a draft, which running it again replaces.
-#
-# Secrets: DEVELOPER_ID_CERTIFICATE (the Developer ID Application
-# certificate with its private key, exported as .p12, base64-encoded) and
-# DEVELOPER_ID_PASSWORD (its password); NOTARY_KEY (an App Store Connect API
-# key's .p8 file as downloaded), NOTARY_KEY_ID and NOTARY_ISSUER; and
-# SPARKLE_PRIVATE_KEY (from Sparkle's `generate_keys -x`). Variable:
-# SPARKLE_PUBLIC_KEY (from `generate_keys -p`).
+# most a draft, which running it again replaces. The secrets and variable it
+# needs, which its first step checks, are docs/releasing.md's.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
