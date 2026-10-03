@@ -171,32 +171,14 @@ pub(crate) fn read(
     let reading = engine.health()?.looked.is_none();
     let now = Instant::now();
     let mut told = HashMap::new();
-    for account in accounts
-        .iter()
-        .filter(|account| used && account.in_use && !account.hidden)
-    {
-        if let Some(limit) = account.deciding() {
-            told.insert(account.id.clone(), tell(engine, account, limit, now)?);
-        }
-    }
-    // Subagents' advice names its model as a person knows it.
-    let mut models: Option<HashMap<String, String>> = None;
-    for told in told.values_mut() {
-        let Some(Advice::Subagents { model, .. }) = &mut told.advice else {
-            continue;
-        };
-        let names = match &mut models {
-            Some(names) => names,
-            None => models.insert(
-                engine
-                    .models()?
-                    .into_iter()
-                    .filter_map(|model| Some((model.key.as_str().to_owned(), model.name?)))
-                    .collect(),
-            ),
-        };
-        if let Some(name) = names.get(model.as_str()) {
-            model.clone_from(name);
+    if used {
+        for account in accounts
+            .iter()
+            .filter(|account| account.in_use && !account.hidden)
+        {
+            if let Some(limit) = account.deciding() {
+                told.insert(account.id.clone(), tell(engine, account, limit, now)?);
+            }
         }
     }
     Ok(assemble(accounts, told, agents, reading, now))
@@ -266,7 +248,7 @@ fn shown(account: &AccountLimits, told: Told) -> Account {
         in_use: account.in_use,
         hidden: account.hidden,
         problem: account.problem.map(problem),
-        standing: standing(account.standing()),
+        standing: account.standing().key(),
         deciding: account.deciding().map(|limit| limit.key.clone()),
         limits: account.limits.iter().map(limit).collect(),
         used_most: told.used_most,
@@ -293,7 +275,7 @@ fn limit(limit: &LimitState) -> Limit {
             .then(|| limit.lasting_pace())
             .flatten()
             .map(hundredths),
-        standing: standing(limit.standing()),
+        standing: limit.standing().key(),
     }
 }
 
@@ -314,14 +296,6 @@ fn problem(problem: LimitProblem) -> &'static str {
         LimitProblem::Unavailable => "unavailable",
         LimitProblem::Unrecognized => "unrecognized",
         LimitProblem::Unsent => "unsent",
-    }
-}
-
-fn standing(standing: Standing) -> &'static str {
-    match standing {
-        Standing::Lasts => "lasts",
-        Standing::RunningOut => "running_out",
-        Standing::UsedUp => "used_up",
     }
 }
 
@@ -424,12 +398,20 @@ fn advise(
     let Some((model, _)) = by_model.into_iter().max_by(|a, b| a.1.total_cmp(&b.1)) else {
         return Ok(None);
     };
-    Ok(
-        (total >= share / 4.0 && !small(model)).then(|| Advice::Subagents {
-            share: tenths(total),
-            model: model.as_str().to_owned(),
-        }),
-    )
+    if total < share / 4.0 || small(model) {
+        return Ok(None);
+    }
+    // Named as a person knows the model, where the catalog names it.
+    let name = engine
+        .models()?
+        .into_iter()
+        .find(|info| info.key == *model)
+        .and_then(|info| info.name)
+        .unwrap_or_else(|| model.as_str().to_owned());
+    Ok(Some(Advice::Subagents {
+        share: tenths(total),
+        model: name,
+    }))
 }
 
 /// Whether `model` is one of the small ones, which advice never suggests
