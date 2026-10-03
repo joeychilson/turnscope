@@ -8,7 +8,6 @@ import SwiftUI
 import TurnscopeKit
 
 struct AccountRow: View {
-    @Environment(Store.self) private var store
     var account: Account
     var open: Bool
     /// The only account in use: its limits show unopened.
@@ -71,12 +70,9 @@ struct AccountRow: View {
             .rowBackground(on: open, radius: 12)
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            Button("Hide \(account.title)") { withAnimation(spring) { store.setHidden(account.id, true) } }
-        }
         .accessibilityElement(children: .combine)
         .accessibilityHint(open ? "Closes what used it" : "Opens what used it")
-        .accessibilityAction(named: "Hide") { store.setHidden(account.id, true) }
+        .hideable(account)
     }
 }
 
@@ -170,7 +166,7 @@ struct Level: View {
         }
         .frame(height: 6)
         .accessibilityHidden(true)
-        .onAppear { withAnimation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.05)) { grown = true } }
+        .onAppear { withAnimation(spring.delay(0.05)) { grown = true } }
     }
 }
 

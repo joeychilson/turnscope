@@ -186,26 +186,16 @@ private struct AgentRow: View {
     }
 
     @ViewBuilder private var status: some View {
-        if store.connecting.contains(agent.id) {
-            ProgressView().controlSize(.mini)
-        } else {
-            switch agent.status {
-            case .connected:
-                Label("Connected", systemImage: "checkmark")
-                    .labelStyle(Checked())
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            case .available:
-                Button("Connect") { store.connect(agent.id) }
-                    .buttonStyle(PillButton())
-                    .help("Adds Turnscope to \(agent.name)'s MCP servers")
-            case .outdated:
-                Button("Update") { store.connect(agent.id) }
-                    .buttonStyle(PillButton())
-                    .help("\(agent.name) runs another copy of Turnscope: point it at this one")
-            case .unsupported:
-                Text("\(agent.name) doesn't use MCP").font(.system(size: 12)).foregroundStyle(.tertiary)
-            }
+        switch agent.status {
+        case .connected:
+            Label("Connected", systemImage: "checkmark")
+                .labelStyle(Checked())
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        case .available, .outdated:
+            ConnectButton(agent: agent)
+        case .unsupported:
+            Text("\(agent.name) doesn't use MCP").font(.system(size: 12)).foregroundStyle(.tertiary)
         }
     }
 }

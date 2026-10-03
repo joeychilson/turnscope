@@ -149,13 +149,7 @@ private struct ConnectNudge: View {
                 Text(agent.status == .outdated ? "\(agent.name) runs an older Turnscope" : "\(agent.name) can't see your limits")
                     .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: 6)
-                if store.connecting.contains(agent.id) {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Button(agent.status == .outdated ? "Update" : "Connect") { store.connect(agent.id) }
-                        .buttonStyle(PillButton())
-                        .help("Adds Turnscope to \(agent.name)'s MCP servers, so it can pace itself")
-                }
+                ConnectButton(agent: agent)
                 Button {
                     withAnimation(spring) { dismissed = (away.union([agent.id])).sorted().joined(separator: ",") }
                 } label: {
