@@ -397,10 +397,7 @@ fn by_sessions(
 ) -> Result<(Value, Value), Failure> {
     let top: Vec<&(SessionKey, f64)> = window.sessions.iter().take(PARTS).collect();
     let keys: Vec<SessionKey> = top.iter().map(|(key, _)| key.clone()).collect();
-    let rows: HashMap<SessionKey, SessionRow> = sessions::rows(server, keys.clone())?
-        .into_iter()
-        .map(|row| (row.key.clone(), row))
-        .collect();
+    let rows = server.engine.session_rows(&keys)?;
     let contexts = server.engine.largest_contexts(&keys)?;
     let names = server.model_names()?;
     let now = Instant::now();

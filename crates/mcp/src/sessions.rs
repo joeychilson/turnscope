@@ -11,8 +11,6 @@
 //! ([`crate::accounts::of_session`]). "This session" is the caller's agent's latest in the caller's folder,
 //! kept where the caller's agent keeps its history ([`this`]).
 
-use std::collections::HashMap;
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 use turnscope_engine::{
@@ -185,10 +183,7 @@ pub(crate) fn find(server: &Server, arguments: FindSessions) -> Answer {
         after: arguments.cursor,
     })?;
     let keys: Vec<SessionKey> = page.items.iter().map(|hit| hit.session.clone()).collect();
-    let mut rows: HashMap<SessionKey, SessionRow> = rows(server, keys.clone())?
-        .into_iter()
-        .map(|row| (row.key.clone(), row))
-        .collect();
+    let mut rows = server.engine.session_rows(&keys)?;
     // The passage around each first match, read from the agents' files now.
     // A file that is gone says so in place of its passage.
     let mentioned: Vec<(SessionRow, Option<(u64, Value)>)> = page
@@ -368,27 +363,6 @@ fn when(server: &Server, row: &SessionRow) -> Option<String> {
     })
 }
 
-/// The sessions `keys` name, subagents among them, with their usage for all
-/// time: none for none.
-pub(crate) fn rows(server: &Server, keys: Vec<SessionKey>) -> Result<Vec<SessionRow>, Failure> {
-    // A question naming no sessions would admit every one.
-    if keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    let limit = keys.len();
-    let question = SessionQuery {
-        filter: Filter {
-            sessions: keys,
-            ..Filter::default()
-        },
-        subagents: true,
-        empty: true,
-        limit,
-        ..SessionQuery::default()
-    };
-    Ok(server.engine.sessions(&question)?.items)
-}
-
 /// The session `id` names, as answers give ids: `agent:id`.
 fn session(id: &str) -> Result<SessionKey, Failure> {
     SessionKey::parse(id)
@@ -404,7 +378,8 @@ fn session(id: &str) -> Result<SessionKey, Failure> {
 /// The session `id` names, with its usage for all time.
 pub(crate) fn named(server: &Server, id: &str) -> Result<SessionRow, Failure> {
     let key = session(id)?;
-    rows(server, vec![key])?.into_iter().next().ok_or_else(|| {
+    let mut rows = server.engine.session_rows(std::slice::from_ref(&key))?;
+    rows.remove(&key).ok_or_else(|| {
         Failure(format!(
             "No session has the id {id:?}; find_sessions gives ids."
         ))

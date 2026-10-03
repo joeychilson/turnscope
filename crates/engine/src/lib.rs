@@ -874,6 +874,17 @@ impl Engine {
         self.ask(|_, cache| query::sessions(cache, question))
     }
 
+    /// The sessions `keys` name, subagents among them, as a list of all
+    /// time shows them, by key: none for none, and none for a key no session
+    /// has.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the cache cannot be read.
+    pub fn session_rows(&self, keys: &[SessionKey]) -> Result<HashMap<SessionKey, SessionRow>> {
+        self.ask(|_, cache| query::rows(cache, keys))
+    }
+
     /// Report on what the ledger holds and how it compares with the agents'
     /// own totals.
     ///

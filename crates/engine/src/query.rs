@@ -603,10 +603,47 @@ pub(crate) fn admitted(
         .filter(|session| named.is_empty() || named.contains(session))
         .cloned()
         .collect();
-    let mut admitted = HashSet::new();
+    Ok(held(connection, &candidates, span, filter, false)?
+        .into_iter()
+        .map(|row| row.key)
+        .collect())
+}
+
+/// The sessions `keys` name, subagents and sessions without usage among
+/// them, with their usage for all time and the models each used, by key:
+/// none for none, and none for a key no session has.
+///
+/// # Errors
+///
+/// Returns [`Error::Ledger`] when the cache cannot be read, and
+/// [`Error::Corrupt`] when a stored value is out of range.
+pub(crate) fn rows(
+    connection: &Connection,
+    keys: &[SessionKey],
+) -> Result<HashMap<SessionKey, SessionRow>> {
+    Ok(
+        held(connection, keys, &Span::default(), &Filter::default(), true)?
+            .into_iter()
+            .map(|row| (row.key.clone(), row))
+            .collect(),
+    )
+}
+
+/// Which of `sessions` a list over `span` and `filter` holds, subagents and
+/// sessions without usage among them, with the models each used when
+/// `models`: none for none, where a list naming no sessions would hold
+/// every one.
+fn held(
+    connection: &Connection,
+    sessions: &[SessionKey],
+    span: &Span,
+    filter: &Filter,
+    models: bool,
+) -> Result<Vec<SessionRow>> {
+    let mut rows = Vec::new();
     // A page lists at most 1,000 sessions, and a list of as many named
     // sessions lists no more, so each is one page.
-    for chunk in candidates.chunks(1_000) {
+    for chunk in sessions.chunks(1_000) {
         let question = SessionQuery {
             span: *span,
             filter: Filter {
@@ -618,10 +655,13 @@ pub(crate) fn admitted(
             limit: 1_000,
             ..SessionQuery::default()
         };
-        let page = listed(connection, &question)?;
-        admitted.extend(page.items.into_iter().map(|row| row.key));
+        let mut page = listed(connection, &question)?;
+        if models {
+            models_of(connection, &mut page.items)?;
+        }
+        rows.extend(page.items);
     }
-    Ok(admitted)
+    Ok(rows)
 }
 
 /// How a list of sessions is ordered.
