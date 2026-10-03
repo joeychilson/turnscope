@@ -369,6 +369,9 @@ public struct Words: Sendable {
         case .unused, .threeQuartersLeft, .halfLeft, .quarterLeft:
             return Note(title: "\(percent(alert.left)) of \(alert.title)'s \(limit) left",
                         body: body(alert.at.map { "Resets \(clock($0))" }), urgent: false)
+        case .signIn:
+            return Note(title: "\(alert.title): sign in again",
+                        body: body("Open its agent to sign in again"), urgent: false)
         }
     }
 

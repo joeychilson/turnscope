@@ -2,3 +2,4 @@
 {"recap":[{"title":"Claude Max","label":"joey@example.com","used":84.0,"project":"atlas"}]}
 {"reply":{"id":2,"error":"codex isn't on this Mac's PATH"}}
 {"reply":{"id":3,"error":null}}
+{"alert":{"account":"chatgpt:b","title":"ChatGPT Pro Lite","label":null,"limit":"","scope":null,"kind":"sign_in","at":null,"left":null}}
