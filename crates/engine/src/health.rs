@@ -60,12 +60,12 @@ pub struct Doctor {
     /// agent itself says it cost.
     pub pricing: Vec<Pricing>,
     /// Where the prices come from.
-    pub prices: Prices,
+    pub prices: PriceSource,
 }
 
 /// Where the prices come from.
 #[derive(Clone, Debug)]
-pub struct Prices {
+pub struct PriceSource {
     /// When the catalog prices are taken from was read from models.dev.
     pub as_of: Option<Instant>,
     /// Where it came from: `bundled` with the app, or `models.dev`.
@@ -294,7 +294,7 @@ pub(crate) fn doctor(ledger: &Ledger, book: &PriceBook) -> Result<Doctor> {
     let checks = checks(ledger, &responses)?;
     let pricing = pricing(&responses, &checks, book);
     let stored = ledger.catalog()?;
-    let prices = Prices {
+    let prices = PriceSource {
         as_of: stored.as_ref().and_then(|stored| stored.catalog.as_of()),
         source: stored.map(|stored| stored.source),
         checked: ledger.last_check()?,
