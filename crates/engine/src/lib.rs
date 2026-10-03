@@ -466,6 +466,9 @@ impl Engine {
                 ledger.launched_from(session)?,
             ))
         })?;
+        // Files the agent deleted since history was last read are gone, as
+        // they would be had it been read since.
+        let artifacts: Vec<PathBuf> = artifacts.into_iter().filter(|path| path.exists()).collect();
         let reader = self
             .readers
             .iter()

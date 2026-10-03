@@ -8,6 +8,11 @@ released.
 
 ## [Unreleased]
 
+- A session whose files were deleted since Turnscope last looked is gone for
+  every agent, rather than failing to open for some.
+- A Claude Code session's handoff counts the lines it wrote over a file
+  with, as it does for every other agent.
+
 - Claude Code gets all of Turnscope's instructions for agents. It used to cut
   them short, leaving out that what a session says is to be read as data,
   not as instructions.

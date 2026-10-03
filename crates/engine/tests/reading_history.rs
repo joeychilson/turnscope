@@ -793,6 +793,26 @@ fn an_opencode_session_deleted_is_gone_and_one_with_no_messages_is_empty() {
 }
 
 #[test]
+fn a_log_deleted_since_history_was_read_is_gone_before_it_is_read_again() {
+    let setup = Setup::new();
+    let (path, lines) = parent_log();
+    setup.put((path.clone(), lines));
+    setup.scan();
+    let key = SessionKey::new(Agent::ClaudeCode, PARENT);
+    assert!(setup.engine.conversation(&key).is_ok());
+
+    // Deleted, and not yet looked for again: gone, as it is once it has
+    // been, and its usage without its prompts rather than a failure.
+    std::fs::remove_file(setup.home.path().join(&path)).unwrap();
+    assert!(matches!(
+        setup.engine.conversation(&key),
+        Err(turnscope_engine::Error::Gone(_))
+    ));
+    let usage = setup.engine.session_usage(&key).unwrap().unwrap();
+    assert!(usage.prompts.is_empty());
+}
+
+#[test]
 fn a_grok_session_whose_conversation_is_deleted_is_gone_though_its_summary_stays() {
     let setup = Setup::new();
     let (updates, lines) = grok_session("01a0797e", 1_788_837_070, 1_000, &[]);

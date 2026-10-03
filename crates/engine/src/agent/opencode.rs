@@ -247,7 +247,6 @@ impl AgentReader for OpenCode {
         let path = artifacts
             .iter()
             .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(DATABASE))
-            .filter(|path| path.exists())
             .ok_or_else(gone)?;
         let fail = |error: rusqlite::Error| Error::database(path, error);
         let connection = open(path).map_err(fail)?;

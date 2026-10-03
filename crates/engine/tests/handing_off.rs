@@ -179,6 +179,21 @@ fn a_claude_code_session_hands_off_its_commands_edits_and_tasks() {
             false,
             None,
         ),
+        // A file written over with no account: its two lines added, and
+        // what it held before unknown.
+        claude_call(
+            "2026-09-29T10:05:10Z",
+            "4w",
+            "Write",
+            json!({"file_path": "/work/ledger/notes.md", "content": "one\ntwo\n"}),
+        ),
+        claude_result(
+            "2026-09-29T10:05:11Z",
+            "4w",
+            "The file /work/ledger/notes.md has been updated successfully.",
+            false,
+            None,
+        ),
         // An edit that failed changed nothing.
         claude_call(
             "2026-09-29T10:05:30Z",
@@ -286,6 +301,7 @@ fn a_claude_code_session_hands_off_its_commands_edits_and_tasks() {
             ("/work/ledger/src/a.rs", Some(2), Some(1), false, false),
             ("/work/ledger/src/new.rs", Some(3), Some(0), true, false),
             ("/work/ledger/src/b.rs", Some(1), Some(1), false, false),
+            ("/work/ledger/notes.md", Some(2), None, false, false),
         ]
     );
     assert_eq!(
