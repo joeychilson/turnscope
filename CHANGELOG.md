@@ -8,6 +8,8 @@ released.
 
 ## [Unreleased]
 
+## [0.3.0]
+
 - Pi can use Turnscope too: connect it from Settings › Agents. Pi takes
   MCP servers from version 1.0 on.
 - Turnscope's answers take agents about a quarter of the room they did.
@@ -113,6 +115,7 @@ The first release.
   `guard` for hooks, `doctor` and `catalog`.
 - Updates with Sparkle, signed with Turnscope's key, from GitHub releases.
 
+[0.3.0]: https://github.com/joeychilson/turnscope/releases/tag/v0.3.0
 [0.2.0]: https://github.com/joeychilson/turnscope/releases/tag/v0.2.0
 [0.1.3]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.3
 [0.1.2]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.2
