@@ -94,6 +94,51 @@ extension View {
     }
 }
 
+extension View {
+    /// Offers to hide `account`, from a right-click and to VoiceOver, as its
+    /// row does.
+    func hideable(_ account: Account) -> some View {
+        modifier(Hideable(account: account))
+    }
+}
+
+private struct Hideable: ViewModifier {
+    @Environment(Store.self) private var store
+    var account: Account
+
+    func body(content: Content) -> some View {
+        content
+            .contextMenu { Button("Hide \(account.title)") { hide(account, in: store) } }
+            .accessibilityAction(named: "Hide") { hide(account, in: store) }
+    }
+}
+
+/// Hide `account` from the menu bar and the panel, on the spring.
+@MainActor
+func hide(_ account: Account, in store: Store) {
+    withAnimation(spring) { store.setHidden(account.id, true) }
+}
+
+/// Connects `agent`, or points it at this copy again, as its status asks,
+/// saying what went wrong when connecting failed; a spinner while it does.
+struct ConnectButton: View {
+    @Environment(Store.self) private var store
+    var agent: AgentLink
+
+    var body: some View {
+        if store.connecting.contains(agent.id) {
+            ProgressView().controlSize(.mini)
+        } else {
+            let outdated = agent.status == .outdated
+            Button(outdated ? "Update" : "Connect") { store.connect(agent.id) }
+                .buttonStyle(PillButton())
+                .help(store.connectErrors[agent.id] ?? (outdated
+                    ? "\(agent.name) runs another copy of Turnscope: point it at this one"
+                    : "Adds Turnscope to \(agent.name)'s MCP servers, so it can pace itself"))
+        }
+    }
+}
+
 /// An account's title, and under it what tells it apart, as a list of
 /// accounts names each: at `size`, in the grays `title` and `subtitle`.
 struct AccountName: View {

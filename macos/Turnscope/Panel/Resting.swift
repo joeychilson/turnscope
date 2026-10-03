@@ -97,7 +97,6 @@ private struct Chevron: View {
 }
 
 private struct RestingRow: View {
-    @Environment(Store.self) private var store
     var account: Account
     var open: Bool
     var toggle: () -> Void
@@ -157,25 +156,22 @@ private struct RestingRow: View {
             toggle()
             return .handled
         }
-        .contextMenu {
-            Button("Hide \(account.title)") { withAnimation(spring) { store.setHidden(account.id, true) } }
-        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint(open ? "Closes its limits" : "Opens its limits")
         .accessibilityAction(.default, toggle)
-        .accessibilityAction(named: "Hide") { store.setHidden(account.id, true) }
+        .hideable(account)
     }
 }
 
 /// Hide an account, from its row.
-struct HideButton: View {
+private struct HideButton: View {
     @Environment(Store.self) private var store
     var account: Account
 
     var body: some View {
         Button {
-            withAnimation(spring) { store.setHidden(account.id, true) }
+            hide(account, in: store)
         } label: {
             Image(systemName: "eye.slash")
         }

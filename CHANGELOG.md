@@ -23,6 +23,8 @@ released.
   price, as Claude Code's already are.
 - When Turnscope's engine stops, the panel says why, rather than sometimes
   only that it stopped.
+- Connecting an agent from the panel or from Settings says the same thing,
+  and if it fails, the button's tooltip says why.
 
 ## [0.1.2]
 
