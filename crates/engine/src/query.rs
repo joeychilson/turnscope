@@ -690,8 +690,16 @@ impl SessionOrder {
 
 /// How recently a session, or one run within it, must have been active for
 /// it to be running now: long enough to span a model's slowest reply and a
-/// short pause between turns.
-pub const RUNNING: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// short pause between turns. Five minutes, in milliseconds.
+const RUNNING: i64 = 5 * 60 * 1000;
+
+/// Since when a session must have been active, it or a session run within
+/// it, to be running at `now`: five minutes before, that moment itself
+/// included. `None` only for a `now` within five minutes of the earliest
+/// instant there is.
+pub fn running_since(now: Instant) -> Option<Instant> {
+    Instant::from_millis(now.millis().saturating_sub(RUNNING))
+}
 
 /// A question about sessions. [`SessionQuery::default`] asks for every
 /// session with something in it, most recently active first, a page of 100.
@@ -722,7 +730,7 @@ pub struct SessionQuery {
     pub after: Option<String>,
     /// Only sessions active since this, they or a session run within them,
     /// as [`SessionRow::active`] says: those running now, since
-    /// [`RUNNING`] ago.
+    /// [`running_since`] now.
     pub active_since: Option<Instant>,
 }
 
@@ -788,13 +796,12 @@ pub struct SessionRow {
 }
 
 impl SessionRow {
-    /// Until when it counts as running, as of its latest activity: `None`
-    /// when it has never been active. It is running now while that is later
-    /// than now.
-    pub fn running_until(&self) -> Option<Instant> {
-        let quiet = i64::try_from(RUNNING.as_millis()).unwrap_or(i64::MAX);
+    /// Whether it is running at `now`: active since [`running_since`] then,
+    /// it or a session run within it.
+    pub fn running(&self, now: Instant) -> bool {
         self.active
-            .and_then(|active| Instant::from_millis(active.millis().saturating_add(quiet)))
+            .zip(running_since(now))
+            .is_some_and(|(active, since)| active >= since)
     }
 
     /// The shell command that picks the session up again in its agent, from

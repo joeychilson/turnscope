@@ -365,10 +365,7 @@ fn tell(
                 project: row.project.clone(),
                 agent: key.agent().key(),
                 share: tenths(*share),
-                active: row.active.is_some_and(|active| {
-                    now.millis().saturating_sub(active.millis())
-                        <= i64::try_from(turnscope_engine::RUNNING.as_millis()).unwrap_or(i64::MAX)
-                }),
+                active: row.running(now),
             })
         })
         .collect();

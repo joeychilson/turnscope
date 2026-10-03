@@ -81,8 +81,8 @@ pub use crate::limits::{
 pub use crate::model::{ModelInfo, ModelKey};
 pub use crate::outside::Counts;
 pub use crate::query::{
-    Dimension, Filter, Page, RUNNING, SessionOrder, SessionQuery, SessionRow, Totals, UsageQuery,
-    UsageRow, UsageTable,
+    Dimension, Filter, Page, SessionOrder, SessionQuery, SessionRow, Totals, UsageQuery, UsageRow,
+    UsageTable, running_since,
 };
 pub use crate::runtime::{CatalogCheck, CatalogOutcome, Change, Options, Running};
 pub use crate::search::{Excerpt, SearchHit, SearchQuery};
