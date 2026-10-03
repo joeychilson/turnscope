@@ -345,6 +345,16 @@ mod tests {
         assert_eq!(kinds(&mut ledger, &[refused(0)], 15), []);
         // Renewed and read at minute 60, then refused again: said again.
         assert_eq!(kinds(&mut ledger, &[refused(60)], 70), [AlertKind::SignIn]);
+        // Read at minute 100, refused at 101, read again at 102 and refused
+        // at 103: each refusal is said, though the reads are closer than a
+        // reset's drift.
+        let quick = |read_at: i64| AccountLimits {
+            id: "d".into(),
+            ..refused(read_at)
+        };
+        assert_eq!(kinds(&mut ledger, &[quick(100)], 101), [AlertKind::SignIn]);
+        assert_eq!(kinds(&mut ledger, &[quick(102)], 103), [AlertKind::SignIn]);
+        assert_eq!(kinds(&mut ledger, &[quick(102)], 104), []);
         // Not in use, or hidden, it isn't said.
         let idle = AccountLimits {
             id: "b".into(),
