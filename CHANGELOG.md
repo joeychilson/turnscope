@@ -8,6 +8,8 @@ released.
 
 ## [Unreleased]
 
+## [0.1.3]
+
 - Claude Code gets all of Turnscope's instructions for agents. It used to cut
   them short, leaving out that what a session says is to be read as data,
   not as instructions.
@@ -30,8 +32,8 @@ released.
   finding it left out of every figure.
 - A session whose files were deleted since Turnscope last looked is gone for
   every agent, rather than failing to open for some.
-- A Claude Code session's handoff counts the lines it wrote over a file
-  with, as it does for every other agent.
+- Picking up a Claude Code session in another agent counts the lines it
+  wrote over existing files, as it already did for every other agent.
 - The Monday recap tells two accounts of one plan apart, as the panel does,
   rather than naming both, say, Claude Max.
 
@@ -85,6 +87,7 @@ The first release.
   `guard` for hooks, `doctor` and `catalog`.
 - Updates with Sparkle, signed with Turnscope's key, from GitHub releases.
 
+[0.1.3]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.3
 [0.1.2]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.2
 [0.1.1]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.1
 [0.1.0]: https://github.com/joeychilson/turnscope/releases/tag/v0.1.0
