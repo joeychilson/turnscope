@@ -282,7 +282,7 @@ impl Watch {
     fn write_alert(&self, alert: &Alert) {
         write(&Out::Alert(Told {
             account: alert.account.clone(),
-            title: self.title_of(&alert.account),
+            title: alert.title.clone(),
             label: alert.label.clone(),
             limit: alert.limit.clone(),
             scope: alert.scope.clone(),
@@ -297,7 +297,7 @@ impl Watch {
             .iter()
             .map(|week| Week {
                 account: week.account.clone(),
-                title: self.title_of(&week.account),
+                title: week.title.clone(),
                 label: week.label.clone(),
                 limit: week.limit.clone(),
                 used: week.window.used,
@@ -306,15 +306,6 @@ impl Watch {
             })
             .collect();
         write(&Out::Recap(weeks));
-    }
-
-    /// What the account `id` is called, as the feed calls it.
-    fn title_of(&self, id: &str) -> String {
-        self.engine
-            .limits()
-            .ok()
-            .and_then(|accounts| accounts.into_iter().find(|account| account.id == id))
-            .map_or_else(|| id.to_owned(), |account| account.title())
     }
 }
 

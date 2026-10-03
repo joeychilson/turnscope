@@ -102,8 +102,8 @@ impl AlertKind {
 pub struct Alert {
     /// The account.
     pub account: String,
-    /// Its subscription.
-    pub subscription: Subscription,
+    /// What the account is called ([`AccountLimits::title`]).
+    pub title: String,
     /// What tells the account apart from others of the subscription.
     pub label: Option<String>,
     /// The limit's name.
@@ -200,7 +200,7 @@ pub(crate) fn alerts(
                     warned |= matches!(kind, AlertKind::RunningOut | AlertKind::Reached);
                     alerts.push(Alert {
                         account: account.id.clone(),
-                        subscription: account.subscription,
+                        title: account.title(),
                         label: account.label.clone(),
                         limit: limit.name.clone(),
                         scope: limit.scope.clone(),
@@ -314,8 +314,10 @@ mod tests {
 
         let sent = alerts(&mut ledger, &accounts, now).unwrap();
         assert_eq!(
-            sent.iter().map(|alert| alert.kind).collect::<Vec<_>>(),
-            [AlertKind::RunningOut]
+            sent.iter()
+                .map(|alert| (alert.kind, alert.title.as_str()))
+                .collect::<Vec<_>>(),
+            [(AlertKind::RunningOut, "Claude Max")]
         );
         assert!(
             alerts(&mut ledger, &accounts, now).unwrap().is_empty(),

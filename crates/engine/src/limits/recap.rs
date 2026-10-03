@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, HashMap};
 use rusqlite::Connection;
 
 use super::share::{counts_in, spending_by, windows_of};
-use super::{AccountLimits, DAY, Subscription, WEEK};
+use super::{AccountLimits, DAY, WEEK};
 use crate::error::Result;
 use crate::ledger::{Ledger, Reading};
 use crate::time::{Instant, Zone, monday_morning};
@@ -41,8 +41,8 @@ use crate::time::{Instant, Zone, monday_morning};
 pub struct WeekEnded {
     /// The account.
     pub account: String,
-    /// Its subscription.
-    pub subscription: Subscription,
+    /// What the account is called ([`AccountLimits::title`]).
+    pub title: String,
     /// What tells the account apart from others of the subscription.
     pub label: Option<String>,
     /// The key of its weekly limit.
@@ -124,7 +124,7 @@ pub(crate) fn recap(
             };
             weeks.push(WeekEnded {
                 account: account.id.clone(),
-                subscription: account.subscription,
+                title: account.title(),
                 label: account.label.clone(),
                 key: limit.key.clone(),
                 limit: limit.name.clone(),
@@ -429,6 +429,7 @@ mod tests {
             sent.iter()
                 .map(|week| (
                     week.account.as_str(),
+                    week.title.as_str(),
                     week.window.clone(),
                     week.project.as_deref()
                 ))
@@ -436,6 +437,7 @@ mod tests {
             [
                 (
                     "claude:personal",
+                    "Claude",
                     PastWindow {
                         starts: Some(at("2026-09-19T12:00:00Z")),
                         resets: Some(at("2026-09-26T12:00:00Z")),
@@ -446,6 +448,7 @@ mod tests {
                 ),
                 (
                     "claude:work",
+                    "Claude",
                     PastWindow {
                         starts: Some(at("2026-09-17T16:00:00Z")),
                         resets: Some(at("2026-09-24T16:00:00Z")),
