@@ -147,9 +147,7 @@ fn the_rollup_answers_as_each_response_does() {
     // conversation, and one response without a price.
     let everything = UsageQuery {
         span: aligned,
-        filter: Filter::default(),
-        by: None,
-        every: None,
+        ..UsageQuery::default()
     };
     let total = engine.usage(&everything, &zone).unwrap().total;
     assert_eq!(
@@ -168,9 +166,7 @@ fn the_rollup_answers_as_each_response_does() {
                 from: Some(at(from)),
                 until: until.map(at),
             },
-            filter: Filter::default(),
-            by: None,
-            every: None,
+            ..UsageQuery::default()
         };
         let total = engine.usage(&question, &zone).unwrap().total;
         (
@@ -257,9 +253,8 @@ fn a_local_day_holds_its_usage_across_a_change_of_the_clocks() {
             from: Some(at("2026-10-31T04:00:00Z")),
             until: Some(at("2026-11-03T05:00:00Z")),
         },
-        filter: Filter::default(),
-        by: None,
         every: Some(Bucket::Day),
+        ..UsageQuery::default()
     };
     let table = engine
         .usage(&question, &Zone::named("America/New_York").unwrap())
@@ -310,10 +305,8 @@ fn only_the_buckets_with_usage_are_given() {
     let engine = home.scanned();
     let zone = Zone::named("UTC").unwrap();
     let question = UsageQuery {
-        span: Span::default(),
-        filter: Filter::default(),
-        by: None,
         every: Some(Bucket::Hour),
+        ..UsageQuery::default()
     };
     // Only the hours with usage, however far apart.
     let table = engine.usage(&question, &zone).unwrap();
@@ -355,9 +348,7 @@ fn usage_before_1970_is_in_the_quarter_hour_it_was_made_in() {
                 from: Some(at(from)),
                 until: Some(at(until)),
             },
-            filter: Filter::default(),
-            by: None,
-            every: None,
+            ..UsageQuery::default()
         };
         engine.usage(&question, &zone).unwrap().total.tokens.output
     };

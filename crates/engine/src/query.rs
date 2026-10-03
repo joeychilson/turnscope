@@ -86,8 +86,9 @@ pub struct Filter {
     pub accounts: Vec<String>,
 }
 
-/// A question about usage.
-#[derive(Clone, Debug)]
+/// A question about usage. [`UsageQuery::default`] asks for all usage of
+/// all time, not told apart.
+#[derive(Clone, Debug, Default)]
 pub struct UsageQuery {
     /// The time it asks about.
     pub span: Span,

@@ -9,7 +9,7 @@ mod history {
 }
 
 use serde_json::{Value, json};
-use turnscope_engine::{Filter, ModelInfo, ModelKey, Span, UsageQuery, Zone};
+use turnscope_engine::{ModelInfo, ModelKey, UsageQuery, Zone};
 
 use history::home::{Home, write};
 use history::{claude_code, opencode, pi};
@@ -88,12 +88,7 @@ fn usage_outside_the_conversation_that_names_no_model_is_no_model() {
     drop(database);
     let engine = home.scanned();
 
-    let everything = UsageQuery {
-        span: Span::default(),
-        filter: Filter::default(),
-        by: None,
-        every: None,
-    };
+    let everything = UsageQuery::default();
     let total = engine.usage(&everything, &Zone::system()).unwrap().total;
     assert_eq!(total.outside, 400);
     let keys: Vec<String> = engine
