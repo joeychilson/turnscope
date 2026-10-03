@@ -7,8 +7,10 @@
 //! **Names.** An account is called as the app calls it: its title
 //! ([`AccountLimits::title`]), its subscription and plan or its provider's
 //! API, and what tells it apart, its label, as `Claude Max ·
-//! joey@example.com` or `OpenRouter API key`. An argument names an account
-//! by its id, that name, its label, an API key's provider, or its
+//! joey@example.com` or `OpenRouter API key`. A list, where the account is
+//! said again on every line, calls it by its title alone, unless another
+//! account shown has that title too ([`short`]). An argument names an
+//! account by its id, either name, its label, an API key's provider, or its
 //! subscription alone, ignoring case.
 //!
 //! **Hidden.** An account the person hid in Turnscope is left out of every
@@ -53,6 +55,15 @@ pub(crate) fn name(account: &AccountLimits) -> String {
     }
 }
 
+/// What a list calls `account`, of those `accounts` shown: its title alone,
+/// as `Claude Max`, unless another shown has that title too, when it is its
+/// [`name`]. An argument names it either way.
+pub(crate) fn short(account: &AccountLimits, accounts: &[AccountLimits]) -> String {
+    let title = account.title();
+    let shared = shown(accounts).any(|other| other.id != account.id && other.title() == title);
+    if shared { name(account) } else { title }
+}
+
 /// What an answer calls the account `id`: its name, or, hidden, only that
 /// it is; `None` when no account has that id.
 pub(crate) fn called(id: &str, accounts: &[AccountLimits]) -> Option<String> {
@@ -82,6 +93,7 @@ pub(crate) fn named<'a>(asked: &str, accounts: &'a [AccountLimits]) -> Vec<&'a A
     let by_name: Vec<&AccountLimits> = shown(accounts)
         .filter(|account| {
             is(&name(account))
+                || is(&account.title())
                 || [&account.label, &account.provider]
                     .into_iter()
                     .any(|apart| apart.as_deref().is_some_and(&is))

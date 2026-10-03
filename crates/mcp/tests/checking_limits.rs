@@ -102,6 +102,9 @@ fn your_account_comes_first_with_where_each_limit_is_heading() {
         "You're using Claude Max \u{b7} joey@example.com, in Claude Code.",
         "5-hour limit: 20% left. At this pace it runs out around ",
         ", 2h 50m before it resets at ",
+        // Rising 60 points an hour; 20 left over the 3h 10m to the reset
+        // last under 20 / 3.1667 = 6.32 an hour.
+        ". It is rising 60.0 points an hour; under 6.3 points an hour, it would last.",
         "Weekly limit: 69% left, resets ",
         // 63.8% is said rounded down, as what is left always is.
         ". At this pace it lasts, with about 63% to spare.",
@@ -112,6 +115,13 @@ fn your_account_comes_first_with_where_each_limit_is_heading() {
     }
     // The ChatGPT account isn't in use, so it waits to be asked for.
     assert!(!said.contains("ChatGPT"), "{said}");
+    // A list calls the one Claude Max by its title alone.
+    let found = answer(&server, "find_sessions", json!({}));
+    assert!(
+        found.said().contains("\u{b7} Claude Max \u{b7}") && !found.said().contains("joey@"),
+        "{}",
+        found.said()
+    );
     let all = answer(&server, "check_limits", json!({"all": true}));
     let ids: Vec<&Value> = all.data["accounts"]
         .as_array()
@@ -164,6 +174,20 @@ fn a_limit_is_asked_of_by_name_and_whether_it_is_under_a_percent_left() {
         json!({"limit": "weekly", "below": 50}),
     );
     assert_eq!(week.data["below"]["status"], "not_under");
+    // Every account, each a line, says the model's limit asked for, though
+    // a line otherwise keeps to limits on all usage.
+    let opus = answer(
+        &server,
+        "check_limits",
+        json!({"all": true, "limit": "opus week"}),
+    );
+    assert!(
+        opus.said()
+            .contains("Claude Max \u{b7} joey@example.com (yours): Opus weekly limit 45% left.")
+            && !opus.said().contains("no limit read"),
+        "{}",
+        opus.said()
+    );
     // Asked of one account, its limits alone; one it doesn't have is
     // refused, naming those there are.
     let chatgpt = answer(&server, "check_limits", json!({"account": "chatgpt"}));
@@ -229,6 +253,19 @@ fn a_stale_reading_is_unknown_not_room_to_go_on() {
         other.said().contains("Whether it's under 50% isn't known"),
         "{}",
         other.said()
+    );
+    // A line, as every account is with all, says why too: signed in
+    // nowhere, it isn't read.
+    let all = answer(&server, "check_limits", json!({"all": true}));
+    let line = all
+        .said()
+        .lines()
+        .find(|line| line.contains("other@example.com"))
+        .unwrap_or_else(|| panic!("{}", all.said()));
+    assert!(
+        line.contains(": 5-hour limit 70% left. As read at ")
+            && line.ends_with(": No agent on this Mac is signed into its account now, so it isn't read; this is its last reading."),
+        "{line}"
     );
 }
 

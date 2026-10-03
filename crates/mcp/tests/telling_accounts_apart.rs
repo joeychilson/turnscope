@@ -182,7 +182,31 @@ fn a_caller_is_told_the_account_of_the_folder_it_signs_in_from() {
         found(&personal, json!({"account": "personal@example.com"})),
         [(json!("claude-code:mine"), json!(PERSONAL))]
     );
-    // A subscription names both its accounts, whose usage is asked of alike.
+    // A list calls each by its title and label, since both are Claude Max;
+    // either name is an argument.
+    let both = answer(&personal, "find_sessions", json!({}));
+    assert!(
+        both.said()
+            .contains("\u{b7} Claude Max \u{b7} work@example.com \u{b7}"),
+        "{}",
+        both.said()
+    );
+    assert_eq!(
+        found(
+            &personal,
+            json!({"account": "Claude Max \u{b7} work@example.com"})
+        ),
+        [(json!("claude-code:theirs"), json!(WORK))]
+    );
+    // A subscription names both its accounts, whose usage is asked of alike,
+    // and so does the title they share.
+    assert_eq!(
+        found(&personal, json!({"account": "Claude Max"})),
+        [
+            (json!("claude-code:theirs"), json!(WORK)),
+            (json!("claude-code:mine"), json!(PERSONAL))
+        ]
+    );
     assert_eq!(
         found(&personal, json!({"account": "claude"})),
         [

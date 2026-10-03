@@ -13,6 +13,14 @@ released.
   agent was restarted; now it carries on with the new version. Agents
   started under 0.1.3 or earlier need restarting once more, after this
   update.
+- Turnscope's answers take agents less than half the room they did. Each
+  answer is said once, in sentences, rather than in sentences and again as
+  figures. The sentences now name every session by its id and list a
+  handoff's plan, files, commands and subagents in full, so an agent can
+  ask about any of them next. Codex gets the same sentences; before, it saw
+  only the figures.
+- An agent pacing itself is told how fast a limit that runs out is rising,
+  and how fast it could rise and still last.
 
 ## [0.1.3]
 

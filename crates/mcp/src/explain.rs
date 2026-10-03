@@ -387,27 +387,24 @@ fn by_sessions(
             .and_then(|breakdown| breakdown.share_in(&account.id, &limit.key, &window.track));
         let subagents_share: Option<f64> = within.map(|share| share.subagents.iter().sum());
         let model_name = |model: &ModelKey| model_name(&names, model);
-        let mut heading = format!(
-            "{}. {}",
-            place + 1,
-            row.map_or_else(|| key.to_string(), sessions::title)
-        );
-        let mut about = Vec::new();
+        // The session, its id saying its agent, then its project and when.
+        let mut about = vec![row.map_or_else(|| key.to_string(), sessions::called)];
         if let Some(row) = row {
             if let Some(project) = &row.project {
                 about.push(project.clone());
             }
-            about.push(key.agent().name().to_owned());
             if sessions::running(row) {
                 about.push("running".to_owned());
             } else if let Some(active) = row.active {
                 about.push(prose::day(active, now, &server.zone));
             }
         }
-        if !about.is_empty() {
-            heading.push_str(&format!(" ({})", about.join(", ")));
-        }
-        heading.push_str(&format!(": {}.", prose::share(*share)));
+        let heading = format!(
+            "{}. {}: {}.",
+            place + 1,
+            about.join(" \u{b7} "),
+            prose::share(*share)
+        );
         let mut why = Vec::new();
         let mut figures = json!({
             "key": key.to_string(),
@@ -519,14 +516,14 @@ fn session(
     let Some(share) = breakdown.share_in(&account.id, &limit.key, &window.track) else {
         said.push(format!(
             "{} took no share of this window.",
-            sessions::title(row)
+            sessions::called(row)
         ));
         data["session"] = json!({"id": row.key.to_string(), "share_percent": 0.0});
         return Ok(());
     };
     said.push(format!(
         "{} took {}{}.",
-        sessions::title(row),
+        sessions::called(row),
         if share.whole { "" } else { "at least " },
         prose::share(share.share)
     ));
@@ -576,34 +573,35 @@ fn session(
         .collect();
     subagents.sort_by(|a, b| b.1.total_cmp(&a.1));
     if !subagents.is_empty() {
-        let named: Vec<String> = subagents
-            .iter()
-            .take(PARTS)
-            .filter_map(|(place, part)| {
-                let subagent = breakdown.subagents.get(*place)?;
-                let title = subagent.title.as_deref().map_or_else(
-                    || subagent.key.to_string(),
-                    |title| format!("\"{}\"", prose::line(title, 60)),
-                );
+        let total: f64 = subagents.iter().map(|(_, part)| part).sum();
+        said.push(format!("Its subagents took {} of it:", prose::share(total)));
+        for (place, part) in subagents.iter().take(PARTS) {
+            if let Some(subagent) = breakdown.subagents.get(*place) {
+                let called = match subagent.title.as_deref() {
+                    Some(title) => format!("\"{}\" ({})", prose::line(title, 60), subagent.key),
+                    None => subagent.key.to_string(),
+                };
                 let model = subagent
                     .model
                     .as_ref()
-                    .map_or_else(String::new, |model| format!(", {model}"));
-                Some(format!("{title}{model}: {}", prose::share(*part)))
-            })
-            .collect();
-        let total: f64 = subagents.iter().map(|(_, part)| part).sum();
-        said.push(format!(
-            "Its subagents took {} of it: {}.",
-            prose::share(total),
-            named.join("; ")
-        ));
+                    .map_or_else(String::new, |model| format!(" \u{b7} {model}"));
+                said.push(format!("- {called}{model}: {}.", prose::share(*part)));
+            }
+        }
+        if subagents.len() > PARTS {
+            let rest: f64 = subagents[PARTS..].iter().map(|(_, part)| part).sum();
+            said.push(format!(
+                "- {} other subagents: {}.",
+                subagents.len() - PARTS,
+                prose::share(rest)
+            ));
+        }
     }
     data["session"] = json!({
         "id": row.key.to_string(),
         "share_percent": rounded(share.share, 2),
         "whole": share.whole,
-        "prompts": prompts.iter().filter_map(|(place, part)| {
+        "prompts": prompts.iter().take(PROMPTS).filter_map(|(place, part)| {
             let prompt = breakdown.prompts.get(*place)?;
             Some(json!({
                 "said": prose::line(&prompt.said, 300),
@@ -613,7 +611,7 @@ fn session(
             }))
         }).collect::<Vec<_>>(),
         "unprompted_percent": rounded(share.unprompted, 2),
-        "subagents": subagents.iter().filter_map(|(place, part)| {
+        "subagents": subagents.iter().take(PARTS).filter_map(|(place, part)| {
             let subagent = breakdown.subagents.get(*place)?;
             Some(json!({
                 "id": subagent.key.to_string(),
@@ -623,6 +621,17 @@ fn session(
             }))
         }).collect::<Vec<_>>(),
     });
+    // The prompts and subagents past those given, as the sentences say them.
+    for (name, parts, given) in [
+        ("other_prompts", &prompts, PROMPTS),
+        ("other_subagents", &subagents, PARTS),
+    ] {
+        if parts.len() > given {
+            let rest: f64 = parts[given..].iter().map(|(_, part)| part).sum();
+            data["session"][name] =
+                json!({"count": parts.len() - given, "share_percent": rounded(rest, 2)});
+        }
+    }
     Ok(())
 }
 

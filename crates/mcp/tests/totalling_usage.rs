@@ -67,12 +67,13 @@ fn usage_is_totalled_by_local_day_and_split_as_asked() {
             json!("2026-09-15T00:00:00-05:00")
         ]
     );
-    // 13,900 and 3,040 tokens, 16,940, of which 10,000 + 2,400 = 12,400
-    // cache reads: 73%.
+    // 13,900 and 3,040 tokens, 16,940: 1,200 + 100 + 600 = 1,900 input,
+    // 2,400 + 200 + 40 = 2,640 output, and 10,000 + 2,400 = 12,400 cache
+    // reads.
     assert!(
         days.said().starts_with(
-            "All of history: 16.9K tokens (73% of them cache reads), 4 responses, $0.08 at list \
-             prices, leaving out usage with no known price."
+            "All of history: 16.9K tokens (1.9K input, 2.6K output, 12.4K cache reads), 4 \
+             responses, $0.08 at list prices, leaving out usage with no known price."
         ),
         "{}",
         days.said()
@@ -137,8 +138,11 @@ fn usage_is_totalled_by_local_day_and_split_as_asked() {
         groups(&models.data, "label"),
         [json!("Claude Opus 5"), Value::Null]
     );
+    // Said by its name, with the key the model argument takes beside it.
     assert!(
-        models.said().contains("\n- Claude Opus 5: 13.9K tokens"),
+        models
+            .said()
+            .contains("\n- Claude Opus 5 (claude-opus-5): 13.9K tokens"),
         "{}",
         models.said()
     );

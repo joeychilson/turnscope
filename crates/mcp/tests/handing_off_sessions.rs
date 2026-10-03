@@ -66,17 +66,25 @@ fn a_handoff_says_what_was_asked_changed_and_failed_and_how_to_resume() {
     );
     let said = by_id.said();
     for line in [
-        "\"Add a file watcher for the ledger\" \u{b7} Claude Code \u{b7} ~/work/ledger \u{b7} ended ",
-        "First asked: \"Add a file watcher for the ledger\"",
-        "Last asked: \"Fix the failing migration\"",
-        "Last reply: \"The migration now runs before the watcher starts.\"",
-        "Changed: src/migration.rs +2 \u{2212}1",
-        "Ran 1 command, 1 failed. Last: cargo test (failed, exit 101)",
-        "Subagents: \"Find the ledger's tests\" (claude-opus-5).",
+        // Named with its id, so that it can be read on.
+        format!(
+            "\"Add a file watcher for the ledger\" (claude-code:{CLAUDE}) \u{b7} Claude Code \
+             \u{b7} ~/work/ledger \u{b7} ended "
+        ),
+        "First asked: \"Add a file watcher for the ledger\"".to_owned(),
+        "Last asked: \"Fix the failing migration\"".to_owned(),
+        "Last reply: \"The migration now runs before the watcher starts.\"".to_owned(),
+        // Each file, command and subagent on a line of its own.
+        "Changed 1 file:\n- src/migration.rs +2 \u{2212}1".to_owned(),
+        "Ran 1 command, 1 failed:\n- cargo test (failed, exit 101)".to_owned(),
+        format!(
+            "1 subagent:\n- \"Find the ledger's tests\" (claude-code:{EXPLORE}) \u{b7} \
+             claude-opus-5 \u{b7} 300 tokens"
+        ),
         // 13,900 tokens and $0.0765, its subagent's with its own.
-        "In all it used 13.9K tokens, $0.08 at list prices.",
+        "In all it used 13.9K tokens, $0.08 at list prices.".to_owned(),
     ] {
-        assert!(said.contains(line), "{line:?} in {said}");
+        assert!(said.contains(&line), "{line:?} in {said}");
     }
     assert!(said.ends_with(&format!(
         "Resume it: cd {} && claude --resume {CLAUDE}",

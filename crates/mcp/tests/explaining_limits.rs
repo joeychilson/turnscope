@@ -63,18 +63,23 @@ fn a_window_is_explained_by_the_sessions_that_took_it_and_why() {
     assert_eq!(data["unpriced_percent"], json!(0.0));
     assert_eq!(data["approximate"], true);
     let said = explained.said();
-    // Each session with its project, agent and the day it ran, which is
-    // said as seen from now and so not checked here.
+    // Each session with its id, which says its agent, its project and the
+    // day it ran, which is said as seen from now and so not checked here.
     for sentence in [
-        "Claude Max \u{b7} joey@example.com, 5-hour limit since ",
-        ": 80% used, 20% left.\n\n1. \"Map the tiles\" (alpha, Claude Code, ",
-        "): 50.0%.\n   Claude Opus 5 for 1m, 1 response. Its context grew to 1K tokens.\n",
-        "2. \"Shade the hills\" (beta, Claude Code, ",
-        "): 30.0%.\n   Claude Opus 5 for 11m, 2 responses. Its context grew to 20K tokens and \
+        "Claude Max \u{b7} joey@example.com, 5-hour limit since ".to_owned(),
+        format!(
+            ": 80% used, 20% left.\n\n1. \"Map the tiles\" (claude-code:{ALPHA}) \u{b7} alpha \
+             \u{b7} "
+        ),
+        ": 50.0%.\n   Claude Opus 5 for 1m, 1 response. Its context grew to 1K tokens.\n"
+            .to_owned(),
+        format!("2. \"Shade the hills\" (claude-code:{BETA}) \u{b7} beta \u{b7} "),
+        ": 30.0%.\n   Claude Opus 5 for 11m, 2 responses. Its context grew to 20K tokens and \
          was read again on every response: 93% of its tokens were cache reads. 1 subagent, on \
-         Claude Opus 5, took 6.2% of it.",
+         Claude Opus 5, took 6.2% of it."
+            .to_owned(),
     ] {
-        assert!(said.contains(sentence), "{sentence:?} in {said}");
+        assert!(said.contains(&sentence), "{sentence:?} in {said}");
     }
     assert!(!said.contains("Not on this Mac"), "{said}");
 }
@@ -128,9 +133,17 @@ fn a_session_is_explained_by_prompt_and_subagent() {
     assert_eq!(session["subagents"][0]["title"], "Find the normals");
     assert_eq!(session["subagents"][0]["share_percent"], json!(6.16));
     let said = beta.said();
-    assert!(said.contains("\"Shade the hills\" took 30.0%."), "{said}");
     assert!(
-        said.contains("Its subagents took 6.2% of it: \"Find the normals\", claude-opus-5: 6.2%."),
+        said.contains(&format!(
+            "\"Shade the hills\" (claude-code:{BETA}) took 30.0%."
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains(
+            "Its subagents took 6.2% of it:\n- \"Find the normals\" \
+             (claude-code:c3c3c3c3c3c3c3c3c) \u{b7} claude-opus-5: 6.2%."
+        ),
         "{said}"
     );
     let refused = refusal(

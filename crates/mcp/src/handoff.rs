@@ -13,9 +13,11 @@
 //! usage and its shares of limits; its handoff says it can't be read.
 //!
 //! Every part is bounded to fit what an agent takes from a tool: quotes are
-//! cut short with where their rest is read ([`crate::read::clipped`]),
-//! and the files, commands, subagents and windows given are the most
-//! telling few, with how many more there are.
+//! cut short with where their rest is read ([`crate::read::clipped`]); the
+//! plan, the files (the most changed first), the commands the engine keeps
+//! and the subagents are each given whole up to their bounds, a line an
+//! item, with how many more there are; and of the windows the session drew
+//! on, the sentences say the latest of each limit, the figures every one.
 
 use std::collections::BTreeMap;
 
@@ -43,12 +45,11 @@ const LONGEST_REPLY: usize = 800;
 /// The most characters of a command a handoff gives.
 const LONGEST_COMMAND: usize = 300;
 
-/// The most files a handoff's figures list, and its sentences name.
+/// The most files a handoff lists.
 const FILES_GIVEN: usize = 100;
-const FILES_SAID: usize = 12;
 
-/// The most commands a handoff's sentences name.
-const COMMANDS_SAID: usize = 5;
+/// The most characters of a plan's step a handoff gives.
+const LONGEST_STEP: usize = 200;
 
 /// The most subagents a handoff lists.
 const MOST_SUBAGENTS: usize = 20;
@@ -201,21 +202,26 @@ pub(crate) fn get(server: &Server, arguments: GetSession) -> Answer {
         }
     }
     if !subagents.is_empty() {
-        let names: Vec<String> = subagents
-            .iter()
-            .map(|subagent| {
-                let model = subagent
-                    .models
-                    .first()
-                    .map_or_else(String::new, |model| format!(" ({model})"));
-                format!("{}{model}", sessions::title(subagent))
-            })
-            .collect();
-        let more = match (row.subagents as usize).saturating_sub(subagents.len()) {
-            0 => String::new(),
-            more => format!(" and {more} more"),
-        };
-        said.push(format!("Subagents: {}{more}.", names.join(", ")));
+        let mut lines = vec![format!(
+            "{}:",
+            prose::capitalized(&prose::count(u64::from(row.subagents), "subagent"))
+        )];
+        lines.extend(subagents.iter().map(|subagent| {
+            let model = subagent
+                .models
+                .first()
+                .map_or_else(String::new, |model| format!(" \u{b7} {model}"));
+            format!(
+                "- {}{model} \u{b7} {} tokens",
+                sessions::called(subagent),
+                prose::tokens(subagent.with_subagents.tokens.total())
+            )
+        }));
+        match (row.subagents as usize).saturating_sub(subagents.len()) {
+            0 => {}
+            more => lines.push(format!("- and {more} more")),
+        }
+        said.push(lines.join("\n"));
         data["subagents"] = subagents
             .iter()
             .map(|subagent| {
@@ -255,7 +261,7 @@ pub(crate) fn get(server: &Server, arguments: GetSession) -> Answer {
 
 /// The first line of a handoff: the session, its agent, where and when.
 fn heading(server: &Server, row: &SessionRow) -> String {
-    let mut parts = vec![sessions::title(row), row.key.agent().name().to_owned()];
+    let mut parts = vec![sessions::called(row), row.key.agent().name().to_owned()];
     if let Some(place) = sessions::place(server, row) {
         parts.push(place);
     }
@@ -334,31 +340,18 @@ fn told(
             .iter()
             .filter(|step| step.status == Some(StepStatus::Completed))
             .count();
-        let under_way: Vec<String> = handoff
-            .plan
-            .iter()
-            .filter(|step| step.status == Some(StepStatus::InProgress))
-            .map(|step| prose::line(&step.text, 120))
-            .collect();
-        let left: Vec<String> = handoff
-            .plan
-            .iter()
-            .filter(|step| {
-                !matches!(
-                    step.status,
-                    Some(StepStatus::Completed | StepStatus::InProgress | StepStatus::Cancelled)
-                )
-            })
-            .map(|step| prose::line(&step.text, 120))
-            .collect();
-        let mut plan = format!("Plan: {done} of {} done.", handoff.plan.len());
-        if !under_way.is_empty() {
-            plan.push_str(&format!(" Under way: {}.", under_way.join("; ")));
-        }
-        if !left.is_empty() {
-            plan.push_str(&format!(" Left: {}.", left.join("; ")));
-        }
-        said.push(plan);
+        let mut lines = vec![format!("Plan, {done} of {} done:", handoff.plan.len())];
+        lines.extend(handoff.plan.iter().map(|step| {
+            let status = match step.status {
+                Some(StepStatus::Completed) => "done",
+                Some(StepStatus::InProgress) => "under way",
+                Some(StepStatus::Pending) => "left",
+                Some(StepStatus::Cancelled) => "given up",
+                None => "status not understood",
+            };
+            format!("- {status}: {}", prose::line(&step.text, LONGEST_STEP))
+        }));
+        said.push(lines.join("\n"));
         data["plan"] = handoff
             .plan
             .iter()
@@ -376,18 +369,21 @@ fn told(
                     .saturating_add(file.removed.unwrap_or(0)),
             )
         });
-        let named: Vec<String> = ordered
-            .into_iter()
-            .take(FILES_SAID)
-            .map(|file| changed(file, folder))
-            .collect();
-        let more = handoff.files.len().saturating_sub(FILES_SAID) as u64 + handoff.files_left_out;
-        let more = if more > 0 {
-            format!(" \u{b7} and {more} more")
-        } else {
-            String::new()
-        };
-        said.push(format!("Changed: {}{more}", named.join(" \u{b7} ")));
+        let more = handoff.files.len().saturating_sub(FILES_GIVEN) as u64 + handoff.files_left_out;
+        let mut lines = vec![format!(
+            "Changed {}:",
+            prose::count(handoff.files.len() as u64 + handoff.files_left_out, "file")
+        )];
+        lines.extend(
+            ordered
+                .into_iter()
+                .take(FILES_GIVEN)
+                .map(|file| format!("- {}", changed(file, folder))),
+        );
+        if more > 0 {
+            lines.push(format!("- and {more} more"));
+        }
+        said.push(lines.join("\n"));
     } else {
         said.push("Changed: no file edits recorded.".to_owned());
     }
@@ -410,28 +406,33 @@ fn told(
     data["files_left_out"] =
         json!(handoff.files.len().saturating_sub(FILES_GIVEN) as u64 + handoff.files_left_out);
     if handoff.commands_run > 0 {
-        let last: Vec<String> = handoff
-            .commands
-            .iter()
-            .rev()
-            .take(COMMANDS_SAID)
-            .rev()
-            .map(|command| {
-                let outcome = match (command.failed, command.exit) {
-                    (Some(true), Some(exit)) => format!(" (failed, exit {exit})"),
-                    (Some(true), None) => " (failed)".to_owned(),
-                    (None, _) => " (outcome not recorded)".to_owned(),
-                    (Some(false), _) => String::new(),
-                };
-                format!("{}{outcome}", prose::line(&command.command, 100))
-            })
-            .collect();
-        said.push(format!(
-            "Ran {}, {} failed. Last: {}",
-            prose::count(handoff.commands_run, "command"),
-            handoff.commands_failed,
-            last.join(" \u{b7} ")
-        ));
+        let kept = handoff.commands.len() as u64;
+        let mut lines = vec![if kept < handoff.commands_run {
+            format!(
+                "Ran {}, {} failed; the last {kept}, oldest first:",
+                prose::count(handoff.commands_run, "command"),
+                handoff.commands_failed,
+            )
+        } else {
+            format!(
+                "Ran {}, {} failed:",
+                prose::count(handoff.commands_run, "command"),
+                handoff.commands_failed,
+            )
+        }];
+        lines.extend(handoff.commands.iter().map(|command| {
+            let outcome = match (command.failed, command.exit) {
+                (Some(true), Some(exit)) => format!(" (failed, exit {exit})"),
+                (Some(true), None) => " (failed)".to_owned(),
+                (None, _) => " (outcome not recorded)".to_owned(),
+                (Some(false), _) => String::new(),
+            };
+            format!(
+                "- {}{outcome}",
+                prose::line(&command.command, LONGEST_COMMAND)
+            )
+        }));
+        said.push(lines.join("\n"));
     }
     data["commands"] = handoff
         .commands
