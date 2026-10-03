@@ -56,7 +56,7 @@ use std::ops::{Deref, DerefMut};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, mpsc};
 use std::time::{Duration, Instant as Clock};
 
 use rusqlite::Connection;
@@ -138,7 +138,7 @@ pub struct Engine {
     /// waited to be recorded and the app showed no account. `None` while no
     /// scan runs, when limits are recorded as they are read.
     waiting: Mutex<Option<Vec<LimitsRead>>>,
-    subscribers: Mutex<Vec<async_channel::Sender<Change>>>,
+    subscribers: Mutex<Vec<mpsc::Sender<Change>>>,
     /// What models and providers are called, and the catalog it was read
     /// from, by when that was published: read at the first question that
     /// needs it, and again once a newer catalog is taken in.
@@ -422,8 +422,8 @@ impl Engine {
 
     /// Hear of every change from now on. A subscriber that stops listening is
     /// forgotten.
-    pub fn subscribe(&self) -> async_channel::Receiver<Change> {
-        let (sender, receiver) = async_channel::unbounded();
+    pub fn subscribe(&self) -> mpsc::Receiver<Change> {
+        let (sender, receiver) = mpsc::channel();
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -437,7 +437,7 @@ impl Engine {
             .subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        subscribers.retain(|subscriber| subscriber.try_send(change.clone()).is_ok());
+        subscribers.retain(|subscriber| subscriber.send(change.clone()).is_ok());
     }
 
     /// The home directory agents' history is read under, as
