@@ -34,7 +34,7 @@ public struct Words: Sendable {
     }
 
     /// How long `seconds` is: "45m", "1h 30m", "2d 4h".
-    public func stretch(_ seconds: TimeInterval) -> String {
+    func stretch(_ seconds: TimeInterval) -> String {
         let minutes = max(0, Int(seconds / 60))
         let (hours, rest) = (minutes / 60, minutes % 60)
         if hours >= 24 {
@@ -46,7 +46,7 @@ public struct Words: Sendable {
 
     /// When `date` is, as a person says it: "3:40 AM", "tomorrow 9 AM", "Thu
     /// 7:50 PM", "Oct 18"; with `around`, to the nearest ten minutes.
-    public func clock(_ date: Date, around: Bool = false) -> String {
+    func clock(_ date: Date, around: Bool = false) -> String {
         var date = date
         if around {
             let ten = 600.0
@@ -66,7 +66,7 @@ public struct Words: Sendable {
 
     /// The day `date` falls on, as a headline says it: "today", "tomorrow",
     /// "Thursday".
-    public func day(_ date: Date) -> String {
+    func day(_ date: Date) -> String {
         if calendar.isDate(date, inSameDayAs: now) { return "today" }
         if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now),
            calendar.isDate(date, inSameDayAs: tomorrow) {
@@ -77,14 +77,14 @@ public struct Words: Sendable {
 
     /// When `date` is, loosely, as a headline says it: "this evening",
     /// "tonight", "tomorrow morning", "Saturday night".
-    public func when(_ date: Date) -> String {
+    func when(_ date: Date) -> String {
         let part = partOfDay(date)
         guard calendar.isDate(date, inSameDayAs: now) else { return "\(day(date)) \(part)" }
         return part == "night" ? "tonight" : "this \(part)"
     }
 
     /// The part of the day `date` falls in: "morning", "evening".
-    public func partOfDay(_ date: Date) -> String {
+    func partOfDay(_ date: Date) -> String {
         switch calendar.component(.hour, from: date) {
         case 5..<12: "morning"
         case 12..<17: "afternoon"
@@ -111,12 +111,7 @@ public struct Words: Sendable {
         case 5: span = "5 hours"
         case 168: span = "Week"
         case let hours? where (672...744).contains(hours): span = "Month"
-        default:
-            switch limit.name.lowercased() {
-            case "weekly": span = "Week"
-            case "monthly": span = "Month"
-            default: span = limit.name
-            }
+        default: span = spanName(limit.name)
         }
         guard let scope = limit.scope else { return span }
         return "\(scope) \(span.lowercased())"
@@ -166,7 +161,7 @@ public struct Words: Sendable {
     /// "8% in reserve", "3% over pace", within a point "On pace"; nil when
     /// that isn't known or it is used up. What is to spare is rounded down
     /// and what is over rounded up, so neither flatters.
-    public func reserve(_ limit: Limit) -> String? {
+    func reserve(_ limit: Limit) -> String? {
         guard limit.standing != .usedUp, let reserve = limit.reserve else { return nil }
         if reserve >= 1 { return "\(Int(reserve.rounded(.down)))% in reserve" }
         if reserve <= -1 { return "\(Int((-reserve).rounded(.up)))% over pace" }
@@ -177,7 +172,7 @@ public struct Words: Sendable {
     /// "Stay under 16% a day to last" for a window longer than a day, an
     /// hour for a shorter one; nil unless the feed gives a budget. Rounded
     /// down, so keeping to it lasts.
-    public func budget(_ limit: Limit) -> String? {
+    func budget(_ limit: Limit) -> String? {
         guard let budget = limit.budget else { return nil }
         let daily = (limit.hours ?? 0) > 24
         let rate = daily ? budget * 24 : budget
@@ -230,23 +225,26 @@ public struct Words: Sendable {
         }
     }
 
-    /// What the panel says before any account is found: while the engine is
-    /// still `reading` agents' history for the first time, that limits are
-    /// on their way, since none found may only mean none found yet; after,
-    /// that no agent it reads is here, or that those here aren't signed in.
-    public func welcome(_ agents: [AgentLink], reading: Bool = false) -> (headline: String, detail: String) {
+    /// What the panel says before any account is found, as [`verdict`] says
+    /// it once one is: while the engine is still `reading` agents' history
+    /// for the first time, that limits are on their way, since none found may
+    /// only mean none found yet; after, that no agent it reads is here, or
+    /// that those here aren't signed in.
+    public func welcome(_ agents: [AgentLink], reading: Bool = false)
+        -> (headline: String, detail: String, standing: Standing) {
         if reading {
-            return ("Getting your limits", "They show up here in a moment.")
+            return ("Getting your limits", "They show up here in a moment.", .lasts)
         }
         guard !agents.isEmpty else {
             return ("No agents found",
-                    "Turnscope reads Claude Code, Codex, OpenCode, Pi and Grok Build. Sign in to one, and its limits show up here.")
+                    "Turnscope reads Claude Code, Codex, OpenCode, Pi and Grok Build. Sign in to one, and its limits show up here.",
+                    .lasts)
         }
         let names = agents.map(\.name)
         let named = names.count > 1
             ? "\(names.dropLast().joined(separator: ", ")) or \(names[names.count - 1])"
             : names[0]
-        return ("No accounts found yet", "Once \(named) is signed in, its limits show up here.")
+        return ("No accounts found yet", "Once \(named) is signed in, its limits show up here.", .lasts)
     }
 
     /// Why an account's limits can't be read now, in a sentence; nil when
@@ -298,8 +296,13 @@ public struct Words: Sendable {
         }
     }
 
+    /// A session's share of a limit, to a tenth of a point: "12.5%".
+    public func share(_ points: Double) -> String {
+        String(format: "%.1f%%", points)
+    }
+
     /// A count of tokens, to three figures: "950", "38.4K", "966K", "1.25M".
-    public func tokens(_ count: Int) -> String {
+    func tokens(_ count: Int) -> String {
         let units: [(Double, String)] = [(1e9, "B"), (1e6, "M"), (1e3, "K")]
         let value = Double(count)
         guard let (size, unit) = units.first(where: { value >= $0.0 }) else { return "\(count)" }
@@ -314,10 +317,11 @@ public struct Words: Sendable {
     }
 
     /// What an account says under its name in a list: what tells it apart,
-    /// its label, or the agents that use it, "via OpenCode, Pi".
-    public func subtitle(_ account: Account) -> String {
+    /// its label, or the agents that use it, "via OpenCode, Pi"; nil when
+    /// nothing does.
+    public func subtitle(_ account: Account) -> String? {
         if let label = account.label { return label }
-        guard !account.agents.isEmpty else { return "" }
+        guard !account.agents.isEmpty else { return nil }
         return "via " + account.agents.map(agentName).joined(separator: ", ")
     }
 

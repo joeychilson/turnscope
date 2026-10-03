@@ -90,20 +90,13 @@ struct LimitRows: View {
 
     var body: some View {
         let words = Words()
-        VStack(alignment: .leading, spacing: 9) {
+        Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 9) {
             ForEach(limits) { limit in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    // Every name, only this one seen, so each is as wide as
-                    // the widest.
-                    ZStack(alignment: .leading) {
-                        ForEach(limits) { other in
-                            Text(words.name(other)).opacity(other.id == limit.id ? 1 : 0)
-                                .accessibilityHidden(other.id != limit.id)
-                        }
-                    }
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                    .fixedSize()
-                    .frame(minWidth: 44, alignment: .leading)
+                GridRow(alignment: .firstTextBaseline) {
+                    Text(words.name(limit))
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                        .fixedSize()
+                        .frame(minWidth: 44, alignment: .leading)
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 6) {
                             Level(limit: limit)
@@ -208,7 +201,7 @@ private struct UsedMost: View {
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 8)
-                        Text(String(format: "%.1f%%", used.share))
+                        Text(words.share(used.share))
                             .font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary)
                     }
                 }

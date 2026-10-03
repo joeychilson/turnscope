@@ -94,74 +94,21 @@ extension View {
     }
 }
 
-/// A section's heading, and what it is for under it.
-struct SectionTitle: View {
-    var text: String
-    var note: String?
+/// An account's title, and under it what tells it apart, as a list of
+/// accounts names each: at `size`, in the grays `title` and `subtitle`.
+struct AccountName: View {
+    var account: Account
+    var size: CGFloat = 12
+    var title: HierarchicalShapeStyle = .primary
+    var subtitle: HierarchicalShapeStyle = .tertiary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(text).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
-            if let note {
-                Text(note).font(.system(size: 11)).foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 0) {
+            Text(account.title).font(.system(size: size)).foregroundStyle(title)
+            if let line = Words().subtitle(account) {
+                Text(line).font(.system(size: 11)).foregroundStyle(subtitle)
+                    .lineLimit(1).truncationMode(.middle)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 4)
-    }
-}
-
-/// A setting: its name, what it means under it, and its control at its end.
-struct SettingRow<Control: View>: View {
-    var title: String
-    var detail: String?
-    @ViewBuilder var control: () -> Control
-
-    var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 13))
-                if let detail {
-                    Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 8)
-            control()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-/// A switch, as small as the rows it sits in.
-struct Switch: View {
-    var label: String
-    @Binding var on: Bool
-
-    var body: some View {
-        Toggle(label, isOn: $on).toggleStyle(.switch).controlSize(.mini).labelsHidden()
-    }
-}
-
-/// A page's title with the way back beside it.
-struct PageTitle: View {
-    var title: String
-    var back: () -> Void
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Button(action: back) { Image(systemName: "chevron.left") }
-                .buttonStyle(IconButton())
-                .keyboardShortcut(.cancelAction)
-                .help("Back")
-                .accessibilityLabel("Back")
-            Text(title).font(.system(size: 15, weight: .semibold)).fixedSize().accessibilityAddTraits(.isHeader)
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .padding(.top, 10)
     }
 }

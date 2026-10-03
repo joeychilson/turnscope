@@ -133,10 +133,12 @@ private func limit(_ standing: Standing, hours: Int? = 5, left: Double? = 20,
                   AgentLink(id: "codex", name: "Codex", status: .available),
                   AgentLink(id: "grok", name: "Grok Build", status: .connected)]
     #expect(words.welcome(agents) == ("No accounts found yet",
-                                      "Once Claude Code, Codex or Grok Build is signed in, its limits show up here."))
+                                      "Once Claude Code, Codex or Grok Build is signed in, its limits show up here.",
+                                      .lasts))
     // While history is still read for the first time, none found is none
     // found yet.
-    #expect(words.welcome(agents, reading: true) == ("Getting your limits", "They show up here in a moment."))
+    #expect(words.welcome(agents, reading: true)
+        == ("Getting your limits", "They show up here in a moment.", .lasts))
 }
 
 @Test func tokensReadToThreeFigures() {
@@ -178,11 +180,12 @@ private func limit(_ standing: Standing, hours: Int? = 5, left: Double? = 20,
 }
 
 extension Account {
-    /// Claude Max in use, with `limits`, the first deciding.
+    /// Claude Max in use, with `limits`, the first deciding, and standing as
+    /// it does.
     static func with(_ limits: [Limit]) -> Account {
         Account(id: "a", title: "Claude Max", label: nil, logo: "anthropic",
                 agents: ["claude-code"], inUse: true, hidden: false, problem: nil,
-                standing: limits.map(\.standing).max() ?? .lasts, deciding: limits.first?.key,
+                standing: limits.first?.standing ?? .lasts, deciding: limits.first?.key,
                 limits: limits, usedMost: [], advice: nil)
     }
 }

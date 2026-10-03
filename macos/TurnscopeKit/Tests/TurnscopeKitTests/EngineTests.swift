@@ -5,24 +5,6 @@ import Foundation
 import Testing
 @testable import TurnscopeKit
 
-/// An executable script, run as the engine is, that `text` is the body of.
-private func script(_ text: String) throws -> URL {
-    let folder = FileManager.default.temporaryDirectory.appending(path: "turnscope-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    let url = folder.appending(path: "turnscope")
-    try "#!/bin/sh\n\(text)\n".write(to: url, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-    return url
-}
-
-/// Wait until `done`, for five seconds at the most.
-@MainActor
-private func until(_ done: () -> Bool) async {
-    for _ in 0..<500 where !done() {
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-}
-
 private let alert = #"{"alert":{"account":"claude:a","title":"Claude Max","label":null,"limit":"5 hours","scope":null,"kind":"used_up","at":null,"left":0.0}}"#
 
 @MainActor

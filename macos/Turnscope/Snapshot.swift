@@ -1,10 +1,8 @@
 // The panel drawn off-screen, from a feed, as PNGs in light and dark:
 // `Turnscope --snapshot <folder> --fixture contract/feed.json`, as
 // `scripts/screenshots.sh` runs it for the README. With `--open`, it is
-// drawn as `--open` opens it: `account`, the first account in use opened,
-// `resting`, the accounts not in use listed, or `settings`, `agents` or
-// `accounts`, that tab of Settings. Glass needs a
-// window behind it, so the panel is drawn on the window background instead.
+// drawn as `--open` opens it (`Navigation.opening`). Glass needs a window
+// behind it, so the panel is drawn on the window background instead.
 
 import AppKit
 import SwiftUI
@@ -14,19 +12,13 @@ import TurnscopeKit
 enum Snapshot {
     static func draw(fixture path: String?, into folder: String) {
         Preference.register()
-        let feed = path.flatMap(fixture)
-        Words.frozen = feed?.at
-        let store = Store(engine: nil, feed: feed)
+        let store = fixture(path)
         let navigation = Navigation()
-        let opened = argument("--open")
-        let tab = opened.flatMap(Navigation.Tab.init(opening:))
+        let tab = argument("--open").flatMap { navigation.opening($0, firstInUse: store.inUse.first?.id) }
         if let tab { navigation.tab = tab }
-        if opened == "account" { navigation.open = store.inUse.first?.id }
-        if opened == "resting" { navigation.restingOpen = true }
         let out = URL(fileURLWithPath: folder)
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         for dark in [false, true] {
-            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
             let page: AnyView = tab == nil
                 ? AnyView(Panel())
                 : AnyView(SettingsPage().frame(width: panelWidth).fixedSize(horizontal: false, vertical: true))
@@ -34,9 +26,7 @@ enum Snapshot {
                 .environment(store)
                 .environment(navigation)
                 .environment(Updater())
-                .background(Color(nsColor: .windowBackgroundColor))
-                .clipShape(shape)
-                .overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+                .panelFrame(Color(nsColor: .windowBackgroundColor))
                 .padding(1)
             // Settings' native controls are drawn only by AppKit; the rest is
             // drawn sharper, and with its bars grown, by SwiftUI.

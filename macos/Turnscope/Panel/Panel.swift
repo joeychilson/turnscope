@@ -1,7 +1,7 @@
 // The menu bar panel, which is Turnscope as a person sees it: the one thing to
 // know, large, whether they can keep going; each account in use, the most
-// urgent first; and the accounts not in use, folded into a line. Settings and
-// Accounts are pages of it, sliding in from the side they lie on.
+// urgent first; and the accounts not in use, folded into a line. Settings is
+// a page of it, in three tabs, sliding in from the side it lies on.
 //
 // It floats in a still, transparent window and draws its own glass, edge and
 // shadow, so its height moves on the same spring as what is inside it and
@@ -32,15 +32,22 @@ struct Floating: View {
     static let gutter: CGFloat = 28
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         Panel()
-            .background(Glass())
-            .clipShape(shape)
-            .overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+            .panelFrame(Glass())
             .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
             .padding(.horizontal, Floating.gutter)
             .padding(.bottom, Floating.gutter * 2)
             .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+extension View {
+    /// The panel's shape over `background`: its corners and its edge.
+    func panelFrame(_ background: some View) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return self.background(background)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
     }
 }
 
@@ -90,7 +97,7 @@ private struct FirstPage: View {
             if store.feed == nil {
                 Opening(failure: store.failure)
             } else {
-                Verdict(inUse: store.inUse, agents: store.all.isEmpty ? store.agents : nil, reading: store.reading)
+                Verdict()
                     .padding(.horizontal, 20)
                     .padding(.top, 18)
                     .padding(.bottom, 14)
@@ -129,7 +136,7 @@ private struct FirstPage: View {
 /// away for good, agent by agent.
 private struct ConnectNudge: View {
     @Environment(Store.self) private var store
-    @AppStorage("dismissedConnect") private var dismissed = ""
+    @AppStorage(Preference.dismissedConnect) private var dismissed = ""
 
     var body: some View {
         let used = Set(store.inUse.flatMap(\.agents))
@@ -190,18 +197,14 @@ private struct Opening: View {
 /// The one thing to know, large: whether the person can keep going, or,
 /// before any account is found, why none is.
 private struct Verdict: View {
+    @Environment(Store.self) private var store
     @Environment(Navigation.self) private var navigation
-    var inUse: [Account]
-    /// The agents found, when no account is.
-    var agents: [AgentLink]?
-    /// Whether agents' history is still read for the first time.
-    var reading = false
 
     var body: some View {
         let words = Words(now: navigation.now)
-        let verdict = agents.map { words.welcome($0, reading: reading) }
-            .map { (headline: $0.headline, detail: $0.detail, standing: Standing.lasts) }
-            ?? words.verdict(inUse)
+        let verdict = store.all.isEmpty
+            ? words.welcome(store.agents, reading: store.reading)
+            : words.verdict(store.inUse)
         VStack(alignment: .leading, spacing: 4) {
             Text(verdict.headline)
                 .font(.system(size: 20, weight: .semibold))

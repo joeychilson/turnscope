@@ -5,17 +5,6 @@ import Foundation
 import Testing
 @testable import TurnscopeKit
 
-private func contract(_ name: String) throws -> Data {
-    let root = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().deletingLastPathComponent()
-    return try Data(contentsOf: root.appending(path: "contract/\(name)"))
-}
-
-private func lines(_ name: String) throws -> [Data] {
-    try contract(name).split(separator: 0x0A).map { Data($0) }
-}
-
 @Test func theFeedIsRead() throws {
     let feed = try Contract.decoder.decode(Feed.self, from: contract("feed.json"))
     #expect(feed.version == Feed.version)

@@ -15,16 +15,6 @@ final class Navigation {
     enum Tab: String, CaseIterable, Identifiable {
         case general = "General", agents = "Agents", accounts = "Accounts"
         var id: String { rawValue }
-
-        /// The tab `--open` names: `settings`, `agents` or `accounts`.
-        init?(opening: String) {
-            switch opening {
-            case "settings": self = .general
-            case "agents": self = .agents
-            case "accounts": self = .accounts
-            default: return nil
-            }
-        }
     }
 
     private(set) var page: Page = .main
@@ -52,6 +42,21 @@ final class Navigation {
         Task { @MainActor in withAnimation(spring) { self.page = to } }
     }
 
+    /// Open what `--open` names, to look at: `account`, the first account in
+    /// use, `firstInUse`; `resting`, the accounts not in use; or `settings`,
+    /// `agents` or `accounts`, the tab of Settings it gives back to go to.
+    func opening(_ name: String, firstInUse: String?) -> Tab? {
+        switch name {
+        case "account": open = firstInUse
+        case "resting": restingOpen = true
+        case "settings": return .general
+        case "agents": return .agents
+        case "accounts": return .accounts
+        default: break
+        }
+        return nil
+    }
+
     /// Back where it opens, with nothing open, for the next time.
     func reset() {
         page = .main
@@ -60,28 +65,5 @@ final class Navigation {
         restingOpen = false
         restingChosen = nil
         hiddenShown = false
-    }
-}
-
-/// What the person chose, kept in the app's defaults.
-enum Preference {
-    /// What the menu bar shows: every account in use, or the most urgent.
-    static let menuShows = "menuShows"
-    static let notifyRunningOut = "notifyRunningOut"
-    static let notifyUsedUp = "notifyUsedUp"
-    static let notifyBack = "notifyBack"
-    static let notifyMilestones = "notifyMilestones"
-    static let notifyRecap = "notifyRecap"
-
-    /// Each notification's default: on for what asks something of the person.
-    static func register() {
-        UserDefaults.standard.register(defaults: [
-            menuShows: "all",
-            notifyRunningOut: true,
-            notifyUsedUp: true,
-            notifyBack: true,
-            notifyMilestones: false,
-            notifyRecap: false,
-        ])
     }
 }

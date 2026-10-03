@@ -28,8 +28,8 @@ public final class Store {
     /// Whether the panel is open, as the engine was last told.
     private var panelOpen = false
 
-    /// A store over `engine`; none for a fixed `feed`, as previews and tests
-    /// show.
+    /// A store over `engine`; none for a fixed `feed`, as `--fixture` and
+    /// `--snapshot` show.
     public init(engine: Engine?, feed: Feed? = nil) {
         self.engine = engine
         self.feed = feed
@@ -45,7 +45,7 @@ public final class Store {
     // MARK: What is shown
 
     /// The accounts shown: all but those the person hid.
-    public var shown: [Account] { (feed?.accounts ?? []).filter { !$0.hidden } }
+    var shown: [Account] { (feed?.accounts ?? []).filter { !$0.hidden } }
     /// The accounts in use, most urgent first.
     public var inUse: [Account] { shown.filter(\.inUse) }
     /// The rest, those with most room first.
