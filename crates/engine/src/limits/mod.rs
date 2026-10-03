@@ -2075,8 +2075,6 @@ mod tests {
         assert_eq!(instant_of(&json!(i64::MAX)), None);
     }
 
-    /// A limit read at minute 0, `used` percent used and rising `pace`
-    /// points an hour, in a window of `hours` that started then.
     /// A Claude account in use, `a`, holding `limits`.
     fn account(limits: Vec<LimitState>) -> AccountLimits {
         AccountLimits {
@@ -2097,6 +2095,8 @@ mod tests {
         }
     }
 
+    /// A limit read at minute 0, `used` percent used and rising `pace`
+    /// points an hour, in a window of `hours` that started then.
     fn paced(used: f64, pace: f64, hours: i64) -> LimitState {
         LimitState {
             key: "k".into(),

@@ -455,7 +455,16 @@ pub(crate) fn fingerprint(
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
     use serde_json::json;
+
+    use super::{accounts, claims, output_within, sign_ins, stamp};
+    use crate::agent::Agent;
+    use crate::folders::{self, Folder, FolderOrigin};
+    use crate::limits::{Identity, SignIn, Subscription, Whose};
 
     /// Write `text` to `path` under `home`, making its folders.
     fn write(home: &Path, path: &str, text: impl AsRef<[u8]>) {
@@ -463,16 +472,6 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
-
-    use std::process::Command;
-    use std::time::{Duration, Instant};
-
-    use std::path::{Path, PathBuf};
-
-    use super::{accounts, claims, output_within, sign_ins, stamp};
-    use crate::agent::Agent;
-    use crate::folders::{self, Folder, FolderOrigin};
-    use crate::limits::{Identity, SignIn, Subscription, Whose};
 
     /// The folders read in `home` with no choice made.
     fn folders(home: &Path) -> Vec<Folder> {
