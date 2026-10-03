@@ -159,8 +159,9 @@ fn mcp(data: &Path, home: &Path, given: &[String]) -> Result<(), Failure> {
         &server,
         std::env::current_exe().ok().as_deref(),
         given,
-        std::io::stdin().lock(),
-        std::io::stdout(),
+        // Not locked to this thread: once handed over, another reads it.
+        std::io::BufReader::new(std::io::stdin()),
+        std::io::stdout().lock(),
     )?;
     Ok(())
 }

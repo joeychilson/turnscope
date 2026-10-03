@@ -22,7 +22,9 @@
 //! [`STARTING`] with the revision this one speaks, is stopped, and this one
 //! goes on answering, without trying that file again; why goes to standard
 //! error, which agents keep in their logs. Once handed over, a new server
-//! that stops leaves the client without one, as any server that stops does.
+//! that stops leaves the client without one, as any server that stops does:
+//! this one stops with it, so the client sees its server stop and fails the
+//! requests it was waiting on, rather than wait on them for good.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::MetadataExt as _;
@@ -162,18 +164,25 @@ impl Successor {
     /// Tell the client that its tools and prompts may have changed; pass the
     /// new server `pending`, the line that found this server out of date,
     /// and every line `input` holds after it, and pass the client every line
-    /// the new server writes, until `input` ends. Then wait for the new
-    /// server to stop, as it does once its input ends.
+    /// the new server writes, until the new server's output ends. That is
+    /// once `input` has ended and the new server stopped with it; or the new
+    /// server stopped first, and the session ends with it.
+    ///
+    /// `input` is read on a thread of its own, since nothing ends a read of
+    /// a client that stays open: once the new server has stopped first, the
+    /// relay returns without it, and the thread ends with this process.
     ///
     /// # Errors
     ///
-    /// Returns the error passing a line gave, such as the new server's input
-    /// closing when it stopped.
+    /// Returns an error when the new server stopped while the client was
+    /// still connected, which ends this server too, so that the client sees
+    /// its server stop rather than wait on requests no one will answer; and
+    /// otherwise the error passing a line gave.
     pub(crate) fn relay(
         self,
-        pending: &[u8],
-        input: &mut impl BufRead,
-        output: &mut (impl Write + Send),
+        pending: Vec<u8>,
+        mut input: impl BufRead + Send + 'static,
+        output: &mut impl Write,
     ) -> io::Result<()> {
         let Successor {
             mut child,
@@ -188,21 +197,35 @@ impl Successor {
             output.write_all(b"\n")?;
         }
         output.flush()?;
-        let (passed_on, passed_back) = thread::scope(|scope| {
-            let passing_back = scope.spawn(move || lines(&mut back, output));
+        let (sent, client_ended) = mpsc::channel();
+        thread::spawn(move || {
             let passed_on = onward
-                .write_all(pending)
-                .and_then(|()| io::copy(input, &mut onward))
+                .write_all(&pending)
+                .and_then(|()| io::copy(&mut input, &mut onward))
                 .map(drop);
-            // The new server stops once its input ends, which ends its output.
+            // Said before the new server's input closes, so that once its
+            // output ends, which it does only after, the relay knows which
+            // stopped first.
+            sent.send(passed_on).ok();
             drop(onward);
-            let passed_back = passing_back
-                .join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-            (passed_on, passed_back)
         });
-        child.wait()?;
-        passed_on.and(passed_back)
+        let passed_back = lines(&mut back, output);
+        if passed_back.is_err() {
+            // The client no longer reads, so nothing the new server says
+            // goes anywhere.
+            stop(child);
+            return passed_back;
+        }
+        let status = child.wait()?;
+        match client_ended.try_recv() {
+            Ok(passed_on) if status.success() => passed_on.and(passed_back),
+            // Stopped before the client's input ended, or failing as a line
+            // was passed to it.
+            _ => Err(io::Error::other(format!(
+                "the newer server this session was handed over to stopped ({status}), so \
+                 this one stops with it"
+            ))),
+        }
     }
 }
 

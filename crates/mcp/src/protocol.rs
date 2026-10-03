@@ -82,13 +82,15 @@ const INVALID_PARAMS: i64 = -32_602;
 /// # Errors
 ///
 /// Returns the error reading `input` or writing `output` gave, or, once
-/// handed over, passing a line between the client and the new server.
+/// handed over, passing a line between the client and the new server; and
+/// an error when the new server stops while the client is still connected,
+/// so that the client sees this one stop too.
 pub fn serve(
     server: &Server,
     program: Option<&Path>,
     options: &[String],
-    mut input: impl BufRead,
-    mut output: impl Write + Send,
+    mut input: impl BufRead + Send + 'static,
+    mut output: impl Write,
 ) -> io::Result<()> {
     let mut session = Session {
         server,
@@ -113,7 +115,7 @@ pub fn serve(
                 "the message is too long",
             ))
         } else if let Some(successor) = session.successor() {
-            return successor.relay(&line, &mut input, &mut output);
+            return successor.relay(line, input, &mut output);
         } else {
             session.answer(&line)
         };
