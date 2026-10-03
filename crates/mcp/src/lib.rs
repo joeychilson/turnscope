@@ -17,13 +17,16 @@
 //!
 //! The server answers from the data directory the app keeps. While the app
 //! runs, what it reads is kept current; when nothing keeps it, the server
-//! reads what changed before it answers.
+//! reads what changed before it answers. An update that replaces this
+//! program while an agent runs it hands the agent's session over to the new
+//! version, so the agent goes on without starting the server again.
 
 mod accounts;
 mod caller;
 mod explain;
 mod guard;
 mod handoff;
+mod handover;
 mod limits;
 mod prompts;
 mod prose;

@@ -266,7 +266,20 @@ pub struct Failure(pub String);
 
 impl From<turnscope_engine::Error> for Failure {
     fn from(error: turnscope_engine::Error) -> Failure {
-        Failure(format!("Turnscope could not answer: {error}"))
+        use turnscope_engine::Error::{NewerCache, NewerLedger};
+        match error {
+            // A server hands its session over to the version an update
+            // leaves, so one that meets a newer version's data was started
+            // by a version that couldn't, or one whose handover failed: the
+            // agent restarting it is what gets it going.
+            NewerLedger { found, known } | NewerCache { found, known } => Failure(format!(
+                "Turnscope was updated after this server started, and keeps its data now in a \
+                 way this version can't read (schema {found}; this one knows up to {known}). \
+                 Restart Turnscope's server to use the new version: in Claude Code with /mcp, \
+                 and in other agents by starting a new session."
+            )),
+            error => Failure(format!("Turnscope could not answer: {error}")),
+        }
     }
 }
 
@@ -838,6 +851,28 @@ mod tests {
             noted(Reply::Text("1. Hello".to_owned()), "why"),
             Reply::Text("[history_incomplete: why]\n1. Hello".to_owned())
         );
+    }
+
+    #[test]
+    fn a_server_older_than_the_data_says_how_to_get_the_new_version() {
+        for error in [
+            turnscope_engine::Error::NewerCache {
+                found: 14,
+                known: 13,
+            },
+            turnscope_engine::Error::NewerLedger {
+                found: 14,
+                known: 13,
+            },
+        ] {
+            let Failure(said) = error.into();
+            assert!(
+                said.starts_with("Turnscope was updated after this server started")
+                    && said.contains("(schema 14; this one knows up to 13)")
+                    && said.contains("in Claude Code with /mcp"),
+                "{said}"
+            );
+        }
     }
 
     #[test]

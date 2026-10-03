@@ -2,7 +2,8 @@
 //!
 //! A message is one line of JSON-RPC 2.0. The server answers requests in the
 //! order they arrive, never sends requests of its own, and ends when its input
-//! does. It writes nothing to its output but answers, each on a line.
+//! does. It writes nothing to its output but answers, each on a line, and the
+//! notifications a handover sends.
 //!
 //! Every message is checked before anything acts on it. A line that is not
 //! JSON is answered with a Parse error; one that is JSON but not a JSON-RPC
@@ -25,16 +26,20 @@
 //! another.
 //!
 //! **What it offers.** Tools (`tools/list`, `tools/call`) and prompts
-//! (`prompts/list`, `prompts/get`), neither of which changes while it runs.
+//! (`prompts/list`, `prompts/get`), which change only when an update replaces
+//! this program while it runs: the session is then handed over to the new
+//! one, which the client is told lists them again ([`crate::handover`]).
 //! A tool's answer is text, its sentences and then its figures as JSON; to
 //! a client speaking 2025-06-18 or later, which takes structured content,
 //! the figures also come as `structuredContent`, as the tool's
 //! `outputSchema` describes them.
 
 use std::io::{self, BufRead, Read, Write};
+use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
+use crate::handover::{Program, Successor};
 use crate::prompts::Prompt;
 use crate::tools::{self, Server, Tool};
 
@@ -68,27 +73,31 @@ const METHOD_NOT_FOUND: i64 = -32_601;
 const INVALID_PARAMS: i64 = -32_602;
 
 /// Serve `server`'s tools to the client at the other end of `input` and
-/// `output` until `input` ends. `options` are those this program was started
-/// with, naming the ledger and the home the server reads, which the
-/// instructions pass on to a tool run from a shell.
+/// `output` until `input` ends. `program` is this program on disk, which the
+/// instructions tell agents to run a tool with from a shell, and which the
+/// session is handed over to once an update replaces it: started anew with
+/// `options`, those this one was started with, naming the ledger and the
+/// home the server reads, which the instructions pass on too.
 ///
 /// # Errors
 ///
-/// Returns the error reading `input` or writing `output` gave.
+/// Returns the error reading `input` or writing `output` gave, or, once
+/// handed over, passing a line between the client and the new server; and
+/// an error when the new server stops while the client is still connected,
+/// so that the client sees this one stop too.
 pub fn serve(
     server: &Server,
+    program: Option<&Path>,
     options: &[String],
-    mut input: impl BufRead,
+    mut input: impl BufRead + Send + 'static,
     mut output: impl Write,
 ) -> io::Result<()> {
-    let executable = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.to_str().map(str::to_owned));
     let mut session = Session {
         server,
-        executable: executable.as_deref(),
+        executable: program.and_then(Path::to_str),
+        program: program.and_then(Program::at),
         options,
-        initialized: false,
+        client: None,
         structured: false,
     };
     let mut line = Vec::new();
@@ -105,6 +114,8 @@ pub fn serve(
                 INVALID_REQUEST,
                 "the message is too long",
             ))
+        } else if let Some(successor) = session.successor() {
+            return successor.relay(line, input, &mut output);
         } else {
             session.answer(&line)
         };
@@ -122,16 +133,29 @@ struct Session<'a> {
     /// This program, and the options it was started with, to tell agents
     /// how to run a tool from a shell.
     executable: Option<&'a str>,
+    /// This program on disk, to hand the session over to once an update
+    /// replaces it.
+    program: Option<Program>,
     options: &'a [String],
-    /// Whether `initialize` has been answered, which every request but
+    /// What the client's `initialize` gave, and the revision it was answered
+    /// with: `None` until it has been answered, which every request but
     /// `ping` waits for.
-    initialized: bool,
+    client: Option<(Map<String, Value>, &'static str)>,
     /// Whether the revision spoken takes tools' output schemas and
     /// structured content.
     structured: bool,
 }
 
 impl Session<'_> {
+    /// The server to hand the session over to, once it is initialized and an
+    /// update has replaced this program.
+    fn successor(&mut self) -> Option<Successor> {
+        let (initialize, revision) = self.client.as_ref()?;
+        self.program
+            .as_mut()?
+            .successor(self.options, initialize, revision)
+    }
+
     /// The answer to one line, or `None` for one that needs none.
     ///
     /// A line is one message, or a batch of them, answered with a batch of
@@ -199,20 +223,20 @@ impl Session<'_> {
                 INVALID_REQUEST,
                 "initialize is sent on its own, not in a batch".into(),
             )),
-            "initialize" if self.initialized => Err((
+            "initialize" if self.client.is_some() => Err((
                 INVALID_REQUEST,
                 "the session is initialized already; initialize comes once".into(),
             )),
             "initialize" => {
                 let revision =
                     negotiate(&params).map_err(|reason| (INVALID_PARAMS, reason.into()))?;
-                self.initialized = true;
+                self.client = Some((params, revision));
                 self.structured = revision >= STRUCTURED_FROM;
                 Ok(json!({
                     "protocolVersion": revision,
                     "capabilities": {
-                        "tools": {"listChanged": false},
-                        "prompts": {"listChanged": false},
+                        "tools": {"listChanged": true},
+                        "prompts": {"listChanged": true},
                     },
                     "serverInfo": {
                         "name": "turnscope",
@@ -222,7 +246,7 @@ impl Session<'_> {
                     "instructions": tools::instructions(self.executable, self.options),
                 }))
             }
-            _ if !self.initialized => Err((
+            _ if self.client.is_none() => Err((
                 INVALID_REQUEST,
                 format!("{method} waits for initialize, which starts a session"),
             )),
@@ -428,7 +452,7 @@ mod tests {
         // refused with the rest of its line rather than answered.
         let input = [ping(1, longest), ping(2, longest + 64), ping(3, 64)].concat();
         let mut output = Vec::new();
-        serve(&server, &[], Cursor::new(input), &mut output).unwrap();
+        serve(&server, None, &[], Cursor::new(input), &mut output).unwrap();
         let answers: Vec<Value> = String::from_utf8(output)
             .unwrap()
             .lines()
