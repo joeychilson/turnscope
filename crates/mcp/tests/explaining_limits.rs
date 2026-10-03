@@ -95,15 +95,24 @@ fn a_window_is_split_by_project_model_or_agent() {
             (json!("/work/beta"), json!(30.0))
         ]
     );
+    // Each named, and beside its name what another tool's argument takes:
+    // a project's folder, a model's key, an agent's.
     assert!(
         projects
             .said()
-            .contains("1. alpha: 50.0%.\n2. beta: 30.0%."),
+            .contains("1. alpha (/work/alpha): 50.0%.\n2. beta (/work/beta): 30.0%."),
         "{}",
         projects.said()
     );
     let models = answer(&server, "explain_limit", json!({"by": "models"}));
     assert_eq!(parts(&models.data), [(json!("claude-opus-5"), json!(80.0))]);
+    assert!(
+        models
+            .said()
+            .contains("1. Claude Opus 5 (claude-opus-5): 80.0%."),
+        "{}",
+        models.said()
+    );
     let agents = answer(
         &server,
         "explain_limit",
@@ -112,6 +121,13 @@ fn a_window_is_split_by_project_model_or_agent() {
     // The week rose 30 points to the first reading, all alpha's, and 1 more
     // to the second, beta's.
     assert_eq!(parts(&agents.data), [(json!("claude-code"), json!(31.0))]);
+    assert!(
+        agents
+            .said()
+            .contains("1. Claude Code (claude-code): 31.0%."),
+        "{}",
+        agents.said()
+    );
     assert_eq!(agents.data["limit"]["limit"], "week");
 }
 
