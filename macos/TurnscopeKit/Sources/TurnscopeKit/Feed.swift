@@ -16,7 +16,7 @@ public struct Feed: Decodable, Equatable, Sendable {
     public var agents: [AgentLink]
 
     /// The feed's version this app reads.
-    public static let version = 8
+    public static let version = 9
 }
 
 /// An account, as the app shows it. `title` is what it is called before
@@ -148,12 +148,15 @@ public struct Alert: Decodable, Equatable, Sendable {
         case threeQuartersLeft = "three_quarters_left"
         case halfLeft = "half_left"
         case quarterLeft = "quarter_left"
+        /// An account in use can't be read until its sign-in is renewed.
+        case signIn = "sign_in"
     }
 
     public var account: String
     public var title: String
     public var label: String?
-    /// The limit's name, as its provider gives it.
+    /// The limit's name, as its provider gives it; empty for `signIn`,
+    /// which is of the account.
     public var limit: String
     public var scope: String?
     public var kind: Kind

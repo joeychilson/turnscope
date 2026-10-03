@@ -38,6 +38,8 @@ import Testing
     #expect(weeks.first?.used == 84)
     #expect(messages[2] == .reply(id: 2, error: "codex isn't on this Mac's PATH"))
     #expect(messages[3] == .reply(id: 3, error: nil))
+    guard case .alert(let signIn) = messages[4] else { Issue.record("not an alert"); return }
+    #expect(signIn.kind == .signIn)
 }
 
 @Test func everyRequestIsWrittenAsTheContractHasIt() throws {

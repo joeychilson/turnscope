@@ -101,13 +101,14 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if store.inUse.contains(where: { $0.id == account }) { navigation.open = account }
         }
         notifier.start()
-        store.onAlert = { [weak self] in self?.notifier.tell($0) }
+        store.onAlert = { [weak self] alert in
+            self?.notifier.tell(alert, account: self?.store.all.first { $0.id == alert.account })
+        }
         store.onRecap = { [weak self] in self?.notifier.tell($0) }
         var opening = CommandLine.arguments.contains("--open")
         let opened = argument("--open")
         store.onFeed = { [weak self] feed in
             self?.drawItem()
-            self?.notifier.follow(feed)
             if opening {
                 opening = false
                 // Once the item has a place in the menu bar to hang it from.

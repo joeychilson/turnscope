@@ -7,13 +7,19 @@
 //! runs, says only that a limit runs out or ran out: how much is left is
 //! where it stands, not news, and its milestones are kept as told.
 //!
+//! Beside the limits, an account in use whose sign-in was refused, so its
+//! limits can't be read, is said once, and again only once a read has
+//! succeeded since.
+//!
 //! Each is sent once per window, however often the app restarts, as the
 //! ledger records it as sent. Only the process that keeps the data
 //! directory works them out, the app, which shows them: limits another
 //! process reads, as an MCP server does while no app runs, are recorded
 //! without them, so no alert is recorded as sent that no one saw.
 
-use super::{AccountLimits, DAY, HOUR, LimitState, SAME_WINDOW, Standing, Subscription};
+use super::{
+    AccountLimits, DAY, HOUR, LimitProblem, LimitState, SAME_WINDOW, Standing, Subscription,
+};
 use crate::error::Result;
 use crate::ledger::Ledger;
 use crate::time::Instant;
@@ -46,11 +52,14 @@ pub enum AlertKind {
     HalfLeft,
     /// A week or a month is down to a quarter of it left.
     QuarterLeft,
+    /// An account in use can't be read, its sign-in refused or expired
+    /// until its agent renews it. Of the account, not of one limit.
+    SignIn,
 }
 
 impl AlertKind {
     /// Every kind.
-    const ALL: [AlertKind; 7] = [
+    const ALL: [AlertKind; 8] = [
         AlertKind::RunningOut,
         AlertKind::Reached,
         AlertKind::Available,
@@ -58,6 +67,7 @@ impl AlertKind {
         AlertKind::ThreeQuartersLeft,
         AlertKind::HalfLeft,
         AlertKind::QuarterLeft,
+        AlertKind::SignIn,
     ];
 
     /// The kind as stored.
@@ -70,6 +80,7 @@ impl AlertKind {
             AlertKind::ThreeQuartersLeft => "left-75",
             AlertKind::HalfLeft => "left-50",
             AlertKind::QuarterLeft => "left-25",
+            AlertKind::SignIn => "sign-in",
         }
     }
 
@@ -106,7 +117,8 @@ pub struct Alert {
     pub title: String,
     /// What tells the account apart from others of the subscription.
     pub label: Option<String>,
-    /// The limit's name.
+    /// The limit's name; empty for [`AlertKind::SignIn`], which is of the
+    /// account.
     pub limit: String,
     /// The one model the limit applies to, when not all.
     pub scope: Option<String>,
@@ -140,6 +152,23 @@ pub(crate) fn alerts(
         // milestones are kept as told, and only that it runs out, ran out or
         // is back is said.
         let first = ledger.read_once(&account.id)?;
+        // A refused sign-in is said once, the alert named by the last read
+        // that succeeded, which renewing the sign-in moves on.
+        if account.in_use && account.problem == Some(LimitProblem::SignIn) {
+            let window = account.read_at.map_or(0, Instant::millis);
+            if ledger.send_alert(&account.id, "", AlertKind::SignIn, window, now)? {
+                alerts.push(Alert {
+                    account: account.id.clone(),
+                    title: account.title(),
+                    label: account.label.clone(),
+                    limit: String::new(),
+                    scope: None,
+                    kind: AlertKind::SignIn,
+                    when: None,
+                    used: None,
+                });
+            }
+        }
         for limit in &account.limits {
             // A week or a month someone was warned of is worth saying is
             // full again; five hours, which reset within the day, aren't.
@@ -291,8 +320,54 @@ mod tests {
     use crate::agent::Agent;
     use crate::ledger::tests::scratch;
     use crate::limits::tests::{account, minute, read};
-    use crate::limits::{AccountLimits, AccountRead, LimitState, Reported, Subscription, state};
+    use crate::limits::{
+        AccountLimits, AccountRead, LimitProblem, LimitState, Reported, Subscription, state,
+    };
     use crate::time::Instant;
+
+    #[test]
+    fn a_refused_sign_in_is_said_once_until_a_read_succeeds_again() {
+        let (_dir, mut ledger) = scratch();
+        // In use, its last read at minute 0 and every read since refused.
+        let refused = |read_at: i64| AccountLimits {
+            problem: Some(LimitProblem::SignIn),
+            read_at: Some(minute(read_at)),
+            ..account(Vec::new())
+        };
+        let kinds = |ledger: &mut crate::ledger::Ledger, accounts: &[AccountLimits], at| {
+            alerts(ledger, accounts, minute(at))
+                .unwrap()
+                .into_iter()
+                .map(|alert| alert.kind)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kinds(&mut ledger, &[refused(0)], 10), [AlertKind::SignIn]);
+        assert_eq!(kinds(&mut ledger, &[refused(0)], 15), []);
+        // Renewed and read at minute 60, then refused again: said again.
+        assert_eq!(kinds(&mut ledger, &[refused(60)], 70), [AlertKind::SignIn]);
+        // Read at minute 100, refused at 101, read again at 102 and refused
+        // at 103: each refusal is said, though the reads are closer than a
+        // reset's drift.
+        let quick = |read_at: i64| AccountLimits {
+            id: "d".into(),
+            ..refused(read_at)
+        };
+        assert_eq!(kinds(&mut ledger, &[quick(100)], 101), [AlertKind::SignIn]);
+        assert_eq!(kinds(&mut ledger, &[quick(102)], 103), [AlertKind::SignIn]);
+        assert_eq!(kinds(&mut ledger, &[quick(102)], 104), []);
+        // Not in use, or hidden, it isn't said.
+        let idle = AccountLimits {
+            id: "b".into(),
+            in_use: false,
+            ..refused(0)
+        };
+        let hidden = AccountLimits {
+            id: "c".into(),
+            hidden: true,
+            ..refused(0)
+        };
+        assert_eq!(kinds(&mut ledger, &[idle, hidden], 80), []);
+    }
 
     #[test]
     fn a_rising_limit_warns_once_before_it_runs_out_and_once_when_it_does() {

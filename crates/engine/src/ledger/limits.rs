@@ -316,7 +316,9 @@ impl Ledger {
     /// Record that an alert of `kind` about `account`'s limit `key` was sent for
     /// the window resetting at `window`. `false` when one had been already:
     /// one for a reset within [`SAME_WINDOW`] of it, since a reset given as a
-    /// countdown moves by a few seconds from read to read.
+    /// countdown moves by a few seconds from read to read. A sign-in alert's
+    /// window is named by the last read that succeeded, which doesn't drift,
+    /// so only that read's own is the same.
     ///
     /// # Errors
     ///
@@ -329,12 +331,17 @@ impl Ledger {
         window: i64,
         at: Instant,
     ) -> Result<bool> {
+        let drift = if kind == AlertKind::SignIn {
+            0
+        } else {
+            SAME_WINDOW
+        };
         let added = self.connection.execute(
             "INSERT INTO alert (account, key, kind, window, at)
              SELECT ?1, ?2, ?3, ?4, ?5
              WHERE NOT EXISTS (SELECT 1 FROM alert WHERE account = ?1 AND key = ?2 AND kind = ?3
                                                      AND window BETWEEN ?4 - ?6 AND ?4 + ?6)",
-            params![account, key, kind.key(), window, at.millis(), SAME_WINDOW],
+            params![account, key, kind.key(), window, at.millis(), drift],
         )?;
         Ok(added > 0)
     }

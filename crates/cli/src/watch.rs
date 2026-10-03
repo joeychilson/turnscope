@@ -313,6 +313,7 @@ fn kind(kind: AlertKind) -> &'static str {
         AlertKind::ThreeQuartersLeft => "three_quarters_left",
         AlertKind::HalfLeft => "half_left",
         AlertKind::QuarterLeft => "quarter_left",
+        AlertKind::SignIn => "sign_in",
     }
 }
 
@@ -416,6 +417,16 @@ mod tests {
                 error: Some("codex isn't on this Mac's PATH".into()),
             },
             Out::Reply { id: 3, error: None },
+            Out::Alert(Notice {
+                account: "chatgpt:b".into(),
+                title: "ChatGPT Pro Lite".into(),
+                label: None,
+                limit: String::new(),
+                scope: None,
+                kind: "sign_in",
+                at: None,
+                left: None,
+            }),
         ];
         let written: String = lines
             .iter()
