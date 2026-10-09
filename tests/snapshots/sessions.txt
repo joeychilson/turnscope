@@ -1,0 +1,4 @@
+2 found, most recently active first.
+
+- `claude-code:7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f` "Add retries with backoff to the HTTP client." · /work/api (retries) · running · 24 responses · $0.47
+- `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60` "Fix the CSV parser so quoted commas work. Don't change the public API." · /work/app (main) · active 1d 2h ago · 3 responses · $0.03 · yours

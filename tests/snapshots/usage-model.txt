@@ -1,0 +1,6 @@
+Tue Sep 29 00:00 to Thu Oct 1 12:00: 27 responses, $0.50
+
+  Model          Responses   Cost
+  claude-opus-5         27  $0.50
+
+Costs are at list prices: what the same tokens cost on each provider's API.

@@ -1,0 +1,469 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "alerts": [
+      {
+        "account": "anthropic:acct-1:org-1",
+        "accountTitle": "Claude Max (me@example.com)",
+        "at": 1791460500000,
+        "id": 1,
+        "kind": "runningOut",
+        "limit": "five_hour",
+        "limitName": "5 hours",
+        "replaces": "limit:anthropic:acct-1:org-1:five_hour",
+        "resets": {
+          "at": 1791471600000,
+          "horizon": "soon"
+        },
+        "runsOut": {
+          "at": 1791464400000,
+          "horizon": "soon"
+        }
+      },
+      {
+        "account": "anthropic:acct-1:org-1",
+        "accountTitle": "Claude Max (me@example.com)",
+        "at": 1791460500000,
+        "id": 2,
+        "kind": "usedUp",
+        "limit": "seven_day_opus",
+        "limitName": "Weekly",
+        "replaces": "limit:anthropic:acct-1:org-1:seven_day_opus",
+        "resets": {
+          "at": 1791471600000,
+          "horizon": "soon"
+        },
+        "runsOut": null
+      },
+      {
+        "account": "anthropic:acct-1:org-1",
+        "accountTitle": "Claude Max (me@example.com)",
+        "at": 1791460500000,
+        "id": 3,
+        "kind": "reset",
+        "limit": "seven_day",
+        "limitName": "Weekly",
+        "replaces": "limit:anthropic:acct-1:org-1:seven_day",
+        "resets": {
+          "at": 1791471600000,
+          "horizon": "soon"
+        },
+        "runsOut": null
+      },
+      {
+        "account": "anthropic:acct-1:org-1",
+        "accountTitle": "Claude Max (me@example.com)",
+        "at": 1791460500000,
+        "id": 4,
+        "kind": "signIn",
+        "limit": null,
+        "limitName": null,
+        "replaces": "account:anthropic:acct-1:org-1",
+        "resets": null,
+        "runsOut": null
+      }
+    ],
+    "server": "turnscope 0.1.0",
+    "status": {
+      "accounts": [
+        {
+          "agents": [
+            "claude-code"
+          ],
+          "deciding": "five_hour",
+          "hidden": false,
+          "id": "anthropic:acct-1:org-1",
+          "inUse": true,
+          "kind": "subscription",
+          "label": "me@example.com",
+          "limits": [
+            {
+              "heldBy": [],
+              "key": "five_hour",
+              "leftPercent": 28,
+              "money": null,
+              "name": "5 hours",
+              "outlook": {
+                "kind": "runsOut",
+                "latest": {
+                  "at": 1791469800000,
+                  "horizon": "soon"
+                },
+                "likely": {
+                  "at": 1791464400000,
+                  "horizon": "soon"
+                },
+                "soonest": {
+                  "at": 1791463200000,
+                  "horizon": "soon"
+                }
+              },
+              "readAt": 1791460680000,
+              "resetSince": null,
+              "scope": null,
+              "window": {
+                "resets": {
+                  "at": 1791471600000,
+                  "horizon": "soon"
+                },
+                "startsAt": 1791453600000
+              },
+              "work": {
+                "ratePerHour": 25.0,
+                "leftHours": {
+                  "low": 0.7,
+                  "likely": 1.1,
+                  "high": 2.2
+                }
+              }
+            },
+            {
+              "heldBy": [],
+              "key": "seven_day",
+              "leftPercent": 60,
+              "money": null,
+              "name": "Weekly",
+              "outlook": {
+                "kind": "lasts",
+                "leftAtReset": {
+                  "high": 45,
+                  "likely": 30,
+                  "low": 8
+                }
+              },
+              "readAt": 1791460680000,
+              "resetSince": null,
+              "scope": null,
+              "window": {
+                "resets": {
+                  "at": 1791471600000,
+                  "horizon": "soon"
+                },
+                "startsAt": 1791453600000
+              },
+              "work": {
+                "ratePerHour": 2.4,
+                "leftHours": null
+              }
+            },
+            {
+              "heldBy": [],
+              "key": "seven_day_opus",
+              "leftPercent": 0,
+              "money": null,
+              "name": "Weekly",
+              "outlook": {
+                "back": {
+                  "at": 1791640800000,
+                  "horizon": "thisWeek"
+                },
+                "kind": "usedUp"
+              },
+              "readAt": 1791460680000,
+              "resetSince": null,
+              "scope": "Opus",
+              "window": {
+                "resets": {
+                  "at": 1791471600000,
+                  "horizon": "soon"
+                },
+                "startsAt": 1791453600000
+              },
+              "work": null
+            }
+          ],
+          "provider": "anthropic",
+          "recent": true,
+          "spend": null,
+          "state": {
+            "kind": "live",
+            "readAt": 1791460680000
+          },
+          "title": "Claude Max",
+          "usedBy": [
+            "claude-code"
+          ]
+        },
+        {
+          "agents": [
+            "codex",
+            "opencode"
+          ],
+          "deciding": "secondary",
+          "hidden": false,
+          "id": "openai:acct-2",
+          "inUse": false,
+          "kind": "subscription",
+          "label": null,
+          "limits": [
+            {
+              "heldBy": [],
+              "key": "primary_window",
+              "leftPercent": 100,
+              "money": null,
+              "name": "Weekly",
+              "outlook": {
+                "kind": "unknown",
+                "reason": "stale"
+              },
+              "readAt": 1791460680000,
+              "resetSince": 1791459000000,
+              "scope": null,
+              "window": {
+                "resets": {
+                  "at": 1791471600000,
+                  "horizon": "soon"
+                },
+                "startsAt": 1791453600000
+              },
+              "work": null
+            },
+            {
+              "heldBy": [],
+              "key": "secondary",
+              "leftPercent": 97,
+              "money": null,
+              "name": "Monthly",
+              "outlook": {
+                "kind": "lasts",
+                "leftAtReset": null
+              },
+              "readAt": 1791460680000,
+              "resetSince": null,
+              "scope": null,
+              "window": {
+                "resets": {
+                  "at": 1792660800000,
+                  "horizon": "later"
+                },
+                "startsAt": null
+              },
+              "work": {
+                "ratePerHour": 1.2,
+                "leftHours": {
+                  "low": 36.7,
+                  "likely": 80.8,
+                  "high": 202.1
+                }
+              }
+            }
+          ],
+          "provider": "openai",
+          "recent": true,
+          "spend": null,
+          "state": {
+            "kind": "asOf",
+            "readAt": 1791424800000,
+            "why": "expired"
+          },
+          "title": "ChatGPT Pro",
+          "usedBy": []
+        },
+        {
+          "agents": [
+            "pi"
+          ],
+          "deciding": "key-0123456789abcdef",
+          "hidden": false,
+          "id": "openrouter:api",
+          "inUse": false,
+          "kind": "apiKey",
+          "label": null,
+          "limits": [
+            {
+              "heldBy": [
+                "pi"
+              ],
+              "key": "key-0123456789abcdef",
+              "leftPercent": 29,
+              "money": {
+                "leftUsd": 8.7,
+                "sizeUsd": 30.0
+              },
+              "name": "Credits",
+              "outlook": {
+                "kind": "unknown",
+                "reason": "noReset"
+              },
+              "readAt": 1791460680000,
+              "resetSince": null,
+              "scope": null,
+              "window": null,
+              "work": null
+            },
+            {
+              "heldBy": [],
+              "key": "rolling",
+              "leftPercent": 100,
+              "money": null,
+              "name": "5 hours",
+              "outlook": {
+                "kind": "unknown",
+                "reason": "rolling"
+              },
+              "readAt": 1791460680000,
+              "resetSince": null,
+              "scope": null,
+              "window": {
+                "resets": {
+                  "at": 1791475200000,
+                  "horizon": "today"
+                },
+                "startsAt": null
+              },
+              "work": null
+            },
+            {
+              "heldBy": [],
+              "key": "fresh",
+              "leftPercent": 99,
+              "money": null,
+              "name": "Daily",
+              "outlook": {
+                "kind": "unknown",
+                "reason": "notEnoughData"
+              },
+              "readAt": 1791460680000,
+              "resetSince": null,
+              "scope": null,
+              "window": {
+                "resets": {
+                  "at": 1791471600000,
+                  "horizon": "soon"
+                },
+                "startsAt": 1791453600000
+              },
+              "work": null
+            }
+          ],
+          "provider": "openrouter",
+          "recent": true,
+          "spend": {
+            "forecastUsd": 80.1,
+            "monthUsd": 21.3,
+            "partial": true
+          },
+          "state": {
+            "kind": "asOf",
+            "readAt": 1791460200000,
+            "why": "readFailed"
+          },
+          "title": "OpenRouter API key",
+          "usedBy": []
+        },
+        {
+          "agents": [
+            "claude-code"
+          ],
+          "deciding": null,
+          "hidden": true,
+          "id": "xai:user-3",
+          "inUse": false,
+          "kind": "subscription",
+          "label": null,
+          "limits": [],
+          "provider": "xai",
+          "recent": false,
+          "spend": null,
+          "state": {
+            "kind": "asOf",
+            "readAt": 1791455400000,
+            "why": "signIn"
+          },
+          "title": "SuperGrok",
+          "usedBy": []
+        },
+        {
+          "agents": [
+            "claude-code"
+          ],
+          "deciding": null,
+          "hidden": false,
+          "id": "opencode-go:key-0123456789abcdef",
+          "inUse": false,
+          "kind": "subscription",
+          "label": null,
+          "limits": [],
+          "provider": "opencode-go",
+          "recent": false,
+          "spend": null,
+          "state": {
+            "kind": "unread",
+            "why": "signIn"
+          },
+          "title": "OpenCode Go",
+          "usedBy": []
+        },
+        {
+          "agents": [
+            "claude-code"
+          ],
+          "deciding": null,
+          "hidden": false,
+          "id": "anthropic:api",
+          "inUse": false,
+          "kind": "apiKey",
+          "label": null,
+          "limits": [],
+          "provider": "anthropic",
+          "recent": false,
+          "spend": null,
+          "state": {
+            "kind": "unread",
+            "why": "readFailed"
+          },
+          "title": "Anthropic API key",
+          "usedBy": []
+        }
+      ],
+      "agents": [
+        {
+          "connection": "connected",
+          "id": "claude-code",
+          "inUse": true,
+          "installed": true,
+          "name": "Claude Code"
+        },
+        {
+          "connection": "outdated",
+          "id": "codex",
+          "inUse": false,
+          "installed": true,
+          "name": "Codex"
+        },
+        {
+          "connection": "available",
+          "id": "opencode",
+          "inUse": false,
+          "installed": false,
+          "name": "OpenCode"
+        },
+        {
+          "connection": "available",
+          "id": "pi",
+          "inUse": false,
+          "installed": false,
+          "name": "Pi"
+        },
+        {
+          "connection": "available",
+          "id": "grok-build",
+          "inUse": false,
+          "installed": false,
+          "name": "Grok Build"
+        }
+      ],
+      "at": 1791460800000,
+      "historyReadAt": 1791460740000,
+      "settings": {
+        "notify": {
+          "reset": true,
+          "runningOut": true,
+          "signIn": true,
+          "usedUp": true
+        }
+      }
+    }
+  }
+}

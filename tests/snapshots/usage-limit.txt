@@ -1,0 +1,8 @@
+Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
+Mon Sep 28 00:00 to Thu Oct 1 12:00: 27 responses, $0.50
+
+  Session                                                   Responses   Cost  % of Weekly
+  7c1d2e3f Add retries with backoff to the HTTP client.            24  $0.47          41%
+  0f6e3f6a Fix the CSV parser so quoted commas work. Don'…          3  $0.03           3%
+
+Costs are at list prices: what the same tokens cost on each provider's API.

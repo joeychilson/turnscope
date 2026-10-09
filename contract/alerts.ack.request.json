@@ -1,0 +1,11 @@
+{
+  "id": 2,
+  "jsonrpc": "2.0",
+  "method": "alerts.ack",
+  "params": {
+    "ids": [
+      1,
+      2
+    ]
+  }
+}

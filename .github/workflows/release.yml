@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "$tagged" != "$declared" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME and Cargo.toml's version, $declared, disagree."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main. A release is made from a commit on main."
+            exit 1
+          fi
+          # A draft left by a failed run is replaced when publishing; only a
+          # published release stops it.
+          draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> /dev/null || true)
+          if [ "$draft" = false ]; then
+            echo "::error::$GITHUB_REF_NAME is already released. A published version is never changed; tag the next one."
+            exit 1
+          fi
+      - name: Check the release notes
+        run: |
+          set -euo pipefail
+          scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > /dev/null
+      - name: Check the secrets
+        env:
+          DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
+          DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in DEVELOPER_ID_CERTIFICATE DEVELOPER_ID_PASSWORD NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER SPARKLE_PRIVATE_KEY SPARKLE_PUBLIC_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::There is no $name. A release is signed, notarized and offered to updates, or not made (scripts/build-release.sh says what each is)."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+  verify:
+    needs: check
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: [check, verify]
+    runs-on: macos-26
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26"
+      - run: rustup toolchain install
+      - name: Set up signing and notarization
+        env:
+          DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
+          DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          # A keychain of its own, for this run only, which codesign may use
+          # without asking.
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          base64 --decode <<< "$DEVELOPER_ID_CERTIFICATE" > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          keychains=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            keychains+=("${line//\"/}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" ${keychains[@]+"${keychains[@]}"}
+          # By its hash, which names exactly the one imported.
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/ { print $2; exit }')
+          if [ -z "$identity" ]; then
+            echo "::error::DEVELOPER_ID_CERTIFICATE holds no Developer ID Application identity."
+            exit 1
+          fi
+          printf '%s\n' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+          {
+            echo "SIGN_IDENTITY=$identity"
+            echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8"
+            echo "NOTARY_KEY_ID=$NOTARY_KEY_ID"
+            echo "NOTARY_ISSUER=$NOTARY_ISSUER"
+            echo "SPARKLE_PUBLIC_KEY=$SPARKLE_PUBLIC_KEY"
+          } >> "$GITHUB_ENV"
+      - name: Build, sign and notarize
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: scripts/build-release.sh
+      # The build verified the signatures and stapled both files; this runs
+      # the app as it will ship.
+      - name: Check the built app runs
+        run: scripts/check-app.sh target/dist/Turnscope.app
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # A draft left by an earlier run of this workflow is replaced; a
+          # release published is never touched.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft] | @tsv" > "$RUNNER_TEMP/existing.tsv"
+          while IFS=$'\t' read -r id draft; do
+            if [ "$draft" != true ]; then
+              echo "::error::$GITHUB_REF_NAME is already released. A published version is never changed; tag the next one."
+              exit 1
+            fi
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done < "$RUNNER_TEMP/existing.tsv"
+          scripts/release-notes.sh "$version" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "Turnscope $version" --notes-file "$RUNNER_TEMP/notes.md" \
+            "target/dist/Turnscope-$version.dmg" target/dist/appcast.xml
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8"

@@ -1,0 +1,38 @@
+{
+  "by": "model",
+  "rest": null,
+  "rows": [
+    {
+      "costUsd": 0.4982,
+      "key": "claude-opus-5",
+      "name": null,
+      "responses": 27,
+      "tokens": {
+        "cacheRead": 482900,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 12100,
+        "output": 7850,
+        "reasoning": 0
+      },
+      "unpriced": 0
+    }
+  ],
+  "since": 1790640000000,
+  "total": {
+    "costUsd": 0.4982,
+    "key": "total",
+    "name": null,
+    "responses": 27,
+    "tokens": {
+      "cacheRead": 482900,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 0,
+      "input": 12100,
+      "output": 7850,
+      "reasoning": 0
+    },
+    "unpriced": 0
+  },
+  "until": 1790856000000
+}

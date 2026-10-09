@@ -1,0 +1,88 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**/*.md", "docs/**", ".github/screenshots/**"]
+  pull_request:
+    paths-ignore: ["**/*.md", "docs/**", ".github/screenshots/**"]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: shellcheck scripts/*.sh
+      - name: actionlint
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" |
+            sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+  rust:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      # Not UTC, so a test that takes local time for UTC fails here.
+      TZ: America/Chicago
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # The app's tests, then the app as a release builds it, unsigned, for both
+  # architectures, with warnings as errors, and the bundle checked to run. A
+  # tag's release builds and checks its own, signed.
+  app:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26"
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/swiftpm
+          key: swiftpm-${{ hashFiles('macos/Turnscope.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+      - run: swift test --package-path macos/TurnscopeKit -Xswiftc -warnings-as-errors
+      - name: Build the release, unsigned
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: scripts/build-release.sh
+      - name: Check the built app runs
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: scripts/check-app.sh

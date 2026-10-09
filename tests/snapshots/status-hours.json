@@ -1,0 +1,99 @@
+{
+  "accounts": [
+    {
+      "agents": [
+        "claude-code"
+      ],
+      "deciding": "five_hour",
+      "hidden": false,
+      "id": "anthropic:acct-1:org-1",
+      "inUse": true,
+      "kind": "subscription",
+      "label": "me@example.com",
+      "limits": [
+        {
+          "heldBy": [],
+          "key": "five_hour",
+          "leftPercent": 25,
+          "money": null,
+          "name": "5 hours",
+          "outlook": {
+            "kind": "runsOut",
+            "latest": null,
+            "likely": {
+              "at": 1790859600000,
+              "horizon": "soon"
+            },
+            "soonest": {
+              "at": 1790857800000,
+              "horizon": "soon"
+            }
+          },
+          "readAt": 1790855400000,
+          "resetSince": null,
+          "scope": null,
+          "window": {
+            "resets": {
+              "at": 1790863200000,
+              "horizon": "soon"
+            },
+            "startsAt": 1790845200000
+          },
+          "work": {
+            "leftHours": {
+              "high": 1.2,
+              "likely": 0.6,
+              "low": 0.4
+            },
+            "ratePerHour": 40.9
+          }
+        },
+        {
+          "heldBy": [],
+          "key": "seven_day",
+          "leftPercent": 56,
+          "money": null,
+          "name": "Weekly",
+          "outlook": {
+            "kind": "lasts",
+            "leftAtReset": {
+              "high": 25,
+              "likely": 12,
+              "low": 0
+            }
+          },
+          "readAt": 1790855400000,
+          "resetSince": null,
+          "scope": null,
+          "window": {
+            "resets": {
+              "at": 1791158400000,
+              "horizon": "thisWeek"
+            },
+            "startsAt": 1790553600000
+          },
+          "work": {
+            "leftHours": {
+              "high": 46.7,
+              "likely": 18.7,
+              "low": 8.5
+            },
+            "ratePerHour": 3.0
+          }
+        }
+      ],
+      "provider": "anthropic",
+      "recent": true,
+      "spend": null,
+      "state": {
+        "kind": "live",
+        "readAt": 1790855400000
+      },
+      "title": "Claude Max",
+      "usedBy": [
+        "claude-code"
+      ]
+    }
+  ],
+  "fit": "3 more hours of work don't fit: 5 hours runs out after about 40m of work."
+}

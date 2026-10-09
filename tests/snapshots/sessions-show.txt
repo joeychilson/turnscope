@@ -1,0 +1,9 @@
+claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60  Fix the CSV parser so quoted commas work. Don't change the public API.
+  active 1d 2h ago · 3 responses · $0.03
+  folder: /work/app
+  project: /work/app
+  branch: main
+  started: Wed 09:00
+  models: claude-opus-5
+  account: Claude Max (me@example.com)
+  resume: cd /work/app && claude --resume 0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60

@@ -1,0 +1,9 @@
+{
+  "id": 5,
+  "jsonrpc": "2.0",
+  "method": "account.hide",
+  "params": {
+    "account": "openrouter:api",
+    "hidden": true
+  }
+}

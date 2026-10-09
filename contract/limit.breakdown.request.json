@@ -1,0 +1,9 @@
+{
+  "id": 3,
+  "jsonrpc": "2.0",
+  "method": "limit.breakdown",
+  "params": {
+    "account": "anthropic:acct-1:org-1",
+    "limit": "five_hour"
+  }
+}

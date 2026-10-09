@@ -1,0 +1,30 @@
+{
+  "found": 1,
+  "next": null,
+  "sessions": [
+    {
+      "active": 1790762430000,
+      "agent": "claude-code",
+      "branch": "main",
+      "costUsd": 0.030199999999999998,
+      "cwd": "/work/app",
+      "id": "claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60",
+      "mentions": 0,
+      "project": "/work/app",
+      "responses": 3,
+      "running": false,
+      "started": 1790758800000,
+      "subagents": 0,
+      "title": "Fix the CSV parser so quoted commas work. Don't change the public API.",
+      "tokens": {
+        "cacheRead": 2900,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 2500,
+        "output": 650,
+        "reasoning": 0
+      },
+      "unpriced": 0
+    }
+  ]
+}

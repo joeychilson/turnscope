@@ -1,0 +1,14 @@
+3 of 7 entries of `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60`, from entry 1. Times are local; it's now Thu Oct 1 12:00.
+
+#1 assistant · Wed 09:00
+I decided to rewrite the tokenizer rather than patch the splitter, because quotes nest.
+
+#2 tool `Bash` (failed) · Wed 09:00
+description: Run tests
+command: cargo test
+out: error: test csv::quoted failed
+
+#3 assistant · Wed 09:02
+The tokenizer is done; the quoted-comma test still fails. Should escaped quotes follow RFC 4180?
+
+More from entry 4: add `--from 4`.

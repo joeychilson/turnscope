@@ -1,0 +1,15 @@
+{
+  "id": 4,
+  "jsonrpc": "2.0",
+  "method": "settings.set",
+  "params": {
+    "settings": {
+      "notify": {
+        "reset": true,
+        "runningOut": true,
+        "signIn": true,
+        "usedUp": true
+      }
+    }
+  }
+}

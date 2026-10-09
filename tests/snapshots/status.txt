@@ -1,0 +1,14 @@
+Claude Max (me@example.com) · via Claude Code · in use
+  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (20m–1h 10m), at 40.9% an hour of work.
+  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
+
+ChatGPT Plus (me@example.com) · via Codex
+  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (0–54%).
+
+OpenRouter API key · via Pi
+  Credits: $35.00 of $50.00 left. Doesn't reset.
+  Weekly key limit: $11.00 of $20.00 left, resets Tue 00:00 (in 4d 12h). No forecast yet.
+  This month, across its keys: $0.00.
+
+SuperGrok (me@example.com) · via Grok Build
+  Its login was refused: sign in again in Grok Build.

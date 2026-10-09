@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": -32001,
+    "data": {
+      "supported": [
+        1
+      ]
+    },
+    "message": "this turnscope speaks protocol 1, not 2"
+  },
+  "id": 1,
+  "jsonrpc": "2.0"
+}

@@ -1,0 +1,8 @@
+{
+  "notify": {
+    "reset": true,
+    "runningOut": true,
+    "signIn": true,
+    "usedUp": true
+  }
+}

@@ -1,0 +1,240 @@
+{
+  "accounts": [
+    {
+      "agents": [
+        "claude-code"
+      ],
+      "deciding": "five_hour",
+      "hidden": false,
+      "id": "anthropic:acct-1:org-1",
+      "inUse": true,
+      "kind": "subscription",
+      "label": "me@example.com",
+      "limits": [
+        {
+          "heldBy": [],
+          "key": "five_hour",
+          "leftPercent": 25,
+          "money": null,
+          "name": "5 hours",
+          "outlook": {
+            "kind": "runsOut",
+            "latest": null,
+            "likely": {
+              "at": 1790859600000,
+              "horizon": "soon"
+            },
+            "soonest": {
+              "at": 1790857800000,
+              "horizon": "soon"
+            }
+          },
+          "readAt": 1790855400000,
+          "resetSince": null,
+          "scope": null,
+          "window": {
+            "resets": {
+              "at": 1790863200000,
+              "horizon": "soon"
+            },
+            "startsAt": 1790845200000
+          },
+          "work": {
+            "leftHours": {
+              "high": 1.2,
+              "likely": 0.6,
+              "low": 0.4
+            },
+            "ratePerHour": 40.9
+          }
+        },
+        {
+          "heldBy": [],
+          "key": "seven_day",
+          "leftPercent": 56,
+          "money": null,
+          "name": "Weekly",
+          "outlook": {
+            "kind": "lasts",
+            "leftAtReset": {
+              "high": 25,
+              "likely": 12,
+              "low": 0
+            }
+          },
+          "readAt": 1790855400000,
+          "resetSince": null,
+          "scope": null,
+          "window": {
+            "resets": {
+              "at": 1791158400000,
+              "horizon": "thisWeek"
+            },
+            "startsAt": 1790553600000
+          },
+          "work": {
+            "leftHours": {
+              "high": 46.7,
+              "likely": 18.7,
+              "low": 8.5
+            },
+            "ratePerHour": 3.0
+          }
+        }
+      ],
+      "provider": "anthropic",
+      "recent": true,
+      "spend": null,
+      "state": {
+        "kind": "live",
+        "readAt": 1790855400000
+      },
+      "title": "Claude Max",
+      "usedBy": [
+        "claude-code"
+      ]
+    },
+    {
+      "agents": [
+        "codex"
+      ],
+      "deciding": "secondary_window",
+      "hidden": false,
+      "id": "openai:acct-2",
+      "inUse": false,
+      "kind": "subscription",
+      "label": "me@example.com",
+      "limits": [
+        {
+          "heldBy": [],
+          "key": "secondary_window",
+          "leftPercent": 80,
+          "money": null,
+          "name": "Weekly",
+          "outlook": {
+            "kind": "lasts",
+            "leftAtReset": {
+              "high": 54,
+              "likely": 44,
+              "low": 0
+            }
+          },
+          "readAt": 1790855400000,
+          "resetSince": null,
+          "scope": null,
+          "window": {
+            "resets": {
+              "at": 1791244800000,
+              "horizon": "thisWeek"
+            },
+            "startsAt": 1790640000000
+          },
+          "work": null
+        }
+      ],
+      "provider": "openai",
+      "recent": false,
+      "spend": null,
+      "state": {
+        "kind": "live",
+        "readAt": 1790855400000
+      },
+      "title": "ChatGPT Plus",
+      "usedBy": []
+    },
+    {
+      "agents": [
+        "pi"
+      ],
+      "deciding": "credits",
+      "hidden": false,
+      "id": "openrouter:api",
+      "inUse": false,
+      "kind": "apiKey",
+      "label": null,
+      "limits": [
+        {
+          "heldBy": [],
+          "key": "credits",
+          "leftPercent": 70,
+          "money": {
+            "leftUsd": 35.0,
+            "sizeUsd": 50.0
+          },
+          "name": "Credits",
+          "outlook": {
+            "kind": "unknown",
+            "reason": "noReset"
+          },
+          "readAt": 1790855400000,
+          "resetSince": null,
+          "scope": null,
+          "window": null,
+          "work": null
+        },
+        {
+          "heldBy": [
+            "pi"
+          ],
+          "key": "key-0123456789abcdef",
+          "leftPercent": 55,
+          "money": {
+            "leftUsd": 11.0,
+            "sizeUsd": 20.0
+          },
+          "name": "Weekly key limit",
+          "outlook": {
+            "kind": "unknown",
+            "reason": "notEnoughData"
+          },
+          "readAt": 1790855400000,
+          "resetSince": null,
+          "scope": null,
+          "window": {
+            "resets": {
+              "at": 1791244800000,
+              "horizon": "thisWeek"
+            },
+            "startsAt": 1790640000000
+          },
+          "work": null
+        }
+      ],
+      "provider": "openrouter",
+      "recent": false,
+      "spend": {
+        "forecastUsd": null,
+        "monthUsd": 0.0,
+        "partial": false
+      },
+      "state": {
+        "kind": "live",
+        "readAt": 1790855400000
+      },
+      "title": "OpenRouter API key",
+      "usedBy": []
+    },
+    {
+      "agents": [
+        "grok-build"
+      ],
+      "deciding": null,
+      "hidden": false,
+      "id": "xai:user-3",
+      "inUse": false,
+      "kind": "subscription",
+      "label": "me@example.com",
+      "limits": [],
+      "provider": "xai",
+      "recent": false,
+      "spend": null,
+      "state": {
+        "kind": "unread",
+        "why": "signIn"
+      },
+      "title": "SuperGrok",
+      "usedBy": []
+    }
+  ],
+  "fit": null
+}
