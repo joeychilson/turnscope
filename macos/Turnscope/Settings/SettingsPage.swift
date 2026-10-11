@@ -1,7 +1,7 @@
 // Settings, a page of the panel with three tabs: General, Agents and Accounts.
 // Each fits without scrolling. Changes take effect at once; there's no Save.
-// Rows look like the panel's: a logo, a name with one line under it, and a
-// control on the right.
+// Settings come in titled cards (`SettingGroup`), and rows look like the
+// panel's: a logo, a name with one line under it, and a control on the right.
 
 import SwiftUI
 import TurnscopeKit
@@ -13,27 +13,24 @@ struct SettingsPage: View {
     var body: some View {
         @Bindable var navigation = navigation
         VStack(alignment: .leading, spacing: 0) {
+            // The page's title with the Back button beside it, and the tabs.
+            // They line up with the cards' edges.
             HStack(spacing: 4) {
-                // The page's title, with the Back button beside it.
-                HStack(spacing: 4) {
-                    Button { navigation.go(.main) } label: { Image(systemName: "chevron.left") }
-                        .buttonStyle(IconButton())
-                        .keyboardShortcut(.cancelAction)
-                        .help("Back")
-                        .accessibilityLabel("Back")
-                    Text("Settings").font(.system(size: 15, weight: .semibold)).fixedSize()
-                        .accessibilityAddTraits(.isHeader)
-                    Spacer()
-                }
-                .padding(.horizontal, 10)
-                .padding(.top, 10)
+                Button { navigation.go(.main) } label: { Image(systemName: "chevron.left") }
+                    .buttonStyle(IconButton())
+                    .keyboardShortcut(.cancelAction)
+                    .help("Back")
+                    .accessibilityLabel("Back")
+                Text("Settings").font(.system(size: 15, weight: .semibold)).fixedSize()
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
                 Choice(label: "Settings", options: SettingsTab.allCases.map { ($0, $0.title) },
                        selection: $navigation.tab)
                     .fixedSize()
-                    .padding(.top, 10)
-                .padding(.trailing, 12)
             }
-            .padding(.bottom, 12)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
             ScrollView(.vertical) {
                 Group {
                     switch navigation.tab {
@@ -43,7 +40,7 @@ struct SettingsPage: View {
                     }
                 }
                 .padding(.horizontal, 8)
-                .padding(.bottom, 14)
+                .padding(.bottom, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height = $0 }
             }

@@ -19,8 +19,9 @@ enum Snapshot {
         let out = URL(fileURLWithPath: folder)
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         for dark in [false, true] {
-            // Only AppKit draws Settings' native controls. SwiftUI draws the
-            // rest sharper, and with its bars grown.
+            // Only AppKit draws Settings' scroll view: `ImageRenderer` leaves
+            // it empty. SwiftUI draws the first page sharper, and with its
+            // bars grown.
             let png = if tab == nil {
                 rendered(framed(Panel(), store: store, navigation: navigation), dark: dark)
             } else {
@@ -55,8 +56,8 @@ enum Snapshot {
     }
 
     /// `view` as a PNG at twice its size, drawn by AppKit in a window that's
-    /// never shown. That way native controls, which `ImageRenderer` can't
-    /// draw, look as they do on screen.
+    /// never shown. That way a scroll view, which `ImageRenderer` can't
+    /// draw, looks as it does on screen.
     private static func drawn(_ view: some View, dark: Bool) -> Data? {
         let host = NSHostingView(rootView: view)
         let window = Retina(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)

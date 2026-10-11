@@ -139,7 +139,7 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(words.verdict([new], among: [new])
         == ("Claude Max's limits are unknown", "It couldn't be read yet.", .lasts))
     let gone = account([], state: .unread(why: .signedOut))
-    #expect(words.verdict([gone], among: [gone]).detail == "No agent here is signed in to it now.")
+    #expect(words.verdict([gone], among: [gone]).detail == "No agent here is signed in to it.")
     #expect(words.unused(3, besideOthers: true) == "3 more accounts")
     #expect(words.unused(1, besideOthers: false) == "1 account")
     // Next to another shown account with the same name, the headline says
@@ -193,22 +193,22 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
 
 @Test func anOpenedAccountSaysWhatItsLimitsCant() {
     let failed = account([limit(.lasts, left: 50)], state: .asOf(readAt: noon, why: .readFailed))
-    #expect(words.opened(failed) == "As read 12 PM; it couldn't be read since.")
+    #expect(words.opened(failed) == "It couldn't be read since 12 PM.")
     let gone = account([limit(.unknown(reason: .stale), left: 50)], inUse: false,
                        state: .asOf(readAt: at("2026-09-30T09:00:00Z"), why: .signedOut))
-    #expect(words.opened(gone) == "As read 9 AM; no agent here is signed in to it now.")
+    #expect(words.opened(gone) == "Last read 9 AM. No agent here is signed in to it.")
     let refused = account([limit(.lasts, left: 50)], state: .asOf(readAt: noon, why: .signIn))
-    #expect(words.opened(refused) == "As read 12 PM; open Claude Code to sign in again.")
+    #expect(words.opened(refused) == "Last read 12 PM. Open Claude Code to sign in.")
     // Every login expired. An agent renews it when next used, so no sign-in
     // is needed.
     let expired = account([limit(.lasts, left: 50)], state: .asOf(readAt: noon, why: .expired))
-    #expect(words.opened(expired) == "As read 12 PM; read again once you use Claude Code.")
+    #expect(words.opened(expired) == "Last read 12 PM. Open Claude Code to update.")
     #expect(words.status(expired) == "Open Claude Code to update")
     #expect(!expired.refused)
     // Never read, each says why, and what to do where there's something.
     let lapsed = account([], state: .unread(why: .expired))
     #expect(words.status(lapsed) == "Open Claude Code to update")
-    #expect(words.opened(lapsed) == "Its login expired. It's read once you use Claude Code.")
+    #expect(words.opened(lapsed) == "Its login expired. Open Claude Code to update.")
     let unreachable = account([], state: .unread(why: .readFailed))
     #expect(words.status(unreachable) == "Couldn't be read yet")
     #expect(words.opened(unreachable) == "It couldn't be read yet.")
@@ -254,13 +254,13 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
 @Test func theFoldsAndAgentsSayWhatTheyHold() {
     #expect(words.hidden(2) == "2 hidden")
     var codex = AgentStatus(id: "codex", name: "Codex", installed: true, connection: .available, inUse: true)
-    #expect(words.connection(codex) == "Not connected")
+    #expect(words.connection(codex) == nil)
     #expect(words.connection(codex, named: true) == "Codex isn't connected")
     codex.connection = .outdated
     #expect(words.connection(codex) == "Uses another Turnscope")
     #expect(words.connection(codex, named: true) == "Codex uses another Turnscope")
     codex.connection = .connected
-    #expect(words.connection(codex) == "Connected")
+    #expect(words.connection(codex, named: true) == nil)
 }
 
 @Test func beforeAnyAccountTheWelcomeSaysWhy() {

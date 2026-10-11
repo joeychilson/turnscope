@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.1
+
+- **Settings** shows its settings in cards, with larger switches.
+- **Agents** connect with a switch in Settings → Agents, instead of a
+  Connect or Disconnect button. "Connecting…" shows beside the switch until
+  it's done. An agent that uses another copy of Turnscope says so under its
+  name, and turning its switch on points it at this copy.
+- **Menu bar:** with no account in use, it shows Turnscope's logo instead
+  of a gauge. Account logos are larger, and the figure beside them is the
+  size of the menu bar's clock and sits on its baseline.
+- **Panel:** account logos are larger, and the Settings and Quit buttons
+  line up with the rows. An account that can't be read now says when it was
+  last read, in one line: "Last read 4:50 AM. Open Grok Build to update."
+  The command line says "open Grok Build to update" for an expired login
+  too.
+
 ## 0.1.0
 
 The first release.

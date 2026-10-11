@@ -55,9 +55,10 @@ struct FirstPage: View {
                         .padding(.top, 4)
                 }
             }
+            // Its buttons line up with the rows' edges, as close to the
+            // panel's corner as the rows are to its side.
             Footer()
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(8)
         }
         // While an account is open, ask what used it.
         .onChange(of: navigation.open) { _, open in store.watch(open) }
@@ -81,8 +82,8 @@ private struct ConnectNudge: View {
                     Text(error).font(.line).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                } else {
-                    Text(store.words().connection(agent, named: true))
+                } else if let unconnected = store.words().connection(agent, named: true) {
+                    Text(unconnected)
                         .font(.line).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -99,6 +100,28 @@ private struct ConnectNudge: View {
             }
             .padding(Row.padding)
             .transition(appears)
+        }
+    }
+}
+
+/// Connects `agent`, or points it back at this copy, depending on its
+/// status. Its help says what went wrong if connecting failed. A spinner
+/// shows while it works.
+private struct ConnectButton: View {
+    @Environment(Store.self) private var store
+    var agent: AgentStatus
+
+    var body: some View {
+        if store.changingAgents[agent.id] != nil {
+            ProgressView().controlSize(.mini)
+        } else {
+            let outdated = agent.connection == .outdated
+            Button(outdated ? "Update" : "Connect") { store.connect(agent.id) }
+                .buttonStyle(PillButton())
+                .accessibilityLabel("\(outdated ? "Update" : "Connect") \(agent.name)")
+                .help(store.agentErrors[agent.id] ?? (outdated
+                    ? "Points \(agent.name) at this copy of Turnscope"
+                    : "Adds Turnscope to \(agent.name)'s MCP servers, so it can pace itself"))
         }
     }
 }
@@ -175,7 +198,7 @@ private struct Footer: View {
                     .foregroundStyle(.secondary)
                     .help(failure)
                     .accessibilityLabel("Not up to date: \(failure). Trying again.")
-                    .padding(.leading, 6)
+                    .padding(.leading, 12)
                     .transition(appears)
             } else if store.reading && !store.all.isEmpty {
                 // Before any account is found, the headline says this
@@ -189,7 +212,7 @@ private struct Footer: View {
                 .help("Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.")
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Reading your agents' history")
-                .padding(.leading, 6)
+                .padding(.leading, 12)
                 .transition(appears)
             }
             Spacer()

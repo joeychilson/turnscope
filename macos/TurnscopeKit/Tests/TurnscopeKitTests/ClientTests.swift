@@ -112,7 +112,7 @@ private func connected(_ client: Client, _ store: Store) async {
     await until { !store.hidden.contains { $0.id == "openai:acct-2" } }
     #expect(serve.params(of: "account.hide").first?["hidden"] as? Bool == true)
     store.connect("codex")
-    #expect(store.changingAgents == ["codex"])
+    #expect(store.changingAgents == ["codex": .connected])
     await until { store.agentErrors["codex"] != nil }
     #expect(store.agentErrors["codex"] == "couldn't run codex: is Codex installed?")
     #expect(store.changingAgents.isEmpty)

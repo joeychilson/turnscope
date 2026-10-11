@@ -68,7 +68,7 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
                         format!("  Its login was refused: sign in again in {agents}.\n")
                     }
                     Stale::Expired => {
-                        format!("  Its login expired: it's read once you use {agents}.\n")
+                        format!("  Its login expired: open {agents} to update.\n")
                     }
                     Stale::ReadFailed => {
                         "  It couldn't be read yet: it's tried again every 5 minutes.\n".to_owned()
@@ -89,9 +89,7 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
                         format!("  {as_of}: its login was refused; sign in again in {agents}.\n")
                     }
                     Stale::Expired => {
-                        format!(
-                            "  {as_of}: its login expired; it's read again once you use {agents}.\n"
-                        )
+                        format!("  {as_of}: its login expired; open {agents} to update.\n")
                     }
                     Stale::ReadFailed => format!("  {as_of}: it couldn't be read since.\n"),
                 };

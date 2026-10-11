@@ -6,7 +6,7 @@
 // - when it's back, "Back 5:40 AM", in red once used up;
 // - for a key with no limit, what it cost this month, "$84".
 //
-// With nothing in use, it shows a gauge symbol alone. A setting can limit
+// With nothing in use, it shows Turnscope's logo alone. A setting can limit
 // it to the most urgent account.
 //
 // It's one image drawn by SwiftUI. While every account is fine it's a
@@ -79,23 +79,64 @@ final class MenuBarItem {
 
         var body: some View {
             HStack(spacing: 10) {
+                // A little under other apps' icons, which are 16 points
+                // (measured beside them in October 2026): at 16, its filled
+                // ring looked bigger than they do.
                 if accounts.isEmpty {
-                    Image(systemName: "gauge.with.dots.needle.50percent")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(template ? Color.black : .primary)
+                    Mark(size: 14).foregroundStyle(template ? Color.black : .primary)
                 }
+                // A mark and its figure read as one item. A provider's mark
+                // has room around it in its frame (`macos/Logos/README.md`),
+                // so at 21 points Anthropic's is 16 by 11.5 and OpenAI's 15.5
+                // square. At 17 points (Anthropic's 9 tall) the item looked
+                // small beside other apps' icons. At 22 (12 tall) the mark
+                // outweighed the figure, so the figure is semibold too.
                 ForEach(Array(zip(accounts, figures)), id: \.0.id) { account, figure in
                     HStack(spacing: 4) {
-                        Logo(account: account, size: 17)
+                        Logo(account: account, size: 21)
                             .foregroundStyle(template ? Color.black : .primary)
+                        // In the menu bar's own size, as the clock is, and
+                        // raised a point onto the clock's baseline: centered
+                        // in the item, it sat lower (measured October 2026).
                         Text(figure)
-                            .font(.system(size: 14, weight: .medium).monospacedDigit())
+                            .font(.system(size: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .semibold)
+                                .monospacedDigit())
                             .foregroundStyle(template ? Color.black : account.standing.color)
+                            .offset(y: -1)
                     }
                 }
             }
             .padding(.horizontal, 1)
             .frame(height: 22)
+        }
+    }
+
+    /// Turnscope's logo, as its icon draws it (`Turnscope.icon`): a ring
+    /// around a slice, like a limit with some of it used. The radii are the
+    /// icon's, in its units, 530 across the ring.
+    private struct Mark: View {
+        var size: CGFloat
+
+        var body: some View {
+            Canvas { context, canvas in
+                let unit = canvas.width / 530
+                let center = CGPoint(x: canvas.width / 2, y: canvas.height / 2)
+                let circle = { (radius: CGFloat) in
+                    Path(ellipseIn: CGRect(x: center.x - radius * unit, y: center.y - radius * unit,
+                                           width: radius * unit * 2, height: radius * unit * 2))
+                }
+                var ring = circle(265)
+                ring.addPath(circle(207))
+                context.fill(ring, with: .foreground, style: FillStyle(eoFill: true))
+                // From twelve o'clock, clockwise to 235°.
+                var slice = Path()
+                slice.move(to: center)
+                slice.addArc(center: center, radius: 169 * unit,
+                             startAngle: .degrees(-90), endAngle: .degrees(145), clockwise: false)
+                slice.closeSubpath()
+                context.fill(slice, with: .foreground)
+            }
+            .frame(width: size, height: size)
         }
     }
 }

@@ -250,21 +250,21 @@ extension Words {
         return "\(names.dropLast().joined(separator: ", ")) \(last) \(final)"
     }
 
-    /// Why an account's limits can't be read now, as a sentence, after when
-    /// the ones shown were read: "As read 9 AM; it couldn't be read since."
-    /// Nil when they can be read.
+    /// Why an account's limits can't be read now, and when the ones shown
+    /// were read, short enough for one line: "Last read 9 AM. Open Codex to
+    /// update." Nil when they can be read.
     func trouble(_ account: AccountStatus) -> String? {
         let with = account.agents.first.map(agent) ?? "its agent"
         return switch account.state {
         case .unread(.signIn): "Open \(with) to sign in again."
-        case .unread(.expired): "Its login expired. It's read once you use \(with)."
+        case .unread(.expired): "Its login expired. Open \(with) to update."
         case .unread(.readFailed): "It couldn't be read yet."
-        case .unread(.signedOut): "No agent here is signed in to it now."
-        case .asOf(let read, .signIn): "As read \(ago(read)); open \(with) to sign in again."
-        case .asOf(let read, .readFailed): "As read \(ago(read)); it couldn't be read since."
-        case .asOf(let read, .expired): "As read \(ago(read)); read again once you use \(with)."
+        case .unread(.signedOut): "No agent here is signed in to it."
+        case .asOf(let read, .signIn): "Last read \(ago(read)). Open \(with) to sign in."
+        case .asOf(let read, .readFailed): "It couldn't be read since \(ago(read))."
+        case .asOf(let read, .expired): "Last read \(ago(read)). Open \(with) to update."
         case .asOf(let read, .signedOut) where account.refilledAt == nil:
-            "As read \(ago(read)); no agent here is signed in to it now."
+            "Last read \(ago(read)). No agent here is signed in to it."
         default: nil
         }
     }
@@ -350,16 +350,16 @@ extension Words {
         "\(count) hidden"
     }
 
-    /// Whether `agent` runs Turnscope's MCP server, as Settings says it
-    /// under its name: "Connected", "Not connected", "Uses another
-    /// Turnscope". With `named`, as the panel offers to connect it: "Codex
-    /// isn't connected", "Codex uses another Turnscope".
-    public func connection(_ agent: AgentStatus, named: Bool = false) -> String {
-        let name = agent.name
-        return switch agent.connection {
-        case .connected: named ? "\(name) is connected" : "Connected"
-        case .available: named ? "\(name) isn't connected" : "Not connected"
-        case .outdated: named ? "\(name) uses another Turnscope" : "Uses another Turnscope"
+    /// Why `agent` can't ask this Turnscope about its limits, or nil if it
+    /// can. With `named`, as the panel offers to connect it: "Codex isn't
+    /// connected", "Codex uses another Turnscope". Without, under its name in
+    /// Settings, where its switch already says whether it's connected: only
+    /// "Uses another Turnscope".
+    public func connection(_ agent: AgentStatus, named: Bool = false) -> String? {
+        switch agent.connection {
+        case .connected: nil
+        case .available: named ? "\(agent.name) isn't connected" : nil
+        case .outdated: named ? "\(agent.name) uses another Turnscope" : "Uses another Turnscope"
         }
     }
 
