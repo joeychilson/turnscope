@@ -11,7 +11,8 @@
   of a gauge. Account logos are larger, and the figure beside them is the
   size of the menu bar's clock and sits on its baseline.
 - **Panel:** account logos are larger, and the Settings and Quit buttons
-  line up with the rows.
+  line up with the rows. An account that can't be read now says when it was
+  last read, in one line: "Last read 4:50 AM. Open Grok Build to update."
 
 ## 0.1.0
 
