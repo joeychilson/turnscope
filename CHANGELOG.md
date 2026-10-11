@@ -13,6 +13,8 @@
 - **Panel:** account logos are larger, and the Settings and Quit buttons
   line up with the rows. An account that can't be read now says when it was
   last read, in one line: "Last read 4:50 AM. Open Grok Build to update."
+  The command line says "open Grok Build to update" for an expired login
+  too.
 
 ## 0.1.0
 

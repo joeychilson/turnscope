@@ -721,7 +721,7 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
                 "{title}: its login was refused; sign in again in {agents}."
             )),
             (_, Some(status::Stale::Expired)) => notes.push(format!(
-                "{title}: its login expired; it's read again once you use {agents}."
+                "{title}: its login expired; open {agents} to update."
             )),
             (status::State::AsOf { read_at, .. }, Some(status::Stale::ReadFailed)) => {
                 notes.push(format!(
