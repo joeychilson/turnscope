@@ -15,7 +15,7 @@ struct GeneralTab: View {
     @State private var off = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             menuBar
             notifications
             Updates()
@@ -23,8 +23,7 @@ struct GeneralTab: View {
     }
 
     private var menuBar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionTitle(text: "Menu bar")
+        SettingGroup(title: "Menu bar") {
             SettingRow(title: "Show") {
                 Choice(label: "Show", options: [(MenuShows.all, "All in use"), (.one, "Most urgent")],
                        selection: $menuShows)
@@ -45,8 +44,7 @@ struct GeneralTab: View {
     }
 
     private var notifications: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionTitle(text: "Notify me when")
+        SettingGroup(title: "Notify me when") {
             if off {
                 SettingRow(title: "Notifications are off for Turnscope") {
                     Button("Open") {
@@ -102,8 +100,7 @@ private struct Updates: View {
     @State private var automatic = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionTitle(text: "Updates")
+        SettingGroup(title: "Updates") {
             let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             SettingRow(title: "Turnscope \(version ?? "")") {
                 if updater.available {

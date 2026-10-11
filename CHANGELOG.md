@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- **Settings** shows its settings in cards, with larger switches.
+- **Agents** connect with a switch in Settings → Agents, instead of a
+  Connect or Disconnect button. "Connecting…" shows beside the switch until
+  it's done. An agent that uses another copy of Turnscope says so under its
+  name, and turning its switch on points it at this copy.
+
 ## 0.1.0
 
 The first release.

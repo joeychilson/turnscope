@@ -54,13 +54,13 @@ Check it by running the app, or with `--fixture` and `--snapshot`.
 | `Panel/Window.swift` | The panel's shell: its glass, edge and shadow, and the pages it slides between |
 | `Panel/FirstPage.swift` | The panel's first page: the headline, the account lists, the offer to connect an agent, the footer |
 | `Panel/AccountRow.swift` | An account's row, its limit lines and bars, and the sessions that used it most |
-| `Panel/RowParts.swift` | Parts shared by rows: an account's title, the Hide and Connect buttons |
+| `Panel/RowParts.swift` | Parts shared by account rows: an account's title, its name, the Hide button |
 | `Panel/UnusedAccounts.swift` | The fold for accounts not used this week, and hidden accounts |
 | `Settings/SettingsPage.swift` | The Settings page and its tabs |
 | `Settings/GeneralTab.swift` | Menu bar, opening at login, notifications, updates |
 | `Settings/AgentsTab.swift` | Connecting and disconnecting agents |
 | `Settings/AccountsTab.swift` | Showing and hiding accounts |
-| `Settings/SettingRow.swift` | The row and switch every setting uses |
+| `Settings/SettingRow.swift` | The card, row and switch every setting uses |
 | `Turnscope.icon` | The app icon, an Icon Composer file |
 
 `TurnscopeKit/Tests/TurnscopeKitTests/`:
@@ -230,13 +230,13 @@ open.
 
 ## Settings
 
-Settings is the panel's second page, with three tabs. Changes take effect
-at once.
+Settings is the panel's second page, with three tabs. Each tab's settings
+are in cards. Changes take effect at once.
 
 | Tab | Holds |
 |---|---|
 | General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version, Check now and Check automatically |
-| Agents | Each installed agent, with whether it's connected and one button: Connect, Update (it uses another copy of Turnscope) or Disconnect |
+| Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 
 Where each setting is kept:
@@ -404,8 +404,8 @@ First decide who owns it.
 
 1. Add a key to `Preference` in `Preferences.swift`, with its default in
    `register()`.
-2. Add a `SettingRow` for it in `GeneralTab.swift`, or the tab it belongs
-   to, bound with `@AppStorage(Preference.<key>)`.
+2. Add a `SettingRow` for it to a `SettingGroup` in `GeneralTab.swift`, or
+   the tab it belongs to, bound with `@AppStorage(Preference.<key>)`.
 3. Read it where it applies. Code outside SwiftUI reads `UserDefaults`.
    `AppDelegate` redraws the menu bar item on any change to the defaults.
 

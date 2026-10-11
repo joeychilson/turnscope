@@ -13,8 +13,10 @@ public final class Store {
     public private(set) var status: Status?
     /// Why serve isn't connected, or nil while it is.
     public private(set) var failure: String?
-    /// The agents being connected or disconnected right now, by id.
-    public private(set) var changingAgents: Set<String> = []
+    /// The agents being connected or disconnected right now, by id, with the
+    /// connection each will have. A status pushed meanwhile can say either,
+    /// as when one of an agent's folders has changed and another hasn't.
+    public private(set) var changingAgents: [String: Connection] = [:]
     /// Why connecting or disconnecting an agent failed, by agent id. It's
     /// kept until that's tried again.
     public private(set) var agentErrors: [String: String] = [:]
@@ -139,10 +141,10 @@ public final class Store {
     /// fails.
     private func run(_ method: String, on id: String, then connection: Connection) {
         guard let client else { return }
-        changingAgents.insert(id)
+        changingAgents[id] = connection
         agentErrors[id] = nil
         Task {
-            defer { changingAgents.remove(id) }
+            defer { changingAgents[id] = nil }
             do throws(ClientError) {
                 let _: Done = try await client.request(method, AgentParams(agent: id))
                 // Shown now, so the old button doesn't come back until the

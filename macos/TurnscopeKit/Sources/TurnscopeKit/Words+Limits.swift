@@ -350,16 +350,16 @@ extension Words {
         "\(count) hidden"
     }
 
-    /// Whether `agent` runs Turnscope's MCP server, as Settings says it
-    /// under its name: "Connected", "Not connected", "Uses another
-    /// Turnscope". With `named`, as the panel offers to connect it: "Codex
-    /// isn't connected", "Codex uses another Turnscope".
-    public func connection(_ agent: AgentStatus, named: Bool = false) -> String {
-        let name = agent.name
-        return switch agent.connection {
-        case .connected: named ? "\(name) is connected" : "Connected"
-        case .available: named ? "\(name) isn't connected" : "Not connected"
-        case .outdated: named ? "\(name) uses another Turnscope" : "Uses another Turnscope"
+    /// Why `agent` can't ask this Turnscope about its limits, or nil if it
+    /// can. With `named`, as the panel offers to connect it: "Codex isn't
+    /// connected", "Codex uses another Turnscope". Without, under its name in
+    /// Settings, where its switch already says whether it's connected: only
+    /// "Uses another Turnscope".
+    public func connection(_ agent: AgentStatus, named: Bool = false) -> String? {
+        switch agent.connection {
+        case .connected: nil
+        case .available: named ? "\(agent.name) isn't connected" : nil
+        case .outdated: named ? "\(agent.name) uses another Turnscope" : "Uses another Turnscope"
         }
     }
 

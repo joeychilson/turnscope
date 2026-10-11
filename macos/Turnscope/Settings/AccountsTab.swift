@@ -12,7 +12,7 @@ struct AccountsTab: View {
     var body: some View {
         let keys = store.all.filter(\.apiKey)
         let subscriptions = store.all.filter { !$0.apiKey }
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             group("Subscriptions", subscriptions)
             group("API keys", keys)
         }
@@ -20,8 +20,7 @@ struct AccountsTab: View {
 
     @ViewBuilder private func group(_ title: String, _ accounts: [AccountStatus]) -> some View {
         if !accounts.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                SectionTitle(text: title)
+            SettingGroup(title: title) {
                 ForEach(accounts) { AccountSwitch(account: $0) }
             }
         }
@@ -42,5 +41,6 @@ private struct AccountSwitch: View {
                                set: { shown in withAnimation(spring) { store.setHidden(!shown, for: account.id) } }))
         }
         .padding(Row.padding)
+        .frame(minHeight: Row.setting)
     }
 }

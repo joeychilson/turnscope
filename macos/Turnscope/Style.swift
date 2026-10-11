@@ -1,8 +1,8 @@
 // The app's look, shared by every view: its springs, sizes, fonts, colors of
 // urgency, and the few controls it draws itself. It is grayscale until
 // something needs the person: amber for a limit that at this pace runs out
-// before it resets, red for one used up. Native controls, switches and
-// pickers, keep the system's accent, as every Mac app's do.
+// before it resets, red for one used up. A switch that's on keeps the
+// system's accent, as every Mac app's does.
 
 import SwiftUI
 import TurnscopeKit
@@ -36,8 +36,12 @@ enum Row {
     static let spacing: CGFloat = 4
     /// The space between the accounts in use and those used this week.
     static let groups: CGFloat = 12
-    /// The corner radius of a row when it's filled.
+    /// The corner radius of a row when it's filled, and of a card in
+    /// Settings.
     static let radius: CGFloat = 10
+    /// The height of a row in Settings with one line, whether it ends in a
+    /// switch, a pill or nothing.
+    static let setting: CGFloat = 36
 }
 
 extension Font {

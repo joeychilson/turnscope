@@ -76,8 +76,8 @@ Add `--json` to any command that prints data. See [docs/cli.md](docs/cli.md).
 
 ## Connect your agents
 
-In the app, open Settings → Agents and choose Connect, or Disconnect to
-remove it. Or from the command line:
+In the app, open Settings → Agents and turn on an agent's switch, or turn
+it off to remove it. Or from the command line:
 
 ```sh
 turnscope connect               # which agents have Turnscope's MCP server

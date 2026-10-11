@@ -81,8 +81,8 @@ private struct ConnectNudge: View {
                     Text(error).font(.line).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                } else {
-                    Text(store.words().connection(agent, named: true))
+                } else if let unconnected = store.words().connection(agent, named: true) {
+                    Text(unconnected)
                         .font(.line).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -99,6 +99,28 @@ private struct ConnectNudge: View {
             }
             .padding(Row.padding)
             .transition(appears)
+        }
+    }
+}
+
+/// Connects `agent`, or points it back at this copy, depending on its
+/// status. Its help says what went wrong if connecting failed. A spinner
+/// shows while it works.
+private struct ConnectButton: View {
+    @Environment(Store.self) private var store
+    var agent: AgentStatus
+
+    var body: some View {
+        if store.changingAgents[agent.id] != nil {
+            ProgressView().controlSize(.mini)
+        } else {
+            let outdated = agent.connection == .outdated
+            Button(outdated ? "Update" : "Connect") { store.connect(agent.id) }
+                .buttonStyle(PillButton())
+                .accessibilityLabel("\(outdated ? "Update" : "Connect") \(agent.name)")
+                .help(store.agentErrors[agent.id] ?? (outdated
+                    ? "Points \(agent.name) at this copy of Turnscope"
+                    : "Adds Turnscope to \(agent.name)'s MCP servers, so it can pace itself"))
         }
     }
 }

@@ -1,31 +1,8 @@
-// Pieces shared by account and agent rows, in the panel and in Settings: an
-// account's title, its name with the agents that use it, its Hide button, and
-// an agent's Connect button.
+// Pieces shared by account rows, in the panel and in Settings: an account's
+// title, its name with the agents that use it, and its Hide button.
 
 import SwiftUI
 import TurnscopeKit
-
-/// Connects `agent`, or points it back at this copy, depending on its
-/// status. Its help says what went wrong if connecting failed. A spinner
-/// shows while it works.
-struct ConnectButton: View {
-    @Environment(Store.self) private var store
-    var agent: AgentStatus
-
-    var body: some View {
-        if store.changingAgents.contains(agent.id) {
-            ProgressView().controlSize(.mini)
-        } else {
-            let outdated = agent.connection == .outdated
-            Button(outdated ? "Update" : "Connect") { store.connect(agent.id) }
-                .buttonStyle(PillButton())
-                .accessibilityLabel("\(outdated ? "Update" : "Connect") \(agent.name)")
-                .help(store.agentErrors[agent.id] ?? (outdated
-                    ? "Points \(agent.name) at this copy of Turnscope"
-                    : "Adds Turnscope to \(agent.name)'s MCP servers, so it can pace itself"))
-        }
-    }
-}
 
 /// An account's title as every row shows it, in the gray `title`. If
 /// `labelled`, its label is beside it, to tell it apart from another account

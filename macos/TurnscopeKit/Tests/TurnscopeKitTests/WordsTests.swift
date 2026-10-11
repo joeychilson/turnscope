@@ -254,13 +254,13 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
 @Test func theFoldsAndAgentsSayWhatTheyHold() {
     #expect(words.hidden(2) == "2 hidden")
     var codex = AgentStatus(id: "codex", name: "Codex", installed: true, connection: .available, inUse: true)
-    #expect(words.connection(codex) == "Not connected")
+    #expect(words.connection(codex) == nil)
     #expect(words.connection(codex, named: true) == "Codex isn't connected")
     codex.connection = .outdated
     #expect(words.connection(codex) == "Uses another Turnscope")
     #expect(words.connection(codex, named: true) == "Codex uses another Turnscope")
     codex.connection = .connected
-    #expect(words.connection(codex) == "Connected")
+    #expect(words.connection(codex, named: true) == nil)
 }
 
 @Test func beforeAnyAccountTheWelcomeSaysWhy() {
