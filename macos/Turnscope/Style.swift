@@ -21,8 +21,11 @@ let spring = Animation.spring(response: 0.34, dampingFraction: 0.9)
 /// account, an agent or a setting. That way rows of every kind line up and
 /// read alike.
 enum Row {
-    /// A logo's size, beside a row's name.
-    static let logo: CGFloat = 16
+    /// A logo's size, beside a row's name. A mark has room around it in its
+    /// frame (`macos/Logos/README.md`): at 16 points Anthropic's was 9 tall
+    /// and looked small beside a name with a line under it, and at 20
+    /// OpenRouter's looked heavy.
+    static let logo: CGFloat = 18
     /// The space from a logo to the name beside it.
     static let gap: CGFloat = 8
     /// The padding around a row's content.

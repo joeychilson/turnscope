@@ -55,9 +55,10 @@ struct FirstPage: View {
                         .padding(.top, 4)
                 }
             }
+            // Its buttons line up with the rows' edges, as close to the
+            // panel's corner as the rows are to its side.
             Footer()
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(8)
         }
         // While an account is open, ask what used it.
         .onChange(of: navigation.open) { _, open in store.watch(open) }
@@ -197,7 +198,7 @@ private struct Footer: View {
                     .foregroundStyle(.secondary)
                     .help(failure)
                     .accessibilityLabel("Not up to date: \(failure). Trying again.")
-                    .padding(.leading, 6)
+                    .padding(.leading, 12)
                     .transition(appears)
             } else if store.reading && !store.all.isEmpty {
                 // Before any account is found, the headline says this
@@ -211,7 +212,7 @@ private struct Footer: View {
                 .help("Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.")
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Reading your agents' history")
-                .padding(.leading, 6)
+                .padding(.leading, 12)
                 .transition(appears)
             }
             Spacer()

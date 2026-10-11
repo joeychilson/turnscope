@@ -7,6 +7,8 @@
   Connect or Disconnect button. "Connecting…" shows beside the switch until
   it's done. An agent that uses another copy of Turnscope says so under its
   name, and turning its switch on points it at this copy.
+- **Panel:** account logos are larger, and the Settings and Quit buttons
+  line up with the rows.
 
 ## 0.1.0
 
