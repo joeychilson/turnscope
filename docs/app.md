@@ -153,13 +153,13 @@ then `Words.figure`:
 - When it's back, `Back 5:40 AM`, in red once it's used up.
 - For an API key with no limit, what it cost this month, `$84`.
 
-With nothing in use, it shows a gauge symbol. While every account it shows
-lasts, it's a template image in the menu bar's own color. Once one needs
-attention, it's drawn in color. While `serve` is away (`Store.failure`), it's
-dimmed, since it shows the last status. With Settings → General → Show set to
-Most urgent, it shows only the most urgent account. VoiceOver reads each
-account's title and `Words.spokenFigure`, then "not up to date" while it's
-dimmed.
+With nothing in use, it shows Turnscope's logo, the ring and slice of its
+icon. While every account it shows lasts, it's a template image in the menu
+bar's own color. Once one needs attention, it's drawn in color. While
+`serve` is away (`Store.failure`), it's dimmed, since it shows the last
+status. With Settings → General → Show set to Most urgent, it shows only
+the most urgent account. VoiceOver reads each account's title and
+`Words.spokenFigure`, then "not up to date" while it's dimmed.
 
 The item is one image drawn by SwiftUI, redrawn only when what it shows
 changes: a new status, `serve` going away or coming back, the menu bar

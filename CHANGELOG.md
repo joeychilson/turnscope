@@ -7,6 +7,9 @@
   Connect or Disconnect button. "Connecting…" shows beside the switch until
   it's done. An agent that uses another copy of Turnscope says so under its
   name, and turning its switch on points it at this copy.
+- **Menu bar:** with no account in use, it shows Turnscope's logo instead
+  of a gauge. Account logos are larger, and the figure beside them is the
+  size of the menu bar's clock and sits on its baseline.
 - **Panel:** account logos are larger, and the Settings and Quit buttons
   line up with the rows.
 
