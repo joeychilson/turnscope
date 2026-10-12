@@ -480,6 +480,33 @@ mod tests {
     }
 
     #[test]
+    fn a_growing_file_read_on_from_its_cursor_reads_as_it_does_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let reply = |entry: &str, at: &str, response: &str, text: &str| {
+            json!({"type": "message", "id": entry, "timestamp": at, "message": {"role": "assistant", "provider": "openai-codex",
+                "model": "gpt-5.5", "responseId": response, "content": [{"type": "text", "text": text}], "usage": usage(50, 0.01)}})
+        };
+        let lines = [
+            json!({"type": "session", "id": "s1", "cwd": "/work/cli", "timestamp": "2026-09-30T09:00:00Z"}),
+            json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:01Z", "message": {"role": "user", "content": "Add a --verbose flag."}}),
+            reply("e2", "2026-09-30T09:00:05Z", "resp_1", "Added."),
+            json!({"type": "message", "id": "e3", "timestamp": "2026-09-30T09:05:00Z", "message": {"role": "user", "content": "Now document it."}}),
+            reply("e4", "2026-09-30T09:05:09Z", "resp_2", "Documented."),
+        ];
+        let name = "2026-09-30T09-00-00-000Z_s1.jsonl";
+        let file = session(dir.path(), name, &lines[..3]);
+        let first = Pi.read(&file, "").unwrap();
+        session(dir.path(), name, &lines);
+        let later = Pi.read(&file, &first.cursor).unwrap();
+        let whole = Pi.read(&file, "").unwrap();
+        // The later part is the session's, untitled by its request.
+        assert_eq!(later.responses.len(), 1);
+        assert_eq!(later.responses["resp_2"], whole.responses["resp_2"]);
+        assert!(later.sessions["pi:s1"].title.is_none());
+        assert_eq!([first.said, later.said].concat(), whole.said);
+    }
+
+    #[test]
     fn a_forks_copies_of_its_parents_entries_are_the_parents() {
         let dir = tempfile::tempdir().unwrap();
         let copied = json!({"type": "message", "id": "e2", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant",

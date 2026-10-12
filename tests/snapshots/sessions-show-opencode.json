@@ -1,0 +1,29 @@
+{
+  "accounts": [],
+  "active": 1790744580000,
+  "agent": "opencode",
+  "branch": null,
+  "costUsd": 0.005,
+  "cwd": "/work/web",
+  "id": "opencode:ses_2f9a8b7c6d5e4f3a2b1c0d9e8f",
+  "models": [
+    "glm-5.3"
+  ],
+  "parent": null,
+  "project": "/work/web",
+  "responses": 2,
+  "resume": "cd /work/web && opencode --session ses_2f9a8b7c6d5e4f3a2b1c0d9e8f",
+  "running": false,
+  "started": 1790744400000,
+  "subagents": 0,
+  "title": "Show signup errors inline",
+  "tokens": {
+    "cacheRead": 12000,
+    "cacheWrite1h": 0,
+    "cacheWrite5m": 0,
+    "input": 2200,
+    "output": 480,
+    "reasoning": 100
+  },
+  "unpriced": 0
+}

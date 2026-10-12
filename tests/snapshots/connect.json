@@ -10,28 +10,28 @@
     "connection": "available",
     "id": "codex",
     "inUse": false,
-    "installed": false,
+    "installed": true,
     "name": "Codex"
   },
   {
     "connection": "available",
     "id": "opencode",
     "inUse": false,
-    "installed": false,
+    "installed": true,
     "name": "OpenCode"
   },
   {
     "connection": "available",
     "id": "pi",
     "inUse": false,
-    "installed": false,
+    "installed": true,
     "name": "Pi"
   },
   {
     "connection": "available",
     "id": "grok-build",
     "inUse": false,
-    "installed": false,
+    "installed": true,
     "name": "Grok Build"
   }
 ]

@@ -1,0 +1,9 @@
+grok-build:8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a  "Fix the broken links in the guide"
+  active 1d 5h ago · 1 response · $0.02
+  folder: /work/docs
+  project: /work/docs
+  branch: main
+  started: Wed 06:00
+  models: grok-4.6-build
+  account: SuperGrok (me@example.com)
+  resume: cd /work/docs && grok --resume 8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a

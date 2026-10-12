@@ -1,0 +1,12 @@
+{
+  "num_messages": 6,
+  "created_at": "2026-09-30T06:00:00Z",
+  "updated_at": "2026-09-30T06:04:00Z",
+  "last_active_at": "2026-09-30T06:04:00Z",
+  "info": {
+    "cwd": "/work/docs"
+  },
+  "head_branch": "main",
+  "generated_title": "Fix the broken links in the guide",
+  "title_is_manual": false
+}

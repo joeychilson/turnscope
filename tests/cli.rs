@@ -1,15 +1,16 @@
 //! The binary as people and agents use it, over a fixed clock, the fixture
-//! home's two synthetic Claude Code sessions (one a day before, one working
-//! through the last two hours), and a store holding four synthetic accounts
-//! as their providers were read, off the network. Every
-//! answer is compared with its snapshot in `tests/snapshots`;
-//! `TURNSCOPE_BLESS=1` writes them anew.
+//! home's synthetic sessions (two of Claude Code's, one a day before, one
+//! working through the last two hours, and one of each other agent's, a day
+//! before), and a store holding four synthetic accounts as their providers
+//! were read, off the network. Every answer is compared with its snapshot in
+//! `tests/snapshots`; `TURNSCOPE_BLESS=1` writes them anew.
 
 #![allow(clippy::unwrap_used)]
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use rusqlite::{Connection, params};
 
@@ -19,9 +20,50 @@ const HOUR: i64 = 3_600_000;
 const SESSION: &str = "claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60";
 /// The session working through the last two hours.
 const WORKING: &str = "claude-code:7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+/// Each other agent's session, a day before.
+const CODEX: &str = "codex:019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b";
+const OPENCODE: &str = "opencode:ses_2f9a8b7c6d5e4f3a2b1c0d9e8f";
+const PI: &str = "pi:5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9";
+const GROK_BUILD: &str = "grok-build:8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a";
 
-fn home() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/home")
+/// The fixture home, copied once a run to where tests may write: OpenCode's
+/// history is a database, built there from the SQL beside it rather than
+/// kept as a binary file.
+fn home() -> &'static Path {
+    static HOME: OnceLock<(PathBuf, std::fs::File)> = OnceLock::new();
+    let (home, _lock) = HOME.get_or_init(|| {
+        fn copy(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let (from, to) = (entry.path(), to.join(entry.file_name()));
+                if entry.file_type().unwrap().is_dir() {
+                    copy(&from, &to);
+                } else {
+                    std::fs::copy(from, to).unwrap();
+                }
+            }
+        }
+        let made = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        // Held until the process ends, so another run of these tests waits
+        // to make the home anew while this one reads it.
+        let lock = std::fs::File::create(made.join("home.lock")).unwrap();
+        lock.lock().unwrap();
+        let home = made.join("home");
+        let _ = std::fs::remove_dir_all(&home);
+        copy(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/home"),
+            &home,
+        );
+        let opencode = home.join(".local/share/opencode");
+        let sql = std::fs::read_to_string(opencode.join("opencode.sql")).unwrap();
+        Connection::open(opencode.join("opencode.db"))
+            .unwrap()
+            .execute_batch(&sql)
+            .unwrap();
+        (home, lock)
+    });
+    home
 }
 
 fn turnscope(data: &Path, args: &[&str], input: Option<&str>) -> Output {
@@ -180,8 +222,8 @@ fn store() -> tempfile::TempDir {
         Some(20.0),
         Some((60.0, -108.0)),
     );
-    // Signed in since two days ago, so the fixture's session, a day ago,
-    // drew on Claude Max.
+    // Signed in since two days ago, so the fixture's sessions a day ago drew
+    // on these accounts; OpenCode's, signed in to none, on no account.
     let folder = |name: &str| home().join(name).to_string_lossy().into_owned();
     for (agent, name, provider, account, key) in [
         (
@@ -246,6 +288,7 @@ fn every_command_answers_as_its_snapshot_says() {
             "status-hours",
             vec!["status", "--account", "claude", "--hours", "3"],
         ),
+        ("usage", vec!["usage"]),
         (
             "usage-model",
             vec!["usage", "--since", "2026-09-29", "--by", "model"],
@@ -259,6 +302,11 @@ fn every_command_answers_as_its_snapshot_says() {
             vec!["usage", "--account", "claude", "--limit", "week"],
         ),
         ("sessions", vec!["sessions"]),
+        // The page after the session the cursor names.
+        (
+            "sessions-cursor",
+            vec!["sessions", "--count", "2", "--cursor", SESSION],
+        ),
         // Words said in different messages of one session find it.
         ("sessions-search", vec!["sessions", "--search", "CSV RFC"]),
         // A unique start of an agent's own id names the session.
@@ -267,11 +315,34 @@ fn every_command_answers_as_its_snapshot_says() {
             "sessions-read",
             vec!["sessions", "read", SESSION, "--from", "1", "--count", "3"],
         ),
+        ("sessions-show-codex", vec!["sessions", "show", CODEX]),
+        ("sessions-read-codex", vec!["sessions", "read", CODEX]),
+        // The last of its two failed calls.
+        (
+            "sessions-read-failed",
+            vec!["sessions", "read", CODEX, "--failed", "--from", "-1"],
+        ),
+        ("sessions-show-opencode", vec!["sessions", "show", OPENCODE]),
+        ("sessions-read-opencode", vec!["sessions", "read", OPENCODE]),
+        ("sessions-show-pi", vec!["sessions", "show", PI]),
+        ("sessions-read-pi", vec!["sessions", "read", PI]),
+        (
+            "sessions-show-grok-build",
+            vec!["sessions", "show", GROK_BUILD],
+        ),
+        (
+            "sessions-read-grok-build",
+            vec!["sessions", "read", GROK_BUILD],
+        ),
         ("handoff", vec!["handoff", SESSION]),
         ("handoff-working", vec!["handoff", WORKING]),
+        // Taken by default: the folder's latest session but the caller's
+        // own, Codex's, with Pi's before it.
+        ("handoff-folder", vec!["handoff", "--folder", "/work/app"]),
         ("accounts", vec!["accounts"]),
         ("config", vec!["config"]),
         ("connect", vec!["connect"]),
+        ("doctor", vec!["doctor"]),
     ] {
         for json in [false, true] {
             let mut args = args.clone();
@@ -317,6 +388,16 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             vec!["status", "--account", "gemini"],
             3,
             "no account is named gemini",
+        ),
+        (
+            vec!["usage", "--account", "claude", "--limit", "month"],
+            3,
+            "has no limit named month",
+        ),
+        (
+            vec!["usage", "--limit", "week", "--until", "today"],
+            2,
+            "cannot be used with",
         ),
         (vec!["usage", "--since", "last tuesday"], 2, "24h, 7d or 4w"),
         (

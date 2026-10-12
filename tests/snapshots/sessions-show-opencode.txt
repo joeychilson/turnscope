@@ -1,0 +1,7 @@
+opencode:ses_2f9a8b7c6d5e4f3a2b1c0d9e8f  "Show signup errors inline"
+  active 1d 6h ago · 2 responses · $0.01
+  folder: /work/web
+  project: /work/web
+  started: Wed 05:00
+  models: glm-5.3
+  resume: cd /work/web && opencode --session ses_2f9a8b7c6d5e4f3a2b1c0d9e8f

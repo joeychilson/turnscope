@@ -1,6 +1,10 @@
-Tue Sep 29 00:00 to Thu Oct 1 12:00: 27 responses, $0.50
+Tue Sep 29 00:00 to Thu Oct 1 12:00: 36 responses, $0.53 (+4 unpriced)
 
-  Model          Responses   Cost
-  claude-opus-5         27  $0.50
+  Model           Responses   Cost
+  claude-opus-5          27  $0.50
+  grok-4.6-build          1  $0.02
+  glm-5.3                 2  $0.01
+  deepseek-v4             2  $0.00
+  gpt-5.5                 4  $0.00 (+4 unpriced)
 
 Costs are at list prices: what the same tokens cost on each provider's API.

@@ -51,10 +51,10 @@ from `mcp.servers` in `~/.config/opencode/opencode.json`.
 
 ```
 Claude Code  not connected: `turnscope connect claude-code`
-Codex        not installed
-OpenCode     not installed
-Pi           not installed
-Grok Build   not installed
+Codex        not connected: `turnscope connect codex`
+OpenCode     not connected: `turnscope connect opencode`
+Pi           not connected: `turnscope connect pi`
+Grok Build   not connected: `turnscope connect grok-build`
 ```
 
 | State | Means |

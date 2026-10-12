@@ -602,6 +602,53 @@ mod tests {
     }
 
     #[test]
+    fn a_growing_file_read_on_from_its_cursor_counts_the_subagents_that_finished_before() {
+        let dir = tempfile::tempdir().unwrap();
+        updates(
+            dir.path(),
+            "s2",
+            &[update(
+                1_790_000_050,
+                json!({"sessionUpdate": "turn_completed", "prompt_id": "p2", "usage": {"modelUsage": {"grok-4.6-build": used(10000, 5000, 4, 100)}}}),
+            )],
+        );
+        let lines = [
+            update(
+                1_790_000_000,
+                json!({"sessionUpdate": "user_message_chunk", "content": {"text": "<user_query>Speed up the build.</user_query>"}}),
+            ),
+            update(
+                1_790_000_001,
+                json!({"sessionUpdate": "subagent_spawned", "child_session_id": "s2"}),
+            ),
+            update(
+                1_790_000_055,
+                json!({"sessionUpdate": "subagent_finished", "child_session_id": "s2"}),
+            ),
+            update(
+                1_790_000_060,
+                json!({"sessionUpdate": "turn_completed", "prompt_id": "p1", "usage": {"modelUsage": {"grok-4.6-build": used(30000, 20000, 10, 400)}}}),
+            ),
+            update(
+                1_790_000_100,
+                json!({"sessionUpdate": "user_message_chunk", "content": {"text": "<user_query>Now the tests.</user_query>"}}),
+            ),
+        ];
+        let file = updates(dir.path(), "s1", &lines[..3]);
+        let first = GrokBuild.read(&file, "").unwrap();
+        assert!(first.responses.is_empty());
+        updates(dir.path(), "s1", &lines);
+        let later = GrokBuild.read(&file, &first.cursor).unwrap();
+        let whole = GrokBuild.read(&file, "").unwrap();
+        // The turn ended after the read that saw its subagent finish, and is
+        // counted less it all the same.
+        let own = &later.responses["p1:grok-4.6-build"];
+        assert_eq!(own, &whole.responses["p1:grok-4.6-build"]);
+        assert_eq!((own.tokens.input, own.tokens.cache_read), (5000, 15000));
+        assert!(later.sessions["grok-build:s1"].title.is_none());
+    }
+
+    #[test]
     fn what_grok_build_adds_isnt_the_persons_and_its_system_prompt_isnt_shown() {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("sessions/%2Fwork/s1");
