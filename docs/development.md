@@ -181,6 +181,11 @@ run.
 | `rust` | macOS 26, in `America/Chicago` | `cargo fmt --check`, clippy, `cargo test` and `cargo doc`, warnings as errors |
 | `app` | macOS 26, Xcode 26.6 | `cargo build`, then `swift test` with warnings as errors and the engine test run on that build; `scripts/build-release.sh` and `scripts/sign-release.sh` signed ad hoc, then `scripts/check-app.sh`. On a tag, only the tests: the release builds and checks its own app, signed. |
 
+The `main` ruleset (Settings → Rules) takes changes only by squashed pull
+request, once Verify's `lint`, `rust` and `app` pass. A pull request that
+doesn't run Verify never gets those checks, so the owner merges it with
+the ruleset's bypass (`gh pr merge --admin`).
+
 A new advisory can fail `cargo deny` on a pull request that changed no
 crate. Update the crate it names.
 
@@ -198,8 +203,10 @@ has it.
 ## Release
 
 **Setup, once.** Releases are signed with a Developer ID and notarized, and
-updates are signed for Sparkle. The repository needs these secrets and one
-variable:
+updates are signed for Sparkle. The secrets belong to the `release`
+environment (Settings → Environments), which only a `v*` tag can use, so
+only the release's `check` and `publish` jobs can read them. The variable
+is the repository's.
 
 | Name | Kind | Holds |
 |---|---|---|
@@ -221,7 +228,9 @@ key safe: without it, no installed copy will accept an update.
    has it too. The app takes its version from the crate.
 2. Add a `## X.Y.Z` section to `CHANGELOG.md`. It becomes the release
    notes.
-3. Merge to `main`, then push the tag `vX.Y.Z` on that commit.
+3. Merge to `main`, then push the tag `vX.Y.Z` on that commit. The
+   `release tags` ruleset lets only the owner push, move or delete a `v*`
+   tag.
 
 The tag starts **Release** (`.github/workflows/release.yml`):
 

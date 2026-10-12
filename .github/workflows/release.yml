@@ -18,6 +18,9 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # The keys are the release environment's secrets, which only a job run
+    # for a v* tag can read.
+    environment: release
     permissions:
       contents: read
     steps:
@@ -115,6 +118,7 @@ jobs:
     needs: build
     runs-on: macos-26
     timeout-minutes: 120
+    environment: release
     permissions:
       contents: write
     steps:
