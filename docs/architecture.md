@@ -422,8 +422,12 @@ covers what it holds, the budget, and how to test a change.
   never once it has expired. Turnscope never refreshes a token or writes an
   agent's files. `connect` and `disconnect` run the agent's own command.
 - **Redaction.** `redact::redact` replaces keys with known prefixes, JSON
-  Web Tokens and `Bearer` tokens with `[redacted]`, in text before it's
-  indexed for search and in transcripts before they're shown.
+  Web Tokens, `Bearer` tokens and private keys' PEM blocks with
+  `[redacted]`, in text before it's indexed for search and in transcripts
+  before they're shown. Each is found after a JSON string's `\n`, `\t` or
+  `\r`, as in a tool call's input. A private key is found in a JSON string,
+  indented, with line numbers, in a diff, encrypted, and cut short with no
+  END line.
 - **The data directory and socket** are the owner's alone: the directory
   is created 0700, and the socket is 0600.
 - **The MCP server only reads.** Its instructions tell agents that what a

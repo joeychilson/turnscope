@@ -123,6 +123,14 @@
   already says when it resets.
 - **VoiceOver and notifications** spell out the day and month: "Back
   Saturday 9 AM", "October 18". The panel and the menu bar keep them short.
+- **Private keys** are redacted in a JSON string, such as a service
+  account's file, in a diff that removes one, and cut short with no END
+  line, as `head` prints one, even encrypted or with spaces after its
+  lines. Search and reading a session showed them.
+- **Keys in a tool call's input,** such as a token at the start of a line
+  in a file an agent wrote, or after a tab, are redacted. The input is kept
+  as JSON, where the `\n` or `\t` before the token hid it, so reading a
+  session and handoffs showed it.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
