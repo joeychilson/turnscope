@@ -365,8 +365,7 @@ fn files(entries: &[Entry], since: usize, cwd: Option<&str>, share: usize) -> St
     };
     for (at, entry) in entries.iter().enumerate().skip(since) {
         let Some(tool) = &entry.tool else { continue };
-        // An edit that failed changed nothing.
-        for file in tool.files.iter().filter(|_| !tool.failed) {
+        for file in tool.files.iter().filter(|_| tool.edited) {
             note(file, at, 1);
         }
         let Ok(input) = serde_json::from_str::<serde_json::Value>(&tool.input) else {
@@ -914,6 +913,7 @@ mod tests {
             output: None,
             failed: false,
             files: Vec::new(),
+            edited: true,
             role: Role::Work,
         };
         let bash = |command: &str| {
@@ -1001,6 +1001,7 @@ mod tests {
                 output: Some("error".to_owned()),
                 failed,
                 files: Vec::new(),
+                edited: !failed,
                 role: Role::Work,
             }),
         }
@@ -1074,6 +1075,7 @@ mod tests {
                 output: Some("test quoted_commas ... FAILED".to_owned()),
                 failed: true,
                 files: Vec::new(),
+                edited: false,
                 role: Role::Work,
             }),
         });
@@ -1113,6 +1115,7 @@ mod tests {
                 output: Some("error: test csv::quoted failed".to_owned()),
                 failed,
                 files: Vec::new(),
+                edited: !failed,
                 role,
             }),
         };
@@ -1195,24 +1198,28 @@ mod handoff_cases {
                     kind: serde_json::from_value(entry["kind"].clone()).unwrap(),
                     at: entry["at"].as_i64(),
                     text: text(&entry["text"]),
-                    tool: entry["tool"].as_object().map(|tool| Tool {
-                        name: text(&tool["name"]),
-                        input: text(&tool["input"]),
-                        output: tool
-                            .get("output")
-                            .and_then(|output| output.as_str())
-                            .map(str::to_owned),
-                        failed: tool
+                    tool: entry["tool"].as_object().map(|tool| {
+                        let failed = tool
                             .get("failed")
                             .and_then(|failed| failed.as_bool())
-                            .unwrap_or(false),
-                        files: tool
-                            .get("files")
-                            .and_then(|files| files.as_array())
-                            .map(|files| files.iter().map(text).collect())
-                            .unwrap_or_default(),
-                        role: agents::by_id(&text(&case["meta"]["agent"]))
-                            .map_or(Role::Work, |agent| agent.role(&text(&tool["name"]))),
+                            .unwrap_or(false);
+                        Tool {
+                            name: text(&tool["name"]),
+                            input: text(&tool["input"]),
+                            output: tool
+                                .get("output")
+                                .and_then(|output| output.as_str())
+                                .map(str::to_owned),
+                            failed,
+                            files: tool
+                                .get("files")
+                                .and_then(|files| files.as_array())
+                                .map(|files| files.iter().map(text).collect())
+                                .unwrap_or_default(),
+                            edited: !failed,
+                            role: agents::by_id(&text(&case["meta"]["agent"]))
+                                .map_or(Role::Work, |agent| agent.role(&text(&tool["name"]))),
+                        }
                     }),
                 })
                 .collect();

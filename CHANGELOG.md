@@ -99,6 +99,9 @@
   read, not a failure; `sed -i.bak`, `find -delete` and `git branch -D` are
   work; and a command after `cd v2;` counts as its own. A request is left
   out as sent again only if the agent hadn't answered it.
+- **Handoff:** a file a Codex script patched counts as changed when the
+  tests the script ran next failed. It was left out, so a session whose
+  edits all came in such scripts had no list of files at all.
 - **`statusline` and `guard`** no longer read every agent's MCP settings.
   With a 5.8 MB `~/.claude.json`, each run takes a quarter of the work and
   8 MB of memory instead of 38 MB.

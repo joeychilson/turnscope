@@ -861,8 +861,12 @@ fn converse(line: &Line, bytes: &[u8], conversation: &mut Conversation) {
         }
         (Some("function_call_output" | "custom_tool_call_output"), _) => {
             if let Some(call) = &item.call_id {
-                let (output, failed) = script(&text(&item.output));
-                conversation.answer(call, output, failed);
+                let (output, failed, stopped) = script(&text(&item.output));
+                if let Some(call) = conversation.answer(call, output, failed) {
+                    // A script that ran to its end made its patches,
+                    // though a command in it failed.
+                    call.edited = !stopped;
+                }
             }
         }
         _ => {}
@@ -870,12 +874,15 @@ fn converse(line: &Line, bytes: &[u8], conversation: &mut Conversation) {
 }
 
 /// What a tool's output says, without the wrapper of an `exec` script's:
-/// each command's own output, as it printed it, and whether the script or
-/// a command in it failed. Codex marks no other failure. A script's output
-/// opens with a header, then a JSON chunk a command, its output escaped,
-/// or the outcome of a promise holding one (measured 2026-10-09).
-fn script(output: &str) -> (String, bool) {
-    let mut failed = output.starts_with("Script failed") || output.starts_with("aborted by user");
+/// each command's own output, as it printed it; whether the script or a
+/// command in it failed; and whether it stopped, failing or with a call to
+/// one of Codex's tools rejected, so that its patches may not have been
+/// made. Codex marks no other failure. A script's output opens with a
+/// header, then a JSON chunk a command, its output escaped, or the outcome
+/// of a promise holding one (measured 2026-10-09).
+fn script(output: &str) -> (String, bool, bool) {
+    let mut stopped = output.starts_with("Script failed") || output.starts_with("aborted by user");
+    let mut failed = false;
     let mut said = Vec::new();
     for line in output.lines() {
         if line.starts_with("Script completed")
@@ -885,7 +892,7 @@ fn script(output: &str) -> (String, bool) {
             continue;
         }
         let parsed: Option<Value> = serde_json::from_str(line).ok();
-        failed |= parsed
+        stopped |= parsed
             .as_ref()
             .is_some_and(|value| value["status"] == "rejected");
         let chunk = parsed
@@ -910,7 +917,7 @@ fn script(output: &str) -> (String, bool) {
             _ => {}
         }
     }
-    (said.join("\n"), failed)
+    (said.join("\n"), failed || stopped, stopped)
 }
 
 #[cfg(test)]
@@ -961,9 +968,13 @@ mod tests {
             {\"i\":1,\"status\":\"fulfilled\",\"value\":{\"chunk_id\":\"b2\",\"exit_code\":101,\"output\":\"test failed\\n\"}}";
         assert_eq!(
             script(output),
-            ("src/lib.rs\nexit 101:\ntest failed".to_owned(), true)
+            ("src/lib.rs\nexit 101:\ntest failed".to_owned(), true, false)
         );
-        assert_eq!(script("Edited"), ("Edited".to_owned(), false));
+        assert_eq!(script("Edited"), ("Edited".to_owned(), false, false));
+        assert_eq!(
+            script("Script failed: patch rejected"),
+            ("Script failed: patch rejected".to_owned(), true, true)
+        );
     }
 
     #[test]
@@ -1393,6 +1404,16 @@ mod tests {
                     "response_item",
                     json!({"type": "custom_tool_call_output", "call_id": "c1", "output": "Script failed: exit 101"}),
                 ),
+                line(
+                    4,
+                    "response_item",
+                    json!({"type": "custom_tool_call", "name": "exec", "call_id": "c2", "input": script}),
+                ),
+                line(
+                    5,
+                    "response_item",
+                    json!({"type": "custom_tool_call_output", "call_id": "c2", "output": "Script completed\nOutput:\n{\"chunk_id\":\"a1\",\"exit_code\":101,\"output\":\"test failed\\n\"}"}),
+                ),
             ],
         );
         let entries = Codex.transcript("t1", &[file]).unwrap();
@@ -1400,14 +1421,37 @@ mod tests {
             (entries[0].kind, entries[0].text.as_str()),
             (Kind::User, "Fix the parser.")
         );
-        let tool = entries[1].tool.as_ref().unwrap();
+        // The script that failed may have stopped before its patch; the one
+        // that went on to its end made it, though its tests then failed.
+        let calls: Vec<_> = entries[1..]
+            .iter()
+            .filter_map(|entry| entry.tool.as_ref())
+            .map(|tool| {
+                (
+                    tool.name.as_str(),
+                    tool.failed,
+                    tool.edited,
+                    tool.files.as_slice(),
+                )
+            })
+            .collect();
+        let patched = ["src/lib.rs".to_owned()];
         assert_eq!(
-            (tool.name.as_str(), tool.failed, tool.files.as_slice()),
-            (
-                "exec: apply_patch, exec_command",
-                true,
-                ["src/lib.rs".to_owned()].as_slice()
-            )
+            calls,
+            [
+                (
+                    "exec: apply_patch, exec_command",
+                    true,
+                    false,
+                    patched.as_slice()
+                ),
+                (
+                    "exec: apply_patch, exec_command",
+                    true,
+                    true,
+                    patched.as_slice()
+                )
+            ]
         );
     }
 
