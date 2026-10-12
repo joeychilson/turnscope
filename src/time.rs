@@ -62,10 +62,11 @@ fn start_of_day(day: Date) -> i64 {
 /// The moment `text` names, as of `now`.
 pub fn parse(text: &str, now: i64) -> Result<i64> {
     let text = text.trim();
-    // A count too large to go back is no time at all.
+    // A count too large to go back is no time at all, and a negative one,
+    // which would be ahead, isn't one.
     let back = |unit: char, hours: i64| {
-        let count: i64 = text.strip_suffix(unit)?.parse().ok()?;
-        now.checked_sub(count.checked_mul(hours * HOUR)?)
+        let count: u32 = text.strip_suffix(unit)?.parse().ok()?;
+        now.checked_sub(i64::from(count).checked_mul(hours * HOUR)?)
     };
     let found = match text {
         "now" => Some(now),
@@ -145,6 +146,8 @@ mod tests {
             millis("2026-10-01T09:00:00Z").unwrap()
         );
         assert!(matches!(parse("last tuesday", now), Err(Error::Usage(_))));
+        // A count back is never ahead.
+        assert!(matches!(parse("-2d", now), Err(Error::Usage(_))));
         assert_eq!(span(110 * MINUTE), "1h 50m");
         assert_eq!(span(2 * DAY + 4 * HOUR + 10 * MINUTE), "2d 4h");
     }

@@ -124,16 +124,13 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
 /// One limit as a line: what's left, the reset, the outlook, and the work
 /// left at the pace of work.
 pub fn limit_text(limit: &Limit, now: i64) -> String {
-    let scope = limit
-        .scope
-        .as_ref()
-        .map_or(String::new(), |scope| format!(" ({scope})"));
+    let named = limit.named();
     let mut out = match limit.money {
         Some(money) => format!(
-            "{}{scope}: ${:.2} of ${:.2} left",
-            limit.name, money.left_usd, money.size_usd
+            "{named}: ${:.2} of ${:.2} left",
+            money.left_usd, money.size_usd
         ),
-        None => format!("{}{scope}: {}% left", limit.name, limit.left_percent),
+        None => format!("{named}: {}% left", limit.left_percent),
     };
     match (&limit.window, limit.reset_since) {
         (Some(_), Some(reset)) => out += &format!(", reset {}", when(reset, now)),
@@ -239,24 +236,25 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
             "{hours} isn't a number of hours: give one of zero or more"
         )));
     }
-    let more = match hours == 1.0 {
-        true => "1 more hour".to_owned(),
-        false => format!("{hours} more hours"),
+    let (more, fit, dont_fit) = match hours == 1.0 {
+        true => ("1 more hour".to_owned(), "fits", "doesn't fit"),
+        false => (format!("{hours} more hours"), "fit", "don't fit"),
     };
     let mut after = Vec::new();
     let mut unknown = None;
+    let mut rolls = None;
     for limit in account.limits.iter().filter(|limit| limit.whole()) {
         match (&limit.outlook, &limit.work) {
             (Outlook::UsedUp { .. }, _) if limit.reset_since.is_none() => {
                 return Ok(format!(
-                    "{more} of work don't fit: {} is used up.",
+                    "{more} of work {dont_fit}: {} is used up.",
                     limit.name
                 ));
             }
             (_, Some(work)) => {
                 if let Some(left) = work.left_hours.filter(|left| left.likely < hours) {
                     return Ok(format!(
-                        "{more} of work don't fit: {} runs out after about {} of work.",
+                        "{more} of work {dont_fit}: {} runs out after about {} of work.",
                         limit.name,
                         worked(left.likely)
                     ));
@@ -271,18 +269,33 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
                 let left = f64::from(limit.left_percent) - work.rate_per_hour * until;
                 after.push(format!("about {:.0}% of {}", left.max(0.0), limit.name));
             }
+            // A window that rolls has no start to measure work from.
+            _ if limit
+                .window
+                .is_some_and(|window| window.starts_at.is_none()) =>
+            {
+                rolls = rolls.or(Some(&limit.name))
+            }
             (_, None) => unknown = unknown.or(Some(&limit.name)),
         }
     }
+    let rolls = rolls.map_or(String::new(), |name| {
+        format!(" {name} is a window that rolls, so it isn't forecast.")
+    });
     Ok(match (unknown, after.is_empty()) {
         (Some(name), _) => format!(
-            "Whether {more} of work fit can't be told yet: too little work on {name} has been measured."
+            "Whether {more} of work {fit} can't be told yet: too little work on {name} has been measured."
         ),
+        (None, true) if !rolls.is_empty() => {
+            format!("Whether {more} of work {fit} can't be told.{rolls}")
+        }
         (None, true) => {
-            format!("Whether {more} of work fit can't be told: no limit on all its usage was read.")
+            format!(
+                "Whether {more} of work {fit} can't be told: no limit on all its usage was read."
+            )
         }
         (None, false) => format!(
-            "{more} of work fit at your working pace, leaving {}.",
+            "{more} of work {fit} at your working pace, leaving {}.{rolls}",
             after.join(", ")
         ),
     })
@@ -462,5 +475,48 @@ fn short(limit: &Limit, now: i64) -> String {
         Outlook::UsedUp { back: None } => format!("{name} used up"),
         Outlook::RunsOut { likely, .. } => format!("{name} {left}, out {}", at(likely.at)),
         _ => format!("{name} {left}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hours_on_a_window_that_rolls_say_so_rather_than_too_little_work() {
+        let example: serde_json::Value =
+            serde_json::from_str(include_str!("../../contract/status.notification.json")).unwrap();
+        let now = example["params"]["at"].as_i64().unwrap();
+        // Claude Max's 5 hours made a window that rolls, as OpenCode Go's
+        // is; its weekly limit is forecast.
+        let mut account = example["params"]["accounts"][0].clone();
+        let five = &mut account["limits"][0];
+        five["window"]["startsAt"] = serde_json::Value::Null;
+        five["work"] = serde_json::Value::Null;
+        five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "rolling"});
+        let account: Account = serde_json::from_value(account).unwrap();
+        assert_eq!(
+            fit(&account, 1.0, now).unwrap(),
+            "1 more hour of work fits at your working pace, leaving about 58% of Weekly. 5 hours is a window that rolls, so it isn't forecast."
+        );
+    }
+
+    #[test]
+    fn one_hour_of_work_doesnt_fit_in_the_singular() {
+        let example: serde_json::Value =
+            serde_json::from_str(include_str!("../../contract/status.notification.json")).unwrap();
+        let now = example["params"]["at"].as_i64().unwrap();
+        // Claude Max's 5 hours with half an hour of work left.
+        let mut account = example["params"]["accounts"][0].clone();
+        account["limits"][0]["work"]["leftHours"]["likely"] = 0.5.into();
+        let account: Account = serde_json::from_value(account).unwrap();
+        assert_eq!(
+            fit(&account, 1.0, now).unwrap(),
+            "1 more hour of work doesn't fit: 5 hours runs out after about 30m of work."
+        );
+        assert_eq!(
+            fit(&account, 2.0, now).unwrap(),
+            "2 more hours of work don't fit: 5 hours runs out after about 30m of work."
+        );
     }
 }

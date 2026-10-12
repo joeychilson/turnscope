@@ -166,7 +166,9 @@ The answer has three parts:
 
 1. With `hours`, whether they fit at the working pace. Only the first
    account's limits on all its usage count, not a limit on one model or one
-   key. When too little work has been measured, it says so.
+   key. When too little work has been measured, it says so. A window that
+   rolls, as OpenCode Go's 5 hours does, has no start to measure work
+   from, so the answer leaves it out and says so.
 2. A one-sentence verdict on the first account: how much work is left
    before which limit runs out, and when that limit resets.
 3. Each account, the caller's first and marked `yours`, with the agents
@@ -232,9 +234,10 @@ The answer:
 
 Shares are approximate. Providers say how much of a limit is used, not by
 what, so each row's share is the points used times its part of the cost.
-Shares are known only over the limit's current window, so with any other
-`since` the column is left out, and a line says from when the window runs
-and to leave `since` out for them.
+A limit on one model, such as `Weekly (Opus)`, counts only the responses of
+models whose id names it. Shares are known only over the limit's current
+window, so with any other `since` the column is left out, and a line says
+from when the window runs and to leave `since` out for them.
 
 An account with no limit read, such as one whose login expired, still has
 its usage broken down: over the last 7 days unless `since` says otherwise,

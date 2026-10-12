@@ -411,10 +411,11 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 account.full_title(),
                 status::limit_text(limit, now)
             );
+            let named = limit.named();
             let column = shares
                 .iter()
                 .any(Option::is_some)
-                .then_some((limit.name.as_str(), shares.as_slice()));
+                .then_some((named.as_str(), shares.as_slice()));
             let text = heading + &usage::text(&used, column);
             let value = json!({ "account": account.id, "limit": limit.key, "usage": used, "sharePercents": shares });
             print(value, text)
@@ -436,12 +437,21 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 ),
                 None => None,
             };
+            let since = time_of(&from)?.unwrap_or(now - 30 * time::DAY);
+            let until = time_of(&until)?.unwrap_or(now);
+            if since >= until {
+                return Err(Error::Usage(
+                    "--since is at or after --until, so nothing is between them: give an earlier --since"
+                        .to_owned(),
+                ));
+            }
             let query = usage::Query {
-                since: time_of(&from)?.unwrap_or(now - 30 * time::DAY),
-                until: time_of(&until)?.unwrap_or(now),
+                since,
+                until,
                 by: by.unwrap_or(usage::By::Day),
                 agent,
                 account,
+                model: None,
                 top,
             };
             let usage = usage::usage(&db, &query)?;

@@ -29,6 +29,8 @@ pub struct Query {
     pub by: By,
     pub agent: Option<String>,
     pub account: Option<String>,
+    /// Only responses of a model whose id holds this, in lowercase.
+    pub model: Option<String>,
     pub top: usize,
 }
 
@@ -112,6 +114,10 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     if let Some(account) = &query.account {
         filters.push("r.account = ?");
         values.push(account.clone().into());
+    }
+    if let Some(model) = &query.model {
+        filters.push("instr(lower(r.model), ?) > 0");
+        values.push(model.clone().into());
     }
     let sql = format!(
         "{trees} SELECT {key}, {name}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
@@ -373,6 +379,13 @@ pub fn breakdown(
             by,
             agent: None,
             account: Some(account.id.clone()),
+            // A limit on one model is used by that model's responses alone,
+            // whose ids name it as its scope does: "Opus" in
+            // `claude-opus-5`.
+            model: limit
+                .scope
+                .as_ref()
+                .map(|scope| scope.to_lowercase().replace(' ', "-")),
             top,
         },
     )?;
@@ -387,4 +400,39 @@ pub fn breakdown(
         })
         .collect();
     Ok((usage, points))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_limit_on_one_model_counts_that_models_responses_alone() {
+        let example: serde_json::Value =
+            serde_json::from_str(include_str!("../contract/status.notification.json")).unwrap();
+        let now = example["params"]["at"].as_i64().unwrap();
+        let account: crate::status::Account =
+            serde_json::from_value(example["params"]["accounts"][0].clone()).unwrap();
+        let opus = account
+            .limits
+            .iter()
+            .find(|limit| limit.scope.as_deref() == Some("Opus"))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        for (id, model, cost) in [("r1", "claude-opus-5", 3.0), ("r2", "claude-sonnet-5", 1.0)] {
+            db.execute(
+                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model, input,
+                     cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches,
+                     priority, cost, account)
+                 VALUES ('claude-code', ?1, 's', 0, 1, 'f', ?2, 'anthropic', ?3, 1, 0, 0, 0, 1, 0, 1, 0, 0, ?4, ?5)",
+                rusqlite::params![id, now - time::HOUR, model, cost, account.id],
+            )
+            .unwrap();
+        }
+        let (usage, points) = breakdown(&db, &account, opus, None, By::Model, 10, now).unwrap();
+        let rows: Vec<&str> = usage.rows.iter().map(|row| row.key.as_str()).collect();
+        assert_eq!(rows, ["claude-opus-5"]);
+        assert_eq!(points, [Some(f64::from(100 - opus.left_percent))]);
+    }
 }

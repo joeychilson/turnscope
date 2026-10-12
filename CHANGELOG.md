@@ -44,6 +44,17 @@
   sessions show` and `explain_usage` by session quote them now, as the
   list of sessions does. A session with no title shows as (untitled),
   without quotes.
+- **What used a limit on one model,** such as Claude's Opus weekly, counts
+  only that model's responses. Other models' usage was given shares of it.
+  Its column reads "% of Weekly (Opus)".
+- **Hours that fit** (`status --hours`, `check_limits`) leave out a window
+  that rolls, as OpenCode Go's 5 hours, and say so, instead of saying too
+  little work was measured. One hour reads "1 more hour of work fits", not
+  "fit".
+- **An API key** held by the same agent in two folders names that agent
+  once.
+- **`--since`** no longer takes a negative count, which meant a time ahead,
+  and `usage` says when `--since` isn't before `--until`.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
