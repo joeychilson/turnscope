@@ -91,6 +91,8 @@ enum Reply: Sendable {
     case result(Data)
     /// An error, in the form serve sends.
     case error(code: Int = -32000, String)
+    /// No answer, as from a serve that's stuck.
+    case silence
 
     /// A result holding `json`.
     static func of(_ json: Any) -> Reply {
@@ -158,9 +160,14 @@ final class FakeServe: Sendable {
         asked.compactMap { $0["method"] as? String }
     }
 
+    /// Every call to `method`, whole.
+    func calls(of method: String) -> [[String: Any]] {
+        asked.filter { $0["method"] as? String == method }
+    }
+
     /// The parameters of every call to `method`.
     func params(of method: String) -> [[String: Any]] {
-        asked.filter { $0["method"] as? String == method }.compactMap { $0["params"] as? [String: Any] }
+        calls(of: method).compactMap { $0["params"] as? [String: Any] }
     }
 
     /// Push the notification `method` to every connection.
@@ -201,13 +208,14 @@ final class FakeServe: Sendable {
                       let method = message["method"] as? String else { continue }
                 state.withLock { $0.asked.append(line) }
                 guard let id = message["id"] else { continue }
-                let reply: [String: Any] = switch answer(method, message["params"] as? [String: Any] ?? [:], self) {
+                switch answer(method, message["params"] as? [String: Any] ?? [:], self) {
                 case .result(let result):
-                    ["jsonrpc": "2.0", "id": id, "result": (try? JSONSerialization.jsonObject(with: result)) ?? [:]]
+                    let result = (try? JSONSerialization.jsonObject(with: result)) ?? [:]
+                    send(["jsonrpc": "2.0", "id": id, "result": result], to: [connection])
                 case .error(let code, let message):
-                    ["jsonrpc": "2.0", "id": id, "error": ["code": code, "message": message]]
+                    send(["jsonrpc": "2.0", "id": id, "error": ["code": code, "message": message]], to: [connection])
+                case .silence: break
                 }
-                send(reply, to: [connection])
             }
         }
     }

@@ -66,6 +66,14 @@
   instead of showing as a limit that never resets.
 - **A key held by two agents**, such as one OpenRouter key in OpenCode and
   Pi, is sent once each read instead of twice.
+- **Not up to date:** when the engine sends a status or alert the app can't
+  read, or doesn't answer within 30 seconds, the panel says "Not up to date ·
+  trying again", the menu bar item dims, and the app connects again. Before
+  the first status, the panel says "Turnscope's engine didn't answer". It
+  used to keep showing the last status as current, or "Reading your
+  agents' history…" with no end.
+- **Settings → General:** the notification switches are grayed out until
+  the first status arrives. Before, clicking them did nothing.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

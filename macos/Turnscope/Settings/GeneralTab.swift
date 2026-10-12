@@ -59,14 +59,18 @@ struct GeneralTab: View {
                 .transition(appears)
             }
             // Each finishes the sentence "Notify me when". More about when
-            // it's sent shows on hover.
-            SettingRow("A limit will run out", help: "Before it resets, at your pace",
-                       isOn: notify(\.runningOut))
-            SettingRow("A limit is used up", isOn: notify(\.usedUp))
-            SettingRow("A limit is back", help: "After it was used up, once the account can be used again",
-                       isOn: notify(\.reset))
-            SettingRow("An account needs signing in", help: "Its login was refused, so its limits can't be read",
-                       isOn: notify(\.signIn))
+            // it's sent shows on hover. They come with the status, so until
+            // the first one there's nothing to change.
+            Group {
+                SettingRow("A limit will run out", help: "Before it resets, at your pace",
+                           isOn: notify(\.runningOut))
+                SettingRow("A limit is used up", isOn: notify(\.usedUp))
+                SettingRow("A limit is back", help: "After it was used up, once the account can be used again",
+                           isOn: notify(\.reset))
+                SettingRow("An account needs signing in", help: "Its login was refused, so its limits can't be read",
+                           isOn: notify(\.signIn))
+            }
+            .disabled(store.notify == nil)
         }
         // Checked again each time Settings shows, since they may have just
         // been turned on.

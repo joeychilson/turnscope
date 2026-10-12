@@ -36,7 +36,7 @@ func theRealEngineIsStartedSaysHelloAndTakesChanges() async throws {
     // A change goes through serve, which then pushes a status that has it.
     store.setNotify { $0.reset = false }
     await until { store.notify?.reset == false && store.failure == nil }
-    let _: Done = try await client.request("shutdown", Done())
+    let _: Done = try await client.request("shutdown")
     client.stop()
     #expect(store.notify?.reset == false)
 }

@@ -106,9 +106,11 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   `turnscope serve --socket` once for the socket's path, starts `serve` when
   nothing listens, and says `hello` on each connection. It hands the store
   events in order: its phase (connecting, connected, or failed and why),
-  each `hello` result, each status and each alert. `request` sends a
-  request and waits for its result. [protocol.md](protocol.md#lifecycle)
-  says how it reconnects and replaces another engine's `serve`.
+  each `hello` result, each status and each alert. A status or alert it
+  can't read drops the connection, so the store hears that it failed.
+  `request` sends a request and waits for its result.
+  [protocol.md](protocol.md#lifecycle) says how it reconnects and replaces
+  another engine's `serve`.
 - **`Store`** is `@Observable`. It keeps the last status, even while
   `serve` is away, so the panel never goes empty during a restart.
   `failure` says why it isn't connected. It splits the accounts into the
@@ -241,7 +243,7 @@ are in cards. Changes take effect at once.
 
 | Tab | Holds |
 |---|---|
-| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version, Check now and Check automatically |
+| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert, grayed out until the first status arrives. **Updates**: the version, Check now and Check automatically |
 | Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed. Run from its disk image, the switches are off and the heading says to move Turnscope to Applications |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 

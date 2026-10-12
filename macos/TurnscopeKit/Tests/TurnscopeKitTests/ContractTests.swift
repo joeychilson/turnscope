@@ -1,7 +1,7 @@
 // The app reads every message serve writes, and writes every request as
 // serve reads it, as `contract/` shows each: every answer and
-// notification decodes as its message, and every request the app makes
-// encodes as the example's parameters.
+// notification decodes as its message, and every request the app makes is
+// written as its example, line for line.
 
 import Foundation
 import Testing
@@ -31,26 +31,27 @@ private let answers: [String: @Sendable (Data) throws -> Void] = [
     "error.json": read(Refused.self),
 ]
 
-/// The parameters the app writes for each request example, by file name,
-/// or nil for a request that takes none.
-private let requests: [String: @Sendable () throws -> Data?] = [
-    "hello.request.json": write(HelloParams(protocol: protocolVersion)),
-    "alerts.ack.request.json": write(AckParams(ids: [1, 2])),
-    "limit.breakdown.request.json": write(BreakdownParams(account: "anthropic:acct-1:org-1", limit: "five_hour")),
-    "settings.set.request.json": write(SettingsParams(settings: Settings(
+/// The line the app writes for each request example, by file name, given
+/// the example's id.
+private let requests: [String: @Sendable (Int) throws -> Data] = [
+    "hello.request.json": write("hello", HelloParams(protocol: protocolVersion)),
+    "alerts.ack.request.json": write("alerts.ack", AckParams(ids: [1, 2])),
+    "limit.breakdown.request.json": write("limit.breakdown",
+                                          BreakdownParams(account: "anthropic:acct-1:org-1", limit: "five_hour")),
+    "settings.set.request.json": write("settings.set", SettingsParams(settings: Settings(
         notify: Notify(runningOut: true, usedUp: true, reset: true, signIn: true)))),
-    "account.hide.request.json": write(HideParams(account: "openrouter:api", hidden: true)),
-    "agent.connect.request.json": write(AgentParams(agent: "codex")),
-    "agent.disconnect.request.json": write(AgentParams(agent: "codex")),
-    "shutdown.request.json": { nil },
+    "account.hide.request.json": write("account.hide", HideParams(account: "openrouter:api", hidden: true)),
+    "agent.connect.request.json": write("agent.connect", AgentParams(agent: "codex")),
+    "agent.disconnect.request.json": write("agent.disconnect", AgentParams(agent: "codex")),
+    "shutdown.request.json": write("shutdown"),
 ]
 
 private func read<T: Decodable & SendableMetatype>(_: T.Type) -> @Sendable (Data) throws -> Void {
     { data in _ = try Contract.decoder.decode(T.self, from: data) }
 }
 
-private func write(_ params: some Encodable & Sendable) -> @Sendable () throws -> Data? {
-    { try Contract.encoder.encode(params) }
+private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil) -> @Sendable (Int) throws -> Data {
+    { id in try Asked(id: id, method: method, params: params).line() }
 }
 
 @Test func everyExampleIsWhatTheAppReadsOrWrites() throws {
@@ -61,9 +62,9 @@ private func write(_ params: some Encodable & Sendable) -> @Sendable () throws -
         if let read = answers[name] {
             do { try read(data) } catch { Issue.record("\(name): \(error)") }
         } else if let write = requests[name] {
-            let example = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["params"]
-            let written = try write().map { try JSONSerialization.jsonObject(with: $0) }
-            #expect(example as? NSDictionary == written as? NSDictionary, "\(name)")
+            let example = try JSONSerialization.jsonObject(with: data) as? NSDictionary
+            let written = try JSONSerialization.jsonObject(with: write(try #require(example?["id"] as? Int)))
+            #expect(example == written as? NSDictionary, "\(name)")
         }
     }
 }
