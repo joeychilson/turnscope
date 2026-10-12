@@ -86,6 +86,11 @@
   request, search finds the parent's words only in the parent,
   `sessions read` and handoffs show only the fork's conversation, and the
   parent's usage isn't counted a second time.
+- **A Codex thread rewound** to an earlier turn no longer shows the turns
+  it went back past in `sessions read` and handoffs. Search still finds the
+  thread by their words. A fork that points at its parent's history
+  instead of copying it is titled by its own first request, not
+  "(untitled)".
 - **OpenCode:** a reply another OpenCode process saved late is no longer
   missed. A session OpenCode left with a placeholder title, such as
   "New session - 2026-07-30T18:45:03.662Z", is titled by its first request.
