@@ -722,6 +722,78 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_grew_between_catch_ups_adds_only_what_was_appended() {
+        use std::io::Write as _;
+
+        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let log = home.path().join(".claude/projects/-work-app/s1.jsonl");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let user = |at: &str, text: &str| {
+            serde_json::json!({"type": "user", "sessionId": "s1", "timestamp": at, "cwd": "/work/app",
+                "message": {"role": "user", "content": text}})
+        };
+        let reply = |at: &str, n: u8, output: u64, block: serde_json::Value| {
+            serde_json::json!({"type": "assistant", "sessionId": "s1", "requestId": format!("req_{n}"), "timestamp": at,
+                "message": {"id": format!("msg_{n}"), "model": "claude-opus-5", "role": "assistant", "content": [block],
+                    "usage": {"input_tokens": 100, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+                        "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}, "output_tokens": output}}})
+        };
+        let text = |text: &str| serde_json::json!({"type": "text", "text": text});
+        let lines = [
+            user("2026-09-30T09:00:00Z", "Fix the parser."),
+            reply(
+                "2026-09-30T09:00:05Z",
+                1,
+                16,
+                text("Looking at the parser."),
+            ),
+            // The same response's next block, its usage grown.
+            reply(
+                "2026-09-30T09:00:09Z",
+                1,
+                900,
+                serde_json::json!({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}),
+            ),
+            user("2026-09-30T09:01:00Z", "Add a test too."),
+            reply("2026-09-30T09:01:30Z", 2, 40, text("Added one.")),
+        ];
+        let write = |lines: &[serde_json::Value]| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log)
+                .unwrap();
+            for line in lines {
+                writeln!(file, "{line}").unwrap();
+            }
+        };
+        write(&lines[..2]);
+        ingest(&mut db, home.path()).unwrap();
+        write(&lines[2..]);
+        ingest(&mut db, home.path()).unwrap();
+        let responses: Vec<(String, i64)> = db
+            .prepare("SELECT id, output FROM response ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            responses,
+            [
+                ("msg_1:req_1".to_owned(), 900),
+                ("msg_2:req_2".to_owned(), 40)
+            ]
+        );
+        // Each of the four messages indexed once.
+        let said: i64 = db
+            .query_row("SELECT count(*) FROM said", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(said, 4);
+    }
+
+    #[test]
     fn a_worktree_is_its_repositorys_project_even_once_gone() {
         let home = tempfile::tempdir().unwrap();
         let repository = home.path().join("work/app");

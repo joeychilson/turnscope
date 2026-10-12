@@ -16,23 +16,83 @@
         "reasoning": 0
       },
       "unpriced": 0
+    },
+    {
+      "costUsd": 0.021,
+      "key": "xai:user-3",
+      "name": "SuperGrok (me@example.com)",
+      "responses": 1,
+      "tokens": {
+        "cacheRead": 16000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 8000,
+        "output": 700,
+        "reasoning": 300
+      },
+      "unpriced": 0
+    },
+    {
+      "costUsd": 0.005,
+      "key": "",
+      "name": null,
+      "responses": 2,
+      "tokens": {
+        "cacheRead": 12000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 2200,
+        "output": 480,
+        "reasoning": 100
+      },
+      "unpriced": 0
+    },
+    {
+      "costUsd": 0.0015999999999999999,
+      "key": "openrouter:api",
+      "name": "OpenRouter API key",
+      "responses": 2,
+      "tokens": {
+        "cacheRead": 3000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 3300,
+        "output": 310,
+        "reasoning": 0
+      },
+      "unpriced": 0
+    },
+    {
+      "costUsd": 0.0,
+      "key": "openai:acct-2",
+      "name": "ChatGPT Plus (me@example.com)",
+      "responses": 4,
+      "tokens": {
+        "cacheRead": 32400,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 4100,
+        "output": 710,
+        "reasoning": 240
+      },
+      "unpriced": 4
     }
   ],
   "since": 1790640000000,
   "total": {
-    "costUsd": 0.4982,
+    "costUsd": 0.5258,
     "key": "total",
     "name": null,
-    "responses": 27,
+    "responses": 36,
     "tokens": {
-      "cacheRead": 482900,
+      "cacheRead": 546300,
       "cacheWrite1h": 0,
       "cacheWrite5m": 0,
-      "input": 12100,
-      "output": 7850,
-      "reasoning": 0
+      "input": 29700,
+      "output": 10050,
+      "reasoning": 640
     },
-    "unpriced": 0
+    "unpriced": 4
   },
   "until": 1790856000000
 }

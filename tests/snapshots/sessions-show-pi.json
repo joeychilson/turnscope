@@ -1,0 +1,31 @@
+{
+  "accounts": [
+    "openrouter:api"
+  ],
+  "active": 1790751690000,
+  "agent": "pi",
+  "branch": null,
+  "costUsd": 0.0015999999999999999,
+  "cwd": "/work/app",
+  "id": "pi:5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+  "models": [
+    "deepseek/deepseek-v4"
+  ],
+  "parent": null,
+  "project": "/work/app",
+  "responses": 2,
+  "resume": "cd /work/app && pi --session 5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+  "running": false,
+  "started": 1790751600000,
+  "subagents": 0,
+  "title": "Add a --quiet flag that hides the progress bar.",
+  "tokens": {
+    "cacheRead": 3000,
+    "cacheWrite1h": 0,
+    "cacheWrite5m": 0,
+    "input": 3300,
+    "output": 310,
+    "reasoning": 0
+  },
+  "unpriced": 0
+}

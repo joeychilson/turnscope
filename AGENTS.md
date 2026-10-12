@@ -50,6 +50,9 @@ Run the binary on scratch data, off the network, over the fixture home:
 TURNSCOPE_OFFLINE=1 target/debug/turnscope --data "$(mktemp -d)" --home tests/fixtures/home sessions
 ```
 
+OpenCode's session is SQL in the fixture home; `cargo test --test cli`
+builds its database in a copy you can use instead: `--home target/tmp/home`.
+
 The full check, as CI runs it:
 
 ```sh

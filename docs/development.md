@@ -32,7 +32,9 @@ open target/xcode/Build/Products/Debug/Turnscope.app --args --data /tmp/ts --ope
 
 Both still read your agents' history and logins, and ask the providers for
 your limits. To leave your agents out too, add `--home` with a copy of a
-home, or the test fixture's: `--home "$PWD/tests/fixtures/home"`. To keep
+home, or the test fixture's: `--home "$PWD/tests/fixtures/home"`. OpenCode's
+session is SQL there; `cargo test --test cli` builds its database in a copy
+you can use instead: `--home "$PWD/target/tmp/home"`. To keep
 the command line off the network, set `TURNSCOPE_OFFLINE=1`
 ([cli.md](cli.md#environment)).
 
@@ -59,13 +61,16 @@ to see it here.
 
 | Tests | Where | Cover |
 |---|---|---|
-| Unit | `#[cfg(test)]` in each module | Each agent's reader on synthetic logs, merging reports in any order, opening the database, prices, the forecast, each provider's answers, alerts, time, redaction, the contract's examples |
-| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `sessions`, `handoff`, `accounts`, `config` and `connect` by snapshot; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
+| Unit | `#[cfg(test)]` in each module | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database, prices, the forecast, each provider's answers, alerts, time, redaction, the contract's examples |
+| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `sessions`, `handoff`, `accounts`, `config`, `connect` and `doctor` by snapshot, with a session of every agent listed, shown and read; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
 | Swift | `macos/TurnscopeKit/Tests/` | Decoding and encoding every contract example, the client against a stand-in `serve`, launch arguments, the wording |
 
-**Fixtures.** `tests/cli.rs` reads a home with two synthetic Claude Code
-sessions (`tests/fixtures/home`) and writes a database of four synthetic
-accounts in SQL. Fixtures never hold real ids, emails, keys or session text.
+**Fixtures.** `tests/cli.rs` reads a home (`tests/fixtures/home`) with two
+synthetic Claude Code sessions and one of each other agent, and writes a
+database of four synthetic accounts in SQL. It copies the home to
+`target/tmp/home` once a run and builds OpenCode's `opencode.db` there from
+`opencode.sql`, so no binary database is kept in the repository. Fixtures
+never hold real ids, emails, keys or session text.
 
 **Snapshots.** The end-to-end tests compare each answer with its file in
 `tests/snapshots/`. After a deliberate change to output, write them again

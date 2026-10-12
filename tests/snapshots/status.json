@@ -133,7 +133,7 @@
         }
       ],
       "provider": "openai",
-      "recent": false,
+      "recent": true,
       "spend": null,
       "state": {
         "kind": "live",
@@ -201,7 +201,7 @@
         }
       ],
       "provider": "openrouter",
-      "recent": false,
+      "recent": true,
       "spend": {
         "forecastUsd": null,
         "monthUsd": 0.0,
@@ -226,7 +226,7 @@
       "label": "me@example.com",
       "limits": [],
       "provider": "xai",
-      "recent": false,
+      "recent": true,
       "spend": null,
       "state": {
         "kind": "unread",

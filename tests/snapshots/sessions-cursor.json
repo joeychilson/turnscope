@@ -1,0 +1,52 @@
+{
+  "found": 6,
+  "next": "pi:5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+  "sessions": [
+    {
+      "active": 1790755501000,
+      "agent": "codex",
+      "branch": "main",
+      "costUsd": 0.0,
+      "cwd": "/work/app",
+      "id": "codex:019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
+      "project": "/work/app",
+      "responses": 4,
+      "running": false,
+      "started": 1790755200000,
+      "subagents": 0,
+      "title": "Skip blank lines in the importer",
+      "tokens": {
+        "cacheRead": 32400,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 4100,
+        "output": 710,
+        "reasoning": 240
+      },
+      "unpriced": 4
+    },
+    {
+      "active": 1790751690000,
+      "agent": "pi",
+      "branch": null,
+      "costUsd": 0.0015999999999999999,
+      "cwd": "/work/app",
+      "id": "pi:5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+      "project": "/work/app",
+      "responses": 2,
+      "running": false,
+      "started": 1790751600000,
+      "subagents": 0,
+      "title": "Add a --quiet flag that hides the progress bar.",
+      "tokens": {
+        "cacheRead": 3000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 3300,
+        "output": 310,
+        "reasoning": 0
+      },
+      "unpriced": 0
+    }
+  ]
+}

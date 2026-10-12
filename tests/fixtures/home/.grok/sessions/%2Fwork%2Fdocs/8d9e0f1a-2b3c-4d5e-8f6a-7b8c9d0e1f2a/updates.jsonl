@@ -1,0 +1,2 @@
+{"timestamp": 1790748000, "params": {"update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "<user_info>OS: macOS</user_info><user_query>Fix the broken links in the guide.</user_query>"}}}}
+{"timestamp": 1790748240, "params": {"update": {"sessionUpdate": "turn_completed", "prompt_id": "prompt-gb-1", "usage": {"modelUsage": {"grok-4.6-build": {"inputTokens": 24000, "cachedReadTokens": 16000, "cacheCreationTokens": 0, "outputTokens": 700, "reasoningTokens": 300, "modelCalls": 4, "costUsdTicks": 210000000}}}}}}

@@ -1,6 +1,6 @@
 // The client and the store against the real engine: `turnscope serve` from
 // the binary `TURNSCOPE_BINARY` names, off the network, over a scratch data
-// directory and the snapshot tests' home, which holds two made-up sessions.
+// directory and the fixture home, `tests/fixtures/home`.
 // It runs only when that variable is set, to an absolute path:
 //
 //   TURNSCOPE_BINARY="$PWD/target/debug/turnscope" swift test --package-path macos/TurnscopeKit

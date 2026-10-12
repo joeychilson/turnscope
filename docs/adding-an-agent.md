@@ -14,7 +14,7 @@ The steps use an agent called Acme, with id `acme`. Pi
 | [2. Describe it in `Info`](#2-describe-it-in-info) | `src/agents/acme.rs` |
 | [3. Implement `Agent`](#3-implement-agent) | `src/agents/acme.rs` |
 | [4. Register it](#4-register-it) | `src/agents/mod.rs` |
-| [5. Test it](#5-test-it) | `src/agents/acme.rs`, `tests/snapshots/` |
+| [5. Test it](#5-test-it) | `src/agents/acme.rs`, `tests/fixtures/home/`, `tests/cli.rs`, `tests/snapshots/` |
 | [6. Add its logo](#6-add-its-logo) | `macos/Logos/agents/acme.svg`, `macos/Logos/README.md` |
 | [7. Update the docs](#7-update-the-docs) | `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`, `CHANGELOG.md` |
 
@@ -307,10 +307,22 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-Three CLI snapshots list every agent: `tests/snapshots/connect.txt`,
-`connect.json`, and `mcp.json` (the MCP server's instructions). `cargo test`
-names them as stale. Rewrite them, and check that the new agent is the only
-change:
+Then add a session of Acme's to the fixture home, `tests/fixtures/home`,
+where the agent keeps it (`.acme/…`) and in its format: a request, a reply
+or two with usage, and a tool call, made up as the unit tests' are. Date it
+on Sep 30, a day before the tests' clock, as the other agents' sessions are,
+in a folder no other fixture session uses, so the handoffs and searches by
+folder stay as they are. An agent whose history is a database, as OpenCode's
+is, gets the SQL that builds it beside where the database goes, built in
+`home()` in `tests/cli.rs` as `opencode.sql` is. In `tests/cli.rs`, add the
+session's id as a constant, and a `sessions show` and a `sessions read` case
+for it in `every_command_answers_as_its_snapshot_says`.
+
+The new agent and its session change the snapshots that list every agent or
+session, such as `connect`, `sessions`, `usage-model`, `status.json` and
+`mcp.json` (the MCP server's instructions). `cargo test` names them as
+stale. Rewrite them, and check that the new agent and its session are the
+only change:
 
 ```sh
 TURNSCOPE_BLESS=1 cargo test --test cli
@@ -327,8 +339,8 @@ draws a generic mark.
 Name the agent in:
 
 - `README.md`: the supported agents.
-- `docs/cli.md`: the agent ids, and the `connect` output, copied from
-  `tests/snapshots/connect.txt`.
+- `docs/cli.md`: the agent ids, and the examples whose snapshots changed,
+  such as the `connect` output, copied from `tests/snapshots/connect.txt`.
 - `docs/mcp.md`: the table of `connect` commands, the `connect` output,
   the agents' folders and configuration files, the commands "Who is
   asking" looks for and any `session_var`, `cwd_var` or `folder_var`, and
@@ -340,7 +352,9 @@ Name the agent in:
 
 - [ ] `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`
   and `cargo test --locked` pass.
-- [ ] The rewritten snapshots differ only by the new agent.
+- [ ] The fixture home holds a session of the agent's, which the CLI
+  snapshots list, show and read.
+- [ ] The rewritten snapshots differ only by the new agent and its session.
 - [ ] `macos/Logos/agents/acme.svg` exists, and `macos/Logos/README.md`
   says where it came from.
 - [ ] `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md` and

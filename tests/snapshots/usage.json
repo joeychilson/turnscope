@@ -1,0 +1,53 @@
+{
+  "by": "day",
+  "rest": null,
+  "rows": [
+    {
+      "costUsd": 0.057800000000000004,
+      "key": "2026-09-30",
+      "name": null,
+      "responses": 12,
+      "tokens": {
+        "cacheRead": 66300,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 20100,
+        "output": 2850,
+        "reasoning": 640
+      },
+      "unpriced": 4
+    },
+    {
+      "costUsd": 0.46799999999999997,
+      "key": "2026-10-01",
+      "name": null,
+      "responses": 24,
+      "tokens": {
+        "cacheRead": 480000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 9600,
+        "output": 7200,
+        "reasoning": 0
+      },
+      "unpriced": 0
+    }
+  ],
+  "since": 1788264000000,
+  "total": {
+    "costUsd": 0.5257999999999999,
+    "key": "total",
+    "name": null,
+    "responses": 36,
+    "tokens": {
+      "cacheRead": 546300,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 0,
+      "input": 29700,
+      "output": 10050,
+      "reasoning": 640
+    },
+    "unpriced": 4
+  },
+  "until": 1790856000000
+}

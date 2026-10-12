@@ -1,0 +1,31 @@
+{
+  "accounts": [
+    "xai:user-3"
+  ],
+  "active": 1790748240000,
+  "agent": "grok-build",
+  "branch": "main",
+  "costUsd": 0.021,
+  "cwd": "/work/docs",
+  "id": "grok-build:8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a",
+  "models": [
+    "grok-4.6-build"
+  ],
+  "parent": null,
+  "project": "/work/docs",
+  "responses": 1,
+  "resume": "cd /work/docs && grok --resume 8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a",
+  "running": false,
+  "started": 1790748000000,
+  "subagents": 0,
+  "title": "Fix the broken links in the guide",
+  "tokens": {
+    "cacheRead": 16000,
+    "cacheWrite1h": 0,
+    "cacheWrite5m": 0,
+    "input": 8000,
+    "output": 700,
+    "reasoning": 300
+  },
+  "unpriced": 0
+}
