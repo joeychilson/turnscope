@@ -58,6 +58,16 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(words.stretch(52 * 3600) == "2d 4h")
 }
 
+@Test func datesAreGregorianWhateverTheMacsCalendar() {
+    var hebrew = Calendar(identifier: .hebrew)
+    hebrew.timeZone = TimeZone(identifier: "America/Chicago")!
+    let words = Words(now: noon, calendar: hebrew)
+    #expect(words.at(at("2026-10-18T16:37:00Z"), .later) == "Oct 18")
+    #expect(words.ago(at("2026-09-22T12:00:00Z")) == "Sep 22")
+    // In the calendar's time zone, five hours behind UTC.
+    #expect(words.at(at("2026-10-03T19:50:00Z"), .thisWeek) == "Sat 2:50 PM")
+}
+
 @Test func amountsAreGroupedAndWhatIsLeftIsRoundedDown() {
     #expect(words.dollars(0) == "$0")
     #expect(words.dollars(9.956) == "$9.96")
@@ -192,6 +202,16 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     // Early in the month there's no forecast, so none is mentioned.
     #expect(words.pace(Spend(monthUsd: 1, forecastUsd: nil, partial: false)) == nil)
     #expect(words.spent(unknown) == "Cost unknown")
+}
+
+@Test func voiceOverReadsTheMenuBarAsEachAccountThenItsFigure() {
+    let claude = account([limit(runsOut)])
+    let keys = account([], id: "openrouter:api", title: "OpenRouter API key", kind: .apiKey,
+                       spend: Spend(monthUsd: 84.2, forecastUsd: 210, partial: false))
+    #expect(words.spokenItem([claude, keys], outOfDate: false)
+        == "Claude Max, runs out in 2 hours; OpenRouter API key, $84 this month")
+    #expect(words.spokenItem([claude], outOfDate: true) == "Claude Max, runs out in 2 hours, not up to date")
+    #expect(words.spokenItem([], outOfDate: false) == "Turnscope")
 }
 
 @Test func aSessionThatUsedALimitSaysItsShareWhereItIsKnown() {

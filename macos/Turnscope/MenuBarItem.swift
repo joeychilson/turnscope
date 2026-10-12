@@ -30,9 +30,10 @@ final class MenuBarItem {
     func image(_ accounts: [AccountStatus], words: Words, dark: Bool, outOfDate: Bool) -> NSImage? {
         let shown = Array(accounts.prefix(MenuBarItem.most))
         let figures = shown.map(words.figure)
+        let spoken = words.spokenItem(shown, outOfDate: outOfDate)
         let urgent = MenuBarItem.urgent(accounts)
-        let showing = Drawn(accounts: shown.map { [$0.title, $0.provider, "\($0.standing)"] },
-                            figures: figures, dark: urgent && dark, outOfDate: outOfDate)
+        let showing = Drawn(accounts: shown.map { [$0.provider, "\($0.standing)"] }, figures: figures,
+                            spoken: spoken, dark: urgent && dark, outOfDate: outOfDate)
         guard showing != drawn else { return nil }
         drawn = showing
         let renderer = ImageRenderer(content: ItemLabel(accounts: shown, figures: figures, template: !urgent)
@@ -41,10 +42,7 @@ final class MenuBarItem {
         renderer.scale = 2
         let image = renderer.nsImage ?? NSImage()
         image.isTemplate = !urgent
-        let said = shown.isEmpty
-            ? "Turnscope"
-            : shown.map { "\($0.title), \(words.spokenFigure($0))" }.joined(separator: "; ")
-        image.accessibilityDescription = outOfDate ? "\(said), not up to date" : said
+        image.accessibilityDescription = spoken
         return image
     }
 
@@ -62,12 +60,14 @@ final class MenuBarItem {
         UserDefaults.standard.string(forKey: Preference.menuShows) == MenuShows.one.rawValue ? 1 : .max
     }
 
-    /// What an image shows: the accounts' names (VoiceOver reads these),
-    /// logos and standings, their figures, the appearance when it's drawn in
-    /// color, and whether it's out of date.
+    /// What an image shows: the accounts' logos and standings, their
+    /// figures, what VoiceOver reads, which can change while the figures
+    /// don't, the appearance when it's drawn in color, and whether it's out
+    /// of date.
     private struct Drawn: Equatable {
         var accounts: [[String]]
         var figures: [String]
+        var spoken: String
         var dark: Bool
         var outOfDate: Bool
     }
@@ -101,7 +101,8 @@ final class MenuBarItem {
                         Text(figure)
                             .font(.system(size: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .semibold)
                                 .monospacedDigit())
-                            .foregroundStyle(template ? Color.black : account.standing.color)
+                            .foregroundStyle(template ? AnyShapeStyle(Color.black)
+                                                      : AnyShapeStyle(account.standing.color))
                             .offset(y: -1)
                     }
                 }

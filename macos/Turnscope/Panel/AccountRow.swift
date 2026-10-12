@@ -44,7 +44,7 @@ struct AccountRow: View {
                     if !lines {
                         Text(words.status(account))
                             .font(.small)
-                            .foregroundStyle(deciding?.standing.ink(lasting: .secondary) ?? .secondary)
+                            .foregroundStyle((deciding?.standing ?? .lasts).ink(lasting: .secondary))
                             .lineLimit(1)
                             .transition(appears)
                     }
@@ -60,7 +60,7 @@ struct AccountRow: View {
                     // The text after the figure says what it is, so they
                     // read as one: "$10 of $30", "$84 this month".
                     let said = words.rowFigure(account)
-                    let left = Text(said.figure).foregroundStyle(deciding?.standing.ink(lasting: .primary) ?? .primary)
+                    let left = Text(said.figure).foregroundStyle((deciding?.standing ?? .lasts).ink(lasting: .primary))
                     let then = Text(said.then.map { " \($0)" } ?? "")
                         .font(.name).foregroundStyle(.secondary)
                     Text("\(left)\(then)")
@@ -147,7 +147,7 @@ private struct LimitLine: View {
         let ahead = words.ahead(limit).map { Text($0).foregroundStyle(limit.standing.color) }
         let usedUp = limit.standing == .usedUp
         let window = words.window(limit).map {
-            Text($0).foregroundStyle(usedUp ? limit.standing.color : .secondary)
+            Text($0).foregroundStyle(usedUp ? AnyShapeStyle(limit.standing.color) : AnyShapeStyle(.secondary))
         }
         let line = { (parts: [Text]) in
             parts.reduce(name) { said, part in Text("\(said)\(Text(" · ").foregroundStyle(.secondary))\(part)") }
@@ -176,9 +176,11 @@ private struct LimitLine: View {
 /// A limit's level: what's left now. It's gray while the limit lasts, amber
 /// while it's running out, and red when it's used up. It's full once the
 /// limit has reset since it was read, as serve says. This is the only bar
-/// the app draws.
+/// the app draws. It grows to its level as it appears, or is drawn there
+/// with Reduce Motion.
 struct Bar: View {
     var limit: LimitStatus
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var grown = false
 
     var body: some View {
@@ -188,7 +190,7 @@ struct Bar: View {
                 Capsule().fill(.quaternary)
                 Capsule()
                     .fill(limit.standing == .lasts ? AnyShapeStyle(.secondary) : AnyShapeStyle(limit.standing.color))
-                    .frame(width: max(level > 0 ? 5 : 0, geometry.size.width * (grown ? level : 0)))
+                    .frame(width: max(level > 0 ? 5 : 0, geometry.size.width * (grown || reduceMotion ? level : 0)))
             }
         }
         .frame(height: 5)

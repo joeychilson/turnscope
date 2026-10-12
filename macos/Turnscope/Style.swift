@@ -62,24 +62,65 @@ extension Font {
 extension Color {
     /// The color of something at work right now, such as an active session.
     /// It's the only color in a calm panel, since it needs nothing from you.
-    /// It's as bright as the amber beside it, and as muted.
+    /// It's as bright as the dark appearance's amber, and as muted.
     static let active = Color(red: 0.27, green: 0.72, blue: 0.43)
+
+    /// The color `0xRRGGBB`, in sRGB.
+    fileprivate init(hex: Int) {
+        self.init(red: Double(hex >> 16 & 0xFF) / 255, green: Double(hex >> 8 & 0xFF) / 255,
+                  blue: Double(hex & 0xFF) / 255)
+    }
 }
 
 extension Standing {
-    /// The color for something with this standing.
-    var color: Color {
-        switch self {
-        case .lasts: .primary
-        case .runningOut: Color(red: 0.93, green: 0.58, blue: 0.10)
-        case .usedUp: Color(red: 0.92, green: 0.26, blue: 0.22)
-        }
-    }
+    /// The color for something with this standing, in the appearance it's
+    /// drawn in.
+    var color: Urgency { Urgency(standing: self) }
 
     /// The color for text about something with this standing: amber or red
     /// when it needs attention, otherwise the gray `lasting`.
-    func ink(lasting: Color) -> Color {
-        self == .lasts ? lasting : color
+    func ink(lasting: Color) -> AnyShapeStyle {
+        self == .lasts ? AnyShapeStyle(lasting) : AnyShapeStyle(color)
+    }
+}
+
+/// A standing's color: the text's own color while it lasts, amber while it's
+/// running out, red once it's used up.
+///
+/// Amber and red are text as small as 11 points, so each reaches 4.5:1
+/// against the darkest background it's on: an open row on the panel's
+/// glass, about #DDDDDD in light mode and #3B3B3B in dark. With Increase
+/// Contrast, which also makes the glass opaque, each reaches 7:1 against an
+/// open row on the window's background, #F2F2F2 and #292929 as `--snapshot`
+/// draws them. Each keeps its hue, and as much of its chroma as sRGB holds.
+/// One amber and one red for every appearance were 1.7:1 and 2.9:1 on a
+/// light open row on the glass, and the red 2.9:1 on a dark one (October
+/// 2026).
+///
+/// | | Light | Dark | Light, Increase Contrast | Dark, Increase Contrast |
+/// |---|---|---|---|---|
+/// | Amber | #8A5303, 4.7:1 | #ED941A, 4.7:1 | #754501, 7.2:1 | #FCA231, 7.2:1 |
+/// | Red | #C1070E, 4.7:1 | #FE8375, 4.7:1 | #A5040A, 7.2:1 | #FF9C8F, 7.2:1 |
+///
+/// SwiftUI resolves it from the environment. A dynamic `NSColor` would never
+/// see Increase Contrast: SwiftUI asks it only for light or dark.
+struct Urgency: ShapeStyle {
+    var standing: Standing
+
+    func resolve(in environment: EnvironmentValues) -> Color {
+        let dark = environment.colorScheme == .dark
+        let more = environment.colorSchemeContrast == .increased
+        return switch (standing, dark, more) {
+        case (.lasts, _, _): .primary
+        case (.runningOut, false, false): Color(hex: 0x8A5303)
+        case (.runningOut, true, false): Color(hex: 0xED941A)
+        case (.runningOut, false, true): Color(hex: 0x754501)
+        case (.runningOut, true, true): Color(hex: 0xFCA231)
+        case (.usedUp, false, false): Color(hex: 0xC1070E)
+        case (.usedUp, true, false): Color(hex: 0xFE8375)
+        case (.usedUp, false, true): Color(hex: 0xA5040A)
+        case (.usedUp, true, true): Color(hex: 0xFF9C8F)
+        }
     }
 }
 

@@ -107,6 +107,17 @@
 - **The app's engine** answers a line that isn't UTF-8 with a "not JSON"
   error instead of closing the connection, and keeps running when it runs
   out of file descriptors for a new connection.
+- **Colors:** amber and red are darker in light mode, and red is lighter in
+  dark mode, so text in them reads at 4.5:1 or more against the panel.
+  Amber text in light mode was 2.4:1 on white. With Increase Contrast they
+  reach 7:1.
+- **Reduce Motion:** with it on, pages fade instead of sliding, a limit's
+  bar doesn't grow into place, and the footer's spinner holds still.
+- **VoiceOver** reads the menu bar item as it is now. A change only it
+  would read, such as an API key's cost becoming partly unpriced, used to
+  wait until the figures shown changed too.
+- **Dates** are on the Gregorian calendar on a Mac set to another one, such
+  as the Hebrew or Islamic calendar: "Oct 18", not "Heshvan 7".
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
