@@ -55,6 +55,17 @@
   once.
 - **`--since`** no longer takes a negative count, which meant a time ahead,
   and `usage` says when `--since` isn't before `--until`.
+- **Limits** are read with a shorter wait. A request to a provider gives up
+  after 15 seconds instead of 60, and any request gives up after 5 if it
+  can't connect. On a network that drops what's sent, `guard` in an agent's
+  hook could hold the agent for a minute or more.
+- **"Sign in again"** is no longer said when a web page in front of a
+  provider, such as a bot check, refuses the request. The account reads as
+  one that couldn't be read, and it's tried again in 5 minutes.
+- **OpenCode Go:** a limit whose reset time can't be read fails the read,
+  instead of showing as a limit that never resets.
+- **A key held by two agents**, such as one OpenRouter key in OpenCode and
+  Pi, is sent once each read instead of twice.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

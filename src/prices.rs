@@ -169,7 +169,7 @@ pub fn refresh(db: &mut Connection) -> Result<()> {
 
 /// Take in models.dev's catalog as of `now`.
 fn take_in(db: &mut Connection, now: i64) -> Result<()> {
-    let (status, json) = providers::get("https://models.dev/api.json", &[])?;
+    let (status, json) = providers::get("https://models.dev/api.json", &[], 60)?;
     if status != 200 {
         return Err(Error::Failed(format!("models.dev answered {status}")));
     }

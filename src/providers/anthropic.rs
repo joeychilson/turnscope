@@ -37,7 +37,7 @@ impl Provider for Anthropic {
 
     fn account(&self, credential: &Credential) -> Option<Account> {
         if credential.key {
-            return Some(super::api_account("anthropic"));
+            return Some(super::api_account(INFO.id));
         }
         let (id, label) = credential.identity.clone()?;
         Some(Account {
@@ -49,10 +49,7 @@ impl Provider for Anthropic {
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
         if credential.key {
-            return Ok(Limits {
-                plan: None,
-                readings: Vec::new(),
-            });
+            return Ok(Limits::default());
         }
         let answer = super::ask(
             "https://api.anthropic.com/api/oauth/usage",

@@ -28,7 +28,7 @@ impl Provider for Xai {
 
     fn account(&self, credential: &Credential) -> Option<Account> {
         if credential.key {
-            return Some(super::api_account("xai"));
+            return Some(super::api_account(INFO.id));
         }
         let (id, label) = match &credential.identity {
             Some(identity) => identity.clone(),
@@ -48,10 +48,7 @@ impl Provider for Xai {
 
     fn limits(&self, credential: &Credential, _now: i64) -> Result<Limits, Problem> {
         if credential.key {
-            return Ok(Limits {
-                plan: None,
-                readings: Vec::new(),
-            });
+            return Ok(Limits::default());
         }
         // Only a 401 is a refused login: the proxy may answer 403 to a client
         // version it no longer takes, which signing in again wouldn't fix.
