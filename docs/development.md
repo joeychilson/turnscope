@@ -10,7 +10,8 @@ something. [architecture.md](architecture.md) explains how the engine works.
 - Rust 1.98.1. `rust-toolchain.toml` pins it with clippy, rustfmt and both
   Mac targets, and rustup installs it on first use.
 - Xcode 26, for the app and the Swift tests.
-- `shellcheck` and `actionlint`, only to run CI's lint job yourself.
+- `shellcheck`, `actionlint` and `cargo-deny`, only to run CI's lint job
+  yourself.
 
 ## Build
 
@@ -50,9 +51,10 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
-swift test --package-path macos/TurnscopeKit -Xswiftc -warnings-as-errors
+TURNSCOPE_BINARY="$PWD/target/debug/turnscope" swift test --package-path macos/TurnscopeKit -Xswiftc -warnings-as-errors
 shellcheck scripts/*.sh
 actionlint
+cargo deny check advisories
 ```
 
 CI runs the Rust tests in the `America/Chicago` time zone, so a test that
@@ -62,8 +64,8 @@ to see it here.
 | Tests | Where | Cover |
 |---|---|---|
 | Unit | `#[cfg(test)]` in each module | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database, prices, the forecast, each provider's answers, alerts, time, redaction, the contract's examples |
-| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `sessions`, `handoff`, `accounts`, `config`, `connect` and `doctor` by snapshot, with a session of every agent listed, shown and read; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
-| Swift | `macos/TurnscopeKit/Tests/` | Decoding and encoding every contract example, the client against a stand-in `serve`, launch arguments, the wording |
+| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `sessions`, `handoff`, `accounts`, `config`, `connect` and `doctor` by snapshot, with a session of every agent listed, shown and read; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
+| Swift | `macos/TurnscopeKit/Tests/` | Decoding and encoding every contract example, the client against a stand-in `serve` and a real one, launch arguments, the wording |
 
 **Fixtures.** `tests/cli.rs` reads a home (`tests/fixtures/home`) with two
 synthetic Claude Code sessions and one of each other agent, and writes a
@@ -80,9 +82,12 @@ and review the diff:
 TURNSCOPE_BLESS=1 cargo test --test cli
 ```
 
+Each line of output in [cli.md](cli.md)'s `console` examples must be a line
+of some snapshot, so update an example that shows output you changed.
+
 **The real engine from Swift.** One Swift test runs the app's client
 against a real `turnscope serve`. It runs only when `TURNSCOPE_BINARY` is
-set, so CI skips it. The path must be absolute, because `swift test` runs
+set, as it is in CI. The path must be absolute, because `swift test` runs
 in the package's folder:
 
 ```sh
@@ -137,7 +142,7 @@ versions.
 | `scripts/build-cli.sh` | The Xcode project's "Build turnscope" phase. Builds `turnscope` for each architecture in `ARCHS` (release for a Release build, debug otherwise) and joins them with `lipo` into `BUILT_PRODUCTS_DIR`. Run by hand, it builds for this Mac in debug into `target/helper/`. |
 | `scripts/build-release.sh` | Builds the app for release into `target/dist/Turnscope.app`, for Apple silicon and Intel, unsigned, with `SPARKLE_PUBLIC_KEY` in it, and resolves the Xcode project's packages into `target/swiftpm/`. |
 | `scripts/sign-release.sh` | Signs the app `build-release.sh` built, notarizes it, and makes `Turnscope-<version>.dmg` and `appcast.xml` beside it, with Sparkle's `sign_update` from `target/swiftpm/`. Its environment is below. |
-| `scripts/check-app.sh [app]` | Checks that a built app's `turnscope` runs: `doctor` creates a database, `serve` answers a hello with a status, and `mcp` answers a handshake and a tool list with the app's version. It runs in throwaway folders, `HOME` included. The default app is `target/dist/Turnscope.app`. |
+| `scripts/check-app.sh [app]` | Checks that a built app runs. Its `turnscope`, off the network: `doctor` creates a database, `serve` answers a hello with a status, and `mcp` answers a handshake and a tool list with the app's version. Then the app, with no engine, draws its panel from `contract/status.notification.json`. All of it runs for each architecture this Mac can run, so on Apple silicon Intel's runs too, under Rosetta. It runs in throwaway folders, `HOME` included. The default app is `target/dist/Turnscope.app`. |
 | `scripts/screenshots.sh` | Builds the app with `build-app.sh`, then draws the README's screenshots, light and dark, from `contract/status.notification.json` into `.github/screenshots/`. |
 | `scripts/release-notes.sh X.Y.Z` | Prints the version's section of `CHANGELOG.md`, without its heading. Fails if the section is missing or empty. |
 
@@ -166,19 +171,29 @@ and the disk image, and checks that the update's signature passes with
 
 **Verify** (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull
 requests, unless only Markdown, `docs/` or `.github/screenshots/` changed.
-The release runs it too. A new push to a pull request cancels its earlier
+A change to `docs/cli.md` runs it, since a test checks its examples. The
+release runs it too. A new push to a pull request cancels its earlier
 run.
 
 | Job | Runner | Steps |
 |---|---|---|
-| `lint` | Ubuntu 24.04 | `shellcheck scripts/*.sh`, then `actionlint` |
+| `lint` | Ubuntu 24.04 | `shellcheck scripts/*.sh`, `actionlint`, then `cargo deny check advisories`, which fails when a crate in `Cargo.lock` has a [RustSec](https://rustsec.org) advisory |
 | `rust` | macOS 26, in `America/Chicago` | `cargo fmt --check`, clippy, `cargo test` and `cargo doc`, warnings as errors |
-| `app` | macOS 26, Xcode 26 | `swift test` with warnings as errors, `scripts/build-release.sh` and `scripts/sign-release.sh` signed ad hoc, then `scripts/check-app.sh`. On a tag, only `swift test`: the release builds and checks its own app, signed. |
+| `app` | macOS 26, Xcode 26.6 | `cargo build`, then `swift test` with warnings as errors and the engine test run on that build; `scripts/build-release.sh` and `scripts/sign-release.sh` signed ad hoc, then `scripts/check-app.sh`. On a tag, only the tests: the release builds and checks its own app, signed. |
+
+A new advisory can fail `cargo deny` on a pull request that changed no
+crate. Update the crate it names.
 
 Actions are pinned by commit. Dependabot (`.github/dependabot.yml`) opens
 one pull request a week for the actions and one for the Rust crates, with
 versions at least 7 days old. Sparkle is pinned to an exact version in the
-Xcode project and is updated by hand.
+Xcode project, and actionlint and cargo-deny to a version and checksum in
+`ci.yml`. These are updated by hand.
+
+The `app` job and the release use Xcode 26.6, named in both workflows. A
+newer Xcode comes in a pull request that changes both, once
+[GitHub's macOS 26 image](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)
+has it.
 
 ## Release
 

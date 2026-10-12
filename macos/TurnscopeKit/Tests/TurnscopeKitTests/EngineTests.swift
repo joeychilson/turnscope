@@ -34,8 +34,11 @@ func theRealEngineIsStartedSaysHelloAndTakesChanges() async throws {
     #expect(client.phase == .connected)
     #expect(store.status?.agents.isEmpty == false)
     // A change goes through serve, which then pushes a status that has it.
+    // It's shown at once, so only what serve sent says serve has it.
     store.setNotify { $0.reset = false }
-    await until { store.notify?.reset == false && store.failure == nil }
+    await until { store.served?.notify.reset == false }
+    #expect(store.served?.notify.reset == false)
+    #expect(store.failure == nil)
     let _: Done = try await client.request("shutdown")
     client.stop()
     #expect(store.notify?.reset == false)

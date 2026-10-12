@@ -69,7 +69,7 @@ Check it by running the app, or with `--fixture` and `--snapshot`.
 |---|---|
 | `ContractTests.swift` | Every example in `contract/` decodes, and each request the app writes matches its example |
 | `ClientTests.swift` | The client and store against a stand-in `serve` on a real socket |
-| `EngineTests.swift` | The client and store against the real `turnscope serve`. Runs only when `TURNSCOPE_BINARY` is set |
+| `EngineTests.swift` | The client and store against the real `turnscope serve`. Runs only when `TURNSCOPE_BINARY` is set, as it is in CI |
 | `LaunchTests.swift` | Launch arguments, and a store showing a fixture |
 | `WordsTests.swift` | The wording, at a fixed time in UTC |
 | `Support.swift` | What the tests share: the contract's files, and `FakeServe`, the stand-in |

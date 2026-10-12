@@ -60,9 +60,10 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
-swift test --package-path macos/TurnscopeKit -Xswiftc -warnings-as-errors
+TURNSCOPE_BINARY="$PWD/target/debug/turnscope" swift test --package-path macos/TurnscopeKit -Xswiftc -warnings-as-errors
 shellcheck scripts/*.sh
 actionlint             # when a workflow changed
+cargo deny check advisories
 ```
 
 [docs/development.md](docs/development.md) has the rest: the real-engine

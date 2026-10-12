@@ -40,7 +40,7 @@ public final class Store {
     @ObservationIgnored private var watched: String?
     /// The settings serve last sent. A change serve refuses goes back to
     /// these.
-    @ObservationIgnored private var served: Settings?
+    @ObservationIgnored private(set) var served: Settings?
     /// Every agent's name, by id, as the status gives them.
     private var names: [String: String] = [:]
     /// For a fixed status, the time its words are as of, whatever the clock
