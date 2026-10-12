@@ -48,12 +48,17 @@
 //! **A thread's rollouts.** A resumed thread goes on in its rollout. One
 //! rewound to an earlier turn goes on in a new rollout,
 //! `rollout-<time>-<thread>_<rollout id>.jsonl`, whose `session_meta` has a
-//! `history_base`: the part of the rollout before it that it keeps
-//! (`thread-store/src/local/revert_thread.rs`). A name starts with the time
-//! its rollout was made, so names sort oldest first.
+//! `history_base`: an earlier rollout, kept below `end_ordinal_exclusive`
+//! (`thread-store/src/local/revert_thread.rs`). The new rollout's ordinals
+//! go on from there (`rollout_lineage.rs`), so a rollout is read below the
+//! least that any later one keeps. Search still finds the words of turns
+//! rewound past: they were indexed as the earlier rollout was read. A name
+//! starts with the time its rollout was made, so names sort oldest first.
 //!
 //! **Forks.** A fork of a paginated thread points at its parent's history
-//! with `history_base` and copies none of it. A fork of a legacy thread
+//! with `history_base` and copies none of it. Its own history starts at
+//! `forked_from_ordinal_exclusive`, which a rewind of the fork keeps
+//! (`rollout/src/metadata.rs`). A fork of a legacy thread
 //! (`history_mode` `legacy`) copies it: after the fork's own `session_meta`
 //! come the parent's `session_meta` and history, then a
 //! `thread_settings_applied` whose `thread_id` is the fork's, written with the
@@ -68,6 +73,8 @@
 //! ends at `subagent_history_start_ordinal`.
 
 use std::borrow::Cow;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -238,9 +245,10 @@ struct Payload<'a> {
     model_provider: Option<String>,
     parent_thread_id: Option<String>,
     forked_from_id: Option<String>,
+    forked_from_ordinal_exclusive: Option<i64>,
     history_mode: Option<String>,
     subagent_history_start_ordinal: Option<i64>,
-    /// A later page of a thread's: where its history before begins.
+    /// The history a rewind's or a paginated fork's rollout goes on from.
     #[serde(borrow)]
     history_base: Option<&'a RawValue>,
     agent_nickname: Option<String>,
@@ -273,6 +281,12 @@ impl Payload<'_> {
             && self.forked_from_id.is_some()
             && self.history_mode.as_deref() == Some("legacy")
     }
+}
+
+/// A `session_meta`'s `history_base`: where the history it goes on from ends.
+#[derive(Deserialize)]
+struct Base {
+    end_ordinal_exclusive: i64,
 }
 
 /// A `turn_context`, or a `thread_settings_applied` event's settings.
@@ -405,8 +419,13 @@ impl Agent for Codex {
         if rollouts.is_empty() {
             return Err(Error::NotFound("the thread's rollouts are gone".to_owned()));
         }
+        let kept: Vec<Option<i64>> = rollouts
+            .iter()
+            .map(|rollout| rewound_to(rollout, native))
+            .collect();
         let mut conversation = Conversation::default();
-        for rollout in rollouts {
+        for (index, rollout) in rollouts.into_iter().enumerate() {
+            let rewound = kept[index + 1..].iter().flatten().min().copied();
             let mut copied_until = None;
             let mut opened = false;
             let mut legacy_fork = false;
@@ -431,6 +450,7 @@ impl Agent for Codex {
                         .ordinal
                         .zip(copied_until)
                         .is_some_and(|(at, until)| at < until)
+                    || line.ordinal.zip(rewound).is_some_and(|(at, end)| at >= end)
                 {
                     return;
                 }
@@ -549,6 +569,20 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
     }
 }
 
+/// Where the history that `rollout` goes on from ends, if it's thread
+/// `native`'s: from its first line, its `session_meta`.
+fn rewound_to(rollout: &Path, native: &str) -> Option<i64> {
+    let mut first = Vec::new();
+    BufReader::new(File::open(rollout).ok()?)
+        .read_until(b'\n', &mut first)
+        .ok()?;
+    let meta = serde_json::from_slice::<Line>(&first).ok()?.payload?;
+    if meta.id.as_deref() != Some(native) {
+        return None;
+    }
+    parsed::<Base>(meta.history_base).map(|base| base.end_ordinal_exclusive)
+}
+
 /// Whether `line`, in a legacy fork's rollout of `thread`, is of its copy of
 /// its parent's history: from the parent's `session_meta` to the
 /// `thread_settings_applied` that names `thread`, written with the copy.
@@ -606,9 +640,12 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
     if let Some(nickname) = &meta.agent_nickname {
         session.title(Title::Task, nickname);
     }
-    // A rollout that goes on from earlier history doesn't hold the thread's
-    // first request.
-    cursor.titled = meta.history_base.is_some();
+    // A rollout that goes on from the thread's own history, as a rewind's
+    // does, doesn't hold its first request. A fork's own history starts
+    // after its parent's.
+    cursor.titled = parsed::<Base>(meta.history_base).is_some_and(|base| {
+        base.end_ordinal_exclusive > meta.forked_from_ordinal_exclusive.unwrap_or(0)
+    });
     cursor.thread = Some(thread);
 }
 
@@ -1203,6 +1240,130 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(Kind::User, "Check the indexes.")]
         );
+    }
+
+    #[test]
+    fn a_rewind_keeps_the_history_before_it_below_its_ordinal() {
+        let dir = tempfile::tempdir().unwrap();
+        let rewind = |at: i64, base: &str| {
+            line(
+                at,
+                "session_meta",
+                json!({"id": "t1", "history_mode": "paginated",
+                    "history_base": {"thread_id": base, "end_ordinal_exclusive": at, "end_byte_offset": 0}}),
+            )
+        };
+        let said = |files: &[PathBuf]| {
+            Codex
+                .transcript("t1", files)
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.text)
+                .collect::<Vec<_>>()
+        };
+        let mut files = vec![
+            rollout(
+                dir.path(),
+                "2026-09-30T09-00-00-t1",
+                &[
+                    line(
+                        0,
+                        "session_meta",
+                        json!({"id": "t1", "history_mode": "paginated"}),
+                    ),
+                    line(1, "response_item", message("user", "Add a retry.")),
+                    line(2, "response_item", message("assistant", "Added one.")),
+                    line(
+                        3,
+                        "response_item",
+                        message("user", "Make it five attempts."),
+                    ),
+                    line(4, "response_item", message("assistant", "Five now.")),
+                ],
+            ),
+            // Rewound to before "Make it five attempts."
+            rollout(
+                dir.path(),
+                "2026-09-30T09-05-00-t1_r2",
+                &[
+                    rewind(3, "t1"),
+                    line(4, "response_item", message("user", "Log each retry.")),
+                    line(5, "response_item", message("assistant", "Each logs.")),
+                    line(6, "response_item", message("user", "Cap the wait.")),
+                    line(7, "response_item", message("assistant", "Capped.")),
+                ],
+            ),
+            // Then to before "Cap the wait."
+            rollout(
+                dir.path(),
+                "2026-09-30T09-09-00-t1_r3",
+                &[
+                    rewind(6, "r2"),
+                    line(7, "response_item", message("user", "Cap it at a minute.")),
+                ],
+            ),
+        ];
+        assert_eq!(
+            said(&files),
+            [
+                "Add a retry.",
+                "Added one.",
+                "Log each retry.",
+                "Each logs.",
+                "Cap it at a minute."
+            ]
+        );
+        // Then back past the second rollout, to before "Make it five attempts."
+        files.push(rollout(
+            dir.path(),
+            "2026-09-30T09-12-00-t1_r4",
+            &[
+                rewind(3, "t1"),
+                line(4, "response_item", message("user", "Undo the retry.")),
+            ],
+        ));
+        assert_eq!(
+            said(&files),
+            ["Add a retry.", "Added one.", "Undo the retry."]
+        );
+    }
+
+    #[test]
+    fn a_fork_of_a_paginated_thread_is_titled_by_its_own_request_and_a_rewind_by_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let title = |name: &str, meta: Value| {
+            let file = rollout(
+                dir.path(),
+                name,
+                &[
+                    line(5, "session_meta", meta),
+                    line(6, "response_item", message("user", "Try it on staging.")),
+                ],
+            );
+            let read = Codex.read(&file, "").unwrap();
+            read.sessions
+                .into_values()
+                .find_map(|session| session.title)
+                .map(|(_, title)| title)
+        };
+        let base = |rollout: &str| json!({"thread_id": rollout, "end_ordinal_exclusive": 5, "end_byte_offset": 0});
+        assert_eq!(
+            title(
+                "t1_r2",
+                json!({"id": "t1", "history_mode": "paginated", "history_base": base("t1")})
+            ),
+            None
+        );
+        let fork = |rollout: &str, forked_at: i64| {
+            json!({"id": "t2", "forked_from_id": "t1", "forked_from_ordinal_exclusive": forked_at,
+                "history_mode": "paginated", "history_base": base(rollout)})
+        };
+        assert_eq!(
+            title("t2", fork("t1", 5)).as_deref(),
+            Some("Try it on staging.")
+        );
+        // A rewind of the fork that keeps some of its own history.
+        assert_eq!(title("t2_r2", fork("t2", 3)), None);
     }
 
     #[test]
