@@ -85,7 +85,7 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
     #expect(likely.horizon == .soon)
     #expect(claude.limits.map(\.standing) == [.runningOut, .lasts, .usedUp])
     let chatgpt = status.accounts[1]
-    #expect(chatgpt.state == .asOf(readAt: Date(timeIntervalSince1970: 1_791_424_800), why: .expired))
+    #expect(chatgpt.state == .asOf(readAt: Date(timeIntervalSince1970: 1_791_459_600), why: .expired))
     // Its weekly limit reset since it was read, so it's full, and the
     // monthly limit decides.
     #expect(chatgpt.limits[0].resetSince != nil && chatgpt.limits[0].leftPercent == 100)
@@ -94,9 +94,9 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
     #expect(keys.apiKey && keys.spend?.partial == true)
     #expect(keys.limits[0].money == Money(sizeUsd: 30, leftUsd: 8.7))
     #expect(keys.limits[0].heldBy == ["pi"])
-    #expect(status.accounts[3].refused && status.accounts[3].hidden)
+    #expect(status.accounts[4].refused && status.accounts[4].hidden)
     #expect(status.accounts.map(\.recent) == [true, true, true, false, false, false])
-    #expect(status.accounts[4].state == .unread(why: .signIn))
+    #expect(status.accounts[3].state == .unread(why: .signIn))
     #expect(status.accounts[5].state == .unread(why: .readFailed))
     #expect(status.agents.map(\.connection) == [.connected, .outdated, .available, .available, .available])
     #expect(hello.alerts.map(\.kind) == [.runningOut, .usedUp, .reset, .signIn])
