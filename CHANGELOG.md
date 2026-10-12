@@ -81,6 +81,14 @@
 - **Costs:** when models.dev first listed a model while another process
   was reading history, the responses that process wrote could stay
   without a cost for good. They're now priced.
+- **Codex forks** that open with a copy of the parent thread's history no
+  longer take that copy as their own. A fork's title is its own first
+  request, search finds the parent's words only in the parent,
+  `sessions read` and handoffs show only the fork's conversation, and the
+  parent's usage isn't counted a second time.
+- **OpenCode:** a reply another OpenCode process saved late is no longer
+  missed. A session OpenCode left with a placeholder title, such as
+  "New session - 2026-07-30T18:45:03.662Z", is titled by its first request.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
