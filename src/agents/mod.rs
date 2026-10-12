@@ -312,10 +312,14 @@ pub struct Tool {
     pub input: String,
     pub output: Option<String>,
     pub failed: bool,
-    /// The files it changed, as the agent names them: absolute, or within
-    /// the session's folder.
+    /// The files its edits name, as the agent names them: absolute, or
+    /// within the session's folder.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
+    /// Whether its edits took: a call that failed made none, unless its
+    /// agent says it went on past what failed.
+    #[serde(skip)]
+    pub edited: bool,
     /// What it is to a handoff, as its agent says (`Agent::role`).
     #[serde(skip)]
     pub role: Role,
@@ -369,6 +373,7 @@ impl Conversation {
                 output: None,
                 failed: false,
                 files: Vec::new(),
+                edited: true,
                 role: Role::Work,
             }),
         });
@@ -386,15 +391,15 @@ impl Conversation {
         }
     }
 
-    pub fn answer(&mut self, id: &str, output: String, failed: bool) {
+    pub fn answer(&mut self, id: &str, output: String, failed: bool) -> Option<&mut Tool> {
         let call = self
             .calls
             .get(id)
-            .and_then(|&at| self.entries[at].tool.as_mut());
-        if let Some(call) = call {
-            call.output = Some(output);
-            call.failed = failed;
-        }
+            .and_then(|&at| self.entries[at].tool.as_mut())?;
+        call.output = Some(output);
+        call.failed = failed;
+        call.edited = !failed;
+        Some(call)
     }
 }
 
