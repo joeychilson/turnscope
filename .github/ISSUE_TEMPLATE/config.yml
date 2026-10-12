@@ -1,0 +1,4 @@
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/joeychilson/turnscope/security/advisories/new
+    about: Privately, as SECURITY.md says, not in a public issue.

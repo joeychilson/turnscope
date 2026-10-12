@@ -15,7 +15,7 @@ macOS menu bar app that talks to `serve`.
 | `macos/` | The app: `Turnscope.xcodeproj`, the app target `Turnscope/`, the Swift package `TurnscopeKit/`, and `Logos/` |
 | `scripts/` | Build, check, screenshot and release scripts |
 | `docs/` | The docs, listed at the end |
-| `.github/` | The CI and release workflows, Dependabot, the README's screenshots |
+| `.github/` | The CI and release workflows, Dependabot, the bug report form, the README's screenshots |
 
 | File | Holds |
 |---|---|
@@ -119,7 +119,9 @@ Swift test, the backtest, the scripts, CI and releases.
 ## Docs
 
 - [README.md](README.md): for users. What it is, install, quick start,
-  connecting agents, privacy, uninstall.
+  connecting agents, privacy, uninstall, reporting a problem.
+- [SECURITY.md](SECURITY.md): how to report a vulnerability, and what it
+  covers.
 - [docs/architecture.md](docs/architecture.md): how the engine works: data,
   code, processes, status, prices, forecast, alerts, security, and a
   glossary.

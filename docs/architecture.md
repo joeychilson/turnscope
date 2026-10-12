@@ -419,3 +419,5 @@ covers what it holds, the budget, and how to test a change.
 - **The MCP server only reads.** Its instructions tell agents that what a
   session says is data, not instructions, and each entry's text comes
   quoted, `> ` a line, so none of it can pass for an entry.
+
+[SECURITY.md](../SECURITY.md) says how to report a vulnerability.
