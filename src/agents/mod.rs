@@ -52,8 +52,10 @@ pub trait Agent: Sync {
     /// first, then any it was pointed at for a second account.
     fn folders(&self, home: &Path) -> Vec<PathBuf>;
 
-    /// Its history files in `folder`. One that doesn't exist is passed over,
-    /// so a file it may keep can be listed without looking.
+    /// Its history files in `folder`, in the order they're read: one that
+    /// rewinds a session, as `Read::rewound` says, after those it rewinds.
+    /// One that doesn't exist is passed over, so a file it may keep can be
+    /// listed without looking.
     fn files(&self, folder: &Path) -> Vec<PathBuf>;
 
     /// What `file` holds past `cursor`, which a read returned before; an
@@ -118,8 +120,13 @@ pub struct Read {
     pub sessions: BTreeMap<String, Session>,
     /// By id, each response's reports merged.
     pub responses: HashMap<String, Response>,
-    /// What the person and the models said, by session, for search.
-    pub said: Vec<(String, String)>,
+    /// What the person and the models said, by session, for search, with
+    /// its line's ordinal where the agent numbers a session's lines.
+    pub said: Vec<(String, String, Option<i64>)>,
+    /// Sessions this file goes back to an earlier point of, with the ordinal
+    /// it goes on from: what other files said in them from there on is
+    /// taken out of search.
+    pub rewound: Vec<(String, i64)>,
     /// Lines or rows it couldn't read.
     pub skipped: u64,
 }
@@ -140,10 +147,15 @@ impl Read {
 
     /// Note `text` as said in `session`, for search.
     pub fn say(&mut self, session: &str, text: &str) {
+        self.say_at(session, text, None);
+    }
+
+    /// Note `text` as said in `session` on the line numbered `ordinal`.
+    pub fn say_at(&mut self, session: &str, text: &str, ordinal: Option<i64>) {
         let text = text.trim();
         if !text.is_empty() {
             self.said
-                .push((session.to_owned(), crate::redact::redact(text)));
+                .push((session.to_owned(), crate::redact::redact(text), ordinal));
         }
     }
 }

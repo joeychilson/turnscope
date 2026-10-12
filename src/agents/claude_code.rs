@@ -1171,7 +1171,7 @@ mod tests {
         assert_eq!(session.cwd.as_deref(), Some("/work/app"));
         assert_eq!(
             read.said[0],
-            ("claude-code:s1".to_owned(), "/review src".to_owned())
+            ("claude-code:s1".to_owned(), "/review src".to_owned(), None)
         );
         // Read on from where it stopped, nothing is read twice.
         let again = ClaudeCode.read(&file, &read.cursor).unwrap();
@@ -1471,13 +1471,17 @@ mod tests {
             read.sessions["claude-code:s1"].title.as_ref().unwrap().1,
             "Fix the parser."
         );
-        assert!(read.said.iter().any(|(_, text)| text == "Also the tests."));
+        assert!(
+            read.said
+                .iter()
+                .any(|(_, text, _)| text == "Also the tests.")
+        );
         // A subagent's hand-back, queued as a prompt, isn't the person's.
         assert!(
             !read
                 .said
                 .iter()
-                .any(|(_, text)| text.contains("agent-message"))
+                .any(|(_, text, _)| text.contains("agent-message"))
         );
         let entries = ClaudeCode.transcript("s1", &[file]).unwrap();
         let said: Vec<(Kind, &str)> = entries

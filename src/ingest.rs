@@ -367,10 +367,22 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
         ])?;
     }
 
-    let mut said =
-        tx.prepare_cached("INSERT INTO said (session, text, file) VALUES (?1, ?2, ?3)")?;
-    for (session, text) in &read.said {
-        said.execute(params![session, text, file])?;
+    // A rewind takes out what its session said from where it went back to,
+    // before this file's own rows, which are past that, go in. Files are
+    // written in the order their agent lists them, so what it rewinds is in
+    // already. This scans the table: 0.2 to 0.35 s on a made-up index of
+    // 250,000 rows, once for each rewind.
+    for (session, from) in &read.rewound {
+        tx.execute(
+            "DELETE FROM said WHERE session = ?1 AND ordinal >= ?2",
+            params![session, from],
+        )?;
+    }
+    let mut said = tx.prepare_cached(
+        "INSERT INTO said (session, text, file, ordinal) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (session, text, ordinal) in &read.said {
+        said.execute(params![session, text, file, ordinal])?;
     }
     let now = !read.said.is_empty() || (indexed && !due.again);
     if now != indexed {
