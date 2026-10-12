@@ -171,8 +171,9 @@ it opens or closes the panel.
 The panel is 340 points wide. From the top:
 
 1. **The headline**: whether you can keep going, from the most urgent
-   account in use (`Words.verdict`). Before any account is found, why none
-   is (`Words.welcome`).
+   account in use (`Words.verdict`). It names the account by its title
+   alone: it's about the first account listed under it, whose row shows its
+   label. Before any account is found, why none is (`Words.welcome`).
 2. **Accounts in use**, most urgent first.
 3. **Used this week**: accounts not in use but used in the last 7 days, the
    most left first.
@@ -261,8 +262,9 @@ kinds turned off and alerts for hidden accounts, so the app doesn't filter.
   says so and offers to open them.
 - **Words.** `Words.note` writes each one. The title is the account, the
   subtitle is what happened, and the body is when it's back or what to do.
-  A title shared with another account gets part of the label. Times are
-  clock times, since a notification stays on screen.
+  The title is the account's, with its label only when another account in
+  use has the same title (`Words.called`). Times are clock times, since a
+  notification stays on screen.
 - **Replacing.** Each is posted under the alert's `replaces`, so a newer one
   for the same limit or account replaces the older: "back" replaces "used
   up". A sign-in notification is removed once the account can be read

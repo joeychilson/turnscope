@@ -17,9 +17,10 @@ extension Words {
     }
 
     /// What an alert says. `accounts` is every account in the status. It's
-    /// used to name the limit as the panel does, to tell the account apart
-    /// from another with the same name, and to say which agent to sign in
-    /// with. Times are clock times, since a notification stays on screen.
+    /// used to name the account and the limit as the panel does (`called`),
+    /// and to say which agent to sign in with. An alert's own title, as it
+    /// was raised, is only for an account no longer in the status. Times are
+    /// clock times, since a notification stays on screen.
     public func note(_ alert: Alert, accounts: [AccountStatus] = []) -> Note {
         let account = accounts.first { $0.id == alert.account }
         let title = account.map { called($0, among: accounts) } ?? alert.accountTitle
@@ -43,20 +44,16 @@ extension Words {
         }
     }
 
-    /// What a notification calls `account`, among `accounts`. It's the
-    /// title, and if another account has the same title (`twinned`), the
-    /// part of the label before the "@" too: "Claude Max · joey". If the
-    /// other's label has the same part before the "@", the whole label is
-    /// used instead.
+    /// What a notification calls `account`, among `accounts`: its title,
+    /// and its label too when another shown account in use has the same
+    /// title, "Claude Max (me@example.com)". A notification stands alone, so
+    /// unlike the headline it can't point to a row. Only an account in use
+    /// counts: an idle account with the same title can't be taken for one in
+    /// use.
     func called(_ account: AccountStatus, among accounts: [AccountStatus]) -> String {
-        let title = account.title
-        guard let label = account.label, account.twinned(among: accounts) else { return title }
-        let others = accounts.filter { $0.title == title && $0.id != account.id && !$0.hidden }.map(\.label)
-        let name = { (label: String) -> String in
-            guard let at = label.firstIndex(of: "@"), at > label.startIndex else { return label }
-            return String(label[..<at])
+        guard let label = account.label, account.twinned(among: accounts.filter(\.inUse)) else {
+            return account.title
         }
-        let alike = others.contains { $0.map(name) == name(label) }
-        return "\(title) · \(alike ? label : name(label))"
+        return "\(account.title) (\(label))"
     }
 }

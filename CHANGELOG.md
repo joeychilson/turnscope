@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- **The panel's headline** names an account by its title, never its email,
+  and the line under it names the account too: "At this pace, no Claude Max
+  limit runs out." A notification adds the email only when another account
+  in use has the same title.
+
 ## 0.1.1
 
 - **Settings** shows its settings in cards, with larger switches.

@@ -50,8 +50,8 @@ extension AccountStatus {
     public var refilledAt: Date? { decidingLimit?.resetSince }
 
     /// Whether another shown (not hidden) account in `accounts` has the same
-    /// title, so the label must tell them apart. The headline, the rows and
-    /// notifications all use this one rule to tell accounts apart.
+    /// title, so the label must tell them apart. The rows ask among every
+    /// account; notifications among those in use (`Words.called`).
     public func twinned(among accounts: [AccountStatus]) -> Bool {
         accounts.contains { $0.id != id && !$0.hidden && $0.title == title }
     }

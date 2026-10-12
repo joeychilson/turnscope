@@ -127,10 +127,12 @@ extension Words {
 
     /// The one thing to know, in large type, and the detail behind it:
     /// whether you can keep going. It's based on the most urgent of `inUse`,
-    /// which serve lists most urgent first. The account is told apart from
-    /// others in `accounts` with the same title. For a subscription with no
-    /// limit read, it's not known, so it says why instead.
-    public func verdict(_ inUse: [AccountStatus], among accounts: [AccountStatus], hiddenInUse: Bool = false)
+    /// which serve lists most urgent first. It names the account by its
+    /// title alone, even beside another in use with the same title: it's
+    /// about the first account listed under it, whose row shows its label.
+    /// For a subscription with no limit read, it's not known, so it says why
+    /// instead.
+    public func verdict(_ inUse: [AccountStatus], hiddenInUse: Bool = false)
         -> (headline: String, detail: String, standing: Standing) {
         guard let account = inUse.first else {
             return ("Nothing in use", hiddenInUse ? "Only accounts you hid are in use." : "", .lasts)
@@ -145,34 +147,35 @@ extension Words {
             }
             return ("\(account.title)'s limits are unknown", trouble(account) ?? "They aren't read yet.", .lasts)
         }
-        // Which account it is, when another has the same title.
-        let which = account.twinned(among: accounts) ? account.label.map { "\($0) · " } ?? "" : ""
         switch limit.outlook {
         case .usedUp(let back):
             let after = back.map { "Back \(at($0))." }
-            return ("\(account.title) is used up", which + (after ?? "It isn't known when it's back."), .usedUp)
+            return ("\(account.title) is used up", after ?? "It isn't known when it's back.", .usedUp)
         case .runsOut(let likely):
             let headline = likely.horizon == .soon
                 ? "\(account.title) runs out \(unbroken("in \(stretch(likely.at.timeIntervalSince(now)))"))"
                 : "\(account.title) runs out \(unbroken(when(likely.at)))"
             // When it's back, which is what you plan around.
             let back = limit.window.map { "Back \(at($0.resets))." }
-            return (headline, back.map { which + $0 } ?? "", .runningOut)
+            return (headline, back ?? "", .runningOut)
         case .unknown(let reason):
-            return ("You can keep going", which + unforecast(limit, reason), .lasts)
+            return ("You can keep going", unforecast(limit, of: account, reason), .lasts)
         case .lasts:
-            return ("You can keep going", which + lasting(limit, of: account), .lasts)
+            return ("You can keep going", lasting(limit, of: account), .lasts)
         }
     }
 
     /// What's known about an account's deciding limit when it isn't
-    /// forecast, as a sentence: what's left of it and when it resets. It
-    /// never says the limit lasts, since that isn't known. "99% left of 5
-    /// hours; it resets in 4h 50m." or "$8.81 of $30 left; it doesn't reset."
-    private func unforecast(_ limit: LimitStatus, _ reason: UnknownReason) -> String {
-        let standing = limit.money == nil
+    /// forecast, as a sentence naming the account: what's left of the limit
+    /// and when it resets, or why that isn't said. It never says the limit
+    /// lasts, since that isn't known. "Claude Max has 99% left of 5 hours; it
+    /// resets in 4h 50m." or "OpenRouter API key has $8.81 of $30 left; it
+    /// doesn't reset."
+    private func unforecast(_ limit: LimitStatus, of account: AccountStatus, _ reason: UnknownReason) -> String {
+        let what = limit.money == nil
             ? "\(left(limit)) left \(of(limit))"
             : "\(left(limit))\(size(limit).map { " \($0)" } ?? "") left"
+        let standing = "\(account.title) has \(what)"
         let resets = limit.window.map { "; it resets \(at($0.resets))" } ?? ""
         return switch reason {
         case .notEnoughData: "\(standing)\(resets)."
@@ -182,18 +185,23 @@ extension Words {
         }
     }
 
-    /// What lasts of `account`, given that its deciding limit, `limit`, lasts
-    /// until it resets. It says every limit lasts if every one does, or else
-    /// just that one. Then it names the first other limit that doesn't last,
-    /// since a limit on a single model can run out while the whole account
-    /// has room.
+    /// What lasts of `account`, given that its deciding limit, `limit`,
+    /// lasts until it resets. It says no limit runs out if none does, or
+    /// else that this one lasts: a limit resets, an account doesn't. A key's
+    /// own limit, "Pi's key", already says whose it is. Then it names the
+    /// first other limit that doesn't last, since a limit on a single model
+    /// can run out while the whole account has room.
     private func lasting(_ limit: LimitStatus, of account: AccountStatus) -> String {
         let others = account.limits.filter { $0.id != limit.id && $0.resetSince == nil }
         let current: Bool = if case .live = account.state { true } else { false }
         let every = others.allSatisfy { if case .lasts = $0.outlook { true } else { false } }
-        let resets = !account.limits.contains { $0.window == nil && $0.resetSince == nil }
-        let what = every ? "every limit lasts" : "\(inSentence(limit)) lasts"
-        let lasts = "\(what)\(resets || !every ? " until it resets" : "")"
+        let lasts = if every {
+            "no \(account.title) limit runs out"
+        } else if limit.heldBy.isEmpty {
+            "\(account.title)'s \(inSentence(limit)) lasts until it resets"
+        } else {
+            "\(inSentence(limit)) lasts until it resets"
+        }
         let sentence = current ? "At this pace, \(lasts)." : "As last read, \(lasts)."
         guard let other = others.first(where: { $0.standing != .lasts }) else { return sentence }
         switch other.outlook {
