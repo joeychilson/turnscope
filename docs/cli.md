@@ -153,7 +153,7 @@ With `--hours`, the answer comes first:
 
 ```console
 $ turnscope status --account claude --hours 3
-3 more hours of work don't fit: 5 hours runs out after about 1h 40m of work.
+3 more hours of work don't fit: 5 hours runs out after about 40m of work.
 
 Claude Max (me@example.com) · via Claude Code · in use
 …

@@ -7,6 +7,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::collections::HashSet;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -366,6 +367,40 @@ fn every_command_answers_as_its_snapshot_says() {
     assert!(
         stale.is_empty(),
         "snapshots that differ: {stale:?}; run with TURNSCOPE_BLESS=1 and review the diff"
+    );
+}
+
+/// The examples in docs/cli.md are what the binary says: each line of their
+/// output is a line of some snapshot.
+#[test]
+fn the_docs_show_what_the_snapshots_hold() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let snapshots: Vec<String> = std::fs::read_dir(root.join("tests/snapshots"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "txt"))
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect();
+    let shown: HashSet<&str> = snapshots.iter().flat_map(|text| text.lines()).collect();
+    let docs = std::fs::read_to_string(root.join("docs/cli.md")).unwrap();
+    let mut example = false;
+    let unseen: Vec<&str> = docs
+        .lines()
+        .filter(|line| {
+            if line.starts_with("```") {
+                example = *line == "```console";
+                return false;
+            }
+            example
+                && !line.is_empty()
+                && *line != "…"
+                && !line.starts_with("$ ")
+                && !shown.contains(line)
+        })
+        .collect();
+    assert!(
+        unseen.is_empty(),
+        "lines of docs/cli.md's examples that no snapshot has: {unseen:#?}"
     );
 }
 
