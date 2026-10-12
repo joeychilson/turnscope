@@ -341,7 +341,6 @@ mod tests {
                 deciding: Some("five_hour".to_owned()),
                 spend: None,
             }],
-            agents: Vec::new(),
             settings: Settings::default(),
         }
     }

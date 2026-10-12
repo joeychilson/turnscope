@@ -235,9 +235,11 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
 - The main thread answers requests one at a time and pushes the status. One
   thread accepts connections, and one per client reads its lines.
 - One thread keeps the data current: it watches every agent folder and
-  catches up as above. After each catch-up, the main thread works out the
-  status. If anything it shows changed, it raises alerts and sends `status`,
-  then each new `alert`, to every client that said `hello`.
+  catches up as above. After a catch-up that read anything new, ran in a
+  new minute, or followed another process's write to the database, the main
+  thread works out the status. If anything it shows changed, it raises
+  alerts and sends `status`, then each new `alert`, to every client that
+  said `hello`.
 - `settings.set`, `account.hide`, and an `agent.connect` or
   `agent.disconnect` that worked push the status too. Connecting runs the
   agent's own command on a thread of its own, as it can take a minute.
@@ -249,7 +251,10 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
 
 `status::status` works out everything the app, the CLI and the MCP server
 show, with every decision already made. Its fields are in
-[protocol.md](protocol.md#status).
+[protocol.md](protocol.md#status). The agents in it are worked out apart,
+by `status::agents`, for the app and `turnscope connect` only: whether an
+agent is connected is read from its MCP settings, and Claude Code's can be
+megabytes.
 
 - A status is worked out as of the minute, so between readings it changes
   at most once a minute.

@@ -145,7 +145,8 @@ impl Prices {
 /// Take in models.dev's catalog when it's six hours since any process last
 /// did: a price that changed is kept from now, beside the one before it, and
 /// a model listed for the first time prices what was used of it before.
-pub fn refresh(db: &mut Connection) -> Result<()> {
+/// Whether it was taken in.
+pub fn refresh(db: &mut Connection) -> Result<bool> {
     let now = crate::now();
     // Claimed in one statement, so two processes never ask at once.
     let claimed = db.execute(
@@ -153,7 +154,7 @@ pub fn refresh(db: &mut Connection) -> Result<()> {
         params![now, 6 * crate::time::HOUR],
     )?;
     if claimed == 0 {
-        return Ok(());
+        return Ok(false);
     }
     let taken = take_in(db, now);
     if taken.is_err() {
@@ -164,7 +165,7 @@ pub fn refresh(db: &mut Connection) -> Result<()> {
             [now - 6 * crate::time::HOUR + 10 * crate::time::MINUTE],
         )?;
     }
-    taken
+    taken.map(|()| true)
 }
 
 /// Take in models.dev's catalog as of `now`.

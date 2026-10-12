@@ -451,9 +451,9 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
 
 /// `text`, saying it's as of the last read when what's new couldn't be
 /// read first.
-fn behind(text: String, caught: Result<()>) -> String {
+fn behind(text: String, caught: Result<bool>) -> String {
     match caught {
-        Ok(()) => text,
+        Ok(_) => text,
         Err(error) => format!(
             "{text}\n\nWhat's new couldn't be read first, so this is as of the last read: {error}"
         ),
@@ -489,7 +489,7 @@ fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
     }
     let input: Input = input(arguments)?;
     let now = crate::now();
-    let status = status::status(&server.db, &server.home, now)?;
+    let status = status::status(&server.db, now)?;
     let yours = server.caller.account(&server.db, &server.home)?;
     let mine = yours
         .as_ref()
@@ -541,7 +541,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
     }
     let input: Input = input(arguments)?;
     let now = crate::now();
-    let status = status::status(&server.db, &server.home, now)?;
+    let status = status::status(&server.db, now)?;
     // Every account's together only when no one account is named.
     let account = match (input.account.as_deref(), input.all) {
         (Some(name), _) => Some(crate::one_account(&status, name)?),

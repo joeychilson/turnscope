@@ -94,6 +94,19 @@
   read, not a failure; `sed -i.bak`, `find -delete` and `git branch -D` are
   work; and a command after `cd v2;` counts as its own. A request is left
   out as sent again only if the agent hadn't answered it.
+- **`statusline` and `guard`** no longer read every agent's MCP settings.
+  With a 5.8 MB `~/.claude.json`, each run takes a quarter of the work and
+  8 MB of memory instead of 38 MB.
+- **The app's engine** works out the status again only after reading
+  something new, in a new minute, or after another Turnscope process wrote.
+  While an agent writes files other than its history, it uses about a
+  twentieth of the CPU it did.
+- **Connecting or disconnecting an agent** no longer hangs when your
+  shell's startup files leave a program running. It waits no longer than
+  its time limit.
+- **The app's engine** answers a line that isn't UTF-8 with a "not JSON"
+  error instead of closing the connection, and keeps running when it runs
+  out of file descriptors for a new connection.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

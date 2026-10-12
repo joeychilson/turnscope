@@ -43,7 +43,6 @@ pub struct Status {
     pub history_read_at: Option<i64>,
     /// In the order to list them: in use first, the most urgent first.
     pub accounts: Vec<Account>,
-    pub agents: Vec<Agent>,
     pub settings: crate::alerts::Settings,
 }
 
@@ -373,7 +372,7 @@ pub fn hide(db: &rusqlite::Connection, account: &str, hidden: bool) -> Result<()
 }
 
 /// How every account stands at `now`.
-pub fn status(db: &rusqlite::Connection, home: &Path, now: i64) -> Result<Status> {
+pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
     let now = now.div_euclid(MINUTE) * MINUTE;
     // Which agents each account's logins are in now, and each key's holders.
     let mut signed: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -469,9 +468,24 @@ pub fn status(db: &rusqlite::Connection, home: &Path, now: i64) -> Result<Status
         });
     }
     rank(&mut accounts);
+    Ok(Status {
+        at: now,
+        history_read_at: db.query_row("SELECT history_at FROM state", [], |row| row.get(0))?,
+        accounts,
+        settings: crate::alerts::settings(db)?,
+    })
+}
 
-    // Compared as files, so a link to this binary, as one on the PATH, is it.
-    let agents = agents::ALL
+/// Every agent: whether it's installed, whether it runs this Turnscope's MCP
+/// server, and whether it drew on any of `accounts` in the last half hour.
+///
+/// Apart from `status`, as only the app and `turnscope connect` show it,
+/// and it reads each agent's MCP settings: Claude Code's `~/.claude.json`
+/// can be megabytes. With a made-up one of 5.8 MB, `statusline` ran 183M
+/// instructions and peaked at 38 MB when `status` worked this out, and 42M
+/// and 8 MB once it didn't.
+pub fn agents(home: &Path, accounts: &[Account]) -> Vec<Agent> {
+    agents::ALL
         .iter()
         .map(|agent| {
             let info = agent.info();
@@ -488,14 +502,7 @@ pub fn status(db: &rusqlite::Connection, home: &Path, now: i64) -> Result<Status
                     .any(|account| account.used_by.iter().any(|by| by == info.id)),
             }
         })
-        .collect();
-    Ok(Status {
-        at: now,
-        history_read_at: db.query_row("SELECT history_at FROM state", [], |row| row.get(0))?,
-        accounts,
-        agents,
-        settings: crate::alerts::settings(db)?,
-    })
+        .collect()
 }
 
 /// How far back a limit's readings, and its account's work, are looked at
@@ -833,7 +840,7 @@ mod tests {
 
     #[test]
     fn a_key_held_by_one_agent_in_two_folders_names_it_once() {
-        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = tempfile::tempdir().unwrap();
         let db = crate::db::open(dir.path()).unwrap();
         db.execute_batch(
             "INSERT INTO account (id, provider, kind, title, read_at)
@@ -845,7 +852,7 @@ mod tests {
                         ('pi', '/b', 'openrouter', 0, 'openrouter:api', 'abc');",
         )
         .unwrap();
-        let status = status(&db, home.path(), HOUR).unwrap();
+        let status = status(&db, HOUR).unwrap();
         let limit = &status.accounts[0].limits[0];
         assert_eq!(limit.held_by, ["pi"]);
     }

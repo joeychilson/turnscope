@@ -139,11 +139,15 @@ ignored.
 | `status` | `Status` | When anything in it but `at` changed |
 | `alert` | `Alert` | When an alert is raised, right after the `status` that raised it |
 
-`serve` works out the status again after each catch-up and after a
-successful `settings.set`, `account.hide`, `agent.connect` or
-`agent.disconnect`. A catch-up runs when `serve` starts, once writes to an
-agent's folders have paused for 250 ms (a second at most), and every minute.
-Alerts are raised only when the status changed.
+`serve` works out the status again after a catch-up that read anything
+new, ran in a new minute, or followed another process's write to the
+database, and after a successful `settings.set`, `account.hide`,
+`agent.connect` or `agent.disconnect`. A catch-up runs when `serve` starts,
+once writes to an agent's folders have paused for 250 ms (a second at most),
+and every minute. Alerts are raised only when the status changed. An agent
+connected or disconnected outside the app, as with `turnscope connect` in a
+terminal, writes nothing to the database, so its `agents` entry changes
+within a minute.
 
 Pushes go only to clients that have said `hello`. A client that doesn't
 take a message within 2 seconds is dropped.
