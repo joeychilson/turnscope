@@ -7,8 +7,8 @@
 // height follows what's in it. A click on the transparent part goes through to
 // whatever is underneath and closes the panel, like a click anywhere else.
 //
-// The engine is the `turnscope` binary in Contents/Helpers, or the one named
-// by `TURNSCOPE_BINARY` when run from a checkout. Launch options such as
+// The engine is the `turnscope` binary in Contents/Helpers, or in a Debug
+// build the one named by `TURNSCOPE_BINARY`. Launch options such as
 // `--data <dir>` are read by `Launch`.
 
 import AppKit
@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             let client = Client(binary: AppDelegate.binary, arguments: launch.passed)
             self.client = client
-            store = Store(client: client)
+            store = Store(client: client, fromDiskImage: AppDelegate.fromDiskImage)
         }
         super.init()
     }
@@ -295,11 +295,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: The engine
 
-    /// The `turnscope` binary: `TURNSCOPE_BINARY`, or the bundle's.
+    /// The `turnscope` binary: the bundle's, or in a Debug build the one
+    /// `TURNSCOPE_BINARY` names. A release never takes it from the
+    /// environment, which `launchctl setenv` can set for every app, since
+    /// the engine's path is what Connect writes into each agent's settings.
     private static var binary: URL {
+        #if DEBUG
         if let named = ProcessInfo.processInfo.environment["TURNSCOPE_BINARY"] {
             return URL(fileURLWithPath: named)
         }
+        #endif
         return Bundle.main.bundleURL.appending(path: "Contents/Helpers/turnscope")
+    }
+
+    /// Whether the app runs from its disk image, or from the read-only copy
+    /// macOS runs an app from when it's opened where it was downloaded (App
+    /// Translocation). Either is gone once the image is ejected or the app
+    /// quits, and so would be the engine an agent was connected to.
+    private static var fromDiskImage: Bool {
+        let bundle = Bundle.main.bundleURL
+        let readOnly = (try? bundle.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly
+        return readOnly == true || bundle.path.contains("/AppTranslocation/")
     }
 }

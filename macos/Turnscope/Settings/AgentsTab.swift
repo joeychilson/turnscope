@@ -12,7 +12,9 @@ struct AgentsTab: View {
             Text("No agent Turnscope serves is installed.")
                 .font(.line).foregroundStyle(.secondary).padding(.horizontal, 12)
         } else {
-            SettingGroup(title: "Let these agents check their limits") {
+            let title = store.fromDiskImage
+                ? "Move Turnscope to Applications to connect agents" : "Let these agents check their limits"
+            SettingGroup(title: title) {
                 ForEach(store.agents) { AgentRow(agent: $0) }
             }
         }
@@ -56,7 +58,7 @@ private struct AgentRow: View {
                                set: { on in
                                    withAnimation(spring) { on ? store.connect(agent.id) : store.disconnect(agent.id) }
                                }))
-                .disabled(changing != nil)
+                .disabled(changing != nil || store.fromDiskImage)
         }
         .padding(Row.padding)
         .frame(minHeight: Row.setting)

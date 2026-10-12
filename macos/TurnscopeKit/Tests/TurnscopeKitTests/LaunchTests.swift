@@ -45,4 +45,6 @@ import Testing
     let using = Store(client: nil, status: status)
     #expect(using.toConnect(dismissed: [])?.id == "codex")
     #expect(using.toConnect(dismissed: ["codex"]) == nil)
+    // Run from its disk image, the app offers none.
+    #expect(Store(client: nil, status: status, fromDiskImage: true).toConnect(dismissed: []) == nil)
 }
