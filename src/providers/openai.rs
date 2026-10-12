@@ -30,7 +30,7 @@ impl Provider for OpenAi {
 
     fn account(&self, credential: &Credential) -> Option<Account> {
         if credential.key {
-            return Some(super::api_account("openai"));
+            return Some(super::api_account(INFO.id));
         }
         let (workspace, label) = workspace(credential)?;
         Some(Account {
@@ -42,10 +42,7 @@ impl Provider for OpenAi {
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
         if credential.key {
-            return Ok(Limits {
-                plan: None,
-                readings: Vec::new(),
-            });
+            return Ok(Limits::default());
         }
         let (workspace, _) = workspace(credential).ok_or(Problem::SignIn)?;
         let answer = super::ask(

@@ -71,7 +71,10 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         if super::absent(window) {
             continue;
         }
-        let resets = super::time(&window["resetsAt"]);
+        let resets = match &window["resetsAt"] {
+            Value::Null => None,
+            at => Some(super::time(at)?),
+        };
         let starts = match key {
             // Always the last five hours: no start to measure from.
             "rolling" => None,
@@ -136,5 +139,16 @@ mod tests {
         let monthly = &readings[2];
         assert_eq!(monthly.resets.unwrap() - monthly.starts.unwrap(), 31 * DAY);
         assert!(super::parse(&json!({"error": "unauthorized"})).is_none());
+    }
+
+    #[test]
+    fn a_reset_that_wont_parse_fails_the_answer() {
+        let answer = json!({"usage": {
+            "rolling": {"percent": 12, "resetsAt": "soon"},
+            "monthly": {"percent": 9, "resetsAt": "2026-11-01T00:00:00.000Z"}
+        }});
+        assert!(super::parse(&answer).is_none());
+        let answer = json!({"usage": {"monthly": {"percent": 9, "resetsAt": null}}});
+        assert_eq!(super::parse(&answer).unwrap()[0].resets, None);
     }
 }

@@ -75,6 +75,7 @@ pub enum Kind {
     ApiKey,
 }
 
+#[derive(Default)]
 pub struct Limits {
     /// The plan, as the provider reports it: `max`, `plus`.
     pub plan: Option<String>,
@@ -115,7 +116,7 @@ fn api_account(provider: &str) -> Account {
 }
 
 /// Ask `url` with `credential`'s token and `headers`, for JSON. A 401 or 403
-/// is a refused login.
+/// is a refused login, unless it's an HTML page.
 fn ask(
     url: &str,
     credential: &Credential,
@@ -136,19 +137,43 @@ fn ask_refused_by(
         credential.secret.expose()
     )];
     lines.extend(headers.iter().map(|header| (*header).to_owned()));
-    match get(url, &lines) {
-        Ok((200..=299, body)) => serde_json::from_slice(&body).map_err(|_| Problem::Unavailable),
-        Ok((status, _)) if refused.contains(&status) => Err(Problem::SignIn),
+    // 15 seconds, where models.dev's catalog gets 60: `guard` reads limits
+    // inside an agent's hook, which holds the agent until it's done, and an
+    // answer of limits is one small JSON object, not a download.
+    let (status, body) = get(url, &lines, 15).map_err(|_| Problem::Unavailable)?;
+    answer(status, &body, refused)
+}
+
+/// The JSON a provider answered with `status` and `body`, or why there's
+/// none.
+///
+/// A refusal is a refused login unless its body is an HTML page: a page in
+/// front of the provider, such as a bot check's 403, is no answer about the
+/// login, and signing in again wouldn't get past it. Only a page is left out,
+/// over counting only a JSON body, because no provider's refusal body has
+/// been measured: one that refuses with plain text or nothing would read as
+/// Unavailable at every read, and "sign in again" would never be said.
+fn answer(status: u16, body: &[u8], refused: &[u16]) -> std::result::Result<Value, Problem> {
+    match status {
+        200..=299 => serde_json::from_slice(body).map_err(|_| Problem::Unavailable),
+        status if refused.contains(&status) && !body.trim_ascii_start().starts_with(b"<") => {
+            Err(Problem::SignIn)
+        }
         _ => Err(Problem::Unavailable),
     }
 }
 
-/// GET `url` over HTTPS with `headers`, giving the status and body.
+/// GET `url` over HTTPS with `headers`, giving the status and body, or
+/// giving up after `seconds`.
 ///
 /// Headers go to curl on standard input, so a credential among them is in
 /// no process listing; `-q` keeps a `~/.curlrc` from adding a trace. A
 /// header with a line break could add headers of its own, so none is sent.
-pub fn get(url: &str, headers: &[String]) -> Result<(u16, Vec<u8>)> {
+/// A connection not made in 5 seconds won't be: on a network that drops
+/// what's sent, curl otherwise waits out all of `seconds` (measured
+/// 2026-10-12 at an address that drops everything: 5.0 seconds with
+/// `--connect-timeout 5`, all of `--max-time` without).
+pub fn get(url: &str, headers: &[String], seconds: u32) -> Result<(u16, Vec<u8>)> {
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err(Error::Failed(
             "a header holds a line break, so nothing was sent".to_owned(),
@@ -164,14 +189,8 @@ pub fn get(url: &str, headers: &[String]) -> Result<(u16, Vec<u8>)> {
             "--proto",
             "=https",
         ])
-        .args([
-            "--max-time",
-            "60",
-            "--max-filesize",
-            "67108864",
-            "--user-agent",
-            "Turnscope",
-        ])
+        .args(["--connect-timeout", "5", "--max-time", &seconds.to_string()])
+        .args(["--max-filesize", "67108864", "--user-agent", "Turnscope"])
         .args(["--header", "@-", "--write-out", "%{stderr}%{http_code}"])
         .arg(url)
         .stdin(Stdio::piped())
@@ -259,5 +278,91 @@ fn window_name(seconds: i64) -> String {
         (_, 7) => "Weekly".to_owned(),
         (_, 28..=31) => "Monthly".to_owned(),
         (_, days) => format!("{days} days"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::Problem;
+    use crate::time::{DAY, HOUR, MINUTE};
+
+    #[test]
+    fn a_refused_status_is_a_refused_login_unless_its_a_page() {
+        let json = br#"{"error": "unauthorized"}"#;
+        let page = b"<!DOCTYPE html><title>Just a moment...</title>";
+        assert_eq!(
+            super::answer(200, json, &[401, 403]),
+            Ok(json!({"error": "unauthorized"}))
+        );
+        assert_eq!(
+            super::answer(200, page, &[401, 403]),
+            Err(Problem::Unavailable)
+        );
+        assert_eq!(super::answer(401, json, &[401, 403]), Err(Problem::SignIn));
+        assert_eq!(
+            super::answer(403, page, &[401, 403]),
+            Err(Problem::Unavailable)
+        );
+        assert_eq!(super::answer(403, json, &[401]), Err(Problem::Unavailable));
+        assert_eq!(
+            super::answer(429, json, &[401, 403]),
+            Err(Problem::Unavailable)
+        );
+    }
+
+    #[test]
+    fn an_empty_or_plain_refusal_is_a_refused_login() {
+        assert_eq!(super::answer(401, b"", &[401, 403]), Err(Problem::SignIn));
+        assert_eq!(
+            super::answer(401, b"Unauthorized", &[401, 403]),
+            Err(Problem::SignIn)
+        );
+        assert_eq!(
+            super::answer(403, b"\n  <html></html>", &[401, 403]),
+            Err(Problem::Unavailable)
+        );
+    }
+
+    #[test]
+    fn a_time_is_text_seconds_or_milliseconds() {
+        assert_eq!(
+            super::time(&json!("2026-10-01T12:00:00Z")),
+            Some(1_790_856_000_000)
+        );
+        assert_eq!(super::time(&json!(1_790_856_000)), Some(1_790_856_000_000));
+        assert_eq!(
+            super::time(&json!(1_790_856_000_000_i64)),
+            Some(1_790_856_000_000)
+        );
+        // Seconds until the year 5138, milliseconds after.
+        assert_eq!(
+            super::time(&json!(99_999_999_999_i64)),
+            Some(99_999_999_999_000)
+        );
+        assert_eq!(
+            super::time(&json!(100_000_000_000_i64)),
+            Some(100_000_000_000)
+        );
+        for not in [json!("soon"), json!(null), json!(1.5)] {
+            assert_eq!(super::time(&not), None);
+        }
+    }
+
+    #[test]
+    fn a_window_is_named_by_its_length_rounded() {
+        let named = |length: i64| super::window_name(length / 1000);
+        assert_eq!(named(HOUR + 29 * MINUTE), "Hourly");
+        assert_eq!(named(HOUR + 30 * MINUTE), "2 hours");
+        assert_eq!(named(22 * HOUR + 29 * MINUTE), "22 hours");
+        assert_eq!(named(22 * HOUR + 30 * MINUTE), "Daily");
+        // A week across a clock change is an hour off.
+        assert_eq!(named(7 * DAY - HOUR), "Weekly");
+        assert_eq!(named(7 * DAY + HOUR), "Weekly");
+        assert_eq!(named(14 * DAY), "14 days");
+        assert_eq!(named(28 * DAY), "Monthly");
+        assert_eq!(named(31 * DAY), "Monthly");
+        assert_eq!(named(32 * DAY), "32 days");
     }
 }

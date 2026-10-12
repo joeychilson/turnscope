@@ -29,8 +29,9 @@ The steps use a provider called Acme, with id `acme`.
 
 Find the endpoint that reports usage for a login the agents hold, and read
 real answers from it: each limit's fields, what a plan without a window
-sends, how times are written, and what a refused login gets. Write what you
-measured, with dates, in the module comment at the top of
+sends, how times are written, and what a refused login gets: its status,
+and whether its body is an HTML page, which `ask` doesn't count as refused.
+Write what you measured, with dates, in the module comment at the top of
 `src/providers/acme.rs`, as the other providers do.
 
 ## 2. Describe it in `Info`
@@ -69,7 +70,7 @@ impl Provider for Acme {
 
     fn account(&self, credential: &Credential) -> Option<Account> {
         if credential.key {
-            return Some(super::api_account("acme"));
+            return Some(super::api_account(INFO.id));
         }
         let (id, label) = credential.identity.clone()?;
         Some(Account {
@@ -81,10 +82,7 @@ impl Provider for Acme {
 
     fn limits(&self, credential: &Credential, _now: i64) -> Result<Limits, Problem> {
         if credential.key {
-            return Ok(Limits {
-                plan: None,
-                readings: Vec::new(),
-            });
+            return Ok(Limits::default());
         }
         let answer = super::ask("https://api.acme.example/v1/usage", credential, &[])?;
         Ok(Limits {
@@ -164,9 +162,9 @@ Helpers in `src/providers/mod.rs`:
 
 | Helper | Does |
 |---|---|
-| `ask(url, credential, headers)` | GETs `url` with `Authorization: Bearer <secret>` and `headers`, for JSON. A 2xx status gives the JSON, 401 or 403 `Problem::SignIn`, and anything else `Problem::Unavailable`. |
+| `ask(url, credential, headers)` | GETs `url` with `Authorization: Bearer <secret>` and `headers`, for JSON, giving up after 15 seconds. A 2xx status gives the JSON, and a 401 or 403 `Problem::SignIn`, unless its body is an HTML page, such as a bot check's, which signing in again wouldn't get past. Anything else is `Problem::Unavailable`. |
 | `ask_refused_by(url, credential, headers, refused)` | As `ask`, with `refused` the statuses that mean a refused login, where a 403 can mean something else, as at xAI. |
-| `get(url, headers)` | The request itself, giving the status and body, for a provider whose token goes in another header. |
+| `get(url, headers, seconds)` | The request itself, giving the status and body, for a provider whose token goes in another header. It gives up after `seconds`, or after 5 without a connection. A limit read passes 15, as `ask` does. |
 | `time(value)` | A time given as RFC 3339 text, or as Unix seconds or milliseconds. |
 | `absent(window)` | Whether a window is null or all nulls, as providers send one a plan doesn't have. |
 | `window_name(seconds)` | A window's name by its length: `Hourly`, `5 hours`, `Daily`, `Weekly`, `Monthly`, or `<n> days`. |

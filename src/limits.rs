@@ -30,6 +30,21 @@ struct Held {
     credentials: Vec<Credential>,
 }
 
+impl Held {
+    /// Read the account with `credential` too, unless it already is: a login
+    /// held in two agent folders is sent once.
+    fn hold(&mut self, credential: Credential) {
+        let fingerprint = credential.secret.fingerprint();
+        if !self
+            .credentials
+            .iter()
+            .any(|known| known.secret.fingerprint() == fingerprint)
+        {
+            self.credentials.push(credential);
+        }
+    }
+}
+
 /// What an agent folder holds for a provider: the account its login is to,
 /// if any, and an API key's fingerprint.
 struct SignedIn {
@@ -143,8 +158,7 @@ fn gather(db: &Connection, home: &Path) -> Result<(Vec<SignedIn>, BTreeMap<Strin
                             account,
                             credentials: Vec::new(),
                         })
-                        .credentials
-                        .push(credential);
+                        .hold(credential);
                 }
             }
             // A login gone from the folder is signed out of.
@@ -429,6 +443,22 @@ mod tests {
                 resets: Some(resets),
             }],
         })
+    }
+
+    #[test]
+    fn a_login_held_in_two_folders_is_sent_once() {
+        let mut held = held("opencode-go:key-a");
+        for secret in ["sk-go-a", "sk-go-a", "sk-go-b"] {
+            held.hold(Credential {
+                provider: "opencode-go",
+                secret: agents::Secret::new(secret),
+                key: true,
+                expires: None,
+                identity: None,
+                plan: None,
+            });
+        }
+        assert_eq!(held.credentials.len(), 2);
     }
 
     #[test]

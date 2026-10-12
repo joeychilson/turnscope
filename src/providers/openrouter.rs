@@ -33,7 +33,7 @@ impl Provider for OpenRouter {
 
     /// Its sign-in gives an agent a key, so every login is a key.
     fn account(&self, _credential: &Credential) -> Option<Account> {
-        Some(super::api_account("openrouter"))
+        Some(super::api_account(INFO.id))
     }
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
@@ -153,5 +153,72 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    #[test]
+    fn daily_and_monthly_key_limits_run_by_utc_days_and_months() {
+        // Thursday 2026-10-01 12:00 UTC.
+        let now = 1_790_856_000_000;
+        let read = |answer: serde_json::Value| {
+            let limit = super::own_limit(&answer, "key-abc", now).unwrap().remove(0);
+            (limit.name, limit.used, limit.starts, limit.resets)
+        };
+        // Without what remains, the window's own usage is what was spent.
+        // October 1 to 2, UTC.
+        assert_eq!(
+            read(json!({"data": {"limit": 10.0, "limit_reset": "daily", "usage_daily": 2.5}})),
+            (
+                "Daily key limit".to_owned(),
+                25.0,
+                Some(1_790_812_800_000),
+                Some(1_790_899_200_000)
+            )
+        );
+        // October 1 to November 1, UTC.
+        assert_eq!(
+            read(
+                json!({"data": {"limit": 20.0, "limit_remaining": 10.0, "limit_reset": "monthly"}})
+            ),
+            (
+                "Monthly key limit".to_owned(),
+                50.0,
+                Some(1_790_812_800_000),
+                Some(1_793_491_200_000)
+            )
+        );
+        assert_eq!(
+            read(json!({"data": {"limit": 8.0, "limit_reset": null, "usage": 6.0}})),
+            ("Key limit".to_owned(), 75.0, None, None)
+        );
+    }
+
+    #[test]
+    fn a_key_answer_not_understood_reads_no_limit() {
+        let now = 1_790_856_000_000;
+        for answer in [
+            json!({"data": {"limit": 10.0, "limit_remaining": 5.0, "limit_reset": "yearly"}}),
+            json!({"data": {"limit": 10.0, "limit_reset": "daily"}}),
+            json!({"error": {"code": 401, "message": "unauthorized"}}),
+        ] {
+            assert!(super::own_limit(&answer, "key-abc", now).is_none());
+        }
+    }
+
+    #[test]
+    fn credits_are_what_was_used_of_what_was_bought() {
+        let answer = json!({"data": {"total_credits": 40.0, "total_usage": 10.0}});
+        let credits = super::credits(&answer).unwrap().unwrap();
+        assert_eq!(
+            (
+                credits.name.as_str(),
+                credits.used,
+                credits.size,
+                credits.resets
+            ),
+            ("Credits", 25.0, Some(40.0), None)
+        );
+        let none_bought = json!({"data": {"total_credits": 0.0, "total_usage": 0.0}});
+        assert!(matches!(super::credits(&none_bought), Some(None)));
+        assert!(super::credits(&json!({"error": "unauthorized"})).is_none());
     }
 }
