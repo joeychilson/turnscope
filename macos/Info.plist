@@ -34,6 +34,8 @@
 	<string>https://github.com/joeychilson/turnscope/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>$(SPARKLE_PUBLIC_KEY)</string>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 </dict>

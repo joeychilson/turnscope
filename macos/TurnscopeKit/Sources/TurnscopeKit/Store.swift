@@ -47,11 +47,15 @@ public final class Store {
     /// says. It's the status's own time, so it reads the same whenever it's
     /// drawn.
     @ObservationIgnored private let frozen: Date?
+    /// Whether the app runs from its disk image (`AppDelegate.fromDiskImage`
+    /// says why it matters): then no agent is offered to connect.
+    public let fromDiskImage: Bool
 
     /// A store over `client`, or with no client for a fixed `status`, as
     /// `--fixture` and `--snapshot` show.
-    public init(client: Client?, status: Status? = nil) {
+    public init(client: Client?, status: Status? = nil, fromDiskImage: Bool = false) {
         self.client = client
+        self.fromDiskImage = fromDiskImage
         frozen = client == nil ? status?.at : nil
         if let status { show(status) }
         guard let client else { return }
@@ -99,9 +103,10 @@ public final class Store {
     /// The agent in use to offer to connect: one that can't ask Turnscope
     /// about its limits, because it isn't connected or points at another
     /// copy. Agents in `dismissed`, where the offer was put away, are
-    /// skipped.
+    /// skipped, and none is offered while the app runs from its disk image.
     public func toConnect(dismissed: Set<String>) -> AgentStatus? {
-        agents.first { $0.inUse && $0.connection != .connected && !dismissed.contains($0.id) }
+        guard !fromDiskImage else { return nil }
+        return agents.first { $0.inUse && $0.connection != .connected && !dismissed.contains($0.id) }
     }
 
     // MARK: Requests to serve

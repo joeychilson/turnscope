@@ -14,6 +14,12 @@
 - **Long messages** read back from a session are cut at 40,000 characters,
   saying how many were left out, so one long paste stays within what an
   agent can take from a tool.
+- **Run from its disk image,** Turnscope no longer offers to connect an
+  agent: an agent connected there would lose Turnscope once the image is
+  ejected. Settings → Agents turns off its switches and says to move
+  Turnscope to Applications.
+- **Updates** are checked against their signature before the disk image is
+  opened, from the update after this one.
 
 ## 0.1.1
 

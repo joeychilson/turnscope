@@ -115,13 +115,18 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   lists the panel shows (`inUse`, `recent`, `unused`, `hidden`), and makes
   the requests views ask for. Hiding an account and changing a notification
   setting show at once, and go back if `serve` refuses. Connecting or
-  disconnecting an agent shows as soon as `serve` has done it. It also holds
-  which agents are being connected, why connecting failed, and the sessions
-  that used the open account's deciding limit (`usedMost`), shown only while
-  that limit still decides it. It calls `onChange` after each status and
-  each time `serve` connects or fails, and `onAlert` with each alert.
-  `AppDelegate` sets these to redraw the menu bar item and post
+  disconnecting an agent shows as soon as `serve` has done it. It also
+  holds which agents are being connected, why connecting failed, and the
+  sessions that used the open account's deciding limit (`usedMost`), shown
+  only while that limit still decides it. It calls `onChange` after each
+  status and each time `serve` connects or fails, and `onAlert` with each
+  alert. `AppDelegate` sets these to redraw the menu bar item and post
   notifications.
+- **Run from its disk image**, or from the copy macOS runs it from there
+  (App Translocation), the app offers to connect no agent
+  (`Store.fromDiskImage`), and Settings → Agents turns off its switches and
+  says to move Turnscope to Applications. An agent connected there would
+  run an engine that's gone once the image is ejected.
 - **Views** get the store from the SwiftUI environment, with `Navigation`,
   `Updater` and `PanelActions` (quit, close, and whether notifications are
   off).
@@ -237,7 +242,7 @@ are in cards. Changes take effect at once.
 | Tab | Holds |
 |---|---|
 | General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version, Check now and Check automatically |
-| Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed |
+| Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed. Run from its disk image, the switches are off and the heading says to move Turnscope to Applications |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 
 Where each setting is kept:
@@ -282,6 +287,10 @@ kinds turned off and alerts for hidden accounts, so the app doesn't filter.
 `Updater` uses Sparkle, pinned to 2.10.0 in the Xcode project. It reads the
 appcast at `SUFeedURL`, the latest GitHub release's `appcast.xml`, checks
 each update's signature with `SUPublicEDKey`, and asks before installing.
+`SUVerifyUpdateBeforeExtraction` has it check the disk image's signature
+before it mounts the image, rather than after, so a disk image that isn't
+ours is never opened. The installed copy's Info.plist is the one that
+counts, so it holds from the update after the one that adds it.
 Automatic checks are on by default (`SUEnableAutomaticChecks`), and Settings
 → General → Check automatically turns them off.
 
@@ -349,7 +358,7 @@ as an option's value, so `--open --data <dir>` opens nothing in the panel.
 
 | Environment variable | Does |
 |---|---|
-| `TURNSCOPE_BINARY` | The `turnscope` to run instead of `Contents/Helpers/turnscope`. `EngineTests.swift` reads it too |
+| `TURNSCOPE_BINARY` | In a Debug build, the `turnscope` to run instead of `Contents/Helpers/turnscope`. A release ignores it, since the engine's path is what Connect writes into agents' settings. `EngineTests.swift` reads it too |
 
 The engine the app starts inherits the app's environment, so
 `TURNSCOPE_OFFLINE` and `TURNSCOPE_NOW` reach it. A `serve` already running

@@ -91,7 +91,7 @@ TURNSCOPE_BINARY="$PWD/target/debug/turnscope" swift test --package-path macos/T
 | Variable | Does |
 |---|---|
 | `TURNSCOPE_BLESS` | Writes the snapshots instead of comparing them |
-| `TURNSCOPE_BINARY` | The `turnscope` that the Swift engine test and the app run, instead of the bundled one |
+| `TURNSCOPE_BINARY` | The `turnscope` that the Swift engine test and a Debug build of the app run, instead of the bundled one |
 | `TURNSCOPE_BACKTEST` | The copy of a data directory the forecast backtest replays |
 | `TURNSCOPE_HANDOFF_CASES` | The folder of handoff cases |
 | `TURNSCOPE_HANDOFF_LABEL` | The name of the version being tested, in each handoff's file name |
