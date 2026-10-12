@@ -377,7 +377,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             all,
             hours,
         } => {
-            let status = status::status(&db, home, now)?;
+            let status = status::status(&db, now)?;
             let mut shown: Vec<&status::Account> = match &account {
                 Some(name) => status::named(&status, name)?,
                 None => status.accounts.iter().collect(),
@@ -401,7 +401,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             top,
             ..
         } => {
-            let status = status::status(&db, home, now)?;
+            let status = status::status(&db, now)?;
             let (account, limit) = limit_of(&db, home, &status, account.as_deref(), &name)?;
             let by = by.unwrap_or(usage::By::Session);
             let (used, shares) =
@@ -430,11 +430,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             top,
         } => {
             let account = match account {
-                Some(name) => Some(
-                    one_account(&status::status(&db, home, now)?, &name)?
-                        .id
-                        .clone(),
-                ),
+                Some(name) => Some(one_account(&status::status(&db, now)?, &name)?.id.clone()),
                 None => None,
             };
             let since = time_of(&from)?.unwrap_or(now - 30 * time::DAY);
@@ -549,12 +545,12 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         Command::Accounts { action } => {
             if let Some(AccountAction::Hide { account } | AccountAction::Show { account }) = &action
             {
-                let status = status::status(&db, home, now)?;
+                let status = status::status(&db, now)?;
                 let found = one_account(&status, account)?;
                 let hidden = matches!(action, Some(AccountAction::Hide { .. }));
                 status::hide(&db, &found.id, hidden)?;
             }
-            let status = status::status(&db, home, now)?;
+            let status = status::status(&db, now)?;
             let lines: Vec<String> = status
                 .accounts
                 .iter()
@@ -618,7 +614,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             print(json!({ "agent": id, "connected": false }), text)
         }
         Command::Connect { agent: None } => {
-            let agents = status::status(&db, home, now)?.agents;
+            let agents = status::agents(home, &status::status(&db, now)?.accounts);
             let lines: Vec<String> = agents
                 .iter()
                 .map(|agent| {
@@ -715,7 +711,7 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
             }
         }
     }
-    let status = status::status(db, home, now)?;
+    let status = status::status(db, now)?;
     for account in &status.accounts {
         let agents = match account.agents.as_slice() {
             [] => "the agent that uses it".to_owned(),
@@ -820,7 +816,7 @@ fn guard(
         limits::refresh(&mut db, home)?;
     }
     let now = now();
-    let status = status::status(&db, home, now)?;
+    let status = status::status(&db, now)?;
     let account = match account {
         Some(name) => one_account(&status, name)?,
         None => {
@@ -892,7 +888,7 @@ fn limit_called(limit: &status::Limit) -> String {
 fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String> {
     let db = db::open(data).ok()?;
     let now = now();
-    let status = status::status(&db, home, now).ok()?;
+    let status = status::status(&db, now).ok()?;
     let id = match account {
         // A line is better than none: of several named, the first.
         Some(name) => Some(status::named(&status, name).ok()?.first()?.id.clone()),
@@ -953,17 +949,18 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
 /// Bring the database up to date: prices and limits when due, then what's
 /// new in the agents' history, priced and attributed as it's written. A
 /// provider out of reach leaves things as they were. The history is read
-/// even when the limits can't be, and their error is given after.
-pub fn catch_up(db: &mut rusqlite::Connection, home: &Path) -> Result<()> {
-    let limits = match online() {
-        true => {
-            let _ = prices::refresh(db);
-            limits::refresh(db, home)
-        }
-        false => Ok(()),
+/// even when the limits can't be, and their error is given after. Whether
+/// there was anything new: prices, limits or history.
+pub fn catch_up(db: &mut rusqlite::Connection, home: &Path) -> Result<bool> {
+    let (priced, limits) = match online() {
+        true => (
+            prices::refresh(db).unwrap_or(false),
+            limits::refresh(db, home),
+        ),
+        false => (false, Ok(false)),
     };
-    ingest::ingest(db, home)?;
-    limits
+    let read = ingest::ingest(db, home)?;
+    Ok(limits? | priced | read)
 }
 
 /// Whether providers and models.dev may be asked: `TURNSCOPE_OFFLINE` works
@@ -982,15 +979,21 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
         .stderr(Stdio::piped())
         .spawn()?;
     // Read as written, so a child that writes more than a pipe holds
-    // doesn't wait on us.
+    // doesn't wait on us. A process it leaves running, as a login shell's
+    // background job, can hold the pipes open after it ends, so they're
+    // read until the deadline at most.
     let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        let (sent, read) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
+            let Some(mut pipe) = pipe else { return };
+            let mut bytes = [0; 8192];
+            while let Ok(count @ 1..) = pipe.read(&mut bytes) {
+                if sent.send(bytes[..count].to_vec()).is_err() {
+                    return;
+                }
             }
-            bytes
-        })
+        });
+        read
     };
     let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
     let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
@@ -1007,13 +1010,39 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let (stdout, stderr) = (
-        stdout.join().unwrap_or_default(),
-        stderr.join().unwrap_or_default(),
-    );
+    // What it wrote before it ended is read at once, but it may have ended
+    // just as the deadline passed.
+    let until = deadline.max(Instant::now() + Duration::from_millis(100));
+    let collect = |read: std::sync::mpsc::Receiver<Vec<u8>>| {
+        let mut bytes = Vec::new();
+        while let Ok(more) = read.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            bytes.extend(more);
+        }
+        bytes
+    };
     Ok(Output {
         status,
-        stdout,
-        stderr,
+        stdout: collect(stdout),
+        stderr: collect(stderr),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_command_is_waited_on_no_longer_than_asked_whatever_it_leaves_running() {
+        let began = Instant::now();
+        let mut command = Process::new("sh");
+        command.args(["-c", "sleep 5 & echo started"]);
+        let output = output_within(&mut command, Duration::from_secs(1)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"started\n");
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            began.elapsed()
+        );
+    }
 }

@@ -57,11 +57,11 @@ struct SignedIn {
 }
 
 /// Read every account's limits, when it's five minutes since any process
-/// last did.
-pub fn refresh(db: &mut Connection, home: &Path) -> Result<()> {
+/// last did; whether it did.
+pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
     let now = now();
     if !claim(db, now)? {
-        return Ok(());
+        return Ok(false);
     }
     let (signed_in, accounts) = gather(db, home)?;
     // Every account at once, so the slowest provider sets how long it takes.
@@ -82,7 +82,8 @@ pub fn refresh(db: &mut Connection, home: &Path) -> Result<()> {
     });
     let changed = record(db, signed_in, answers, now)?;
     // Whose usage is whose changed.
-    ingest::derive(db, ingest::Of::SignIns(changed))
+    ingest::derive(db, ingest::Of::SignIns(changed))?;
+    Ok(true)
 }
 
 /// Claim reading the limits if they're due, in one statement, so no two

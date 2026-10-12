@@ -607,8 +607,8 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
         })
         .unwrap();
     let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
-    let mut ask = |request: &str| {
-        writeln!(&stream, "{request}").unwrap();
+    let mut ask = |request: &[u8]| {
+        (&stream).write_all(&[request, b"\n"].concat()).unwrap();
         loop {
             let reply: serde_json::Value =
                 serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
@@ -618,11 +618,11 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
             }
         }
     };
-    let early = ask(r#"{"jsonrpc":"2.0","id":1,"method":"alerts.ack","params":{"ids":[]}}"#);
+    let early = ask(br#"{"jsonrpc":"2.0","id":1,"method":"alerts.ack","params":{"ids":[]}}"#);
     assert_eq!(early["error"]["code"], -32002);
-    let other = ask(r#"{"jsonrpc":"2.0","id":2,"method":"hello","params":{"protocol":2}}"#);
+    let other = ask(br#"{"jsonrpc":"2.0","id":2,"method":"hello","params":{"protocol":2}}"#);
     assert_eq!(other["error"]["code"], -32001);
-    let hello = ask(r#"{"jsonrpc":"2.0","id":3,"method":"hello","params":{"protocol":1}}"#);
+    let hello = ask(br#"{"jsonrpc":"2.0","id":3,"method":"hello","params":{"protocol":1}}"#);
     assert_eq!(
         hello["result"]["server"],
         format!("turnscope {}", env!("CARGO_PKG_VERSION"))
@@ -642,14 +642,28 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
             "xai:user-3"
         ]
     );
+    let agents: Vec<&str> = hello["result"]["status"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|agent| agent["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        agents,
+        ["claude-code", "codex", "opencode", "pi", "grok-build"]
+    );
     let breakdown = ask(
-        r#"{"jsonrpc":"2.0","id":4,"method":"limit.breakdown","params":{"account":"anthropic:acct-1:org-1","limit":"seven_day"}}"#,
+        br#"{"jsonrpc":"2.0","id":4,"method":"limit.breakdown","params":{"account":"anthropic:acct-1:org-1","limit":"seven_day"}}"#,
     );
     assert_eq!(breakdown["result"]["sessions"][0]["session"], WORKING);
     let hidden = ask(
-        r#"{"jsonrpc":"2.0","id":5,"method":"account.hide","params":{"account":"xai:user-3","hidden":true}}"#,
+        br#"{"jsonrpc":"2.0","id":5,"method":"account.hide","params":{"account":"xai:user-3","hidden":true}}"#,
     );
     assert_eq!(hidden["result"], serde_json::json!({}));
+    // A line that isn't UTF-8 isn't JSON, and the client stays: what follows
+    // is answered.
+    let garbled = ask(b"\xff\xfe{\"x\":1}");
+    assert_eq!(garbled["error"]["code"], -32700);
     // Each request in the contract's examples, which the app's tests check
     // it writes, is one serve reads: answered, not refused. Not `agent.*`,
     // which would run an agent's own command on this Mac, and `shutdown`
@@ -665,7 +679,7 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
     requests.sort();
     for name in requests {
         let request: serde_json::Value = serde_json::from_str(&example(&name)).unwrap();
-        let answer = ask(&request.to_string());
+        let answer = ask(request.to_string().as_bytes());
         assert!(
             answer.get("result").is_some(),
             "{name} was refused: {answer}"
@@ -673,6 +687,9 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
     }
     let shutdown: serde_json::Value =
         serde_json::from_str(&example("shutdown.request.json")).unwrap();
-    assert_eq!(ask(&shutdown.to_string())["result"], serde_json::json!({}));
+    assert_eq!(
+        ask(shutdown.to_string().as_bytes())["result"],
+        serde_json::json!({})
+    );
     assert!(serve.wait().unwrap().success());
 }

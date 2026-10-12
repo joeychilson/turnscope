@@ -9,9 +9,11 @@
 //!
 //! One thread answers requests. Another keeps the data current: it reads
 //! what changed 250 ms after the agents' folders do, and each minute reads
-//! history, limits when due and prices when due. After each, serve pushes
-//! the status, if what it shows changed, with the alerts it raised. Should
-//! that thread stop, serve stops too, so the app starts one that keeps it.
+//! history, limits when due and prices when due. After each that read
+//! anything new, ran in a new minute or followed another process's write,
+//! serve pushes the status, if what it shows changed, with the alerts it
+//! raised. Should that thread stop, serve stops too, so the app starts one
+//! that keeps it.
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -47,9 +49,9 @@ pub fn socket_path(data: &Path) -> PathBuf {
 
 enum Message {
     Connected(UnixStream),
-    Line(u64, String),
+    Line(u64, Vec<u8>),
     Gone(u64),
-    /// The data was brought up to date.
+    /// The data was brought up to date, and may show something new.
     Kept,
     /// Keeping the data current stopped, and why: serve stops with it, so
     /// the app starts one that can.
@@ -63,10 +65,22 @@ struct Client {
     greeted: bool,
 }
 
-/// Let a client go that a write to failed or timed out: shut its socket, so
-/// the thread reading it ends and the app sees it close and connects again.
-fn drop_client(client: &Client) {
-    let _ = client.stream.shutdown(std::net::Shutdown::Both);
+/// The status as the app is sent it: with the agents (`status::agents`).
+#[derive(Serialize, Deserialize)]
+struct AppStatus {
+    #[serde(flatten)]
+    status: status::Status,
+    agents: Vec<status::Agent>,
+}
+
+impl AppStatus {
+    fn of(db: &Connection, home: &Path, now: i64) -> Result<AppStatus> {
+        let status = status::status(db, now)?;
+        Ok(AppStatus {
+            agents: status::agents(home, &status.accounts),
+            status,
+        })
+    }
 }
 
 struct Server {
@@ -136,13 +150,26 @@ pub fn run(home: &Path, data: &Path, linger: Duration) -> Result<()> {
         });
         match messages.recv_timeout(wait) {
             Ok(Message::Connected(stream)) => {
+                // Out of file descriptors, say: let this client go, and
+                // serve on.
+                let Ok(reading) = stream.try_clone() else {
+                    continue;
+                };
                 next += 1;
-                let (reading, sender) =
-                    (stream.try_clone().map_err(failed)?, server.sender.clone());
+                let sender = server.sender.clone();
                 std::thread::spawn(move || {
-                    for line in BufReader::new(reading).lines() {
-                        let Ok(line) = line else { break };
-                        if sender.send(Message::Line(next, line)).is_err() {
+                    let mut reading = BufReader::new(reading);
+                    let mut line = Vec::new();
+                    // Bytes, so a line that isn't UTF-8 is answered as one
+                    // that isn't JSON, and the client stays.
+                    while reading
+                        .read_until(b'\n', &mut line)
+                        .is_ok_and(|read| read > 0)
+                    {
+                        if sender
+                            .send(Message::Line(next, std::mem::take(&mut line)))
+                            .is_err()
+                        {
                             return;
                         }
                     }
@@ -207,12 +234,31 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
             let _ = watcher.watch(&folder, notify::RecursiveMode::Recursive);
         }
     }
+    // When the status was last pushed: the minute, and SQLite's
+    // `data_version`, which moves when another connection writes, as an
+    // agent's MCP server reading history first does. A catch-up that read
+    // nothing new, in the same minute, with no one else's write since, would
+    // push the same status: as when an agent writes in its folder anything
+    // but its history. With a stand-in agent doing that three times a second
+    // for 30 s, serve ran 11.3G instructions pushing after every catch-up,
+    // and 0.4G with this. The cost: an agent's MCP settings changed outside
+    // the app show at the next minute.
+    let mut pushed = None;
     loop {
-        if let Err(error) = crate::catch_up(&mut db, home) {
+        // One that failed may have read some.
+        let read = crate::catch_up(&mut db, home).unwrap_or_else(|error| {
             eprintln!("turnscope serve: {error}");
-        }
-        if kept.send(Message::Kept).is_err() {
-            return Ok(());
+            true
+        });
+        let now = (
+            crate::now().div_euclid(crate::time::MINUTE),
+            db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
+        );
+        if read || pushed != Some(now) {
+            if kept.send(Message::Kept).is_err() {
+                return Ok(());
+            }
+            pushed = Some(now);
         }
         match changes.recv_timeout(Duration::from_secs(60)) {
             Ok(()) => {
@@ -232,31 +278,31 @@ impl Server {
     /// Push the status to every client, if what it shows changed, with the
     /// alerts it raised.
     fn push(&mut self) {
-        let status = match status::status(&self.db, &self.home, crate::now()) {
-            Ok(status) => status,
+        let app = match AppStatus::of(&self.db, &self.home, crate::now()) {
+            Ok(app) => app,
             Err(error) => return eprintln!("turnscope serve: {error}"),
         };
-        let mut shown = serde_json::to_value(&status).unwrap_or_default();
+        let mut shown = serde_json::to_value(&app).unwrap_or_default();
         if let Some(fields) = shown.as_object_mut() {
             fields.remove("at");
             // Set at every catch-up; what's shown is only whether the first
             // read is done.
             fields.insert(
                 "historyReadAt".to_owned(),
-                json!(status.history_read_at.is_some()),
+                json!(app.status.history_read_at.is_some()),
             );
         }
         if self.sent.as_ref().is_some_and(|(_, sent)| *sent == shown) {
             return;
         }
-        let raised = alerts::raise(&mut self.db, &status);
-        self.broadcast("status", json!(status));
+        let raised = alerts::raise(&mut self.db, &app.status);
+        self.broadcast("status", json!(app));
         match raised {
             Ok(raised) => {
                 for alert in raised {
                     self.broadcast("alert", json!(alert));
                 }
-                self.sent = Some((status, shown));
+                self.sent = Some((app.status, shown));
             }
             // Not sent, so the next push raises them again.
             Err(error) => eprintln!("turnscope serve: alerts: {error}"),
@@ -268,7 +314,9 @@ impl Server {
         self.clients.retain(|_, client| {
             let sent = !client.greeted || writeln!(client.stream, "{line}").is_ok();
             if !sent {
-                drop_client(client);
+                // Shut, so the thread reading it ends, and the app sees it
+                // close and connects again.
+                let _ = client.stream.shutdown(std::net::Shutdown::Both);
             }
             sent
         });
@@ -280,12 +328,13 @@ impl Server {
             .get_mut(&client)
             .is_some_and(|to| writeln!(to.stream, "{message}").is_err());
         if gone && let Some(client) = self.clients.remove(&client) {
-            drop_client(&client);
+            // As in `broadcast`.
+            let _ = client.stream.shutdown(std::net::Shutdown::Both);
         }
     }
 
     /// Answer a line; `false` once asked to shut down.
-    fn answer(&mut self, client: u64, line: &str) -> bool {
+    fn answer(&mut self, client: u64, line: &[u8]) -> bool {
         let reply =
             |id: Value, result: std::result::Result<Value, (i64, String, Option<Value>)>| {
                 match result {
@@ -299,7 +348,7 @@ impl Server {
                     }
                 }
             };
-        let request: Value = match serde_json::from_str(line) {
+        let request: Value = match serde_json::from_slice(line) {
             Ok(request) => request,
             Err(error) => {
                 self.send(
@@ -358,7 +407,7 @@ impl Server {
                         );
                         return Err((-32001, message, Some(json!({ "supported": [PROTOCOL] }))));
                     }
-                    let status = status::status(&self.db, &self.home, now).map_err(failed)?;
+                    let status = AppStatus::of(&self.db, &self.home, now).map_err(failed)?;
                     let alerts = alerts::pending(&self.db, now).map_err(failed)?;
                     if let Some(client) = self.clients.get_mut(&client) {
                         client.greeted = true;
@@ -460,7 +509,7 @@ impl Server {
         let status = match &self.sent {
             Some((status, _)) => status,
             None => {
-                worked_out = status::status(&self.db, &self.home, now)?;
+                worked_out = status::status(&self.db, now)?;
                 &worked_out
             }
         };
@@ -527,7 +576,7 @@ mod tests {
         let again =
             |value: &Value, read: fn(Value) -> Value| assert_eq!(&read(value.clone()), value);
         let status = |value: Value| {
-            serde_json::to_value(serde_json::from_value::<crate::status::Status>(value).unwrap())
+            serde_json::to_value(serde_json::from_value::<super::AppStatus>(value).unwrap())
                 .unwrap()
         };
         let alert = |value: Value| {

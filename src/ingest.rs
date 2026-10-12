@@ -115,8 +115,9 @@ fn lock(db: &Connection) -> Result<std::fs::File> {
     locked.map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
 }
 
-/// Read what's new in every agent's history under `home`.
-pub fn ingest(db: &mut Connection, home: &Path) -> Result<()> {
+/// Read what's new in every agent's history under `home`; whether any file
+/// had changed.
+pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     let _lock = lock(db)?;
 
     let readers: i64 = db.query_row("SELECT readers FROM state", [], |row| row.get(0))?;
@@ -208,7 +209,7 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<()> {
     }
     db.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
     if due.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     let derived = Derived::load(db)?;
@@ -266,7 +267,7 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<()> {
     })?;
     // Statistics for the query planner, where tables changed enough.
     db.execute_batch("PRAGMA optimize")?;
-    Ok(())
+    Ok(true)
 }
 
 fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived) -> Result<()> {
@@ -947,5 +948,21 @@ mod tests {
         // An agent's own folder under home isn't a repository.
         let own = home.path().join(".grok/worktrees/w1");
         assert_eq!(project(&own), own.to_string_lossy());
+    }
+
+    #[test]
+    fn a_read_says_whether_any_file_changed() {
+        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let log = home.path().join(".claude/projects/-work-app/s1.jsonl");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let line = r#"{"type":"user","sessionId":"s1","timestamp":"2026-09-30T09:00:00Z","cwd":"/work/app","message":{"role":"user","content":"Fix the parser."}}"#;
+        std::fs::write(&log, format!("{line}\n")).unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        assert!(ingest(&mut db, home.path()).unwrap());
+        // Anything but history written in the agent's folder is nothing new.
+        std::fs::write(home.path().join(".claude/debug.txt"), "").unwrap();
+        assert!(!ingest(&mut db, home.path()).unwrap());
+        std::fs::write(&log, format!("{line}\n{line}\n")).unwrap();
+        assert!(ingest(&mut db, home.path()).unwrap());
     }
 }
