@@ -130,13 +130,15 @@ versions.
 |---|---|
 | `scripts/build-app.sh` | Builds the app for this Mac into `target/xcode/Build/Products/Debug/Turnscope.app`: Debug, signed ad hoc, warnings as errors, with the version in `Cargo.toml`. Swift packages are resolved into `target/swiftpm/`. |
 | `scripts/build-cli.sh` | The Xcode project's "Build turnscope" phase. Builds `turnscope` for each architecture in `ARCHS` (release for a Release build, debug otherwise) and joins them with `lipo` into `BUILT_PRODUCTS_DIR`. Run by hand, it builds for this Mac in debug into `target/helper/`. |
-| `scripts/build-release.sh` | Builds the release into `target/dist`: the app for Apple silicon and Intel, `Turnscope-<version>.dmg`, and `appcast.xml`. Its environment is below. |
+| `scripts/build-release.sh` | Builds the app for release into `target/dist/Turnscope.app`, for Apple silicon and Intel, unsigned, with `SPARKLE_PUBLIC_KEY` in it, and resolves the Xcode project's packages into `target/swiftpm/`. |
+| `scripts/sign-release.sh` | Signs the app `build-release.sh` built, notarizes it, and makes `Turnscope-<version>.dmg` and `appcast.xml` beside it, with Sparkle's `sign_update` from `target/swiftpm/`. Its environment is below. |
 | `scripts/check-app.sh [app]` | Checks that a built app's `turnscope` runs: `doctor` creates a database, `serve` answers a hello with a status, and `mcp` answers a handshake and a tool list with the app's version. It runs in throwaway folders, `HOME` included. The default app is `target/dist/Turnscope.app`. |
 | `scripts/screenshots.sh` | Builds the app with `build-app.sh`, then draws the README's screenshots, light and dark, from `contract/status.notification.json` into `.github/screenshots/`. |
 | `scripts/release-notes.sh X.Y.Z` | Prints the version's section of `CHANGELOG.md`, without its heading. Fails if the section is missing or empty. |
 
-`build-release.sh` reads its settings from the environment, so it runs the
-same on a Mac and in the release workflow:
+To build and sign a release on a Mac, run `scripts/build-release.sh &&
+scripts/sign-release.sh`. `sign-release.sh` reads its settings from the
+environment, so it runs the same on a Mac and in the release workflow:
 
 | Variable | Holds |
 |---|---|
@@ -144,7 +146,7 @@ same on a Mac and in the release workflow:
 | `NOTARY_KEY` | The path of an App Store Connect API key's `.p8` file |
 | `NOTARY_KEY_ID` | That key's ID |
 | `NOTARY_ISSUER` | That key's issuer ID |
-| `SPARKLE_PUBLIC_KEY` | The public key the app checks updates with |
+| `SPARKLE_PUBLIC_KEY` | The public key the app checks updates with. `build-release.sh` builds it into the app, and `sign-release.sh` checks the app carries it. |
 | `SPARKLE_PRIVATE_KEY` | Its private half, as `generate_keys -x` exports it. It signs the disk image. Without it, there's no appcast. |
 
 With `SIGN_IDENTITY` set, all the others are needed. The script signs the
@@ -152,7 +154,8 @@ app from the inside out, the order Sparkle requires: Sparkle's helpers, its
 framework, `turnscope`, then the app. It then notarizes and staples the app
 and the disk image, and checks that the update's signature passes with
 `SPARKLE_PUBLIC_KEY`. It exits 2 when a variable it needs is missing,
-`NOTARY_KEY` names no file, or the version isn't `X.Y.Z`.
+`NOTARY_KEY` names no file, there's no app, or the app's version isn't
+`X.Y.Z`.
 
 ## CI
 
@@ -165,7 +168,7 @@ run.
 |---|---|---|
 | `lint` | Ubuntu 24.04 | `shellcheck scripts/*.sh`, then `actionlint` |
 | `rust` | macOS 26, in `America/Chicago` | `cargo fmt --check`, clippy, `cargo test` and `cargo doc`, warnings as errors |
-| `app` | macOS 26, Xcode 26 | `swift test` with warnings as errors, `scripts/build-release.sh` unsigned, then `scripts/check-app.sh`. On a tag, only `swift test`: the release builds and checks its own app, signed. |
+| `app` | macOS 26, Xcode 26 | `swift test` with warnings as errors, `scripts/build-release.sh` and `scripts/sign-release.sh` signed ad hoc, then `scripts/check-app.sh`. On a tag, only `swift test`: the release builds and checks its own app, signed. |
 
 Actions are pinned by commit. Dependabot (`.github/dependabot.yml`) opens
 one pull request a week for the actions and one for the Rust crates, with
@@ -206,7 +209,13 @@ The tag starts **Release** (`.github/workflows/release.yml`):
 |---|---|
 | `check` | Checks that the tag matches `Cargo.toml`, is on `main` and isn't released yet; that `CHANGELOG.md` has the version's notes; and that every secret and the variable are set |
 | `verify` | All of Verify |
-| `publish` | Imports the certificate into a keychain made for the run, runs `scripts/build-release.sh` signed, runs `scripts/check-app.sh` on the result, and publishes the release with the disk image and `appcast.xml` |
+| `build` | Runs `scripts/build-release.sh`, and hands the app to `publish` as an artifact |
+| `publish` | Resolves Sparkle's tools at the versions `Package.resolved` pins, imports the certificate into a keychain made for the run, runs `scripts/sign-release.sh` with the keys, removes the keychain and the notary key, runs `scripts/check-app.sh` on the result, and publishes the release with the disk image and `appcast.xml` |
+
+The build and the keys are on separate runners. Whatever the build runs,
+such as a dependency's build script, has no key to reach. The job that
+holds the keys builds nothing, and resolves Sparkle before the keys are
+there.
 
 Installed copies read `appcast.xml` from the latest release, so publishing
 the release offers the update. If a run fails after creating its draft
