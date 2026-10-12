@@ -18,7 +18,7 @@ use crate::{Error, Result};
 
 /// Raised when a reader would read a file it read before differently: every
 /// file still there is then read again.
-const READERS: i64 = 4;
+const READERS: i64 = 5;
 
 /// Merges what a file says of a session: the earliest start, the latest
 /// activity and branch, the first folder, and a title as good or better.

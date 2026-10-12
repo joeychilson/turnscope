@@ -20,6 +20,17 @@
   Turnscope to Applications.
 - **Updates** are checked against their signature before the disk image is
   opened, from the update after this one.
+- **Claude Code usage** through a gateway or another backend that leaves
+  out the cache counts or their split is counted. Such a response was
+  skipped whole.
+- **A Claude Code fork** read the moment it starts, while its description
+  is still being written, no longer shows its parent's history as its own
+  and keeps its task title. A fork of a session shows the session it was
+  forked from.
+- **Branches:** a Claude Code session that moves outside a repository keeps
+  the branch it was on.
+- Your agents' history is read again once after updating, so these fixes
+  apply to what was read before.
 
 ## 0.1.1
 

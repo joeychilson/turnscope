@@ -18,15 +18,23 @@
 //! them in `usage.iterations`, and its own counts are their sum or zero; for
 //! some responses the calls are the only record. A reply naming the model
 //! `<synthetic>` is Claude Code's own, such as an error, and costs nothing.
+//! The usage is what the API answered; a backend other than Anthropic's, as
+//! a gateway, can leave out the cache counts or their `cache_creation` split
+//! (not measured here). A cache count left out is 0, and cache writes
+//! without the split are taken as kept for 5 minutes, the cache's default.
+//! The input and output counts stay required: a line without them is
+//! skipped, and `doctor` says so, which is how a new format shows.
 //!
 //! **Forks.** A fork's log opens with a copy of its parent's history, through
 //! the line making the call that started it (`toolUseId` in its description),
 //! under the fork's `agentId`. A fork of the session itself opens with
-//! `fork-context-ref` and a copy of the parent's last response, ended by the
-//! fork's first prompt. The copy is the parent's: its responses are marked
-//! copies of the parent's, and nothing else in it is the fork's. Only the
-//! description tells a fork from another subagent, and Claude Code may write
-//! it up to 1.5 s after the log, so a new log waits for it.
+//! `fork-context-ref`, naming the parent in `parentSessionId`, and a copy of
+//! the parent's last response, ended by the fork's first prompt. The copy is
+//! the parent's: its responses are marked copies of the parent's, and
+//! nothing else in it is the fork's. Only the description tells a fork from
+//! another subagent, and Claude Code may write it up to 1.5 s after the log,
+//! so a new log waits for it, and for it to parse, as one read while it's
+//! written won't.
 //!
 //! **Continuations and `/clear`.** A line can name, in `session_id`, another
 //! session than its `sessionId`. A session carried on in a new log (the old
@@ -382,12 +390,19 @@ impl Message<'_> {
 #[derive(Deserialize, Clone, Copy, Default)]
 struct Counts {
     input_tokens: u64,
+    #[serde(default)]
     cache_read_input_tokens: u64,
-    cache_creation: CacheCreation,
+    /// Every cache write, which `cache_creation` splits by how long the
+    /// cache keeps it.
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
+    #[serde(default)]
+    cache_creation: Option<CacheCreation>,
     output_tokens: u64,
 }
 
 #[derive(Deserialize, Clone, Copy, Default)]
+#[serde(default)]
 struct CacheCreation {
     ephemeral_5m_input_tokens: u64,
     ephemeral_1h_input_tokens: u64,
@@ -395,10 +410,20 @@ struct CacheCreation {
 
 impl Counts {
     fn prompt(&self) -> u64 {
+        let writes = self.writes();
         self.input_tokens
             + self.cache_read_input_tokens
-            + self.cache_creation.ephemeral_5m_input_tokens
-            + self.cache_creation.ephemeral_1h_input_tokens
+            + writes.ephemeral_5m_input_tokens
+            + writes.ephemeral_1h_input_tokens
+    }
+
+    /// The cache writes, by how long they're kept. Without the split, every
+    /// write is taken as kept for 5 minutes, the cache's default.
+    fn writes(&self) -> CacheCreation {
+        self.cache_creation.unwrap_or(CacheCreation {
+            ephemeral_5m_input_tokens: self.cache_creation_input_tokens,
+            ephemeral_1h_input_tokens: 0,
+        })
     }
 }
 
@@ -513,24 +538,20 @@ impl Agent for ClaudeCode {
         if let Some(agent) = &agent
             && !cursor.described
         {
-            let meta = file.with_file_name(format!("agent-{agent}.meta.json"));
-            match std::fs::read(&meta) {
-                Ok(bytes) => {
-                    let meta: Option<Meta> = serde_json::from_slice(&bytes).ok();
+            let meta = std::fs::read(file.with_file_name(format!("agent-{agent}.meta.json")))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Meta>(&bytes).ok());
+            match meta {
+                Some(meta) => {
                     let parent = meta
-                        .as_ref()
-                        .and_then(|meta| meta.parent_agent_id.clone())
+                        .parent_agent_id
                         .filter(|parent| !parent.is_empty())
                         .unwrap_or(session.clone());
-                    let fork = meta.as_ref().is_some_and(|meta| meta.is_fork);
-                    if fork && cursor.offset == 0 {
-                        cursor.copy =
-                            meta.as_ref()
-                                .and_then(|meta| meta.tool_use_id.clone())
-                                .map(|call| Copy {
-                                    parent: id(&parent),
-                                    through: Some(call),
-                                });
+                    if meta.is_fork && cursor.offset == 0 {
+                        cursor.copy = meta.tool_use_id.map(|call| Copy {
+                            parent: id(&parent),
+                            through: Some(call),
+                        });
                     }
                     // A fork here is a subagent begun with a copy of its
                     // parent's context: it's still the parent's subagent.
@@ -539,21 +560,22 @@ impl Agent for ClaudeCode {
                         id: id(&parent),
                         link: Link::Subagent,
                     });
-                    if let Some(task) = meta.and_then(|meta| meta.description) {
+                    if let Some(task) = meta.description {
                         described.title(Title::Task, &task);
                     }
                     cursor.described = true;
                 }
                 // Read without its description, a fork's copy would read as
-                // the fork's own, so a new log waits for it.
-                // An error, so it's tried again at the next read.
-                Err(_) if cursor.offset == 0 && begun_lately(file) => {
+                // the fork's own, so a new log waits for it, and for one
+                // read while Claude Code was still writing it, which won't
+                // parse. An error, so it's tried again at the next read.
+                None if cursor.offset == 0 && begun_lately(file) => {
                     return Err(Error::Failed(format!(
                         "{} waits for its description",
                         file.display()
                     )));
                 }
-                Err(_) => {
+                None => {
                     read.session(&own).parent = Some(Parent {
                         id: id(&session),
                         link: Link::Subagent,
@@ -796,6 +818,14 @@ fn in_copy(line: &Line, copy: &mut Option<Copy>, prompted: &mut bool) -> bool {
 }
 
 fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
+    // A fork of the session itself names the session it was forked from. A
+    // subagent's link, from its description, stays.
+    if let ("fork-context-ref", Some(parent)) = (&*line.kind, line.parent_session_id.as_deref()) {
+        read.session(own).parent.get_or_insert(Parent {
+            id: id(parent),
+            link: Link::Fork,
+        });
+    }
     let copied = cursor.copy.as_ref().map(|copy| copy.parent.clone());
     if in_copy(line, &mut cursor.copy, &mut cursor.prompted) {
         if let (Some(parent), "assistant") = (copied, &*line.kind) {
@@ -871,8 +901,13 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
     if session.cwd.is_none() {
         session.cwd = line.cwd.as_deref().map(str::to_owned);
     }
-    if let Some(branch) = &line.git_branch {
-        session.branch = Some(branch.to_string());
+    // Outside a repository the branch is empty, which is none.
+    if let Some(branch) = line
+        .git_branch
+        .as_deref()
+        .filter(|branch| !branch.is_empty())
+    {
+        session.branch = Some(branch.to_owned());
     }
 }
 
@@ -892,16 +927,20 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
     let (counts, prompt) = if calls.is_empty() {
         (usage.counts, usage.counts.prompt())
     } else {
-        let sum = calls.iter().fold(Counts::default(), |sum, call| Counts {
-            input_tokens: sum.input_tokens + call.input_tokens,
-            cache_read_input_tokens: sum.cache_read_input_tokens + call.cache_read_input_tokens,
-            cache_creation: CacheCreation {
-                ephemeral_5m_input_tokens: sum.cache_creation.ephemeral_5m_input_tokens
-                    + call.cache_creation.ephemeral_5m_input_tokens,
-                ephemeral_1h_input_tokens: sum.cache_creation.ephemeral_1h_input_tokens
-                    + call.cache_creation.ephemeral_1h_input_tokens,
-            },
-            output_tokens: sum.output_tokens + call.output_tokens,
+        let sum = calls.iter().fold(Counts::default(), |sum, call| {
+            let (writes, more) = (sum.writes(), call.writes());
+            Counts {
+                input_tokens: sum.input_tokens + call.input_tokens,
+                cache_read_input_tokens: sum.cache_read_input_tokens + call.cache_read_input_tokens,
+                cache_creation_input_tokens: 0,
+                cache_creation: Some(CacheCreation {
+                    ephemeral_5m_input_tokens: writes.ephemeral_5m_input_tokens
+                        + more.ephemeral_5m_input_tokens,
+                    ephemeral_1h_input_tokens: writes.ephemeral_1h_input_tokens
+                        + more.ephemeral_1h_input_tokens,
+                }),
+                output_tokens: sum.output_tokens + call.output_tokens,
+            }
         });
         (
             sum,
@@ -921,8 +960,8 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
         tokens: Tokens {
             input: counts.input_tokens,
             cache_read: counts.cache_read_input_tokens,
-            cache_write_5m: counts.cache_creation.ephemeral_5m_input_tokens,
-            cache_write_1h: counts.cache_creation.ephemeral_1h_input_tokens,
+            cache_write_5m: counts.writes().ephemeral_5m_input_tokens,
+            cache_write_1h: counts.writes().ephemeral_1h_input_tokens,
             output: counts.output_tokens,
             reasoning: usage
                 .output_tokens_details
@@ -1216,6 +1255,105 @@ mod tests {
             fork.started,
             crate::time::millis("2026-09-30T09:05:00Z"),
             "the copy's times are the parent's"
+        );
+    }
+
+    #[test]
+    fn a_fork_waits_for_a_description_half_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("projects/-work-app/s1/subagents");
+        std::fs::create_dir_all(&folder).unwrap();
+        // As read while Claude Code is still writing it.
+        std::fs::write(
+            folder.join("agent-f1.meta.json"),
+            r#"{"description": "Try the oth"#,
+        )
+        .unwrap();
+        let file = folder.join("agent-f1.jsonl");
+        std::fs::write(&file, "{}\n").unwrap();
+        assert!(ClaudeCode.read(&file, "").is_err());
+    }
+
+    #[test]
+    fn a_fork_of_the_session_names_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let fork = log(
+            dir.path(),
+            "s2.jsonl",
+            &[
+                serde_json::json!({"type": "fork-context-ref", "sessionId": "s2", "parentSessionId": "s1"}),
+            ],
+        );
+        let read = ClaudeCode.read(&fork, "").unwrap();
+        assert!(
+            read.sessions["claude-code:s2"]
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.id == "claude-code:s1" && parent.link == Link::Fork)
+        );
+    }
+
+    #[test]
+    fn usage_without_the_cache_split_counts_its_writes_as_kept_5_minutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = log(
+            dir.path(),
+            "s1.jsonl",
+            &[assistant(
+                "s1",
+                "msg_1",
+                "req_1",
+                "2026-09-30T09:00:00Z",
+                serde_json::json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "output_tokens": 16}),
+                serde_json::json!([]),
+            )],
+        );
+        let read = ClaudeCode.read(&file, "").unwrap();
+        let tokens = &read.responses["msg_1:req_1"].tokens;
+        assert_eq!(
+            (
+                tokens.input,
+                tokens.cache_read,
+                tokens.cache_write_5m,
+                tokens.cache_write_1h,
+                tokens.output
+            ),
+            (5, 0, 30, 0, 16)
+        );
+        assert_eq!(read.skipped, 0);
+    }
+
+    #[test]
+    fn a_line_without_its_output_count_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = log(
+            dir.path(),
+            "s1.jsonl",
+            &[assistant(
+                "s1",
+                "msg_1",
+                "req_1",
+                "2026-09-30T09:00:00Z",
+                serde_json::json!({"input_tokens": 5, "cache_read_input_tokens": 100}),
+                serde_json::json!([]),
+            )],
+        );
+        let read = ClaudeCode.read(&file, "").unwrap();
+        assert!(read.responses.is_empty());
+        assert_eq!(read.skipped, 1);
+    }
+    #[test]
+    fn a_line_outside_a_repository_leaves_the_branch_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = |branch: &str| {
+            serde_json::json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
+                "gitBranch": branch, "message": {"role": "user", "content": "Go on."}})
+        };
+        let file = log(dir.path(), "s1.jsonl", &[line("main"), line("")]);
+        let read = ClaudeCode.read(&file, "").unwrap();
+        assert_eq!(
+            read.sessions["claude-code:s1"].branch.as_deref(),
+            Some("main")
         );
     }
 
