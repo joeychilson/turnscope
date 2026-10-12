@@ -51,7 +51,8 @@ out. The parts, in the order they print:
 2. **`## What the person asked (<n> requests)`**: every request, oldest
    first, in the user's words, and the user's answers to the agent's
    questions. In a subagent's session, its brief counts as a request. A
-   request the user sent again edited is left out for the later one.
+   request the user sent again edited, before the agent answered it, is
+   left out for the later one.
 3. **`## The agent's task list, as it last stood`**: each task as `done`,
    `in progress` or `to do`, where the agent keeps a list.
 4. **`## The files the work was in, latest first`**: up to 15 files that
@@ -72,8 +73,10 @@ out. The parts, in the order they print:
    the agent shows its last entries instead.
 8. **`## What failed and wasn't run again since`**: up to 3 tool calls,
    the latest, that failed since the user's latest request and weren't run
-   again with success, with their output. A failure after the last message
-   shows under "Where it stopped" instead.
+   again with success, with their output. A call runs again when it runs
+   the same commands, whatever its description says, or, running none, is
+   for the same thing. A failure after the last message shows under "Where
+   it stopped" instead.
 9. **`## Read more`**: how to read any entry in full, the tool calls left
    out, the entries before the story when it doesn't start at the
    beginning, every request, and a search.
@@ -85,7 +88,7 @@ Build's `spawn_subagent` runs a subagent, and so on.
 
 | A call that | Shows |
 |---|---|
-| Reads: a file, a search, a page | Named in a line under "Where it stopped", with what it was for. Left out of the story. |
+| Reads: a file, a search, a page, or shell commands that only read (`ls`, `grep`, `git diff`, `sed -n`, but not `sed -i` or `find -delete`) | Named in a line under "Where it stopped", with what it was for. Left out of the story. |
 | Asks the user | Its answer is one of the user's requests. |
 | Runs a subagent | What it was asked and its report, in the story and under "Where it stopped". |
 | Does anything else: the work | With its input and output under "Where it stopped". Left out of the story. |

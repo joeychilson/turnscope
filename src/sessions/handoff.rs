@@ -180,10 +180,14 @@ fn asked(entries: &[Entry], share: usize, now: i64) -> (String, Vec<usize>) {
     for (index, &(at, entry)) in all.iter().enumerate() {
         if let Some(tool) = &entry.tool {
             requests.push((at, answer(at, entry, tool, now)));
-        } else if all
-            .get(index + 1)
-            .is_some_and(|(_, later)| later.tool.is_none() && resent(entry, later))
-        {
+        } else if all.get(index + 1).is_some_and(|&(next, later)| {
+            later.tool.is_none()
+                && resent(entry, later)
+                // Answered, it was a request of its own.
+                && !entries[at + 1..next]
+                    .iter()
+                    .any(|between| between.kind == Kind::Assistant)
+        }) {
             again += 1;
         } else {
             requests.push((at, render(at, entry, &SAID, now)));
@@ -548,7 +552,7 @@ fn failing(entries: &[Entry], since: usize, stop: usize, share: usize, now: i64)
         .filter(|(at, _, tool)| {
             !entries[at + 1..].iter().any(|later| {
                 later.tool.as_ref().is_some_and(|again| {
-                    !again.failed && again.name == tool.name && gist(again) == gist(tool)
+                    !again.failed && again.name == tool.name && same(again) == same(tool)
                 })
             })
         })
@@ -684,6 +688,16 @@ fn gist(tool: &Tool) -> String {
     in_quotes(&said, 120)
 }
 
+/// What makes a call the same as another: the commands it ran, where it
+/// ran any, since an agent rewords the description it gives them; else what
+/// it was for.
+fn same(tool: &Tool) -> String {
+    match commands(tool).as_slice() {
+        [] => gist(tool),
+        commands => commands.join("; "),
+    }
+}
+
 /// What a call is to a handoff: as its agent says, except that a call
 /// whose shell commands only read is a read, however it ran them.
 fn role(tool: &Tool) -> Role {
@@ -745,20 +759,57 @@ fn reads_only(tool: &Tool) -> bool {
         && commands.iter().all(|command| {
             simple_commands(command).is_some_and(|simple| {
                 simple.iter().all(|simple| {
-                    let mut words = simple.split_whitespace();
-                    match words.next() {
-                        None => true,
-                        Some("git") => words.next().is_some_and(|verb| GIT_READS.contains(&verb)),
-                        Some(first) => {
-                            READS.contains(&first)
-                                && !words.any(|word| {
-                                    matches!(word, "-i" | "--in-place" | "-delete" | "-exec")
-                                })
-                        }
+                    let words: Vec<&str> = simple.split_whitespace().collect();
+                    match words.as_slice() {
+                        [] => true,
+                        ["git", verb, ..] => GIT_READS.contains(verb) && !writes(&words),
+                        [first, ..] => READS.contains(first) && !writes(&words),
                     }
                 })
             })
         })
+}
+
+/// Whether a command that reads, given as its words, changes a file or a
+/// branch after all: `sed` in place (`-i`, `-i.bak`, `-Ei`, `-I .bak`,
+/// `--in-place=.orig`), `find` or `fd` deleting or running commands, `sort`
+/// or `tree` to a file, `git branch` deleting, renaming or copying one.
+fn writes(command: &[&str]) -> bool {
+    match command {
+        ["sed", words @ ..] => words
+            .iter()
+            .any(|word| word.starts_with("--in-place") || short_flag(word, "iI")),
+        ["find", words @ ..] => words.iter().any(|word| {
+            matches!(*word, "-delete" | "-fls")
+                || ["-exec", "-ok", "-fprint"]
+                    .iter()
+                    .any(|action| word.starts_with(action))
+        }),
+        ["fd", words @ ..] => words
+            .iter()
+            .any(|word| matches!(*word, "-x" | "-X") || word.starts_with("--exec")),
+        ["sort", words @ ..] => words
+            .iter()
+            .any(|word| word.starts_with("-o") || word.starts_with("--output")),
+        ["tree", words @ ..] => words.iter().any(|word| short_flag(word, "o")),
+        ["git", "branch", words @ ..] => words.iter().any(|word| {
+            matches!(*word, "--delete" | "--move" | "--copy") || short_flag(word, "dDmMcC")
+        }),
+        _ => false,
+    }
+}
+
+/// Whether `word` sets one of the short `flags`, alone or in a cluster such
+/// as `-Ei`, read up to its first character that isn't a letter, as in
+/// `-i.bak`.
+fn short_flag(word: &str, flags: &str) -> bool {
+    word.strip_prefix('-').is_some_and(|word| {
+        !word.starts_with('-')
+            && word
+                .chars()
+                .take_while(char::is_ascii_alphabetic)
+                .any(|flag| flags.contains(flag))
+    })
 }
 
 /// `command`'s simple commands: split at `&&`, `||`, `;`, `|` and new lines
@@ -779,7 +830,8 @@ fn simple_commands(command: &str) -> Option<Vec<String>> {
             }
             (Some(open), char) if char == open => quote = None,
             (None, '\'' | '"') => quote = Some(char),
-            (None, '&' | ';' | '|' | '\n') if simple.last()?.ends_with(['2', '>']) => {}
+            // A redirection's `&`, as in `2>&1`, joins nothing.
+            (None, '&') if simple.last()?.ends_with('>') => {}
             (None, '&' | ';' | '|' | '\n') => {
                 simple.push(String::new());
                 continue;
@@ -897,6 +949,105 @@ mod tests {
         );
         // What's quoted isn't the shell's: a pipe or arrow in a pattern.
         assert_eq!(role(&bash("rg -n 'a|b->c' src 2>&1 | head")), Role::Read);
+        // A flag that writes is one command's own: `grep -i` only reads.
+        for reads in [
+            "grep -rn -i retry src",
+            "git branch",
+            "git branch -a",
+            "git branch --list",
+            "git branch -v",
+        ] {
+            assert_eq!(role(&bash(reads)), Role::Read, "{reads}");
+        }
+        for writes in [
+            "sed -i.bak 's/a/b/' a.rs",
+            "sed -Ei 's/a/b/' a.rs",
+            "sed -I .bak 's/a/b/' a.rs",
+            "sed --in-place=.orig 's/a/b/' a.rs",
+            "find . -name '*.tmp' -delete",
+            "find . -name x -exec rm {} +",
+            "fd -e tmp -x rm",
+            "fd -e tmp -X rm",
+            "fd -e tmp --exec rm",
+            "fd -e tmp --exec-batch rm",
+            "sort -o out.txt in.txt",
+            "tree -o out.txt",
+            "git branch -d old",
+            "git branch -D old",
+            "git branch -m old new",
+            "git branch -M old new",
+            "git branch -c old new",
+            "git branch -C old new",
+            "git branch --delete old",
+            "git branch --move old new",
+            "git branch --copy old new",
+        ] {
+            assert_eq!(role(&bash(writes)), Role::Work, "{writes}");
+        }
+        // A command after a `;` is one of its own, whatever came before.
+        assert_eq!(role(&bash("cd v2; cargo test")), Role::Work);
+        assert_eq!(role(&bash("cat a.rs 1>&2 | head")), Role::Read);
+    }
+
+    fn bash_call(minute: i64, description: &str, command: &str, failed: bool) -> Entry {
+        Entry {
+            kind: Kind::Tool,
+            at: Some(minute * MINUTE),
+            text: String::new(),
+            tool: Some(Tool {
+                name: "Bash".to_owned(),
+                input: serde_json::json!({ "description": description, "command": command })
+                    .to_string(),
+                output: Some("error".to_owned()),
+                failed,
+                files: Vec::new(),
+                role: Role::Work,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_failed_command_run_again_is_matched_by_the_command_not_its_description() {
+        let failed = |entries: &[Entry]| failing(entries, 0, entries.len(), 2000, 10 * MINUTE);
+        // Run again under a reworded description, it passed.
+        let rerun = [
+            bash_call(1, "Run tests", "cargo test", true),
+            bash_call(2, "Run the tests again after the fix", "cargo test", false),
+        ];
+        assert_eq!(failed(&rerun), "");
+        // Another command under the same description didn't run it again.
+        let other = [
+            bash_call(1, "Run tests", "cargo test", true),
+            bash_call(2, "Run tests", "cargo build", false),
+        ];
+        assert!(
+            failed(&other).contains("#0 tool `Bash` (failed)"),
+            "{}",
+            failed(&other)
+        );
+    }
+
+    #[test]
+    fn a_request_answered_is_kept_though_the_next_starts_the_same() {
+        let first = "Run the tests and fix the failures in the parser crate.";
+        let second = "Run the tests and fix the failures in the lexer crate.";
+        let answered = [
+            said(Kind::User, 0, first),
+            said(Kind::Assistant, 1, "Fixed the parser."),
+            said(Kind::User, 2, second),
+        ];
+        let (asked_for, _) = asked(&answered, 2000, 3 * MINUTE);
+        assert!(
+            asked_for.contains(first) && asked_for.contains(second),
+            "{asked_for}"
+        );
+        // Sent again edited before any answer, only the edit counts.
+        let resent = [said(Kind::User, 0, first), said(Kind::User, 1, second)];
+        let (asked_for, _) = asked(&resent, 2000, 2 * MINUTE);
+        assert!(
+            !asked_for.contains(first) && asked_for.contains(second),
+            "{asked_for}"
+        );
     }
 
     /// Out of room, a handoff keeps every request and where it stopped, and
