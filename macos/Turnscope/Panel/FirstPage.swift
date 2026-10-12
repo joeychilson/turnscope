@@ -247,18 +247,21 @@ private struct Footer: View {
     }
 }
 
-/// A small arc that turns while something is in progress. SwiftUI draws it,
-/// so a snapshot shows it as the panel does.
+/// A small arc that turns while something is in progress, or holds still
+/// with Reduce Motion. SwiftUI draws it, so a snapshot shows it as the panel
+/// does.
 private struct Spinner: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var turning = false
 
     var body: some View {
+        let spinning = turning && !reduceMotion
         Circle()
             .trim(from: 0, to: 0.7)
             .stroke(.secondary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
             .frame(width: 9, height: 9)
-            .rotationEffect(.degrees(turning ? 360 : 0))
-            .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: turning)
+            .rotationEffect(.degrees(spinning ? 360 : 0))
+            .animation(spinning ? .linear(duration: 0.9).repeatForever(autoreverses: false) : nil, value: spinning)
             .onAppear { turning = true }
             .accessibilityHidden(true)
     }

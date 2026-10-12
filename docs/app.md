@@ -137,9 +137,13 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   notifications. Views get one from `store.words(now:)`, which uses the agent
   names in the status. Fixed labels, such as headings, button titles and
   setting names, are written in the view that shows them. Everything is in
-  English, and times are on a 12-hour clock, whatever the Mac's language.
+  English, dates are on the Gregorian calendar, and times are on a 12-hour
+  clock, whatever the Mac's language and calendar.
 - **`Standing`** turns an outlook into lasts, running out or used up.
-  `Style.swift` maps it to a color: gray, amber or red.
+  `Style.swift` maps it to a color: gray, amber or red. Amber and red have a
+  variant for light, dark and Increase Contrast, each at 4.5:1 or more
+  against the panel (7:1 with Increase Contrast). `Urgency` has the values
+  and the ratios.
 
 The app's state lives on the main thread: `Client`, `Store`, `Navigation`
 and `AppDelegate` are `@MainActor`. Only the socket is read on a thread of
@@ -165,8 +169,9 @@ icon. While every account it shows lasts, it's a template image in the menu
 bar's own color. Once one needs attention, it's drawn in color. While
 `serve` is away (`Store.failure`), it's dimmed, since it shows the last
 status. With Settings → General → Show set to Most urgent, it shows only
-the most urgent account. VoiceOver reads each account's title and
-`Words.spokenFigure`, then "not up to date" while it's dimmed.
+the most urgent account. VoiceOver reads `Words.spokenItem`: each
+account's title and what its figure says, then "not up to date" while it's
+dimmed.
 
 The item is one image drawn by SwiftUI, redrawn only when what it shows
 changes: a new status, `serve` going away or coming back, the menu bar
@@ -207,6 +212,10 @@ bar, the note, and the sessions that used the deciding limit most, from
 opens, so a row opens with them in one motion, and again for the open
 account with each status. Hovering shows a Hide button, and right-clicking
 offers Hide too.
+
+With Reduce Motion on, pages fade instead of sliding, a limit's bar is
+drawn at its level instead of growing to it, and the footer's spinner holds
+still.
 
 The window is a borderless, transparent panel hung under the item, as tall
 as the screen allows. The SwiftUI view draws its own glass, edge and shadow
@@ -444,7 +453,7 @@ First decide who owns it.
   figures and times, `Words+Limits.swift` limits, rows, the headline, the
   menu bar, the panel's folds and agents' connections, and
   `Words+Notes.swift` notifications. Check what VoiceOver
-  says too: `spokenFigure` for the menu bar, and `accessibilityLabel` in the
+  says too: `spokenItem` for the menu bar, and `accessibilityLabel` in the
   views.
 - **A fixed label**, such as a heading, a button or a setting's name: change
   it in the view that shows it.

@@ -298,7 +298,7 @@ extension Words {
     /// What the menu bar shows for an account, as VoiceOver reads it after
     /// its name: "20% left", "runs out in 1 hour 40 minutes", "back 5:40
     /// AM", "$84 this month".
-    public func spokenFigure(_ account: AccountStatus) -> String {
+    func spokenFigure(_ account: AccountStatus) -> String {
         guard let limit = account.decidingLimit else {
             if account.refused { return "sign in again" }
             return account.spend.map(spent) ?? "not read yet"
@@ -310,6 +310,17 @@ extension Words {
             return "runs out in \(spoken(likely.at.timeIntervalSince(now)))"
         case .lasts, .unknown: return "\(left(limit)) left"
         }
+    }
+
+    /// What VoiceOver reads for the menu bar item showing `accounts`: each
+    /// one's title and spoken figure, "Claude Max, runs out in 2 hours;
+    /// OpenRouter API key, $84 this month", or "Turnscope" with none. Then
+    /// "not up to date" while what it shows is `outOfDate`.
+    public func spokenItem(_ accounts: [AccountStatus], outOfDate: Bool) -> String {
+        let said = accounts.isEmpty
+            ? "Turnscope"
+            : accounts.map { "\($0.title), \(spokenFigure($0))" }.joined(separator: "; ")
+        return outOfDate ? "\(said), not up to date" : said
     }
 
     /// How long `seconds` is, as said aloud: "1 hour 40 minutes".

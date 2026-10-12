@@ -228,13 +228,18 @@ public struct Words: Sendable {
     }
 
     /// `date` formatted with `pattern`, in `calendar`'s time zone. It's in
-    /// English, like all the words here, whatever the Mac's language.
-    /// Foundation caches the formatter for each pattern, so each is made once.
+    /// English on the Gregorian calendar, like all the words here, whatever
+    /// the Mac's language and calendar: on the Hebrew calendar, Oct 18 was
+    /// "Heshvan 7". Foundation caches the formatter for each pattern, so each
+    /// is made once.
     private func format(_ date: Date, _ pattern: Date.FormatString) -> String {
         date.formatted(Date.VerbatimFormatStyle(format: pattern, locale: Words.english,
-                                                timeZone: calendar.timeZone, calendar: calendar))
+                                                timeZone: calendar.timeZone, calendar: Words.gregorian))
     }
 
     /// English, like all the words here, whatever the Mac's language.
     private static let english = Locale(identifier: "en_US_POSIX")
+    /// The calendar dates are written in. Its time zone isn't used: `format`
+    /// gives `calendar`'s.
+    private static let gregorian = Calendar(identifier: .gregorian)
 }

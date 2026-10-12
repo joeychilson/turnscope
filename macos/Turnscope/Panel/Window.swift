@@ -67,10 +67,11 @@ struct Glass: NSViewRepresentable {
     func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
-/// The page shown, sliding in from the side as it changes. It's as tall as
-/// its page.
+/// The page shown, sliding in from the side as it changes, or fading in with
+/// Reduce Motion. It's as tall as its page.
 struct Panel: View {
     @Environment(Navigation.self) private var navigation
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -85,6 +86,7 @@ struct Panel: View {
     }
 
     private var slide: AnyTransition {
+        guard !reduceMotion else { return .opacity }
         let forward = navigation.forward
         return .asymmetric(insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
                            removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity))
