@@ -327,8 +327,7 @@ struct HideParams: Encodable, Sendable {
 struct AgentParams: Encodable, Sendable { var agent: String }
 
 /// The answer to a request when the app only needs to know it was done.
-/// `shutdown` takes no parameters, so it isn't sent one of these.
-struct Done: Codable, Sendable {}
+struct Done: Decodable, Sendable {}
 
 // MARK: Reading and writing JSON
 

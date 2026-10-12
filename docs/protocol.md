@@ -16,8 +16,8 @@ each message is one line.
 Both sides test against the examples, so they can't drift apart:
 
 - The app's `ContractTests.swift` decodes every result and notification, and
-  checks that each request the app writes has exactly its example's
-  `params`. It fails on an example it doesn't check.
+  checks that each request the app writes is exactly its example. It fails
+  on an example it doesn't check.
 - `serve::tests` reads every status and alert in the examples into the Rust
   types and writes them back unchanged.
 - `tests/cli.rs` sends every request example to a running `serve` and expects
@@ -53,7 +53,10 @@ nc -U "$(turnscope serve --socket)"
 - **Reconnecting.** After a dropped connection or a failed attempt, the app
   waits 0.5 s, doubling each time up to 30 s. The wait goes back to 0.5 s
   only after a connection has held for 30 s, so an engine that keeps failing
-  isn't started twice a second.
+  isn't started twice a second. A `serve` that doesn't answer `hello` within
+  30 s counts as a failed attempt. That's long because `hello` works out the
+  whole status, which is slow on a long history. A `status` or `alert` the
+  app can't read drops the connection.
 - **Exiting.** `serve` exits `--linger` seconds (default 60) after its last
   client leaves, or after it starts if no client connects. An app restart or
   update reconnects in that time without reading anything again. `shutdown`
@@ -63,8 +66,9 @@ nc -U "$(turnscope serve --socket)"
   `hello` result names the server, as `turnscope --version` prints it
   (`turnscope 0.1.0`), and the app checks that before reading the rest. If
   it names another engine, or the answer is `-32001`, the app sends
-  `shutdown` and starts its own `serve`. It does this once per run, so two
-  app versions can't keep stopping each other's `serve`.
+  `shutdown`, waits up to 5 s for that `serve` to exit, and connects again,
+  starting its own `serve`. It does this once per run, so two app versions
+  can't keep stopping each other's `serve`.
 
 ## Handshake
 

@@ -1,7 +1,7 @@
 // The client and the store over a stand-in for `turnscope serve` on a real
 // Unix socket: the handshake on every connection, pushes, requests and their
-// errors, reconnecting after serve goes away, starting serve when nothing
-// listens, and replacing a serve of another engine.
+// errors, reconnecting after serve goes away or stops answering, starting
+// serve when nothing listens, and replacing a serve of another engine.
 
 import Foundation
 import Testing
@@ -89,6 +89,41 @@ private func connected(_ client: Client, _ store: Store) async {
     store.acknowledge([42])
     await until { !serve.params(of: "alerts.ack").isEmpty }
     #expect(serve.params(of: "alerts.ack").first?["ids"] as? [Int] == [42])
+    client.stop()
+}
+
+@MainActor
+@Test func aPushItCantReadSaysWhatsShownIsOutOfDateAndConnectsAgain() async throws {
+    let serve = try serve()
+    defer { serve.close() }
+    let (client, store) = try store(over: serve)
+    client.start()
+    await connected(client, store)
+    serve.push("status", ["accounts": "not a list"])
+    await until { store.failure != nil }
+    #expect(store.failure?.hasPrefix("Turnscope couldn't read what its engine sent") == true)
+    // The last status it read stays, marked out of date, until hello on the
+    // next connection brings it up to date.
+    #expect(store.status != nil)
+    await connected(client, store)
+    #expect(serve.methods.filter { $0 == "hello" }.count == 2)
+    serve.push("alert", ["id": "not a number"])
+    await until { store.failure != nil }
+    #expect(store.failure?.hasPrefix("Turnscope couldn't read what its engine sent") == true)
+    client.stop()
+}
+
+@MainActor
+@Test func aServeThatDoesntAnswerHelloIsSaidAndTriedAgain() async throws {
+    let serve = FakeServe { _, _, _ in .silence }
+    defer { serve.close() }
+    let (client, store) = try store(over: serve)
+    client.helloWait = .milliseconds(300)
+    client.start()
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope's engine didn't answer")
+    await until { serve.methods.filter { $0 == "hello" }.count >= 2 }
+    #expect(serve.methods.filter { $0 == "hello" }.count >= 2)
     client.stop()
 }
 
@@ -248,6 +283,9 @@ private func connected(_ client: Client, _ store: Store) async {
     client.start()
     await until { serve.methods.contains("shutdown") }
     #expect(serve.methods == ["hello", "shutdown"])
+    // It takes no parameters, so it's sent none: JSON-RPC doesn't allow
+    // null there.
+    #expect(serve.calls(of: "shutdown").first?.keys.contains("params") == false)
     #expect(store.status == nil)
     // It exits. The serve connected to next is kept, whatever engine it
     // runs, so two apps can't take turns ending each other's serve.
@@ -255,6 +293,20 @@ private func connected(_ client: Client, _ store: Store) async {
     await connected(client, store)
     #expect(serve.methods == ["hello", "shutdown", "hello"])
     #expect(store.status != nil)
+    client.stop()
+}
+
+@MainActor
+@Test func aServeOfAnotherEngineThatDoesntExitIsKeptAfterAWhile() async throws {
+    let serve = try serve { method, _, _ in method == "shutdown" ? .silence : .done }
+    defer { serve.close() }
+    let (client, store) = try store(over: serve, version: "turnscope 9.9.9")
+    client.exitWait = .milliseconds(300)
+    client.start()
+    // It neither answers nor exits. The client stops waiting, connects
+    // again, and keeps it.
+    await connected(client, store)
+    #expect(serve.methods == ["hello", "shutdown", "hello"])
     client.stop()
 }
 
@@ -301,6 +353,39 @@ private func connected(_ client: Client, _ store: Store) async {
 }
 
 @MainActor
+@Test func aServeThatStillDoesntSpeakTheProtocolIsntAskedToExitAgain() async throws {
+    let serve = FakeServe { method, _, _ in
+        method == "hello" ? .error(code: -32001, "this serve speaks protocol 2") : .done
+    }
+    defer { serve.close() }
+    let (client, store) = try store(over: serve)
+    client.start()
+    await until { serve.methods.contains("shutdown") }
+    serve.drop()
+    // The serve after it is kept, so the client says why it can't connect,
+    // and keeps trying.
+    await until { store.failure != nil }
+    #expect(store.failure == "this serve speaks protocol 2")
+    await until { serve.methods.filter { $0 == "hello" }.count >= 3 }
+    #expect(serve.methods.filter { $0 == "hello" }.count >= 3)
+    #expect(serve.methods.filter { $0 == "shutdown" }.count == 1)
+    client.stop()
+}
+
+@Test func theWaitToConnectAgainDoublesAndStartsOverOnlyAfterAConnectionHeld() {
+    var backoff = Backoff()
+    let waits = (0..<8).map { _ in backoff.next() }
+    #expect(waits == [.milliseconds(500), .seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16),
+                      .seconds(30), .seconds(30)])
+    // A connection that dropped within thirty seconds changes nothing.
+    backoff.ended(after: .seconds(29))
+    #expect(backoff.next() == .seconds(30))
+    backoff.ended(after: .seconds(31))
+    #expect(backoff.next() == .milliseconds(500))
+    #expect(backoff.next() == .seconds(1))
+}
+
+@MainActor
 @Test func aHelloOfItsOwnEngineItCantReadIsSaidAndTriedAgain() async throws {
     let unreadable = Reply.of(["server": try engine()])
     let serve = FakeServe { method, _, _ in method == "hello" ? unreadable : .done }
@@ -308,7 +393,7 @@ private func connected(_ client: Client, _ store: Store) async {
     let (client, store) = try store(over: serve)
     client.start()
     await until { store.failure != nil }
-    #expect(store.failure?.hasPrefix("Turnscope couldn't read its engine's answer") == true)
+    #expect(store.failure?.hasPrefix("Turnscope couldn't read what its engine sent") == true)
     #expect(store.status == nil)
     #expect(!serve.methods.contains("shutdown"))
     // It connects again on its own and says hello again.
@@ -321,7 +406,7 @@ private func connected(_ client: Client, _ store: Store) async {
 @Test func whatIsAskedWhileNotConnectedSaysSo() async throws {
     let client = Client(binary: URL(fileURLWithPath: "/nonexistent/turnscope"))
     await #expect(throws: ClientError.notConnected) {
-        let _: Done = try await client.request("shutdown", Done())
+        let _: Done = try await client.request("shutdown")
     }
     let store = Store(client: client)
     client.start()
