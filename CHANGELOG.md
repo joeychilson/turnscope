@@ -118,6 +118,9 @@
   wait until the figures shown changed too.
 - **Dates** are on the Gregorian calendar on a Mac set to another one, such
   as the Hebrew or Islamic calendar: "Oct 18", not "Heshvan 7".
+- **With no forecast yet,** the line under the panel's headline says only
+  what's left, such as "Claude Max has 99% left of 5 hours". The row below
+  already says when it resets.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

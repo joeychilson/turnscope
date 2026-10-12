@@ -166,21 +166,21 @@ extension Words {
     }
 
     /// What's known about an account's deciding limit when it isn't
-    /// forecast, as a sentence naming the account: what's left of the limit
-    /// and when it resets, or why that isn't said. It never says the limit
-    /// lasts, since that isn't known. "Claude Max has 99% left of 5 hours; it
-    /// resets in 4h 50m." or "OpenRouter API key has $8.81 of $30 left; it
-    /// doesn't reset."
+    /// forecast, as a sentence naming the account: what's left of the limit.
+    /// It never says the limit lasts, since that isn't known. When it resets
+    /// is on the account's row just below, so it isn't said again. Why
+    /// there's no forecast is said only where it changes what the figure
+    /// means: that it's as last read, or that money doesn't come back.
+    /// "Claude Max has 99% left of 5 hours." or "OpenRouter API key has $8.81
+    /// of $30 left; it doesn't reset."
     private func unforecast(_ limit: LimitStatus, of account: AccountStatus, _ reason: UnknownReason) -> String {
         let what = limit.money == nil
             ? "\(left(limit)) left \(of(limit))"
             : "\(left(limit))\(size(limit).map { " \($0)" } ?? "") left"
         let standing = "\(account.title) has \(what)"
-        let resets = limit.window.map { "; it resets \(at($0.resets))" } ?? ""
         return switch reason {
-        case .notEnoughData: "\(standing)\(resets)."
+        case .notEnoughData, .rolling: "\(standing)."
         case .stale: "As last read, \(standing)."
-        case .rolling: "\(standing), in a window that rolls."
         case .noReset: "\(standing); it doesn't reset."
         }
     }
