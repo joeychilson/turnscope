@@ -304,7 +304,7 @@ extension Words {
             return account.spend.map(spent) ?? "not read yet"
         }
         switch limit.outlook {
-        case .usedUp(let back): return back.map { "back \(clock($0))" } ?? "used up"
+        case .usedUp(let back): return back.map { "back \(clock($0, full: true))" } ?? "used up"
         case .runsOut(let likely):
             guard likely.horizon == .soon else { return "\(left(limit)) left, running out" }
             return "runs out in \(spoken(likely.at.timeIntervalSince(now)))"

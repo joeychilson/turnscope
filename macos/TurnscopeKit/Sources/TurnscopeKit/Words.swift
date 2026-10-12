@@ -11,7 +11,12 @@
 //
 // A time is written for how far off it is: within three hours, "in 2h 10m";
 // later today, "3:40 PM"; this week, "Thu 7:50 PM" or "tomorrow 9 AM"; later,
-// "Oct 18". Durations read "1h 30m", or "2d 4h" past a day.
+// "Oct 18". VoiceOver and a notification spell out the day and month,
+// "Saturday 7:50 PM" and "October 18": VoiceOver can read "Sat" as the word
+// "sat", and a notification has room and is read on its own. The panel and
+// the menu bar keep them short: a row has no room for them, and the line
+// under the headline says a time as the rows do. Durations read "1h 30m", or
+// "2d 4h" past a day.
 
 import Foundation
 
@@ -127,23 +132,25 @@ public struct Words: Sendable {
         at(moment.at, moment.horizon)
     }
 
-    /// When `date` is, worded for `horizon`.
-    func at(_ date: Date, _ horizon: Horizon) -> String {
+    /// When `date` is, worded for `horizon`, with the day and month spelled
+    /// out if `full`.
+    private func at(_ date: Date, _ horizon: Horizon, full: Bool = false) -> String {
         switch horizon {
         case .soon: "in \(stretch(date.timeIntervalSince(now)))"
         case .today: time(date)
-        case .thisWeek: "\(tomorrow(date) ? "tomorrow" : weekday(date)) \(time(date))"
-        case .later: monthDay(date)
+        case .thisWeek: "\(tomorrow(date) ? "tomorrow" : weekday(date, full: full)) \(time(date))"
+        case .later: monthDay(date, full: full)
         }
     }
 
     /// When `moment` is, as a clock time whatever its horizon. It's for text
     /// that stays on screen while the clock moves, such as a notification:
     /// "3:40 PM", "tomorrow 9 AM", "Thu 7:50 PM", "Oct 18". A time that's
-    /// soon is given as the time of day it falls on.
-    func clock(_ moment: Moment) -> String {
-        guard moment.horizon == .soon else { return at(moment) }
-        return at(moment.at, calendar.isDate(moment.at, inSameDayAs: now) ? .today : .thisWeek)
+    /// soon is given as the time of day it falls on. `full` spells out the
+    /// day and month: "Thursday 7:50 PM", "October 18".
+    func clock(_ moment: Moment, full: Bool = false) -> String {
+        guard moment.horizon == .soon else { return at(moment.at, moment.horizon, full: full) }
+        return at(moment.at, calendar.isDate(moment.at, inSameDayAs: now) ? .today : .thisWeek, full: full)
     }
 
     /// When a past `date` was: "3:40 AM" today, "yesterday 9 AM", "Mon 12 AM"
@@ -171,7 +178,7 @@ public struct Words: Sendable {
     func day(_ date: Date) -> String {
         if calendar.isDate(date, inSameDayAs: now) { return "today" }
         if tomorrow(date) { return "tomorrow" }
-        return format(date, "\(weekday: .wide)")
+        return weekday(date, full: true)
     }
 
     /// Roughly when `date` is, as a headline words a forecast: "this
@@ -212,14 +219,15 @@ public struct Words: Sendable {
             : format(date, "\(hour: hour):\(minute: .twoDigits) \(dayPeriod: .standard(.abbreviated))")
     }
 
-    /// The day of the week `date` falls on, abbreviated: "Thu".
-    private func weekday(_ date: Date) -> String {
-        format(date, "\(weekday: .abbreviated)")
+    /// The day of the week `date` falls on: "Thu", or "Thursday" if `full`.
+    private func weekday(_ date: Date, full: Bool = false) -> String {
+        format(date, "\(weekday: full ? .wide : .abbreviated)")
     }
 
-    /// The month and day `date` falls on: "Oct 18".
-    private func monthDay(_ date: Date) -> String {
-        format(date, "\(month: .abbreviated) \(day: .defaultDigits)")
+    /// The month and day `date` falls on: "Oct 18", or "October 18" if
+    /// `full`.
+    private func monthDay(_ date: Date, full: Bool = false) -> String {
+        format(date, "\(month: full ? .wide : .abbreviated) \(day: .defaultDigits)")
     }
 
     /// `count` of `word`, as said aloud: "1 hour", "40 minutes".

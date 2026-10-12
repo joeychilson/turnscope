@@ -42,14 +42,14 @@ private func account(_ limits: [LimitStatus], id: String = "anthropic:a", title:
 private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .soon))
 
 @Test func timesAreSaidAsTheirHorizonCallsFor() {
-    #expect(words.at(at("2026-09-30T14:10:00Z"), .soon) == "in 2h 10m")
-    #expect(words.at(at("2026-09-30T18:40:00Z"), .today) == "6:40 PM")
-    #expect(words.at(at("2026-10-01T09:00:00Z"), .thisWeek) == "tomorrow 9 AM")
-    #expect(words.at(at("2026-10-03T19:50:00Z"), .thisWeek) == "Sat 7:50 PM")
-    #expect(words.at(at("2026-10-18T16:37:00Z"), .later) == "Oct 18")
-    // A forecast is shown as the engine rounded it.
-    #expect(words.at(moment("2026-09-30T19:50:00Z", .today)) == "7:50 PM")
-    #expect(words.at(moment("2026-10-03T20:00:00Z", .thisWeek)) == "Sat 8 PM")
+    #expect(words.at(moment("2026-09-30T14:10:00Z", .soon)) == "in 2h 10m")
+    #expect(words.at(moment("2026-09-30T18:40:00Z", .today)) == "6:40 PM")
+    #expect(words.at(moment("2026-10-01T09:00:00Z", .thisWeek)) == "tomorrow 9 AM")
+    #expect(words.at(moment("2026-10-03T19:50:00Z", .thisWeek)) == "Sat 7:50 PM")
+    #expect(words.at(moment("2026-10-18T16:37:00Z", .later)) == "Oct 18")
+    // Spelled out, for VoiceOver and a notification.
+    #expect(words.clock(moment("2026-10-03T19:50:00Z", .thisWeek), full: true) == "Saturday 7:50 PM")
+    #expect(words.clock(moment("2026-10-18T16:37:00Z", .later), full: true) == "October 18")
     // Roughly, as a headline words a forecast.
     #expect(words.when(at("2026-10-03T19:51:00Z")) == "Saturday evening")
     #expect(words.when(at("2026-10-01T00:40:00Z")) == "tonight")
@@ -62,10 +62,10 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     var hebrew = Calendar(identifier: .hebrew)
     hebrew.timeZone = TimeZone(identifier: "America/Chicago")!
     let words = Words(now: noon, calendar: hebrew)
-    #expect(words.at(at("2026-10-18T16:37:00Z"), .later) == "Oct 18")
+    #expect(words.at(moment("2026-10-18T16:37:00Z", .later)) == "Oct 18")
     #expect(words.ago(at("2026-09-22T12:00:00Z")) == "Sep 22")
     // In the calendar's time zone, five hours behind UTC.
-    #expect(words.at(at("2026-10-03T19:50:00Z"), .thisWeek) == "Sat 2:50 PM")
+    #expect(words.at(moment("2026-10-03T19:50:00Z", .thisWeek)) == "Sat 2:50 PM")
 }
 
 @Test func amountsAreGroupedAndWhatIsLeftIsRoundedDown() {
@@ -190,6 +190,11 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     let overnight = account([limit(.usedUp(back: moment("2026-10-01T01:00:00Z", .soon)), left: 0)])
     #expect(late.figure(overnight) == "Back tomorrow 1 AM")
     #expect(late.spokenFigure(overnight) == "back tomorrow 1 AM")
+    // Back days later: the menu bar keeps the day short, and VoiceOver says
+    // it in full.
+    let days = account([limit(.usedUp(back: moment("2026-10-03T09:00:00Z", .thisWeek)), left: 0)])
+    #expect(words.figure(days) == "Back Sat 9 AM")
+    #expect(words.spokenFigure(days) == "back Saturday 9 AM")
     let refused = account([], state: .unread(why: .signIn))
     #expect(words.figure(refused) == "Sign in")
     #expect(words.status(refused) == "Sign in again")
@@ -277,12 +282,13 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     accounts[1].inUse = true
     #expect(words.note(alert(.usedUp), accounts: accounts).title == "Claude Max (joey@example.com)")
     accounts[1].inUse = false
-    // Back days later, as when a weekly limit runs out, given as a clock
-    // time.
+    // Days later, as when a weekly limit runs out, given as a clock time
+    // with the day spelled out.
     var days = alert(.runningOut)
     days.resets = moment("2026-10-03T00:00:00Z", .thisWeek)
-    days.runsOut = moment("2026-09-30T20:00:00Z", .today)
-    #expect(words.note(days, accounts: accounts).body == "Back Sat 12 AM.")
+    days.runsOut = moment("2026-10-02T09:00:00Z", .thisWeek)
+    #expect(words.note(days, accounts: accounts).subtitle == "5 hours runs out Friday 9 AM")
+    #expect(words.note(days, accounts: accounts).body == "Back Saturday 12 AM.")
 }
 
 @Test func theFoldsAndAgentsSayWhatTheyHold() {
