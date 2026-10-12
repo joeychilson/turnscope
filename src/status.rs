@@ -203,6 +203,14 @@ pub struct Limit {
 }
 
 impl Limit {
+    /// Its name, and the model it's on if it's on one: "Weekly (Opus)".
+    pub fn named(&self) -> String {
+        match &self.scope {
+            Some(scope) => format!("{} ({scope})", self.name),
+            None => self.name.clone(),
+        }
+    }
+
     /// Whether it limits the whole account: not one model's, nor one key's.
     pub fn whole(&self) -> bool {
         self.scope.is_none() && self.held_by.is_empty() && !self.key.starts_with("key-")
@@ -384,7 +392,10 @@ pub fn status(db: &rusqlite::Connection, home: &Path, now: i64) -> Result<Status
             agents.push(agent.clone());
         }
         if let Some(key) = key {
-            keys.entry(format!("key-{key}")).or_default().push(agent);
+            let agents = keys.entry(format!("key-{key}")).or_default();
+            if !agents.contains(&agent) {
+                agents.push(agent);
+            }
         }
     }
     let mut used: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -814,4 +825,28 @@ pub fn named<'a>(status: &'a Status, name: &str) -> crate::Result<Vec<&'a Accoun
         )));
     }
     Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_held_by_one_agent_in_two_folders_names_it_once() {
+        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = crate::db::open(dir.path()).unwrap();
+        db.execute_batch(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+                 VALUES ('openrouter:api', 'openrouter', 'apiKey', 'OpenRouter API key', 0);
+             INSERT INTO reading (account, limit_key, at, name, used, size, starts, resets)
+                 VALUES ('openrouter:api', 'key-abc', 0, 'Weekly key limit', 10, 20, 0, 604800000);
+             INSERT INTO sign_in (agent, folder, provider, since, account, key)
+                 VALUES ('pi', '/a', 'openrouter', 0, 'openrouter:api', 'abc'),
+                        ('pi', '/b', 'openrouter', 0, 'openrouter:api', 'abc');",
+        )
+        .unwrap();
+        let status = status(&db, home.path(), HOUR).unwrap();
+        let limit = &status.accounts[0].limits[0];
+        assert_eq!(limit.held_by, ["pi"]);
+    }
 }

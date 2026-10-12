@@ -594,6 +594,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
                 until: now,
                 by,
                 agent: None,
+                model: None,
                 account: account.map(|account| account.id.clone()),
                 top,
             },
@@ -636,7 +637,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
             Some(limit) => {
                 out += &format!(
                     "\n| {what} | Cost | Responses | % of {} |\n|---|--:|--:|--:|\n",
-                    limit.name
+                    limit.named()
                 );
             }
             None => out += &format!("\n| {what} | Cost | Responses |\n|---|--:|--:|\n"),
@@ -692,7 +693,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
     {
         out += &format!(
             "\nShares of {} are known only over its window, since {} ({} ago): leave since out for them.\n",
-            limit.name,
+            limit.named(),
             time::clock(start, now),
             time::span(now - start)
         );

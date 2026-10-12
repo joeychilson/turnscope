@@ -172,7 +172,7 @@ counted as unpriced, not free.
 
 | Flag | Default | |
 |---|---|---|
-| `--since <when>` | 30 days back | A [time form](#time-forms). |
+| `--since <when>` | 30 days back | A [time form](#time-forms), before `--until`. |
 | `--until <when>` | now | A time form. Not with `--limit`. |
 | `--by <group>` | `day`, or `session` with `--limit` | `day`, `week`, `month`, `model`, `project`, `agent`, `account` or `session`. |
 | `--agent <id>` | every agent | Only this agent's usage. Not with `--limit`. |
@@ -211,7 +211,9 @@ Costs are at list prices: what the same tokens cost on each provider's API.
 ```
 
 Shares are approximate. Providers say how much of a limit is used, not by
-what, so each row's share is its part of the cost.
+what, so each row's share is its part of the cost. A limit on one model,
+such as `Weekly (Opus)`, counts only the responses of models whose id
+names it, such as `claude-opus-5`.
 
 ## Sessions
 
