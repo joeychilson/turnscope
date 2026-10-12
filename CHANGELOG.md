@@ -29,6 +29,12 @@
   forked from.
 - **Branches:** a Claude Code session that moves outside a repository keeps
   the branch it was on.
+- **Search** no longer counts a session's messages twice once Codex
+  archives it, or once a history file is replaced. A moved file is read on
+  from where it was.
+- **`doctor`** lists history files that can't be read and why, and counts
+  the lines it couldn't read once, not again each time a file is read from
+  the start.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

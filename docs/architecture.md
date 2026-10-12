@@ -61,11 +61,11 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 
 | Table | Holds |
 |---|---|
-| `file` | Each history file: its size, modification time and inode when last read, its reader's cursor, and how many lines it couldn't read |
+| `file` | Each history file: its size, modification time and inode when last read, its reader's cursor, how many lines it couldn't read, why it couldn't be read the last time it failed, and whether it has rows in `said` |
 | `session` | Each session: agent, agent folder, working folder, project, branch, title, parent and link, first and last activity |
 | `session_file` | Which files hold each session's conversation |
 | `response` | One row per response: tokens, prompt size, the cost the agent recorded, its cost, its account, and the file that last reported it |
-| `said` | A full-text index (FTS5) of what the user and the models said. The text is indexed, not kept. |
+| `said` | A full-text index (FTS5) of what the user and the models said, with the session and file each row came from. The text is indexed, not kept. |
 | `account` | Each account: provider, kind, title, label, whether it's hidden, the last read that worked, and what went wrong with the last read |
 | `reading` | Each limit at each read: name, scope, percent used, size in dollars, the window's start and reset |
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
@@ -96,7 +96,11 @@ into another program's database.
 - **Some tables can't be rebuilt.** Accounts, readings, sign-ins, past
   prices, alerts and settings exist only here, so they're never deleted.
   History can be read again. When a reader changes, `ingest::READERS` is
-  raised, and every file still on disk is read again from the start.
+  raised, and every file still on disk is read again from the start. A
+  file at a new path with the inode of one read before, whose path is gone,
+  was moved, as an agent moves a file it archives: it's read on from where
+  it was. A file replaced or cut short is read again from the start, and
+  what it said is taken out of `said` first.
   Responses and sessions from files the agent has since deleted stay. An
   older Turnscope, such as an agent's MCP server started before an update,
   doesn't read history a newer one read: it says to update instead, as it
