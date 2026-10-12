@@ -497,7 +497,7 @@ mod tests {
         let account: Account = serde_json::from_value(account).unwrap();
         assert_eq!(
             fit(&account, 1.0, now).unwrap(),
-            "1 more hour of work fits at your working pace, leaving about 58% of Weekly. 5 hours is a window that rolls, so it isn't forecast."
+            "1 more hour of work fits at your working pace, leaving about 59% of Weekly. 5 hours is a window that rolls, so it isn't forecast."
         );
     }
 

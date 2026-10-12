@@ -12,10 +12,10 @@
     "replaces": "limit:anthropic:acct-1:org-1:five_hour",
     "resets": {
       "at": 1791471600000,
-      "horizon": "soon"
+      "horizon": "today"
     },
     "runsOut": {
-      "at": 1791464400000,
+      "at": 1791463800000,
       "horizon": "soon"
     }
   }

@@ -149,7 +149,7 @@ Pushes go only to clients that have said `hello`. A client that doesn't
 take a message within 2 seconds is dropped.
 
 ```json
-{"jsonrpc":"2.0","method":"alert","params":{"account":"anthropic:acct-1:org-1","accountTitle":"Claude Max (me@example.com)","at":1791460500000,"id":1,"kind":"runningOut","limit":"five_hour","limitName":"5 hours","replaces":"limit:anthropic:acct-1:org-1:five_hour","resets":{"at":1791471600000,"horizon":"soon"},"runsOut":{"at":1791464400000,"horizon":"soon"}}}
+{"jsonrpc":"2.0","method":"alert","params":{"account":"anthropic:acct-1:org-1","accountTitle":"Claude Max (me@example.com)","at":1791460500000,"id":1,"kind":"runningOut","limit":"five_hour","limitName":"5 hours","replaces":"limit:anthropic:acct-1:org-1:five_hour","resets":{"at":1791471600000,"horizon":"today"},"runsOut":{"at":1791463800000,"horizon":"soon"}}}
 ```
 
 ## Errors
@@ -281,12 +281,12 @@ A limit from the contract's example:
   "key": "five_hour", "name": "5 hours", "scope": null,
   "leftPercent": 28, "money": null, "resetSince": null, "heldBy": [],
   "readAt": 1791460680000,
-  "window": {"startsAt": 1791453600000, "resets": {"at": 1791471600000, "horizon": "soon"}},
+  "window": {"startsAt": 1791453600000, "resets": {"at": 1791471600000, "horizon": "today"}},
   "outlook": {
     "kind": "runsOut",
-    "likely":  {"at": 1791464400000, "horizon": "soon"},
-    "soonest": {"at": 1791463200000, "horizon": "soon"},
-    "latest":  {"at": 1791469800000, "horizon": "soon"}
+    "likely":  {"at": 1791463800000, "horizon": "soon"},
+    "soonest": {"at": 1791462600000, "horizon": "soon"},
+    "latest":  {"at": 1791468600000, "horizon": "soon"}
   },
   "work": {"ratePerHour": 25.0, "leftHours": {"low": 0.7, "likely": 1.1, "high": 2.2}}
 }

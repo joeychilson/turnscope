@@ -23,15 +23,15 @@
             "outlook": {
               "kind": "runsOut",
               "latest": {
-                "at": 1791469800000,
+                "at": 1791468600000,
                 "horizon": "soon"
               },
               "likely": {
-                "at": 1791464400000,
+                "at": 1791463800000,
                 "horizon": "soon"
               },
               "soonest": {
-                "at": 1791463200000,
+                "at": 1791462600000,
                 "horizon": "soon"
               }
             },
@@ -41,7 +41,7 @@
             "window": {
               "resets": {
                 "at": 1791471600000,
-                "horizon": "soon"
+                "horizon": "today"
               },
               "startsAt": 1791453600000
             },
@@ -63,9 +63,9 @@
             "outlook": {
               "kind": "lasts",
               "leftAtReset": {
-                "high": 45,
-                "likely": 30,
-                "low": 8
+                "high": 60,
+                "likely": 43,
+                "low": 2
               }
             },
             "readAt": 1791460680000,
@@ -73,13 +73,13 @@
             "scope": null,
             "window": {
               "resets": {
-                "at": 1791471600000,
-                "horizon": "soon"
+                "at": 1791640800000,
+                "horizon": "thisWeek"
               },
-              "startsAt": 1791453600000
+              "startsAt": 1791036000000
             },
             "work": {
-              "ratePerHour": 2.4,
+              "ratePerHour": 1.0,
               "leftHours": null
             }
           },
@@ -101,10 +101,10 @@
             "scope": "Opus",
             "window": {
               "resets": {
-                "at": 1791471600000,
-                "horizon": "soon"
+                "at": 1791640800000,
+                "horizon": "thisWeek"
               },
-              "startsAt": 1791453600000
+              "startsAt": 1791036000000
             },
             "work": null
           }
@@ -122,10 +122,7 @@
         ]
       },
       {
-        "agents": [
-          "codex",
-          "opencode"
-        ],
+        "agents": [],
         "deciding": "secondary",
         "hidden": false,
         "id": "openai:acct-2",
@@ -143,15 +140,15 @@
               "kind": "unknown",
               "reason": "stale"
             },
-            "readAt": 1791460680000,
-            "resetSince": 1791459000000,
+            "readAt": 1791459600000,
+            "resetSince": 1791460200000,
             "scope": null,
             "window": {
               "resets": {
-                "at": 1791471600000,
+                "at": 1791460200000,
                 "horizon": "soon"
               },
-              "startsAt": 1791453600000
+              "startsAt": 1790855400000
             },
             "work": null
           },
@@ -162,10 +159,10 @@
             "money": null,
             "name": "Monthly",
             "outlook": {
-              "kind": "lasts",
-              "leftAtReset": null
+              "kind": "unknown",
+              "reason": "rolling"
             },
-            "readAt": 1791460680000,
+            "readAt": 1791459600000,
             "resetSince": null,
             "scope": null,
             "window": {
@@ -175,14 +172,7 @@
               },
               "startsAt": null
             },
-            "work": {
-              "ratePerHour": 1.2,
-              "leftHours": {
-                "low": 36.7,
-                "likely": 80.8,
-                "high": 202.1
-              }
-            }
+            "work": null
           }
         ],
         "provider": "openai",
@@ -190,7 +180,7 @@
         "spend": null,
         "state": {
           "kind": "asOf",
-          "readAt": 1791424800000,
+          "readAt": 1791459600000,
           "why": "signedOut"
         },
         "title": "ChatGPT Pro",
@@ -198,7 +188,8 @@
       },
       {
         "agents": [
-          "pi"
+          "pi",
+          "opencode"
         ],
         "deciding": "key-0123456789abcdef",
         "hidden": false,
@@ -217,58 +208,41 @@
               "leftUsd": 8.7,
               "sizeUsd": 30.0
             },
-            "name": "Credits",
+            "name": "Key limit",
             "outlook": {
               "kind": "unknown",
               "reason": "noReset"
             },
-            "readAt": 1791460680000,
+            "readAt": 1791460200000,
             "resetSince": null,
             "scope": null,
             "window": null,
             "work": null
           },
           {
-            "heldBy": [],
-            "key": "rolling",
-            "leftPercent": 100,
-            "money": null,
-            "name": "5 hours",
-            "outlook": {
-              "kind": "unknown",
-              "reason": "rolling"
-            },
-            "readAt": 1791460680000,
-            "resetSince": null,
-            "scope": null,
-            "window": {
-              "resets": {
-                "at": 1791475200000,
-                "horizon": "today"
-              },
-              "startsAt": null
-            },
-            "work": null
-          },
-          {
-            "heldBy": [],
-            "key": "fresh",
+            "heldBy": [
+              "opencode"
+            ],
+            "key": "key-fedcba9876543210",
             "leftPercent": 99,
-            "money": null,
-            "name": "Daily",
+            "money": {
+              "leftUsd": 4.95,
+              "sizeUsd": 5.0
+            },
+            "name": "Daily key limit",
             "outlook": {
               "kind": "unknown",
               "reason": "notEnoughData"
             },
-            "readAt": 1791460680000,
+            "readAt": 1791460200000,
             "resetSince": null,
             "scope": null,
             "window": {
               "resets": {
-                "at": 1791471600000,
-                "horizon": "soon"
+                "at": 1791504000000,
+                "horizon": "thisWeek"
               },
-              "startsAt": 1791453600000
+              "startsAt": 1791417600000
             },
             "work": null
           }
@@ -276,7 +250,7 @@
         "provider": "openrouter",
         "recent": true,
         "spend": {
-          "forecastUsd": 80.1,
+          "forecastUsd": 88.04,
           "monthUsd": 21.3,
           "partial": true
         },
@@ -286,6 +260,27 @@
           "why": "readFailed"
         },
         "title": "OpenRouter API key",
+        "usedBy": []
+      },
+      {
+        "agents": [
+          "claude-code"
+        ],
+        "deciding": null,
+        "hidden": false,
+        "id": "opencode-go:key-0123456789abcdef",
+        "inUse": false,
+        "kind": "subscription",
+        "label": null,
+        "limits": [],
+        "provider": "opencode-go",
+        "recent": false,
+        "spend": null,
+        "state": {
+          "kind": "unread",
+          "why": "signIn"
+        },
+        "title": "OpenCode Go",
         "usedBy": []
       },
       {
@@ -316,27 +311,6 @@
         ],
         "deciding": null,
         "hidden": false,
-        "id": "opencode-go:key-0123456789abcdef",
-        "inUse": false,
-        "kind": "subscription",
-        "label": null,
-        "limits": [],
-        "provider": "opencode-go",
-        "recent": false,
-        "spend": null,
-        "state": {
-          "kind": "unread",
-          "why": "signIn"
-        },
-        "title": "OpenCode Go",
-        "usedBy": []
-      },
-      {
-        "agents": [
-          "claude-code"
-        ],
-        "deciding": null,
-        "hidden": false,
         "id": "anthropic:api",
         "inUse": false,
         "kind": "apiKey",
@@ -344,7 +318,11 @@
         "limits": [],
         "provider": "anthropic",
         "recent": false,
-        "spend": null,
+        "spend": {
+          "forecastUsd": 0.0,
+          "monthUsd": 0.0,
+          "partial": false
+        },
         "state": {
           "kind": "unread",
           "why": "readFailed"
