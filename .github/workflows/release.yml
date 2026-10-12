@@ -65,7 +65,7 @@ jobs:
           missing=0
           for name in DEVELOPER_ID_CERTIFICATE DEVELOPER_ID_PASSWORD NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER SPARKLE_PRIVATE_KEY SPARKLE_PUBLIC_KEY; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::There is no $name. A release is signed, notarized and offered to updates, or not made (scripts/build-release.sh says what each is)."
+              echo "::error::There is no $name. A release is signed, notarized and offered to updates, or not made (scripts/sign-release.sh says what each is)."
               missing=1
             fi
           done
@@ -77,8 +77,42 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci.yml
 
-  publish:
+  # The app, built on a runner that holds no secret, so nothing the build
+  # runs, such as a dependency's build script, can reach a key.
+  build:
     needs: [check, verify]
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26"
+      - run: rustup toolchain install
+      - name: Build the app, unsigned
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: scripts/build-release.sh
+      # An artifact keeps neither symlinks nor file modes, which the app's
+      # framework needs, so the app goes in a zip that keeps both.
+      - name: Pack the app
+        run: ditto -c -k --keepParent target/dist/Turnscope.app "$RUNNER_TEMP/Turnscope.zip"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-app
+          path: ${{ runner.temp }}/Turnscope.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  # Signs, notarizes and publishes what build made. It builds nothing: while
+  # the keys are here, only Apple's tools, Sparkle's sign_update and the
+  # script's own check of the update's signature run.
+  publish:
+    needs: build
     runs-on: macos-26
     timeout-minutes: 120
     permissions:
@@ -90,15 +124,26 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26"
-      - run: rustup toolchain install
-      - name: Set up signing and notarization
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-app
+          path: ${{ runner.temp }}/unsigned
+      - name: Unpack the app
+        run: |
+          mkdir -p target/dist
+          ditto -x -k "$RUNNER_TEMP/unsigned/Turnscope.zip" target/dist
+      # Before the keys are here, since resolving runs each package's
+      # manifest, and only at the versions Package.resolved pins, since
+      # Sparkle's sign_update is handed the update's private key.
+      - name: Resolve Sparkle's tools
+        run: |
+          xcodebuild -resolvePackageDependencies -onlyUsePackageVersionsFromResolvedFile \
+            -project macos/Turnscope.xcodeproj -scheme Turnscope \
+            -clonedSourcePackagesDirPath target/swiftpm -quiet
+      - name: Set up signing
         env:
           DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
           DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
-          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
-          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
-          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           # A keychain of its own, for this run only, which codesign may use
@@ -124,20 +169,30 @@ jobs:
             echo "::error::DEVELOPER_ID_CERTIFICATE holds no Developer ID Application identity."
             exit 1
           fi
-          printf '%s\n' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
-          {
-            echo "SIGN_IDENTITY=$identity"
-            echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8"
-            echo "NOTARY_KEY_ID=$NOTARY_KEY_ID"
-            echo "NOTARY_ISSUER=$NOTARY_ISSUER"
-            echo "SPARKLE_PUBLIC_KEY=$SPARKLE_PUBLIC_KEY"
-          } >> "$GITHUB_ENV"
-      - name: Build, sign and notarize
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      # The notary and Sparkle keys are in this step's environment alone, and
+      # the next step removes the notary key's file.
+      - name: Sign, notarize and package
         env:
+          NOTARY_P8: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: scripts/build-release.sh
-      # The build verified the signatures and stapled both files; this runs
-      # the app as it will ship.
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          (umask 077 && printf '%s\n' "$NOTARY_P8" > "$RUNNER_TEMP/notary.p8")
+          unset NOTARY_P8
+          NOTARY_KEY="$RUNNER_TEMP/notary.p8" scripts/sign-release.sh
+      # The keys go before the app runs: it was built where a dependency
+      # could have changed it.
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8"
+      # The signatures were verified and both files stapled; this runs the
+      # app as it will ship.
       - name: Check the built app runs
         run: scripts/check-app.sh target/dist/Turnscope.app
       - name: Publish
@@ -162,8 +217,3 @@ jobs:
             --title "Turnscope $version" --notes-file "$RUNNER_TEMP/notes.md" \
             "target/dist/Turnscope-$version.dmg" target/dist/appcast.xml
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
-      - name: Remove the signing keychain
-        if: always()
-        run: |
-          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2> /dev/null || true
-          rm -f "$RUNNER_TEMP/notary.p8"

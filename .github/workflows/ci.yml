@@ -58,9 +58,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # The app's tests, then the app as a release builds it, unsigned, for both
-  # architectures, with warnings as errors, and the bundle checked to run. A
-  # tag's release builds and checks its own, signed.
+  # The app's tests, then the app as a release builds it, for both
+  # architectures, with warnings as errors, signed ad hoc and packed, and the
+  # bundle checked to run. A tag's release builds and checks its own, signed.
   app:
     runs-on: macos-26
     timeout-minutes: 45
@@ -80,9 +80,9 @@ jobs:
           path: target/swiftpm
           key: swiftpm-${{ hashFiles('macos/Turnscope.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
       - run: swift test --package-path macos/TurnscopeKit -Xswiftc -warnings-as-errors
-      - name: Build the release, unsigned
+      - name: Build the release, signed ad hoc
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: scripts/build-release.sh
+        run: scripts/build-release.sh && scripts/sign-release.sh
       - name: Check the built app runs
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: scripts/check-app.sh
