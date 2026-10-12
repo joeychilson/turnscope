@@ -3,10 +3,9 @@
 //! Each thread is written to JSON Lines rollouts,
 //! `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<thread>.jsonl`, moved to
 //! `archived_sessions/` when archived. Every line is `{timestamp, ordinal,
-//! type, payload}`, and a rollout opens with its thread's `session_meta`. A
-//! resumed thread goes on in a new rollout. `session_index.jsonl` names
-//! threads. A second account's folder is `~/.codex-<name>`, used through
-//! `CODEX_HOME`, once signed in there.
+//! type, payload}`, and a rollout opens with its thread's `session_meta`.
+//! `session_index.jsonl` names threads. A second account's folder is
+//! `~/.codex-<name>`, used through `CODEX_HOME`, once signed in there.
 //!
 //! What follows was measured on this Mac's history, September and October 2026.
 //!
@@ -38,12 +37,35 @@
 //! their own, some tags with attributes. Nearly every tool call is `exec`, a
 //! script calling Codex's tools (`tools.apply_patch`, `tools.exec_command`),
 //! whose patches name the files they change; a script that failed says so
-//! as its output opens. A thread resumed goes on in rollouts named
-//! `…_<page>.jsonl`, each opening with a `session_meta` whose `history_base`
-//! says it's a later page.
+//! as its output opens.
 //!
 //! **Not shown.** Codex encrypts a compaction's summary, so its
 //! conversations have none.
+//!
+//! What follows is from Codex's code (openai/codex at `a9b0815`, read
+//! 2026-10-12), not measured.
+//!
+//! **A thread's rollouts.** A resumed thread goes on in its rollout. One
+//! rewound to an earlier turn goes on in a new rollout,
+//! `rollout-<time>-<thread>_<rollout id>.jsonl`, whose `session_meta` has a
+//! `history_base`: the part of the rollout before it that it keeps
+//! (`thread-store/src/local/revert_thread.rs`). A name starts with the time
+//! its rollout was made, so names sort oldest first.
+//!
+//! **Forks.** A fork of a paginated thread points at its parent's history
+//! with `history_base` and copies none of it. A fork of a legacy thread
+//! (`history_mode` `legacy`) copies it: after the fork's own `session_meta`
+//! come the parent's `session_meta` and history, then a
+//! `thread_settings_applied` whose `thread_id` is the fork's, written with the
+//! copy (`core/src/session/mod.rs`); a copied one keeps its owner's
+//! `thread_id`. The copy is the parent's: its records name the parent's
+//! thread, its settings the models they were made with, and nothing else in
+//! it is the fork's. A fork made by a Codex before 2026-08-29
+//! (openai/codex#41567) has no `thread_id` on that event, so the rest of its
+//! file reads as the copy until a current Codex resumes it. A subagent given
+//! its parent's history has a `forked_from_id` too, from the parent's
+//! `session_meta` in its copy (`core/src/session/session.rs`), but its copy
+//! ends at `subagent_history_start_ordinal`.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -97,6 +119,9 @@ struct Cursor {
     provider: Option<String>,
     /// Where a spawned subagent's own history starts, after its parent's.
     copied_until: Option<i64>,
+    legacy_fork: bool,
+    /// Within a legacy fork's copy of its parent's history.
+    copying: bool,
     model: Option<String>,
     priority: bool,
     /// The running total as last seen.
@@ -213,6 +238,7 @@ struct Payload<'a> {
     model_provider: Option<String>,
     parent_thread_id: Option<String>,
     forked_from_id: Option<String>,
+    history_mode: Option<String>,
     subagent_history_start_ordinal: Option<i64>,
     /// A later page of a thread's: where its history before begins.
     #[serde(borrow)]
@@ -227,7 +253,7 @@ struct Payload<'a> {
     // token_count
     #[serde(borrow)]
     info: Option<&'a RawValue>,
-    // token_usage_record
+    // token_usage_record, and thread_settings_applied's `thread_id`
     response_id: Option<String>,
     thread_id: Option<String>,
     #[serde(borrow)]
@@ -237,6 +263,16 @@ struct Payload<'a> {
     role: Option<Cow<'a, str>>,
     #[serde(borrow)]
     content: Option<&'a RawValue>,
+}
+
+impl Payload<'_> {
+    /// Whether this `session_meta` opens a fork of a legacy thread, which
+    /// copies its parent's history; a subagent's copy ends at its ordinal.
+    fn legacy_fork(&self) -> bool {
+        self.parent_thread_id.is_none()
+            && self.forked_from_id.is_some()
+            && self.history_mode.as_deref() == Some("legacy")
+    }
 }
 
 /// A `turn_context`, or a `thread_settings_applied` event's settings.
@@ -355,7 +391,8 @@ impl Agent for Codex {
         Ok(read)
     }
 
-    fn transcript(&self, _native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
+    fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
+        let thread = id(native);
         // A thread's rollouts, oldest first by the time in their names.
         let mut rollouts: Vec<&PathBuf> = files
             .iter()
@@ -372,22 +409,24 @@ impl Agent for Codex {
         for rollout in rollouts {
             let mut copied_until = None;
             let mut opened = false;
+            let mut legacy_fork = false;
+            let mut copying = false;
             super::lines(rollout, 0, |bytes| {
                 let Ok(line) = serde_json::from_slice::<Line>(bytes) else {
                     return;
                 };
-                if line.kind == "session_meta" {
-                    if !opened {
-                        opened = true;
-                        copied_until = line.payload.as_ref().and_then(|meta| {
-                            meta.parent_thread_id
-                                .as_ref()
-                                .and(meta.subagent_history_start_ordinal)
-                        });
-                    }
+                if line.kind == "session_meta" && !opened {
+                    opened = true;
+                    copied_until = line.payload.as_ref().and_then(|meta| {
+                        meta.parent_thread_id
+                            .as_ref()
+                            .and(meta.subagent_history_start_ordinal)
+                    });
+                    legacy_fork = line.payload.as_ref().is_some_and(Payload::legacy_fork);
                     return;
                 }
-                if line.kind != "response_item"
+                if (legacy_fork && in_copy(&line, &thread, &mut copying))
+                    || line.kind != "response_item"
                     || line
                         .ordinal
                         .zip(copied_until)
@@ -433,23 +472,25 @@ impl Agent for Codex {
 
 fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
     let Some(payload) = &line.payload else { return };
-    if line.kind == "session_meta" {
-        if cursor.thread.is_none() {
+    let Some(thread) = cursor.thread.clone() else {
+        if line.kind == "session_meta" {
             open(payload, line.at(), cursor, read);
         }
         return;
-    }
-    let Some(thread) = cursor.thread.clone() else {
-        return;
     };
-    let copied = line
-        .ordinal
-        .zip(cursor.copied_until)
-        .is_some_and(|(at, until)| at < until);
+    let copied = (cursor.legacy_fork && in_copy(line, &thread, &mut cursor.copying))
+        || line
+            .ordinal
+            .zip(cursor.copied_until)
+            .is_some_and(|(at, until)| at < until);
     match (&*line.kind, payload.kind.as_deref()) {
-        ("turn_context", _) if !copied => {
-            let session = read.session(&thread);
-            session.cwd = session.cwd.take().or(payload.cwd.clone());
+        ("session_meta", _) => return,
+        // Settings are taken from a copy too: its records were made under them.
+        ("turn_context", _) => {
+            if !copied {
+                let session = read.session(&thread);
+                session.cwd = session.cwd.take().or(payload.cwd.clone());
+            }
             let settings = Settings {
                 model: payload.model.clone(),
                 service_tier: payload.service_tier.clone(),
@@ -461,7 +502,7 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
                 total(totals, line, &thread, copied, cursor, read);
             }
         }
-        ("event_msg", Some("thread_settings_applied")) if !copied => {
+        ("event_msg", Some("thread_settings_applied")) => {
             if let Some(settings) = parsed(payload.thread_settings) {
                 apply(settings, cursor, read);
             }
@@ -508,6 +549,25 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
     }
 }
 
+/// Whether `line`, in a legacy fork's rollout of `thread`, is of its copy of
+/// its parent's history: from the parent's `session_meta` to the
+/// `thread_settings_applied` that names `thread`, written with the copy.
+fn in_copy(line: &Line, thread: &str, copying: &mut bool) -> bool {
+    let Some(payload) = &line.payload else {
+        return *copying;
+    };
+    let names =
+        |native: &Option<String>| native.as_deref().is_some_and(|native| id(native) == thread);
+    match (&*line.kind, payload.kind.as_deref()) {
+        ("session_meta", _) if !names(&payload.id) => *copying = true,
+        ("event_msg", Some("thread_settings_applied")) if names(&payload.thread_id) => {
+            *copying = false
+        }
+        _ => {}
+    }
+    *copying
+}
+
 /// Take in the rollout's own `session_meta`.
 fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
     if meta.thread_source.as_deref() == Some("guardian_review") {
@@ -521,6 +581,7 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
         .parent_thread_id
         .as_ref()
         .and(meta.subagent_history_start_ordinal);
+    cursor.legacy_fork = meta.legacy_fork();
     let session = read.session(&thread);
     session.parent = match (&meta.parent_thread_id, &meta.forked_from_id) {
         (Some(parent), _) => Some(Parent {
@@ -545,7 +606,8 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
     if let Some(nickname) = &meta.agent_nickname {
         session.title(Title::Task, nickname);
     }
-    // A thread's first request is on its first page.
+    // A rollout that goes on from earlier history doesn't hold the thread's
+    // first request.
     cursor.titled = meta.history_base.is_some();
     cursor.thread = Some(thread);
 }
@@ -851,6 +913,10 @@ mod tests {
         )
     }
 
+    fn message(role: &str, text: &str) -> Value {
+        json!({"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]})
+    }
+
     #[test]
     fn a_scripts_output_is_its_commands_and_a_failing_one_fails_it() {
         let output = "Script completed\nWall time 0.4 seconds\nOutput:\n\
@@ -998,6 +1064,145 @@ mod tests {
             ],
         );
         assert!(Codex.read(&review, "").unwrap().responses.is_empty());
+    }
+
+    #[test]
+    fn a_forks_copy_of_its_parents_history_is_the_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = |thread: &str, model: &str| json!({"type": "thread_settings_applied", "thread_id": thread, "thread_settings": {"model": model}});
+        let file = rollout(
+            dir.path(),
+            "t2",
+            &[
+                line(
+                    0,
+                    "session_meta",
+                    json!({"id": "t2", "forked_from_id": "t1", "history_mode": "legacy"}),
+                ),
+                line(1, "session_meta", json!({"id": "t1"})),
+                line(2, "turn_context", json!({"model": "gpt-5.4"})),
+                line(3, "response_item", message("user", "Plan the migration.")),
+                line(
+                    4,
+                    "token_usage_record",
+                    json!({"response_id": "resp_1", "thread_id": "t1", "usage": usage(1000, 0, 10)}),
+                ),
+                total(5, usage(1000, 0, 10), usage(1000, 0, 10)),
+                // A total the parent wrote before it wrote records.
+                total(6, usage(3000, 0, 30), usage(2000, 0, 20)),
+                line(7, "response_item", message("assistant", "Here's the plan.")),
+                line(8, "event_msg", settings("t1", "gpt-5.4")),
+            ],
+        );
+        let copy = Codex.read(&file, "").unwrap();
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        for own in [
+            line(9, "event_msg", settings("t2", "gpt-5.5")),
+            line(10, "response_item", message("user", "Try it on staging.")),
+            line(
+                11,
+                "token_usage_record",
+                json!({"response_id": "resp_2", "thread_id": "t2", "usage": usage(4000, 3000, 40)}),
+            ),
+            total(12, usage(7000, 3000, 70), usage(4000, 3000, 40)),
+        ] {
+            text += &format!("{own}\n");
+        }
+        std::fs::write(&file, text).unwrap();
+        let own = Codex.read(&file, &copy.cursor).unwrap();
+
+        let mut responses: Vec<(&str, &str, &str)> = [&copy, &own]
+            .iter()
+            .flat_map(|read| read.responses.values())
+            .map(|response| {
+                (
+                    response.id.as_str(),
+                    response.session.as_str(),
+                    response.model.as_str(),
+                )
+            })
+            .collect();
+        responses.sort();
+        assert_eq!(
+            responses,
+            [
+                ("resp_1", "codex:t1", "gpt-5.4"),
+                ("resp_2", "codex:t2", "gpt-5.5")
+            ]
+        );
+        assert!(copy.said.is_empty());
+        assert_eq!(
+            own.said,
+            [("codex:t2".to_owned(), "Try it on staging.".to_owned())]
+        );
+        let fork = &own.sessions["codex:t2"];
+        assert_eq!(fork.title.as_ref().unwrap().1, "Try it on staging.");
+        assert!(
+            copy.sessions["codex:t2"]
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.id == "codex:t1" && parent.link == Link::Fork)
+        );
+        let entries = Codex.transcript("t2", &[file]).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.kind, entry.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(Kind::User, "Try it on staging.")]
+        );
+    }
+
+    #[test]
+    fn a_subagents_copy_holding_its_parents_session_meta_ends_at_its_ordinal() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = rollout(
+            dir.path(),
+            "t2",
+            &[
+                line(
+                    0,
+                    "session_meta",
+                    json!({"id": "t2", "parent_thread_id": "t1", "forked_from_id": "t1",
+                        "history_mode": "legacy", "subagent_history_start_ordinal": 5}),
+                ),
+                line(1, "session_meta", json!({"id": "t1"})),
+                line(2, "turn_context", json!({"model": "gpt-5.4"})),
+                line(3, "response_item", message("user", "Plan the migration.")),
+                total(4, usage(9000, 0, 90), usage(9000, 0, 90)),
+                // As a Codex before 2026-08-29 wrote it, naming no thread.
+                line(
+                    5,
+                    "event_msg",
+                    json!({"type": "thread_settings_applied", "thread_settings": {"model": "gpt-5.5"}}),
+                ),
+                line(6, "response_item", message("user", "Check the indexes.")),
+                total(7, usage(9500, 0, 95), usage(500, 0, 5)),
+            ],
+        );
+        let read = Codex.read(&file, "").unwrap();
+        let counted: Vec<(u64, &str)> = read
+            .responses
+            .values()
+            .map(|response| (response.tokens.input, response.model.as_str()))
+            .collect();
+        assert_eq!(counted, [(500, "gpt-5.5")]);
+        assert_eq!(
+            read.said,
+            [("codex:t2".to_owned(), "Check the indexes.".to_owned())]
+        );
+        assert_eq!(
+            read.sessions["codex:t2"].title.as_ref().unwrap().1,
+            "Check the indexes."
+        );
+        let entries = Codex.transcript("t2", &[file]).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.kind, entry.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(Kind::User, "Check the indexes.")]
+        );
     }
 
     #[test]

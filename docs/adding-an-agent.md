@@ -139,7 +139,10 @@ fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
 ```
 
 An agent that keeps a SQLite database, as OpenCode does, is opened read-only
-and read on from the latest `time_updated` seen (`src/agents/opencode.rs`).
+and read on from a little before the latest `time_updated` seen, since a
+row can be committed after one stamped later (`src/agents/opencode.rs`).
+Rows read again are reported again, which changes nothing, but what they
+say is indexed only once.
 
 What a read returns, in `Read`:
 

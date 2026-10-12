@@ -3,9 +3,13 @@
 //! OpenCode keeps every session in one SQLite database,
 //! `~/.local/share/opencode/opencode.db`: a row per session in `session_v2`,
 //! a row per message in `session_message`, whose `data` holds an assistant
-//! message's tokens, cost, provider and model as JSON. It's read on from the
-//! latest `time_updated` seen in each table; rows updated at that mark are
-//! read again, which changes nothing.
+//! message's tokens, cost, provider and model as JSON. It's read on from 10 s
+//! before the latest `time_updated` seen in each table, as a row can be
+//! committed after one stamped later: OpenCode stamps a row as it makes the
+//! write, then waits up to 5 s (`busy_timeout`) for another process's write
+//! to end. Rows read again change nothing, and what they say isn't indexed
+//! again. (From OpenCode's code, `packages/core/src/database/`, read
+//! 2026-10-12.)
 //!
 //! What follows was measured on this Mac's history, September and October 2026.
 //!
@@ -20,6 +24,12 @@
 //! **When.** OpenCode adds a step to a session without touching the session's
 //! `time_updated`, so when it worked is its messages': each one's creation
 //! and a response's completion.
+//!
+//! **Titles.** A session OpenCode hasn't titled has no title, or the
+//! placeholder it used to write, `New session - <ISO time>` (`Child session -
+//! …` for a subagent's), which it reads as none. (From OpenCode's code,
+//! `isFallbackTitle` in `packages/util/src/session-title-fallback.ts`, read
+//! 2026-10-12.)
 //!
 //! **Not read.** A session's own totals add calls no message records, such as
 //! compacting and naming it: a few hundredths of a percent of its tokens.
@@ -64,7 +74,14 @@ const OWN: &str = "(s.fork_session_id IS NULL OR m.time_created >= s.time_create
 struct Cursor {
     sessions: i64,
     messages: i64,
+    /// The messages whose text was indexed at a time within `LATE` of
+    /// `messages`, which are read again.
+    said: Vec<String>,
 }
+
+/// How long before the latest `time_updated` seen a read starts, so a row
+/// committed after one stamped later is read.
+const LATE: i64 = 10_000;
 
 fn id(native: &str) -> String {
     format!("opencode:{native}")
@@ -109,7 +126,7 @@ impl Agent for OpenCode {
                  FROM session_v2 s WHERE s.time_updated >= ?1"
             ))
             .map_err(failed)?;
-        let mut rows = sessions.query([cursor.sessions]).map_err(failed)?;
+        let mut rows = sessions.query([cursor.sessions - LATE]).map_err(failed)?;
         while let Some(row) = rows.next().map_err(failed)? {
             let (native, parent, fork): (String, Option<String>, Option<String>) = (
                 row.get(0).map_err(failed)?,
@@ -144,7 +161,17 @@ impl Agent for OpenCode {
             if let Some(text) = first.and_then(|data| serde_json::from_str::<Value>(&data).ok()) {
                 session.title(Title::Prompt, text["text"].as_str().unwrap_or_default());
             }
-            if let Some(title) = row.get::<_, Option<String>>(4).map_err(failed)? {
+            // OpenCode reads its placeholder as no title.
+            let placeholder = |title: &str| {
+                ["New session - ", "Child session - "].iter().any(|prefix| {
+                    title
+                        .strip_prefix(prefix)
+                        .and_then(crate::time::millis)
+                        .is_some()
+                })
+            };
+            let title: Option<String> = row.get(4).map_err(failed)?;
+            if let Some(title) = title.filter(|title| !placeholder(title)) {
                 session.title(Title::Generated, &title);
             }
         }
@@ -158,10 +185,13 @@ impl Agent for OpenCode {
                  WHERE m.time_updated >= ?1 AND m.type IN ('user', 'assistant') AND {OWN}"
             ))
             .map_err(failed)?;
-        // A message is read again each time it changes; what it says is
-        // indexed once, when it's new or a response completes.
+        // A message is read again each time it changes, and while it's
+        // within `LATE` of the latest change; what it says is indexed once,
+        // when it's new or a response completes.
         let mark = cursor.messages;
-        let mut rows = messages.query(params![mark]).map_err(failed)?;
+        let was_said = std::mem::take(&mut cursor.said);
+        let mut said_at = Vec::new();
+        let mut rows = messages.query(params![mark - LATE]).map_err(failed)?;
         while let Some(row) = rows.next().map_err(failed)? {
             let (message, native, kind): (String, String, String) = (
                 row.get(0).map_err(failed)?,
@@ -178,19 +208,28 @@ impl Agent for OpenCode {
             };
             let session = id(&native);
             read.session(&session).saw(created);
-            if let Some(completed) = data["time"]["completed"].as_i64() {
+            let completed = data["time"]["completed"].as_i64();
+            if let Some(completed) = completed {
                 read.session(&session).saw(completed);
             }
+            // What a prompt says is final once it's made, and a reply's once it
+            // completes.
+            let final_at = match kind.as_str() {
+                "user" => Some(created),
+                _ => completed,
+            }
+            .filter(|at| *at > mark - LATE);
+            let new = final_at.is_some() && !was_said.contains(&message);
+            if let Some(at) = final_at {
+                said_at.push((message.clone(), at));
+            }
             if kind == "user" {
-                if created > mark {
+                if new {
                     read.say(&session, data["text"].as_str().unwrap_or_default());
                 }
                 continue;
             }
-            if data["time"]["completed"]
-                .as_i64()
-                .is_some_and(|completed| completed > mark)
-            {
+            if new {
                 for part in data["content"]
                     .as_array()
                     .into_iter()
@@ -249,6 +288,11 @@ impl Agent for OpenCode {
         }
         drop(rows);
         drop(messages);
+        cursor.said = said_at
+            .into_iter()
+            .filter(|(_, at)| *at > cursor.messages - LATE)
+            .map(|(message, _)| message)
+            .collect();
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
     }
@@ -528,9 +572,10 @@ mod tests {
             2,
             "the prompt and the reply; the fork's copy isn't its own"
         );
-        // Read on, rows at the mark are read again, and their text isn't
-        // indexed again.
+        // Read on, rows within 10 s of the mark are read again, and their
+        // text isn't indexed again.
         let again = OpenCode.read(&file, &read.cursor).unwrap();
+        assert!(again.responses.contains_key("m2"));
         assert!(again.said.is_empty());
         let entries = OpenCode
             .transcript("s1", std::slice::from_ref(&file))
@@ -552,6 +597,53 @@ mod tests {
             go.credential
                 .as_ref()
                 .is_some_and(|credential| credential.key)
+        );
+    }
+
+    #[test]
+    fn a_reply_committed_after_a_later_one_is_read_and_indexed_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = database(dir.path());
+        let first = OpenCode.read(&file, "").unwrap();
+        // Another OpenCode process stamped it at 2200, before the last read
+        // saw m2's 2500, and committed it after.
+        let reply = json!({"model": {"providerID": "opencode-go", "id": "glm-5.3"}, "time": {"created": 2100, "completed": 2200},
+            "tokens": {"input": 50, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+            "content": [{"type": "text", "text": "Checked the email field too."}]});
+        Connection::open(&file)
+            .unwrap()
+            .execute(
+                "INSERT INTO session_message VALUES ('m4', 's1', 'assistant', 3, 2100, 2200, ?1)",
+                [reply.to_string()],
+            )
+            .unwrap();
+        let later = OpenCode.read(&file, &first.cursor).unwrap();
+        assert_eq!(later.responses["m4"].tokens.input, 50);
+        assert_eq!(
+            later.said,
+            [(
+                "opencode:s1".to_owned(),
+                "Checked the email field too.".to_owned()
+            )]
+        );
+        assert!(OpenCode.read(&file, &later.cursor).unwrap().said.is_empty());
+    }
+
+    #[test]
+    fn a_placeholder_title_gives_way_to_the_first_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = database(dir.path());
+        Connection::open(&file)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO session_v2 VALUES ('s3', NULL, NULL, '/work/web', 'New session - 2026-09-30T09:00:00.000Z', 6000, 6000);
+                 INSERT INTO session_message VALUES ('m5', 's3', 'user', 1, 6500, 6500, '{\"text\":\"Add a dark theme.\"}');",
+            )
+            .unwrap();
+        let read = OpenCode.read(&file, "").unwrap();
+        assert_eq!(
+            read.sessions["opencode:s3"].title.as_ref().unwrap().1,
+            "Add a dark theme."
         );
     }
 }
