@@ -89,6 +89,11 @@
 - **OpenCode:** a reply another OpenCode process saved late is no longer
   missed. A session OpenCode left with a placeholder title, such as
   "New session - 2026-07-30T18:45:03.662Z", is titled by its first request.
+- **Handoff:** a failed command run again under a reworded description no
+  longer shows under "What failed". A `grep -i` that found nothing is a
+  read, not a failure; `sed -i.bak`, `find -delete` and `git branch -D` are
+  work; and a command after `cd v2;` counts as its own. A request is left
+  out as sent again only if the agent hadn't answered it.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
