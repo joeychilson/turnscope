@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in Turnscope doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report a security problem privately instead, as [SECURITY.md](https://github.com/joeychilson/turnscope/blob/main/SECURITY.md) says.
+  - type: input
+    id: version
+    attributes:
+      label: Turnscope version
+      description: What `turnscope --version` prints, or Settings → General shows.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: What `sw_vers -productVersion` prints.
+    validations:
+      required: true
+  - type: input
+    id: agents
+    attributes:
+      label: Agents
+      description: The coding agents you use with Turnscope, such as Claude Code or Codex.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands you ran, or what you clicked.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Paste the output or the error as it was.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: turnscope doctor
+      description: >-
+        What `turnscope doctor` prints. Without the command line on your PATH,
+        run `/Applications/Turnscope.app/Contents/Helpers/turnscope doctor`.
+        It can name your accounts with their emails, and the paths of files
+        on your Mac. Read it before you paste it, and replace what you don't
+        want to make public.
+      render: text

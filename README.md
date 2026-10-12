@@ -152,6 +152,12 @@ and the command line and MCP server are the same binary. See
 - [Adding an agent](docs/adding-an-agent.md) and [a provider](docs/adding-a-provider.md)
 - [Development](docs/development.md): building, testing and releasing
 
+## Report a problem
+
+Open an [issue](https://github.com/joeychilson/turnscope/issues/new/choose).
+Report a security problem privately instead, as [SECURITY.md](SECURITY.md)
+says.
+
 ## License
 
 [MIT](LICENSE)
