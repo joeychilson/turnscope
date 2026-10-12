@@ -74,6 +74,13 @@
   agents' history…" with no end.
 - **Settings → General:** the notification switches are grayed out until
   the first status arrives. Before, clicking them did nothing.
+- **Reading a long history,** as on a first run, no longer makes other
+  commands fail with "database is locked". `config set`, `accounts hide`,
+  reading limits and raising alerts used to wait up to 10 s for it and
+  then fail. Now they wait a second or two at most.
+- **Costs:** when models.dev first listed a model while another process
+  was reading history, the responses that process wrote could stay
+  without a cost for good. They're now priced.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

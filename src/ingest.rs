@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
@@ -19,6 +20,20 @@ use crate::{Error, Result};
 /// Raised when a reader would read a file it read before differently: every
 /// file still there is then read again.
 const READERS: i64 = 5;
+
+/// How long a transaction writes history before it lets the write lock go,
+/// and for how long: another process's write waits no more than `db::open`'s
+/// 10 s, and SQLite tries a waiting write again every 100 ms at most, so a
+/// pause longer than that lets it in.
+///
+/// Measured on a made-up 616 MB history of 256 files, with `config set` run
+/// beside it every half second: one transaction for all 256 held the lock 6
+/// to 23 s, and a write failed after 10.4 s in 4 runs of 8. A transaction a
+/// file let it go only between commits, so a write got in by chance, after
+/// up to 4.3 s. A second and then 110 ms: no write failed or waited over
+/// 1.1 s in 6 runs, and reading took as long as before.
+const HOLD: Duration = Duration::from_secs(1);
+const PAUSE: Duration = Duration::from_millis(110);
 
 /// Merges what a file says of a session: the earliest start, the latest
 /// activity and branch, the first folder, and a title as good or better.
@@ -215,30 +230,37 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<()> {
             drop(send);
         });
         for (share, read) in reads {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            for (due, read) in share.iter().zip(read) {
-                match read {
-                    Ok(read) => write(&tx, due, read, home, &derived)?,
-                    // A file that can't be read now is tried again next
-                    // time, from where it was: its row keeps its cursor and
-                    // what it was, and says why for doctor.
-                    Err(error) => {
-                        tx.execute(
-                            "INSERT INTO file (path, agent, folder, size, modified, inode, cursor, failed)
-                             VALUES (?1, ?2, ?3, -1, 0, ?4, '', ?5)
-                             ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
-                            params![
-                                due.path.to_string_lossy(),
-                                due.agent.info().id,
-                                due.folder.to_string_lossy(),
-                                due.stat.inode,
-                                error.to_string(),
-                            ],
-                        )?;
+            let mut files = share.iter().zip(read).peekable();
+            while files.peek().is_some() {
+                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let began = Instant::now();
+                while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
+                    match read {
+                        Ok(read) => write(&tx, due, read, home, &derived)?,
+                        // A file that can't be read now is tried again next
+                        // time, from where it was: its row keeps its cursor
+                        // and what it was, and says why for doctor.
+                        Err(error) => {
+                            tx.execute(
+                                "INSERT INTO file (path, agent, folder, size, modified, inode, cursor, failed)
+                                 VALUES (?1, ?2, ?3, -1, 0, ?4, '', ?5)
+                                 ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
+                                params![
+                                    due.path.to_string_lossy(),
+                                    due.agent.info().id,
+                                    due.folder.to_string_lossy(),
+                                    due.stat.inode,
+                                    error.to_string(),
+                                ],
+                            )?;
+                        }
                     }
                 }
+                tx.commit()?;
+                if files.peek().is_some() {
+                    std::thread::sleep(PAUSE);
+                }
             }
-            tx.commit()?;
         }
         Ok(())
     })?;
@@ -436,8 +458,22 @@ pub enum Of {
 /// once known stays as it was: the price in force when a response was made
 /// never changes.
 pub fn derive(db: &mut Connection, of: Of) -> Result<()> {
+    let none = match &of {
+        Of::Models(pairs) => pairs.is_empty(),
+        Of::SignIns(changed) => changed.is_empty(),
+    };
+    if none {
+        return Ok(());
+    }
+    // Taken before what's used is looked at: a process reading history may
+    // be writing a model's first responses, unpriced. The cost: a price
+    // refresh waits out another process's read of history whenever
+    // models.dev lists a model it didn't before, used here or not. `guard`
+    // refreshes no prices, so a hook never waits; a reporting command,
+    // `serve` or the MCP server that claims the six-hourly refresh mid-read
+    // does.
+    let _lock = lock(db)?;
     let (filter, pairs) = match of {
-        Of::Models(pairs) if pairs.is_empty() => return Ok(()),
         Of::Models(pairs) => {
             // Of the thousands of models a catalog lists, the few used here.
             let used: std::collections::HashSet<(String, String)> = db
@@ -455,7 +491,6 @@ pub fn derive(db: &mut Connection, of: Of) -> Result<()> {
     if pairs.is_empty() {
         return Ok(());
     }
-    let _lock = lock(db)?;
     let derived = Derived::load(db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut select = tx.prepare(&format!(
@@ -485,6 +520,10 @@ pub fn derive(db: &mut Connection, of: Of) -> Result<()> {
 /// one a deleted file held, and the responses only deleted files reported,
 /// are kept. The search index is made anew.
 fn read_again(db: &mut Connection) -> Result<()> {
+    // One transaction, not split as reading is: on the made-up 616 MB
+    // history `HOLD` was measured on, it held the lock 0.62 to 0.80 s, far
+    // under the 10 s another write waits. Deleting 123,140 responses took
+    // 0.48 to 0.64 s of it.
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let files: Vec<(i64, String)> = tx
         .prepare("SELECT id, path FROM file")?
@@ -516,7 +555,10 @@ fn read_again(db: &mut Connection) -> Result<()> {
         [],
     )?;
     tx.execute("DROP TABLE again", [])?;
-    tx.execute("DELETE FROM said", [])?;
+    // `delete-all` empties the index at once, where `DELETE` deletes each
+    // of that history's 246,280 rows: 37 to 48 ms against 0.82 to 1.7 s.
+    // With `DELETE`, the lock was held 1.9 to 4.3 s.
+    tx.execute("INSERT INTO said (said) VALUES ('delete-all')", [])?;
     tx.execute("UPDATE file SET indexed = 0", [])?;
     tx.execute("UPDATE state SET readers = ?1", [READERS])?;
     tx.commit()?;
@@ -791,6 +833,101 @@ mod tests {
             .query_row("SELECT count(*) FROM said", [], |row| row.get(0))
             .unwrap();
         assert_eq!(said, 4);
+    }
+
+    #[test]
+    fn history_read_again_is_searched_once() {
+        let (_dir, home, mut db, projects) = store();
+        let folder = projects.join("-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("s1.jsonl"), line("Quote fields with commas.")).unwrap();
+        let found = "SELECT count(*) FROM said WHERE said MATCH 'commas'";
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(count(&db, found), 1);
+        read_again(&mut db).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM said"), 0);
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(count(&db, found), 1);
+    }
+
+    #[test]
+    fn a_long_history_read_lets_other_writes_in() {
+        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // Seconds of writing, in one share of files.
+        let folder = home.path().join(".claude/projects/-work-app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let texts: Vec<String> = (0..100)
+            .map(|text| {
+                let words: Vec<String> = (0..200)
+                    .map(|word| format!("w{}", text * 7 + word))
+                    .collect();
+                words.join(" ")
+            })
+            .collect();
+        for file in 0..200 {
+            let mut log = String::new();
+            for (turn, said) in texts.iter().enumerate() {
+                log += &format!(
+                    r#"{{"type":"user","sessionId":"s{file}","timestamp":"2026-09-30T09:00:00Z","cwd":"/work/app","message":{{"role":"user","content":"{said}"}}}}
+{{"type":"assistant","sessionId":"s{file}","timestamp":"2026-09-30T09:00:01Z","requestId":"r{turn}","message":{{"id":"m{file}-{turn}","model":"claude-opus-5","role":"assistant","usage":{{"input_tokens":10,"output_tokens":10}},"content":[{{"type":"text","text":"{said}"}}]}}}}
+"#
+                );
+            }
+            std::fs::write(folder.join(format!("{file}.jsonl")), log).unwrap();
+        }
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let other = crate::db::open(dir.path()).unwrap();
+        let mut longest = Duration::ZERO;
+        std::thread::scope(|scope| {
+            let reading = scope.spawn(|| ingest(&mut db, home.path()));
+            while !reading.is_finished() {
+                let began = Instant::now();
+                other
+                    .execute("UPDATE state SET settings = NULL", [])
+                    .unwrap();
+                longest = longest.max(began.elapsed());
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            reading.join().unwrap().unwrap();
+        });
+        assert!(longest < 3 * HOLD, "a write waited {longest:?}");
+    }
+
+    #[test]
+    fn a_model_first_priced_while_history_is_read_prices_what_was_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        db.execute(
+            r#"INSERT INTO price VALUES ('anthropic', 'claude-opus-5', 0, '{"input":5,"output":25}', NULL)"#,
+            [],
+        )
+        .unwrap();
+        // Another process reads history, and writes the model's first
+        // response unpriced.
+        let reading = crate::db::open(dir.path()).unwrap();
+        let held = lock(&reading).unwrap();
+        std::thread::scope(|scope| {
+            let model = ("anthropic".to_owned(), "claude-opus-5".to_owned());
+            let deriving = scope.spawn(|| derive(&mut db, Of::Models(vec![model])));
+            // Time for `derive` to look at what's used, were it to look first.
+            std::thread::sleep(Duration::from_millis(100));
+            reading
+                .execute(
+                    "INSERT INTO response (agent, id, session, copy, file, folder, at, provider,
+                         model, input, cache_read, cache_write_5m, cache_write_1h, output,
+                         reasoning, prompt, web_searches, priority)
+                     VALUES ('claude-code', 'm1', 'claude-code:s1', 0, 1, '/work', 0, 'anthropic',
+                         'claude-opus-5', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0)",
+                    [],
+                )
+                .unwrap();
+            drop(held);
+            deriving.join().unwrap().unwrap();
+        });
+        let cost: Option<f64> = db
+            .query_row("SELECT cost FROM response", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(cost, Some(5.0));
     }
 
     #[test]
