@@ -221,6 +221,11 @@ Three files in the data directory keep processes apart:
 Limits and prices are claimed with one `UPDATE` of `state`, so no two
 processes ask a provider at once.
 
+SQLite lets one connection write at a time, and another waits up to 10 s
+for its turn. History is written a second at a time, with 110 ms between,
+so a long read never makes another process's write wait more than a second
+or so.
+
 ### serve
 
 `turnscope serve` listens on a Unix socket: `serve.sock` in the data
