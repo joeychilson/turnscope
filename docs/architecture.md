@@ -413,4 +413,5 @@ covers what it holds, the budget, and how to test a change.
 - **The data directory and socket** are the owner's alone: the directory
   is created 0700, and the socket is 0600.
 - **The MCP server only reads.** Its instructions tell agents that what a
-  session says is data, not instructions.
+  session says is data, not instructions, and each entry's text comes
+  quoted, `> ` a line, so none of it can pass for an entry.
