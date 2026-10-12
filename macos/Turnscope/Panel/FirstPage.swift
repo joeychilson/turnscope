@@ -160,7 +160,7 @@ private struct Verdict: View {
         let hiddenInUse = store.hidden.contains(where: \.inUse)
         let verdict = store.all.isEmpty
             ? words.welcome(store.agents, reads: store.agentNames, reading: store.reading)
-            : words.verdict(store.inUse, among: store.all, hiddenInUse: hiddenInUse)
+            : words.verdict(store.inUse, hiddenInUse: hiddenInUse)
         VStack(alignment: .leading, spacing: 4) {
             Text(verdict.headline)
                 .font(.system(size: 20, weight: .semibold))

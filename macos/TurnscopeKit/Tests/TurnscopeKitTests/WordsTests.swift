@@ -117,40 +117,54 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
 
 @Test func theVerdictSaysTheMostUrgentAndWhenItsBack() {
     let out = account([limit(runsOut)])
-    let verdict = words.verdict([out], among: [out])
+    let verdict = words.verdict([out])
     #expect(verdict.headline == "Claude Max runs out in\u{00A0}2h")
     #expect(verdict.detail == "Back in 3h.")
     #expect(verdict.standing == .runningOut)
     let mayLast = account([limit(.runsOut(likely: moment("2026-10-03T06:00:00Z", .thisWeek)),
                                  resets: "2026-10-04T00:00:00Z", horizon: .thisWeek)])
-    #expect(words.verdict([mayLast], among: [mayLast]).headline == "Claude Max runs out Saturday\u{00A0}morning")
-    #expect(words.verdict([mayLast], among: [mayLast]).detail == "Back Sun 12 AM.")
+    #expect(words.verdict([mayLast]).headline == "Claude Max runs out Saturday\u{00A0}morning")
+    #expect(words.verdict([mayLast]).detail == "Back Sun 12 AM.")
     let used = account([limit(.usedUp(back: moment("2026-09-30T15:00:00Z", .soon)), left: 0)])
-    #expect(words.verdict([used], among: [used]) == ("Claude Max is used up", "Back in 3h.", .usedUp))
+    #expect(words.verdict([used]) == ("Claude Max is used up", "Back in 3h.", .usedUp))
     let fine = account([limit(.lasts, left: 80)])
-    #expect(words.verdict([fine], among: [fine]).detail == "At this pace, every limit lasts until it resets.")
+    #expect(words.verdict([fine]).detail == "At this pace, no Claude Max limit runs out.")
     let early = account([limit(.unknown(reason: .notEnoughData), left: 99)])
-    #expect(words.verdict([early], among: [early]).detail == "99% left of 5 hours; it resets in 3h.")
+    #expect(words.verdict([early]).detail == "Claude Max has 99% left of 5 hours; it resets in 3h.")
     // Nothing in use, so the accounts below say the rest.
-    #expect(words.verdict([], among: []) == ("Nothing in use", "", .lasts))
+    #expect(words.verdict([]) == ("Nothing in use", "", .lasts))
     // A subscription in use with no limit read: whether it has room isn't
     // known, so it says why.
     let new = account([], state: .unread(why: .readFailed))
-    #expect(words.verdict([new], among: [new])
+    #expect(words.verdict([new])
         == ("Claude Max's limits are unknown", "It couldn't be read yet.", .lasts))
     let gone = account([], state: .unread(why: .signedOut))
-    #expect(words.verdict([gone], among: [gone]).detail == "No agent here is signed in to it.")
+    #expect(words.verdict([gone]).detail == "No agent here is signed in to it.")
     #expect(words.unused(3, besideOthers: true) == "3 more accounts")
     #expect(words.unused(1, besideOthers: false) == "1 account")
-    // Next to another shown account with the same name, the headline says
-    // which one it is.
+}
+
+@Test func anAccountIsToldApartOnlyWhereItHasTo() {
     let mine = account([limit(runsOut)], label: "me@example.com")
-    let other = account([limit(.lasts, left: 90)], id: "anthropic:b", label: "work@example.com",
+    var other = account([limit(.lasts, left: 90)], id: "anthropic:b", label: "work@example.com",
                         inUse: false)
-    #expect(words.verdict([mine], among: [mine, other]).detail == "me@example.com · Back in 3h.")
-    var hidden = other
-    hidden.hidden = true
-    #expect(words.verdict([mine], among: [mine, hidden]).detail == "Back in 3h.")
+    // The headline names the account by its title alone, even beside
+    // another in use: it's about the first row under it.
+    other.inUse = true
+    #expect(words.verdict([mine, other])
+        == ("Claude Max runs out in\u{00A0}2h", "Back in 3h.", .runningOut))
+    // A notification adds the label only beside another in use, and never
+    // beside a hidden one.
+    #expect(words.called(mine, among: [mine, other]) == "Claude Max (me@example.com)")
+    other.inUse = false
+    #expect(words.called(mine, among: [mine, other]) == "Claude Max")
+    other.inUse = true
+    other.hidden = true
+    #expect(words.called(mine, among: [mine, other]) == "Claude Max")
+    // Rows show the label next to any shown account of the same title.
+    other.hidden = false
+    other.inUse = false
+    #expect(mine.twinned(among: [mine, other]))
 }
 
 @Test func theMenuBarSaysWhatIsLeftOrHowLongOrWhenItIsBack() {
@@ -219,7 +233,7 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
 }
 
 @Test func aNoteSaysWhichAccountThenWhatHappenedThenWhatItMeans() {
-    let accounts = [account([limit(runsOut)], label: "joey@example.com"),
+    var accounts = [account([limit(runsOut)], label: "joey@example.com"),
                     account([], id: "anthropic:b", label: "work@example.com", inUse: false)]
     let alert = { (kind: AlertKind) in
         Alert(id: 1, kind: kind, account: "anthropic:a", accountTitle: "Claude Max (joey@example.com)",
@@ -227,7 +241,8 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
               resets: moment("2026-09-30T15:00:00Z", .soon), runsOut: moment("2026-09-30T14:00:00Z", .soon))
     }
     let out = words.note(alert(.runningOut), accounts: accounts)
-    #expect(out == Words.Note(title: "Claude Max · joey", subtitle: "5 hours runs out 2 PM",
+    // Named as the status has it now, not as the alert was raised.
+    #expect(out == Words.Note(title: "Claude Max", subtitle: "5 hours runs out 2 PM",
                               body: "Back 3 PM."))
     #expect(words.note(alert(.usedUp), accounts: accounts).subtitle == "5 hours is used up")
     #expect(words.note(alert(.usedUp), accounts: accounts).body == "Back 3 PM.")
@@ -238,11 +253,10 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     // For an account not in the status, the title is the alert's name for
     // it.
     #expect(words.note(alert(.usedUp)).title == "Claude Max (joey@example.com)")
-    // If another account's label has the same part before the "@", the
-    // whole label is used.
-    let alike = [account([limit(runsOut)], label: "joey@example.com"),
-                 account([], id: "anthropic:b", label: "joey@example.net", inUse: false)]
-    #expect(words.note(alert(.usedUp), accounts: alike).title == "Claude Max · joey@example.com")
+    // Another account in use with the same title: the label says which.
+    accounts[1].inUse = true
+    #expect(words.note(alert(.usedUp), accounts: accounts).title == "Claude Max (joey@example.com)")
+    accounts[1].inUse = false
     // Back days later, as when a weekly limit runs out, given as a clock
     // time.
     var days = alert(.runningOut)
@@ -282,32 +296,40 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
                      resets: "2026-10-03T09:00:00Z", horizon: .thisWeek)
     opus.scope = "Opus"
     let scoped = account([week, opus])
-    #expect(words.verdict([scoped], among: [scoped]) == ("You can keep going",
-        "At this pace, weekly lasts until it resets. Opus weekly is used up, back Sat 9 AM.", .lasts))
+    #expect(words.verdict([scoped]) == ("You can keep going",
+        "At this pace, Claude Max's weekly lasts until it resets. Opus weekly is used up, back Sat 9 AM.", .lasts))
     // Next to a limit that can't be forecast, it says only that the
     // deciding one lasts.
     let credits = limit(.unknown(reason: .noReset), key: "credits", name: "Credits", left: 29,
                         money: Money(sizeUsd: 30, leftUsd: 8.7))
     let mixed = account([week, credits])
-    #expect(words.verdict([mixed], among: [mixed]).detail == "At this pace, weekly lasts until it resets.")
+    #expect(words.verdict([mixed]).detail == "At this pace, Claude Max's weekly lasts until it resets.")
+    // A key's own limit already says whose key it is.
+    var held = limit(lasts, key: "key-1", name: "Daily", left: 60)
+    held.heldBy = ["pi"]
+    let key = account([held, credits], id: "openrouter:api", title: "OpenRouter API key", kind: .apiKey)
+    #expect(words.verdict([key]).detail == "At this pace, Pi's key lasts until it resets.")
+    // Money with no reset says so.
+    let left = account([credits], id: "openrouter:api", title: "OpenRouter API key", kind: .apiKey)
+    #expect(words.verdict([left]).detail == "OpenRouter API key has $8.70 of $30 left; it doesn't reset.")
     // If it's as last read, it says so.
     let stale = account([week], state: .asOf(readAt: noon, why: .readFailed))
-    #expect(words.verdict([stale], among: [stale]).detail == "As last read, every limit lasts until it resets.")
+    #expect(words.verdict([stale]).detail == "As last read, no Claude Max limit runs out.")
     // A limit that can't be forecast is never said to last. What's left of
     // it is given instead.
     let reasons: [(UnknownReason, String)] = [
-        (.notEnoughData, "50% left of 5 hours; it resets in 3h."),
-        (.stale, "As last read, 50% left of 5 hours."),
-        (.rolling, "50% left of 5 hours, in a window that rolls."),
-        (.noReset, "50% left of 5 hours; it doesn't reset."),
+        (.notEnoughData, "Claude Max has 50% left of 5 hours; it resets in 3h."),
+        (.stale, "As last read, Claude Max has 50% left of 5 hours."),
+        (.rolling, "Claude Max has 50% left of 5 hours, in a window that rolls."),
+        (.noReset, "Claude Max has 50% left of 5 hours; it doesn't reset."),
     ]
     for (reason, said) in reasons {
         let unknown = account([limit(.unknown(reason: reason), left: 50)])
-        #expect(words.verdict([unknown], among: [unknown]) == ("You can keep going", said, .lasts))
+        #expect(words.verdict([unknown]) == ("You can keep going", said, .lasts))
     }
     // When it's back is worded for its horizon, as in the row.
     let spent = account([limit(.usedUp(back: moment("2026-10-03T09:00:00Z", .thisWeek)), left: 0)])
-    #expect(words.verdict([spent], among: [spent]).detail == "Back Sat 9 AM.")
+    #expect(words.verdict([spent]).detail == "Back Sat 9 AM.")
 }
 
 @Test func aLimitIsCalledWhatItsProviderCallsIt() {
