@@ -10,7 +10,7 @@ extension Words {
     /// when it's back, or what to do.
     public struct Note: Equatable, Sendable {
         public var title: String
-        /// What happened: "Weekly runs out Thu 9 AM".
+        /// What happened: "Weekly runs out Thursday 9 AM".
         public var subtitle: String
         /// When it's back, or what to do. Empty when nothing more is known.
         public var body: String
@@ -27,14 +27,14 @@ extension Words {
         let limit = account?.limits.first { $0.key == alert.limit }
         let name = limit.map(name) ?? alert.limitName ?? "A limit"
         let (runs, be) = limit.map(plural) == true ? ("run", "are") : ("runs", "is")
-        let back = alert.resets.map { "Back \(clock($0))." } ?? ""
+        let back = alert.resets.map { "Back \(clock($0, full: true))." } ?? ""
         switch alert.kind {
         case .signIn:
             let agent = account?.agents.first.map(self.agent)
             return Note(title: title, subtitle: "Sign in again",
                         body: agent.map { "Open \($0) to sign in." } ?? "")
         case .runningOut:
-            let out = alert.runsOut.map(clock) ?? "soon"
+            let out = alert.runsOut.map { clock($0, full: true) } ?? "soon"
             return Note(title: title, subtitle: "\(name) \(runs) out \(out)", body: back)
         case .usedUp:
             return Note(title: title, subtitle: "\(name) \(be) used up", body: back)

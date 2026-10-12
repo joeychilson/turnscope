@@ -121,6 +121,8 @@
 - **With no forecast yet,** the line under the panel's headline says only
   what's left, such as "Claude Max has 99% left of 5 hours". The row below
   already says when it resets.
+- **VoiceOver and notifications** spell out the day and month: "Back
+  Saturday 9 AM", "October 18". The panel and the menu bar keep them short.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
