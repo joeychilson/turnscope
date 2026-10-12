@@ -15,7 +15,8 @@ use crate::{Error, Result};
 
 /// The schema, one script per revision. A shipped script is never edited: a
 /// change is a new one.
-const REVISIONS: &[&str] = &[r#"
+const REVISIONS: &[&str] = &[
+    r#"
 CREATE TABLE file (
     id INTEGER PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
@@ -160,7 +161,30 @@ CREATE TABLE state (
     settings TEXT                  -- alerts::Settings, as JSON
 ) STRICT;
 INSERT INTO state (id) VALUES (1);
-"#];
+"#,
+    r#"
+-- Each row of `said` names its file, so a file read again from the start
+-- takes its own rows out first. A table without content can't gain a
+-- column, so it's made again, and the history read again to fill it.
+-- Dropping it leaves its `said_content` behind (SQLite 3.53, a table
+-- keeping unindexed columns but no content), which would stop it being
+-- made again.
+DROP TABLE said;
+DROP TABLE IF EXISTS said_content;
+CREATE VIRTUAL TABLE said USING fts5 (
+    session UNINDEXED, text, file UNINDEXED,
+    content = '', contentless_delete = 1, contentless_unindexed = 1,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+UPDATE state SET readers = 0;
+
+-- Why a file couldn't be read when it was last tried; NULL once it was.
+ALTER TABLE file ADD COLUMN failed TEXT;
+-- Whether its reads put rows in `said`: only such a file's are taken out
+-- when it's read again, since taking them out by file scans the table.
+ALTER TABLE file ADD COLUMN indexed INTEGER NOT NULL DEFAULT 0;
+"#,
+];
 
 /// "TRNS", in the header, so a file that isn't Turnscope's is never written.
 const APPLICATION_ID: i32 = 0x5452_4E53;

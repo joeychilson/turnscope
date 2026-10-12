@@ -735,6 +735,22 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
             _ => {}
         }
     }
+    let mut failed = db
+        .prepare("SELECT path, failed FROM file WHERE failed IS NOT NULL ORDER BY path LIMIT 10")?;
+    for row in failed.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (path, why) = row?;
+        // A reader's error often names its file already.
+        let why = if why.contains(&path) {
+            why
+        } else {
+            format!("{path}: {why}")
+        };
+        notes.push(format!(
+            "{why}. It's tried again each time history is read."
+        ));
+    }
     let mut skipped = db.prepare(
         "SELECT path, skipped FROM file WHERE skipped > 0 ORDER BY skipped DESC LIMIT 10",
     )?;
@@ -742,8 +758,9 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })? {
         let (path, skipped) = row?;
+        let lines = if skipped == 1 { "line" } else { "lines" };
         notes.push(format!(
-            "{path}: {skipped} lines couldn't be read; their agent may write a newer format."
+            "{path}: {skipped} {lines} couldn't be read; their agent may write a newer format."
         ));
     }
     let unpriced: Vec<(String, i64)> = db

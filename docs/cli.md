@@ -407,9 +407,9 @@ turnscope doctor
 ```
 
 Lists what can't be read and how to fix it: logins that can't be read or
-were refused, providers that haven't answered, history lines that couldn't
-be read, models with no known price, prices not read yet, and `serve` not
-running. When all is well it prints `Nothing to fix.`
+were refused, providers that haven't answered, history files and lines
+that couldn't be read, models with no known price, prices not read yet,
+and `serve` not running. When all is well it prints `Nothing to fix.`
 
 ## Serve and MCP
 

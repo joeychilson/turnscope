@@ -5,7 +5,7 @@
 //! several files is one row, its reports merged by `Response::merge`, priced,
 //! and given the account its folder was signed into when it was made.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
@@ -47,6 +47,9 @@ struct Due {
     path: PathBuf,
     cursor: String,
     stat: Stat,
+    /// Read before, and now replaced or cut short, so read again from the
+    /// start: what its last read said is taken out first.
+    again: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -78,6 +81,13 @@ impl Stat {
     }
 }
 
+/// A file as its last read left it.
+struct Known {
+    agent: String,
+    stat: Stat,
+    cursor: String,
+}
+
 /// Hold `ingest.lock` beside the database: one process writes history, or
 /// works out costs and accounts, at a time, so a first run isn't read twice
 /// at once and no response is written with prices or sign-ins gone stale.
@@ -106,42 +116,80 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<()> {
         read_again(db)?;
     }
 
-    let mut known: HashMap<PathBuf, (Stat, String)> = db
-        .prepare("SELECT path, size, modified, inode, cursor FROM file")?
+    let mut known: HashMap<PathBuf, Known> = db
+        .prepare("SELECT path, agent, size, modified, inode, cursor FROM file")?
         .query_map([], |row| {
-            let stat = Stat {
-                size: row.get(1)?,
-                modified: row.get(2)?,
-                inode: row.get(3)?,
+            let known = Known {
+                agent: row.get(1)?,
+                stat: Stat {
+                    size: row.get(2)?,
+                    modified: row.get(3)?,
+                    inode: row.get(4)?,
+                },
+                cursor: row.get(5)?,
             };
-            Ok((PathBuf::from(row.get::<_, String>(0)?), (stat, row.get(4)?)))
+            Ok((PathBuf::from(row.get::<_, String>(0)?), known))
         })?
         .collect::<rusqlite::Result<_>>()?;
 
-    let mut due = Vec::new();
+    let mut found = Vec::new();
     for &agent in agents::ALL {
         for folder in agent.folders(home) {
             for path in agent.files(&folder) {
-                let Some(stat) = Stat::of(&path) else {
-                    continue;
-                };
-                let cursor = match known.remove(&path) {
-                    Some((was, _)) if was == stat => continue,
-                    // A file replaced or cut short is read from the start.
-                    Some((was, cursor)) if was.inode == stat.inode && stat.size >= was.size => {
-                        cursor
-                    }
-                    _ => String::new(),
-                };
-                due.push(Due {
-                    agent,
-                    folder: folder.clone(),
-                    path,
-                    cursor,
-                    stat,
-                });
+                if let Some(stat) = Stat::of(&path) {
+                    found.push((agent, folder.clone(), path, stat));
+                }
             }
         }
+    }
+    // A file read before at a path that's gone, by its inode: an agent that
+    // moves a file, as one it archives, moves it on the same disk, where it
+    // keeps its inode, and on one volume APFS numbers new files in order
+    // rather than reusing a number. Read on from where it was, it's not read
+    // twice.
+    let listed: HashSet<&PathBuf> = found.iter().map(|(.., path, _)| path).collect();
+    let gone: Vec<PathBuf> = known
+        .keys()
+        .filter(|path| !listed.contains(path))
+        .cloned()
+        .collect();
+    let mut moved: HashMap<i64, (PathBuf, Known)> = gone
+        .into_iter()
+        .filter_map(|path| known.remove(&path).map(|was| (was.stat.inode, (path, was))))
+        .collect();
+
+    let mut due = Vec::new();
+    for (agent, folder, path, stat) in found {
+        let was = match known.remove(&path) {
+            Some(was) => Some(was),
+            None => match moved.remove(&stat.inode) {
+                Some((from, was)) if was.agent == agent.info().id => {
+                    db.execute(
+                        "UPDATE file SET path = ?1 WHERE path = ?2",
+                        params![path.to_string_lossy(), from.to_string_lossy()],
+                    )?;
+                    Some(was)
+                }
+                _ => None,
+            },
+        };
+        let (cursor, again) = match was {
+            Some(was) if was.stat == stat => continue,
+            Some(was) if was.stat.inode == stat.inode && stat.size >= was.stat.size => {
+                (was.cursor, false)
+            }
+            // A file replaced or cut short is read from the start.
+            Some(_) => (String::new(), true),
+            None => (String::new(), false),
+        };
+        due.push(Due {
+            agent,
+            folder,
+            path,
+            cursor,
+            stat,
+            again,
+        });
     }
     db.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
     if due.is_empty() {
@@ -169,9 +217,25 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<()> {
         for (share, read) in reads {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             for (due, read) in share.iter().zip(read) {
-                // A file that can't be read now is tried again next time.
-                if let Ok(read) = read {
-                    write(&tx, due, read, home, &derived)?;
+                match read {
+                    Ok(read) => write(&tx, due, read, home, &derived)?,
+                    // A file that can't be read now is tried again next
+                    // time, from where it was: its row keeps its cursor and
+                    // what it was, and says why for doctor.
+                    Err(error) => {
+                        tx.execute(
+                            "INSERT INTO file (path, agent, folder, size, modified, inode, cursor, failed)
+                             VALUES (?1, ?2, ?3, -1, 0, ?4, '', ?5)
+                             ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
+                            params![
+                                due.path.to_string_lossy(),
+                                due.agent.info().id,
+                                due.folder.to_string_lossy(),
+                                due.stat.inode,
+                                error.to_string(),
+                            ],
+                        )?;
+                    }
                 }
             }
             tx.commit()?;
@@ -186,12 +250,13 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<()> {
 fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived) -> Result<()> {
     let agent = due.agent.info().id;
     let folder = due.folder.to_string_lossy();
-    let file: i64 = tx.query_row(
+    let (file, indexed): (i64, bool) = tx.query_row(
         "INSERT INTO file (path, agent, folder, size, modified, inode, cursor, skipped)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT (path) DO UPDATE SET size = excluded.size, modified = excluded.modified,
-             inode = excluded.inode, cursor = excluded.cursor, skipped = skipped + excluded.skipped
-         RETURNING id",
+             inode = excluded.inode, cursor = excluded.cursor, failed = NULL,
+             skipped = iif(?9, excluded.skipped, skipped + excluded.skipped)
+         RETURNING id, indexed",
         params![
             due.path.to_string_lossy(),
             agent,
@@ -201,9 +266,15 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
             due.stat.inode,
             read.cursor,
             read.skipped as i64,
+            due.cursor.is_empty(),
         ],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    // Only for such a file, and only one whose reads were indexed, since
+    // taking rows out by file scans the table.
+    if due.again && indexed {
+        tx.execute("DELETE FROM said WHERE file = ?1", [file])?;
+    }
 
     let mut session = tx.prepare_cached(SESSION)?;
     let mut holds =
@@ -273,9 +344,17 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
         ])?;
     }
 
-    let mut said = tx.prepare_cached("INSERT INTO said (session, text) VALUES (?1, ?2)")?;
+    let mut said =
+        tx.prepare_cached("INSERT INTO said (session, text, file) VALUES (?1, ?2, ?3)")?;
     for (session, text) in &read.said {
-        said.execute(params![session, text])?;
+        said.execute(params![session, text, file])?;
+    }
+    let now = !read.said.is_empty() || (indexed && !due.again);
+    if now != indexed {
+        tx.execute(
+            "UPDATE file SET indexed = ?2 WHERE id = ?1",
+            params![file, now],
+        )?;
     }
     Ok(())
 }
@@ -438,6 +517,7 @@ fn read_again(db: &mut Connection) -> Result<()> {
     )?;
     tx.execute("DROP TABLE again", [])?;
     tx.execute("DELETE FROM said", [])?;
+    tx.execute("UPDATE file SET indexed = 0", [])?;
     tx.execute("UPDATE state SET readers = ?1", [READERS])?;
     tx.commit()?;
     Ok(())
@@ -504,6 +584,141 @@ mod tests {
             .query_row("SELECT readers FROM state", [], |row| row.get(0))
             .unwrap();
         assert_eq!(readers, READERS + 1);
+    }
+
+    /// A temp data folder and home, with Claude Code's projects in the home,
+    /// and a user line of `text` as a log line.
+    fn store() -> (tempfile::TempDir, tempfile::TempDir, Connection, PathBuf) {
+        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = crate::db::open(dir.path()).unwrap();
+        let projects = home.path().join(".claude/projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        (dir, home, db, projects)
+    }
+
+    fn line(text: &str) -> String {
+        let line = serde_json::json!({"type": "user", "sessionId": "s1",
+            "timestamp": "2026-09-30T09:00:00Z", "message": {"role": "user", "content": text}});
+        format!("{line}\n")
+    }
+
+    fn count(db: &Connection, sql: &str) -> i64 {
+        db.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_moved_or_replaced_file_is_counted_once() {
+        let (_dir, home, mut db, projects) = store();
+        let (first, second) = (projects.join("-work-a"), projects.join("-work-b"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let file = first.join("s1.jsonl");
+        std::fs::write(&file, line("Fix the parser.") + "not a line\n").unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM said"), 1);
+
+        // Moved, as an agent moves a file it archives: read on from where it
+        // was, not again.
+        let moved = second.join("s1.jsonl");
+        std::fs::rename(&file, &moved).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM said"), 1);
+        assert_eq!(count(&db, "SELECT count(*) FROM file"), 1);
+
+        // Replaced: read from the start, what it said and couldn't read
+        // counted once.
+        let new = second.join("s1.new");
+        std::fs::write(
+            &new,
+            line("Fix the parser.") + "not a line\n" + &line("And the tests."),
+        )
+        .unwrap();
+        std::fs::rename(&new, &moved).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM said"), 2);
+        assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
+        assert_eq!(count(&db, "SELECT indexed FROM file"), 1);
+    }
+
+    #[test]
+    fn a_file_that_said_nothing_isnt_marked_as_in_search() {
+        let (_dir, home, mut db, projects) = store();
+        let folder = projects.join("-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
+        let quiet = folder.join("s2.jsonl");
+        std::fs::write(&quiet, "not a line\n").unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        let indexed = |db: &Connection, name: &str| {
+            count(
+                db,
+                &format!("SELECT indexed FROM file WHERE path LIKE '%{name}'"),
+            )
+        };
+        assert_eq!((indexed(&db, "s1.jsonl"), indexed(&db, "s2.jsonl")), (1, 0));
+        // Replaced, it's read again, with no scan of search for rows it
+        // never had.
+        let new = folder.join("s2.new");
+        std::fs::write(&new, "not a line\nnor this\n").unwrap();
+        std::fs::rename(&new, &quiet).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(indexed(&db, "s2.jsonl"), 0);
+        assert_eq!(count(&db, "SELECT count(*) FROM said"), 1);
+    }
+
+    #[test]
+    fn a_gone_files_inode_under_another_agent_isnt_taken_as_moved() {
+        let (_dir, home, mut db, projects) = store();
+        let folder = projects.join("-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("s1.jsonl");
+        std::fs::write(&file, line("Fix the parser.")).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        // The same inode, now listed by Codex: not Claude Code's file moved.
+        let sessions = home.path().join(".codex/sessions/2026/09/30");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let other = sessions.join("rollout-2026-09-30T09-00-00-a.jsonl");
+        std::fs::rename(&file, &other).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM file WHERE path LIKE '%s1.jsonl'"),
+            1
+        );
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM file WHERE agent = 'codex'"),
+            1
+        );
+    }
+
+    #[test]
+    fn a_file_that_cant_be_read_says_why_until_it_can() {
+        let (_dir, home, mut db, projects) = store();
+        let folder = projects.join("-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
+        // A subagent's log whose description isn't written yet waits.
+        let subagents = folder.join("s1/subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::write(subagents.join("agent-x.jsonl"), line("Look.")).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        let why: String = db
+            .query_row(
+                "SELECT failed FROM file WHERE path LIKE '%agent-x.jsonl'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(why.contains("waits for its description"), "{why}");
+        std::fs::write(
+            subagents.join("agent-x.meta.json"),
+            r#"{"description": "Look"}"#,
+        )
+        .unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM file WHERE failed IS NOT NULL"),
+            0
+        );
     }
 
     #[test]
