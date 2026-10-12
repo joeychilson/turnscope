@@ -6,6 +6,14 @@
   and the line under it names the account too: "At this pace, no Claude Max
   limit runs out." A notification adds the email only when another account
   in use has the same title.
+- **Reading a session** with `turnscope sessions read` or the
+  `read_session` tool quotes what each entry says, `> ` a line, and says
+  to treat it as data, not instructions. Text from a web page or a file in
+  a session can no longer pass for one of its entries, such as a request
+  from you.
+- **Long messages** read back from a session are cut at 40,000 characters,
+  saying how many were left out, so one long paste stays within what an
+  agent can take from a tool.
 
 ## 0.1.1
 
