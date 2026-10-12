@@ -184,6 +184,19 @@ ALTER TABLE file ADD COLUMN failed TEXT;
 -- when it's read again, since taking them out by file scans the table.
 ALTER TABLE file ADD COLUMN indexed INTEGER NOT NULL DEFAULT 0;
 "#,
+    r#"
+-- Each row of `said` keeps its line's ordinal, where the agent numbers a
+-- session's lines, so a session rewound to an earlier point takes what was
+-- said after it out. Made again as before, and the history read again.
+DROP TABLE said;
+DROP TABLE IF EXISTS said_content;
+CREATE VIRTUAL TABLE said USING fts5 (
+    session UNINDEXED, text, file UNINDEXED, ordinal UNINDEXED,
+    content = '', contentless_delete = 1, contentless_unindexed = 1,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+UPDATE state SET readers = 0;
+"#,
 ];
 
 /// "TRNS", in the header, so a file that isn't Turnscope's is never written.

@@ -194,7 +194,11 @@ Rules:
   model replied, not what the agent adds itself. `without_tags(text, tags)`
   takes the agent's blocks out of a message sent as the user's, and
   `inner(text, tag)` gives what one tag holds. A command of the agent's
-  own, such as `/clear`, asks for no work, so it's no title.
+  own, such as `/clear`, asks for no work, so it's no title. If the agent
+  numbers a session's lines and can rewind a session to an earlier line,
+  pass each line's number to `read.say_at`, push the session and the number
+  a rewind goes on from to `read.rewound`, and list a rewind's file after
+  the files it rewinds.
 - **Growing files.** Reading a file in two parts, the second from the
   cursor the first returned, gives what reading it whole does, and says
   nothing twice.

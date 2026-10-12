@@ -623,7 +623,8 @@ mod tests {
             later.said,
             [(
                 "opencode:s1".to_owned(),
-                "Checked the email field too.".to_owned()
+                "Checked the email field too.".to_owned(),
+                None
             )]
         );
         assert!(OpenCode.read(&file, &later.cursor).unwrap().said.is_empty());

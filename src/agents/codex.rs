@@ -51,9 +51,10 @@
 //! `history_base`: an earlier rollout, kept below `end_ordinal_exclusive`
 //! (`thread-store/src/local/revert_thread.rs`). The new rollout's ordinals
 //! go on from there (`rollout_lineage.rs`), so a rollout is read below the
-//! least that any later one keeps. Search still finds the words of turns
-//! rewound past: they were indexed as the earlier rollout was read. A name
-//! starts with the time its rollout was made, so names sort oldest first.
+//! least that any later one keeps, and reading a rewind takes the thread's
+//! words from its `end_ordinal_exclusive` on out of search. A name starts
+//! with the time its rollout was made, so names sort oldest first, and
+//! rollouts are listed in that order.
 //!
 //! **Forks.** A fork of a paginated thread points at its parent's history
 //! with `history_base` and copies none of it. Its own history starts at
@@ -363,9 +364,12 @@ impl Agent for Codex {
                 }
             }
         }
-        let mut files = vec![folder.join("session_index.jsonl")];
+        let mut files = Vec::new();
         rollouts(&folder.join("sessions"), &mut files);
         rollouts(&folder.join("archived_sessions"), &mut files);
+        // Oldest first, so a rewind is read after what it goes on from.
+        files.sort_by(|one, other| one.file_name().cmp(&other.file_name()));
+        files.insert(0, folder.join("session_index.jsonl"));
         files
     }
 
@@ -552,14 +556,16 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
             Some("user") => {
                 for text in texts(payload.content) {
                     let text = typed(&text);
-                    read.say(&thread, &text);
+                    read.say_at(&thread, &text, line.ordinal);
                     if !cursor.titled && !text.is_empty() {
                         read.session(&thread).title(Title::Prompt, &text);
                         cursor.titled = true;
                     }
                 }
             }
-            Some("assistant") => read.say(&thread, &texts(payload.content).join("\n")),
+            Some("assistant") => {
+                read.say_at(&thread, &texts(payload.content).join("\n"), line.ordinal)
+            }
             _ => {}
         },
         _ => {}
@@ -641,11 +647,16 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
         session.title(Title::Task, nickname);
     }
     // A rollout that goes on from the thread's own history, as a rewind's
-    // does, doesn't hold its first request. A fork's own history starts
-    // after its parent's.
-    cursor.titled = parsed::<Base>(meta.history_base).is_some_and(|base| {
-        base.end_ordinal_exclusive > meta.forked_from_ordinal_exclusive.unwrap_or(0)
-    });
+    // does, doesn't hold its first request, and takes what was said past
+    // where it goes on from out of search. A fork's own history starts after
+    // its parent's.
+    let rewound = parsed::<Base>(meta.history_base)
+        .map(|base| base.end_ordinal_exclusive)
+        .filter(|end| *end > meta.forked_from_ordinal_exclusive.unwrap_or(0));
+    if let Some(end) = rewound {
+        read.rewound.push((thread.clone(), end));
+    }
+    cursor.titled = rewound.is_some();
     cursor.thread = Some(thread);
 }
 
@@ -1181,7 +1192,11 @@ mod tests {
         assert!(copy.said.is_empty());
         assert_eq!(
             own.said,
-            [("codex:t2".to_owned(), "Try it on staging.".to_owned())]
+            [(
+                "codex:t2".to_owned(),
+                "Try it on staging.".to_owned(),
+                Some(10)
+            )]
         );
         let fork = &own.sessions["codex:t2"];
         assert_eq!(fork.title.as_ref().unwrap().1, "Try it on staging.");
@@ -1237,7 +1252,11 @@ mod tests {
         assert_eq!(counted, [(500, "gpt-5.5")]);
         assert_eq!(
             read.said,
-            [("codex:t2".to_owned(), "Check the indexes.".to_owned())]
+            [(
+                "codex:t2".to_owned(),
+                "Check the indexes.".to_owned(),
+                Some(6)
+            )]
         );
         assert_eq!(
             read.sessions["codex:t2"].title.as_ref().unwrap().1,
@@ -1340,9 +1359,75 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_of_a_paginated_thread_is_titled_by_its_own_request_and_a_rewind_by_none() {
+    fn a_rewind_takes_what_it_went_back_past_out_of_search() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join(".codex");
+        let first = rollout(
+            &folder,
+            "2026-09-30T09-00-00-t1",
+            &[
+                line(
+                    0,
+                    "session_meta",
+                    json!({"id": "t1", "history_mode": "paginated"}),
+                ),
+                line(1, "response_item", message("user", "Add a retry.")),
+                line(2, "response_item", message("assistant", "Added one.")),
+                line(
+                    3,
+                    "response_item",
+                    message("user", "Make it five attempts."),
+                ),
+                line(4, "response_item", message("assistant", "Five now.")),
+            ],
+        );
+        // After reading what's new, how many messages hold each word.
+        let found = |db: &mut rusqlite::Connection| -> Vec<i64> {
+            crate::ingest::ingest(db, home.path()).unwrap();
+            ["added", "five", "logs"]
+                .iter()
+                .map(|word| {
+                    db.query_row(
+                        "SELECT count(*) FROM said WHERE said MATCH ?1",
+                        [word],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
+                })
+                .collect()
+        };
+        let data = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(data.path()).unwrap();
+        assert_eq!(found(&mut db), [1, 2, 0]);
+        // Rewound to before "Make it five attempts."
+        rollout(
+            &folder,
+            "2026-09-30T09-05-00-t1_r2",
+            &[
+                line(
+                    3,
+                    "session_meta",
+                    json!({"id": "t1", "history_mode": "paginated",
+                        "history_base": {"thread_id": "t1", "end_ordinal_exclusive": 3, "end_byte_offset": 0}}),
+                ),
+                line(4, "response_item", message("user", "Log each retry.")),
+                line(5, "response_item", message("assistant", "Each logs.")),
+            ],
+        );
+        assert_eq!(found(&mut db), [1, 0, 1]);
+        // Archived, the first rollout is found after the rewind, and still
+        // read before it.
+        let archived = folder.join("archived_sessions");
+        std::fs::create_dir_all(&archived).unwrap();
+        std::fs::rename(&first, archived.join(first.file_name().unwrap())).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        assert_eq!(found(&mut crate::db::open(data.path()).unwrap()), [1, 0, 1]);
+    }
+
+    #[test]
+    fn a_paginated_fork_is_titled_by_its_own_request_and_only_a_rewind_takes_back() {
         let dir = tempfile::tempdir().unwrap();
-        let title = |name: &str, meta: Value| {
+        let read = |name: &str, meta: Value| {
             let file = rollout(
                 dir.path(),
                 name,
@@ -1352,29 +1437,34 @@ mod tests {
                 ],
             );
             let read = Codex.read(&file, "").unwrap();
-            read.sessions
+            let title = read
+                .sessions
                 .into_values()
                 .find_map(|session| session.title)
-                .map(|(_, title)| title)
+                .map(|(_, title)| title);
+            (title, read.rewound)
         };
         let base = |rollout: &str| json!({"thread_id": rollout, "end_ordinal_exclusive": 5, "end_byte_offset": 0});
         assert_eq!(
-            title(
+            read(
                 "t1_r2",
                 json!({"id": "t1", "history_mode": "paginated", "history_base": base("t1")})
             ),
-            None
+            (None, vec![("codex:t1".to_owned(), 5)])
         );
         let fork = |rollout: &str, forked_at: i64| {
             json!({"id": "t2", "forked_from_id": "t1", "forked_from_ordinal_exclusive": forked_at,
                 "history_mode": "paginated", "history_base": base(rollout)})
         };
         assert_eq!(
-            title("t2", fork("t1", 5)).as_deref(),
-            Some("Try it on staging.")
+            read("t2", fork("t1", 5)),
+            (Some("Try it on staging.".to_owned()), vec![])
         );
         // A rewind of the fork that keeps some of its own history.
-        assert_eq!(title("t2_r2", fork("t2", 3)), None);
+        assert_eq!(
+            read("t2_r2", fork("t2", 3)),
+            (None, vec![("codex:t2".to_owned(), 5)])
+        );
     }
 
     #[test]
