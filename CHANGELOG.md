@@ -35,6 +35,15 @@
 - **`doctor`** lists history files that can't be read and why, and counts
   the lines it couldn't read once, not again each time a file is read from
   the start.
+- **Handoff:** the session's title, its tasks and what each tool call was
+  for are in double quotes, as the rest of what the session said is
+  quoted, with a quote inside escaped as `\"`. A task a model wrote can no
+  longer read as Turnscope's own words. A session of one entry says
+  "1 entry", not "1 entries".
+- **Session titles** are in quotes wherever a line shows one: `turnscope
+  sessions show` and `explain_usage` by session quote them now, as the
+  list of sessions does. A session with no title shows as (untitled),
+  without quotes.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

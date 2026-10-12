@@ -647,7 +647,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
                 (Some(name), By::Session) => format!(
                     "`{}` {}{}",
                     row.key,
-                    sessions::short(name, 80),
+                    sessions::title(Some(name.as_str())),
                     if Some(row.key.as_str()) == yours {
                         " (yours)"
                     } else {

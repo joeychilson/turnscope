@@ -251,7 +251,7 @@ resumes it:
 
 ```console
 $ turnscope sessions show 0f6e3f6a
-claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60  Fix the CSV parser so quoted commas work. Don't change the public API.
+claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60  "Fix the CSV parser so quoted commas work. Don't change the public API."
   active 1d 2h ago · 3 responses · $0.03
   folder: /work/app
   project: /work/app

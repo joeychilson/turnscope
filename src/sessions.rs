@@ -798,10 +798,27 @@ pub fn short(text: &str, most: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
-/// A session's title as a list or heading gives it, cut to about 80
-/// characters.
-fn title(title: Option<&str>) -> String {
-    title.map_or("(untitled)".to_owned(), |title| short(title, 80))
+/// Session text within a line, such as a title, a task or what a tool call
+/// was for: on one line, cut to `most` characters, in double quotes as JSON
+/// writes a string. A handoff's header says quoted text is the session's
+/// own, so it can't read as Turnscope's words.
+///
+/// Each is marked where it stands, not left to the header: by a task or a
+/// tool call, the reader is far past it. Double quotes rather than
+/// backticks, since Turnscope's own commands are in backticks, as
+/// `git diff` is. JSON's escapes, `\"` and `\\`, keep a quote inside from
+/// ending it early and leaving words outside. A name Turnscope gives on its
+/// own, such as a file in a handoff's file list, a folder or a tool, stays
+/// in backticks as code: it's for using, not for reading as words. The
+/// quotes cost two characters a line.
+fn in_quotes(text: &str, most: usize) -> String {
+    serde_json::Value::String(short(text, most)).to_string()
+}
+
+/// A session's title as a list or heading gives it, in quotes and cut to
+/// about 80 characters.
+pub fn title(title: Option<&str>) -> String {
+    title.map_or("(untitled)".to_owned(), |title| in_quotes(title, 80))
 }
 
 /// How long each part of an entry may run before it's cut.
@@ -940,7 +957,7 @@ pub fn page_text(id: &str, entries: &[Entry], reading: &Reading, cite: Cite, now
     if let Some(next) = next {
         out += &match cite {
             Cite::Command => format!("\nMore from entry {next}: add `--from {next}`."),
-            Cite::Tool => format!("\nMore from entry {next}: call again with \"from\": {next}."),
+            Cite::Tool => format!("\nMore from entry {next}: call again with `\"from\": {next}`."),
         };
     }
     out.trim_end().to_owned()
@@ -951,9 +968,10 @@ fn clock_now(now: i64) -> String {
     time::local(now).strftime("%a %b %-d %H:%M").to_string()
 }
 
-/// `count` of `word`, as said: "1 request", "2 requests".
-fn plural(count: usize, word: &str) -> String {
-    format!("{count} {word}{}", if count == 1 { "" } else { "s" })
+/// `number` with its thousands marked, then `one` or `many` as it calls
+/// for: "1 entry", "1,204 entries".
+fn plural(number: u64, one: &str, many: &str) -> String {
+    format!("{} {}", count(number), if number == 1 { one } else { many })
 }
 
 /// An entry's kind, as it's written.
@@ -987,7 +1005,6 @@ fn activity(session: &Summary, now: i64) -> String {
     }
 }
 
-/// A page of sessions as text.
 /// `page` as text; the session `yours`, the caller's own, is marked.
 pub fn text(page: &Page, cite: Cite, yours: Option<&str>, now: i64) -> String {
     if page.sessions.is_empty() {
@@ -1035,7 +1052,7 @@ fn line(session: &Summary, yours: Option<&str>, now: i64) -> String {
     };
     let subagents = match session.subagents {
         0 => String::new(),
-        count => format!(" · {}", plural(count as usize, "subagent")),
+        count => format!(" · {}", plural(count, "subagent", "subagents")),
     };
     let mine = match Some(session.id.as_str()) == yours {
         true => " · yours",
@@ -1043,26 +1060,18 @@ fn line(session: &Summary, yours: Option<&str>, now: i64) -> String {
     };
     let mentions = match session.mentions {
         None | Some(0) => String::new(),
-        Some(1) => " · all the words in 1 message".to_owned(),
-        Some(many) => format!(" · all the words in {} messages", count(many)),
+        Some(many) => format!(
+            " · all the words in {}",
+            plural(many, "message", "messages")
+        ),
     };
     format!(
-        "\n- `{}` \"{}\"{place} · {} · {} · {}{subagents}{mentions}{mine}",
+        "\n- `{}` {}{place} · {} · {} · {}{subagents}{mentions}{mine}",
         session.id,
         title(session.title.as_deref()),
         activity(session, now),
-        plural_count(session.responses, "response"),
+        plural(session.responses, "response", "responses"),
         crate::usage::cost(session.cost_usd, session.unpriced)
-    )
-}
-
-/// `count` of `word` with its thousands marked: "1 response", "1,204
-/// responses".
-fn plural_count(number: u64, word: &str) -> String {
-    format!(
-        "{} {word}{}",
-        count(number),
-        if number == 1 { "" } else { "s" }
     )
 }
 
@@ -1073,7 +1082,7 @@ pub fn detail_text(detail: &Detail, now: i64) -> String {
         session.id,
         title(session.title.as_deref()),
         activity(session, now),
-        plural_count(session.responses, "response"),
+        plural(session.responses, "response", "responses"),
         crate::usage::cost(session.cost_usd, session.unpriced)
     );
     for (label, value) in [
