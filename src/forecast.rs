@@ -55,7 +55,6 @@ pub struct Window {
 }
 
 /// Where a window is headed from `at` at a steady pace.
-#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Projection {
     pub at: i64,
     /// Percent used at `at`.
@@ -161,7 +160,7 @@ pub fn runs_out(
 pub const SLOT: i64 = 5 * MINUTE;
 
 /// A limit's reading, as the pace of work is measured from it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy)]
 pub struct Reading {
     pub at: i64,
     /// Percent used.

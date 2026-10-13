@@ -79,20 +79,16 @@ impl Stat {
     /// when its write-ahead log changed is when it did; the log's size isn't
     /// counted, as a checkpoint shrinks it.
     fn of(path: &Path) -> Option<Stat> {
+        let modified = |meta: &std::fs::Metadata| meta.mtime() * 1_000_000_000 + meta.mtime_nsec();
         let meta = std::fs::metadata(path).ok()?;
-        let mut stat = Stat {
-            size: meta.size() as i64,
-            modified: meta.mtime() * 1_000_000_000 + meta.mtime_nsec(),
-            inode: meta.ino() as i64,
-        };
         let mut wal = path.as_os_str().to_owned();
         wal.push("-wal");
-        if let Ok(wal) = std::fs::metadata(wal) {
-            stat.modified = stat
-                .modified
-                .max(wal.mtime() * 1_000_000_000 + wal.mtime_nsec());
-        }
-        Some(stat)
+        let wal = std::fs::metadata(wal).map_or(i64::MIN, |wal| modified(&wal));
+        Some(Stat {
+            size: meta.size() as i64,
+            modified: modified(&meta).max(wal),
+            inode: meta.ino() as i64,
+        })
     }
 }
 
@@ -108,11 +104,9 @@ struct Known {
 /// at once and no response is written with prices or sign-ins gone stale.
 fn lock(db: &Connection) -> Result<std::fs::File> {
     let path = Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock");
-    let locked = std::fs::File::create(&path).and_then(|lock| {
-        lock.lock()?;
-        Ok(lock)
-    });
-    locked.map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
+    std::fs::File::create(&path)
+        .and_then(|lock| lock.lock().map(|()| lock))
+        .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
 }
 
 /// Read what's new in every agent's history under `home`; whether any file
@@ -164,14 +158,9 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     // rather than reusing a number. Read on from where it was, it's not read
     // twice.
     let listed: HashSet<&PathBuf> = found.iter().map(|(.., path, _)| path).collect();
-    let gone: Vec<PathBuf> = known
-        .keys()
-        .filter(|path| !listed.contains(path))
-        .cloned()
-        .collect();
-    let mut moved: HashMap<i64, (PathBuf, Known)> = gone
-        .into_iter()
-        .filter_map(|path| known.remove(&path).map(|was| (was.stat.inode, (path, was))))
+    let mut moved: HashMap<i64, (PathBuf, Known)> = known
+        .extract_if(|path, _| !listed.contains(path))
+        .map(|(path, was)| (was.stat.inode, (path, was)))
         .collect();
 
     let mut due = Vec::new();
@@ -218,8 +207,10 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     // while the share before is written.
     std::thread::scope(|scope| -> Result<()> {
         let (send, reads) = std::sync::mpsc::sync_channel(1);
-        scope.spawn(|| {
-            for share in due.chunks(256) {
+        let shares = due.chunks(256);
+        // Moved in, so the channel closes when reading ends.
+        scope.spawn(move || {
+            for share in shares {
                 let read: Vec<Result<Read>> = share
                     .par_iter()
                     .map(|due| due.agent.read(&due.path, &due.cursor))
@@ -228,8 +219,6 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
                     return;
                 }
             }
-            // Moved in, so the channel closes when reading ends.
-            drop(send);
         });
         for (share, read) in reads {
             let mut files = share.iter().zip(read).peekable();
@@ -554,24 +543,14 @@ fn read_again(db: &mut Connection) -> Result<()> {
     }
     // In one statement each: `response.file` has no index, so a statement a
     // file would scan the table once for each.
-    tx.execute(
-        "DELETE FROM response WHERE file IN (SELECT file FROM again)",
-        [],
+    tx.execute_batch(
+        "DELETE FROM response WHERE file IN (SELECT file FROM again);
+         UPDATE file SET cursor = '', size = -1, skipped = 0 WHERE id IN (SELECT file FROM again);
+         DELETE FROM session WHERE NOT EXISTS (SELECT 1 FROM session_file held
+             WHERE held.session = session.id AND held.file NOT IN (SELECT file FROM again));
+         DELETE FROM session_file WHERE file IN (SELECT file FROM again);
+         DROP TABLE again;",
     )?;
-    tx.execute(
-        "UPDATE file SET cursor = '', size = -1, skipped = 0 WHERE id IN (SELECT file FROM again)",
-        [],
-    )?;
-    tx.execute(
-        "DELETE FROM session WHERE NOT EXISTS (SELECT 1 FROM session_file held
-             WHERE held.session = session.id AND held.file NOT IN (SELECT file FROM again))",
-        [],
-    )?;
-    tx.execute(
-        "DELETE FROM session_file WHERE file IN (SELECT file FROM again)",
-        [],
-    )?;
-    tx.execute("DROP TABLE again", [])?;
     // `delete-all` empties the index at once, where `DELETE` deletes each
     // of that history's 246,280 rows: 37 to 48 ms against 0.82 to 1.7 s.
     // With `DELETE`, the lock was held 1.9 to 4.3 s.
@@ -632,26 +611,14 @@ pub fn project(cwd: &str, home: &Path) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn history_read_by_a_newer_turnscope_is_left_alone() {
-        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut db = crate::db::open(dir.path()).unwrap();
-        db.execute("UPDATE state SET readers = ?1", [READERS + 1])
-            .unwrap();
-        assert!(ingest(&mut db, home.path()).is_err());
-        let readers: i64 = db
-            .query_row("SELECT readers FROM state", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(readers, READERS + 1);
-    }
-
-    /// A temp data folder and home, with Claude Code's projects in the home.
+    /// A temp data folder and home, with a folder of Claude Code's projects
+    /// in the home.
     fn store() -> (tempfile::TempDir, tempfile::TempDir, Connection, PathBuf) {
         let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let db = crate::db::open(dir.path()).unwrap();
-        let projects = home.path().join(".claude/projects");
-        std::fs::create_dir_all(&projects).unwrap();
-        (dir, home, db, projects)
+        let folder = home.path().join(".claude/projects/-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        (dir, home, db, folder)
     }
 
     /// A user line of `text`, as Claude Code logs it.
@@ -666,10 +633,18 @@ mod tests {
     }
 
     #[test]
+    fn history_read_by_a_newer_turnscope_is_left_alone() {
+        let (_dir, home, mut db, _) = store();
+        db.execute("UPDATE state SET readers = ?1", [READERS + 1])
+            .unwrap();
+        assert!(ingest(&mut db, home.path()).is_err());
+        assert_eq!(count(&db, "SELECT readers FROM state"), READERS + 1);
+    }
+
+    #[test]
     fn a_moved_or_replaced_file_is_counted_once() {
-        let (_dir, home, mut db, projects) = store();
-        let (first, second) = (projects.join("-work-a"), projects.join("-work-b"));
-        std::fs::create_dir_all(&first).unwrap();
+        let (_dir, home, mut db, first) = store();
+        let second = first.with_file_name("-work-b");
         std::fs::create_dir_all(&second).unwrap();
         let file = first.join("s1.jsonl");
         std::fs::write(&file, line("Fix the parser.") + "not a line\n").unwrap();
@@ -702,9 +677,7 @@ mod tests {
     #[test]
     fn a_file_that_cant_be_read_is_no_new_history() {
         use std::os::unix::fs::PermissionsExt as _;
-        let (_dir, home, mut db, projects) = store();
-        let folder = projects.join("-work-a");
-        std::fs::create_dir_all(&folder).unwrap();
+        let (_dir, home, mut db, folder) = store();
         std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
         let locked = folder.join("s2.jsonl");
         std::fs::write(&locked, line("Fix the parser.")).unwrap();
@@ -716,9 +689,7 @@ mod tests {
 
     #[test]
     fn a_file_that_said_nothing_isnt_marked_as_in_search() {
-        let (_dir, home, mut db, projects) = store();
-        let folder = projects.join("-work-a");
-        std::fs::create_dir_all(&folder).unwrap();
+        let (_dir, home, mut db, folder) = store();
         std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
         let quiet = folder.join("s2.jsonl");
         std::fs::write(&quiet, "not a line\n").unwrap();
@@ -742,9 +713,7 @@ mod tests {
 
     #[test]
     fn a_gone_files_inode_under_another_agent_isnt_taken_as_moved() {
-        let (_dir, home, mut db, projects) = store();
-        let folder = projects.join("-work-a");
-        std::fs::create_dir_all(&folder).unwrap();
+        let (_dir, home, mut db, folder) = store();
         let file = folder.join("s1.jsonl");
         std::fs::write(&file, line("Fix the parser.")).unwrap();
         ingest(&mut db, home.path()).unwrap();
@@ -766,9 +735,7 @@ mod tests {
 
     #[test]
     fn a_file_that_cant_be_read_says_why_until_it_can() {
-        let (_dir, home, mut db, projects) = store();
-        let folder = projects.join("-work-a");
-        std::fs::create_dir_all(&folder).unwrap();
+        let (_dir, home, mut db, folder) = store();
         std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
         // A subagent's log whose description isn't written yet waits.
         let subagents = folder.join("s1/subagents");
@@ -799,10 +766,8 @@ mod tests {
     fn a_file_that_grew_between_catch_ups_adds_only_what_was_appended() {
         use std::io::Write as _;
 
-        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let log = home.path().join(".claude/projects/-work-app/s1.jsonl");
-        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let (_dir, home, mut db, folder) = store();
+        let log = folder.join("s1.jsonl");
         let user = |at: &str, text: &str| {
             serde_json::json!({"type": "user", "sessionId": "s1", "timestamp": at, "cwd": "/work/app",
                 "message": {"role": "user", "content": text}})
@@ -861,17 +826,12 @@ mod tests {
             ]
         );
         // Each of the four messages indexed once.
-        let said: i64 = db
-            .query_row("SELECT count(*) FROM said", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(said, 4);
+        assert_eq!(count(&db, "SELECT count(*) FROM said"), 4);
     }
 
     #[test]
     fn history_read_again_is_searched_once() {
-        let (_dir, home, mut db, projects) = store();
-        let folder = projects.join("-work-a");
-        std::fs::create_dir_all(&folder).unwrap();
+        let (_dir, home, mut db, folder) = store();
         std::fs::write(folder.join("s1.jsonl"), line("Quote fields with commas.")).unwrap();
         let found = "SELECT count(*) FROM said WHERE said MATCH 'commas'";
         ingest(&mut db, home.path()).unwrap();
@@ -884,10 +844,8 @@ mod tests {
 
     #[test]
     fn a_long_history_read_lets_other_writes_in() {
-        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (dir, home, mut db, folder) = store();
         // Seconds of writing, in one share of files.
-        let folder = home.path().join(".claude/projects/-work-app");
-        std::fs::create_dir_all(&folder).unwrap();
         let texts: Vec<String> = (0..100)
             .map(|text| {
                 let words: Vec<String> = (0..200)
@@ -907,7 +865,6 @@ mod tests {
             }
             std::fs::write(folder.join(format!("{file}.jsonl")), log).unwrap();
         }
-        let mut db = crate::db::open(dir.path()).unwrap();
         let other = crate::db::open(dir.path()).unwrap();
         let mut longest = Duration::ZERO;
         std::thread::scope(|scope| {
@@ -983,17 +940,14 @@ mod tests {
 
     #[test]
     fn a_read_says_whether_any_file_changed() {
-        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let log = home.path().join(".claude/projects/-work-app/s1.jsonl");
-        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
-        let line = r#"{"type":"user","sessionId":"s1","timestamp":"2026-09-30T09:00:00Z","cwd":"/work/app","message":{"role":"user","content":"Fix the parser."}}"#;
-        std::fs::write(&log, format!("{line}\n")).unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, home, mut db, folder) = store();
+        let log = folder.join("s1.jsonl");
+        std::fs::write(&log, line("Fix the parser.")).unwrap();
         assert!(ingest(&mut db, home.path()).unwrap());
         // Anything but history written in the agent's folder is nothing new.
         std::fs::write(home.path().join(".claude/debug.txt"), "").unwrap();
         assert!(!ingest(&mut db, home.path()).unwrap());
-        std::fs::write(&log, format!("{line}\n{line}\n")).unwrap();
+        std::fs::write(&log, line("Fix the parser.").repeat(2)).unwrap();
         assert!(ingest(&mut db, home.path()).unwrap());
     }
 }

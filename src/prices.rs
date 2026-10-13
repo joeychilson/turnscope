@@ -253,15 +253,6 @@ mod tests {
         Prices::load(&db).unwrap()
     }
 
-    /// Prices of `rows`, each in force from the start.
-    fn prices(rows: &[(&str, &str, &str, Option<&str>)]) -> Prices {
-        let rows: Vec<_> = rows
-            .iter()
-            .map(|&(provider, model, cost, fast)| (provider, model, 0, cost, fast))
-            .collect();
-        priced(&rows)
-    }
-
     fn response(provider: &str, model: &str, tokens: Tokens) -> Response {
         Response {
             id: "r".to_owned(),
@@ -283,9 +274,10 @@ mod tests {
 
     #[test]
     fn anthropic_hour_cache_writes_cost_twice_input_and_searches_a_cent() {
-        let prices = prices(&[(
+        let prices = priced(&[(
             "anthropic",
             "claude-opus-5",
+            0,
             r#"{"input":5,"output":25,"cache_read":0.5,"cache_write":6.25}"#,
             None,
         )]);
@@ -308,9 +300,10 @@ mod tests {
 
     #[test]
     fn long_prompts_take_their_tier_and_priority_its_rates() {
-        let prices = prices(&[(
+        let prices = priced(&[(
             "openai",
             "gpt-6-astra",
+            0,
             r#"{"input":10,"output":50,"cache_read":1,"tiers":[{"input":20,"output":75,"cache_read":2,"tier":{"type":"context","size":272000}}]}"#,
             Some(r#"{"input":20,"output":100,"cache_read":2}"#),
         )]);
@@ -361,7 +354,7 @@ mod tests {
 
     #[test]
     fn a_charge_is_the_bill_and_an_estimate_stands_in_for_an_unpriced_model() {
-        let prices = prices(&[("xai", "grok-4.6", r#"{"input":2,"output":6}"#, None)]);
+        let prices = priced(&[("xai", "grok-4.6", 0, r#"{"input":2,"output":6}"#, None)]);
         let tokens = Tokens {
             input: 1_000,
             output: 100,

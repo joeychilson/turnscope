@@ -103,15 +103,8 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             params![account.id, key, kind_name(kind), window, now, !told, serde_json::to_string(&detail).unwrap_or_default()],
         )?;
         if told {
-            raised.push(alert(
-                tx.last_insert_rowid(),
-                kind,
-                now,
-                &account.id,
-                key,
-                detail,
-                now,
-            ));
+            let id = tx.last_insert_rowid();
+            raised.push(alert(id, kind, now, &account.id, key, detail, now));
         }
         Ok(())
     };
@@ -174,28 +167,22 @@ pub fn pending(db: &Connection, now: i64) -> Result<Vec<Alert>> {
     let mut statement = db.prepare(
         "SELECT id, kind, at, account, limit_key, detail FROM alert WHERE acknowledged = 0 ORDER BY id",
     )?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
-        ))
-    })?;
+    let mut rows = statement.query([])?;
     let mut pending = Vec::new();
-    for row in rows {
-        let (id, kind, at, account, limit, detail) = row?;
-        let (Some(kind), Ok(detail)) = (kind_of(&kind), serde_json::from_str::<Detail>(&detail))
-        else {
+    while let Some(row) = rows.next()? {
+        let kind = kind_of(&row.get::<_, String>(1)?);
+        let detail = serde_json::from_str::<Detail>(&row.get::<_, String>(5)?);
+        let (Some(kind), Ok(detail)) = (kind, detail) else {
             continue;
         };
+        let at = row.get(2)?;
         let stands = match kind {
             Kind::RunningOut | Kind::UsedUp => detail.resets.is_none_or(|resets| resets > now),
             Kind::Reset | Kind::SignIn => now - at <= DAY,
         };
         if stands {
+            let (id, account, limit): (i64, String, String) =
+                (row.get(0)?, row.get(3)?, row.get(4)?);
             pending.push(alert(id, kind, at, &account, &limit, detail, now));
         }
     }
@@ -345,45 +332,33 @@ mod tests {
         }
     }
 
+    const LASTS: Outlook = Outlook::Lasts {
+        left_at_reset: None,
+    };
+
+    fn kinds(raised: &[Alert]) -> Vec<Kind> {
+        raised.iter().map(|alert| alert.kind).collect()
+    }
+
     #[test]
     fn a_limit_used_up_is_told_once_and_its_return_after() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();
         let used_up = status(DAY, 0, Outlook::UsedUp { back: None });
         let raised = raise(&mut db, &used_up).unwrap();
-        assert_eq!(
-            raised.iter().map(|alert| alert.kind).collect::<Vec<_>>(),
-            [Kind::UsedUp]
-        );
+        assert_eq!(kinds(&raised), [Kind::UsedUp]);
         assert_eq!(raised[0].replaces, "limit:anthropic:a:five_hour");
         assert!(raise(&mut db, &used_up).unwrap().is_empty(), "told once");
         assert_eq!(pending(&db, DAY).unwrap().len(), 1);
         assert_eq!(acknowledge(&db, &[raised[0].id]).unwrap(), 1);
         assert!(pending(&db, DAY).unwrap().is_empty());
         // Use given back within the window: it's back.
-        let back = status(
-            DAY + MINUTE,
-            60,
-            Outlook::Lasts {
-                left_at_reset: None,
-            },
-        );
-        assert_eq!(
-            raise(&mut db, &back)
-                .unwrap()
-                .iter()
-                .map(|alert| alert.kind)
-                .collect::<Vec<_>>(),
-            [Kind::Reset]
-        );
+        let back = status(DAY + MINUTE, 60, LASTS);
+        assert_eq!(kinds(&raise(&mut db, &back).unwrap()), [Kind::Reset]);
     }
 
     #[test]
     fn only_a_limit_used_up_is_back_and_only_once_the_account_can_be_used() {
-        let kinds = |raised: Vec<Alert>| raised.iter().map(|alert| alert.kind).collect::<Vec<_>>();
-        let lasts = Outlook::Lasts {
-            left_at_reset: None,
-        };
         // Warned it would run out, it reset before it did: nothing is back.
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();
@@ -400,8 +375,8 @@ mod tests {
                 latest: Some(soon),
             },
         );
-        assert_eq!(kinds(raise(&mut db, &warned).unwrap()), [Kind::RunningOut]);
-        let reset = status(10 * DAY + MINUTE, 100, lasts.clone());
+        assert_eq!(kinds(&raise(&mut db, &warned).unwrap()), [Kind::RunningOut]);
+        let reset = status(10 * DAY + MINUTE, 100, LASTS);
         assert!(raise(&mut db, &reset).unwrap().is_empty());
         // Its 5 hours back while its week is still used up: not said.
         let dir = tempfile::tempdir().unwrap();
@@ -418,13 +393,13 @@ mod tests {
         });
         used_up.accounts[0].limits.push(week);
         assert_eq!(
-            kinds(raise(&mut db, &used_up).unwrap()),
+            kinds(&raise(&mut db, &used_up).unwrap()),
             [Kind::UsedUp, Kind::UsedUp]
         );
         let mut five_back = used_up.clone();
         five_back.at = 10 * DAY + MINUTE;
         five_back.accounts[0].limits[0].left_percent = 100;
-        five_back.accounts[0].limits[0].outlook = lasts;
+        five_back.accounts[0].limits[0].outlook = LASTS;
         assert!(raise(&mut db, &five_back).unwrap().is_empty());
     }
 
@@ -434,17 +409,7 @@ mod tests {
         let mut db = crate::db::open(dir.path()).unwrap();
         raise(&mut db, &status(DAY, 0, Outlook::UsedUp { back: None })).unwrap();
         // Nine days on, an hour after the window reset.
-        let back = status(
-            10 * DAY + 60 * MINUTE,
-            100,
-            Outlook::Lasts {
-                left_at_reset: None,
-            },
-        );
-        let raised = raise(&mut db, &back).unwrap();
-        assert_eq!(
-            raised.iter().map(|alert| alert.kind).collect::<Vec<_>>(),
-            [Kind::Reset]
-        );
+        let back = status(10 * DAY + 60 * MINUTE, 100, LASTS);
+        assert_eq!(kinds(&raise(&mut db, &back).unwrap()), [Kind::Reset]);
     }
 }
