@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.3
+
+- **The app's engine** works out the status again only after reading
+  something new, even with a history file it can't read. Such a file made
+  it work out the status after every change in an agent's folder.
+- **`doctor`** no longer lists a history file that couldn't be read once
+  it's deleted, and counts an OpenCode message it can't read once, not
+  again on each read for the 10 seconds after it.
+- **Connecting an agent** is refused while Turnscope's engine runs from its
+  disk image or another drive. Moved to Applications and opened within a
+  minute of quitting the one on the disk image, the app could still connect
+  an agent to that one, which is gone once the image is ejected.
+- **Claude Code usage** from a backend that sends an empty cache split
+  counts its cache writes.
+
 ## 0.1.2
 
 - **The panel's headline** names an account by its title, never its email,

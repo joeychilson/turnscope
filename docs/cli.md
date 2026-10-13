@@ -408,7 +408,9 @@ Grok Build   not connected: `turnscope connect grok-build`
 ```
 
 An agent that runs another copy of Turnscope says so, and `connect` points
-it at this one.
+it at this one. `connect` refuses when Turnscope runs from a disk image or
+a drive in `/Volumes`, or from the copy macOS runs a downloaded app from:
+the agent would lose it once that's gone.
 
 ## Doctor
 

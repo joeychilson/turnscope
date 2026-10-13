@@ -747,6 +747,10 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })? {
         let (path, why) = row?;
+        // One deleted isn't tried again.
+        if !Path::new(&path).exists() {
+            continue;
+        }
         // A reader's error often names its file already.
         let why = if why.contains(&path) {
             why
@@ -1030,6 +1034,29 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_names_a_file_that_cant_be_read_until_its_deleted() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let folder = home.path().join(".claude/projects/-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        let locked = folder.join("s1.jsonl");
+        std::fs::write(&locked, "{}\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut db = db::open(data.path()).unwrap();
+        ingest::ingest(&mut db, home.path()).unwrap();
+        let named = |db: &rusqlite::Connection| {
+            doctor(db, home.path(), data.path(), now())
+                .unwrap()
+                .iter()
+                .any(|note| note.contains("s1.jsonl"))
+        };
+        assert!(named(&db));
+        std::fs::remove_file(&locked).unwrap();
+        ingest::ingest(&mut db, home.path()).unwrap();
+        assert!(!named(&db));
+    }
 
     #[test]
     fn a_command_is_waited_on_no_longer_than_asked_whatever_it_leaves_running() {

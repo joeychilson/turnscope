@@ -417,13 +417,16 @@ impl Counts {
             + writes.ephemeral_1h_input_tokens
     }
 
-    /// The cache writes, by how long they're kept. Without the split, every
-    /// write is taken as kept for 5 minutes, the cache's default.
+    /// The cache writes, by how long they're kept. Without a split that
+    /// splits any, every write is taken as kept for 5 minutes, the cache's
+    /// default.
     fn writes(&self) -> CacheCreation {
-        self.cache_creation.unwrap_or(CacheCreation {
-            ephemeral_5m_input_tokens: self.cache_creation_input_tokens,
-            ephemeral_1h_input_tokens: 0,
-        })
+        self.cache_creation
+            .filter(|split| split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens > 0)
+            .unwrap_or(CacheCreation {
+                ephemeral_5m_input_tokens: self.cache_creation_input_tokens,
+                ephemeral_1h_input_tokens: 0,
+            })
     }
 }
 
@@ -1294,33 +1297,47 @@ mod tests {
     }
 
     #[test]
-    fn usage_without_the_cache_split_counts_its_writes_as_kept_5_minutes() {
+    fn usage_without_a_cache_split_counts_its_writes_as_kept_5_minutes() {
         let dir = tempfile::tempdir().unwrap();
-        let file = log(
-            dir.path(),
-            "s1.jsonl",
-            &[assistant(
-                "s1",
-                "msg_1",
-                "req_1",
-                "2026-09-30T09:00:00Z",
-                serde_json::json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "output_tokens": 16}),
-                serde_json::json!([]),
-            )],
-        );
-        let read = ClaudeCode.read(&file, "").unwrap();
-        let tokens = &read.responses["msg_1:req_1"].tokens;
-        assert_eq!(
+        // No split, and one that splits none of the writes.
+        for (name, usage) in [
             (
-                tokens.input,
-                tokens.cache_read,
-                tokens.cache_write_5m,
-                tokens.cache_write_1h,
-                tokens.output
+                "s1.jsonl",
+                serde_json::json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "output_tokens": 16}),
             ),
-            (5, 0, 30, 0, 16)
-        );
-        assert_eq!(read.skipped, 0);
+            (
+                "s2.jsonl",
+                serde_json::json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "cache_creation": {},
+                    "output_tokens": 16}),
+            ),
+        ] {
+            let file = log(
+                dir.path(),
+                name,
+                &[assistant(
+                    "s1",
+                    "msg_1",
+                    "req_1",
+                    "2026-09-30T09:00:00Z",
+                    usage,
+                    serde_json::json!([]),
+                )],
+            );
+            let read = ClaudeCode.read(&file, "").unwrap();
+            let tokens = &read.responses["msg_1:req_1"].tokens;
+            assert_eq!(
+                (
+                    tokens.input,
+                    tokens.cache_read,
+                    tokens.cache_write_5m,
+                    tokens.cache_write_1h,
+                    tokens.output
+                ),
+                (5, 0, 30, 0, 16),
+                "{name}"
+            );
+            assert_eq!(read.skipped, 0);
+        }
     }
 
     #[test]

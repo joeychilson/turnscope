@@ -116,7 +116,7 @@ fn lock(db: &Connection) -> Result<std::fs::File> {
 }
 
 /// Read what's new in every agent's history under `home`; whether any file
-/// had changed.
+/// was read.
 pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     let _lock = lock(db)?;
 
@@ -213,6 +213,7 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     }
 
     let derived = Derived::load(db)?;
+    let mut wrote = false;
     // Files are read in parallel a share at a time, so memory stays bounded,
     // while the share before is written.
     std::thread::scope(|scope| -> Result<()> {
@@ -237,7 +238,10 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
                 let began = Instant::now();
                 while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
                     match read {
-                        Ok(read) => write(&tx, due, read, home, &derived)?,
+                        Ok(read) => {
+                            write(&tx, due, read, home, &derived)?;
+                            wrote = true;
+                        }
                         // A file that can't be read now is tried again next
                         // time, from where it was: its row keeps its cursor
                         // and what it was, and says why for doctor.
@@ -267,7 +271,7 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     })?;
     // Statistics for the query planner, where tables changed enough.
     db.execute_batch("PRAGMA optimize")?;
-    Ok(true)
+    Ok(wrote)
 }
 
 fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived) -> Result<()> {
@@ -641,8 +645,7 @@ mod tests {
         assert_eq!(readers, READERS + 1);
     }
 
-    /// A temp data folder and home, with Claude Code's projects in the home,
-    /// and a user line of `text` as a log line.
+    /// A temp data folder and home, with Claude Code's projects in the home.
     fn store() -> (tempfile::TempDir, tempfile::TempDir, Connection, PathBuf) {
         let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let db = crate::db::open(dir.path()).unwrap();
@@ -651,6 +654,7 @@ mod tests {
         (dir, home, db, projects)
     }
 
+    /// A user line of `text`, as Claude Code logs it.
     fn line(text: &str) -> String {
         let line = serde_json::json!({"type": "user", "sessionId": "s1",
             "timestamp": "2026-09-30T09:00:00Z", "message": {"role": "user", "content": text}});
@@ -693,6 +697,21 @@ mod tests {
         assert_eq!(count(&db, "SELECT count(*) FROM said"), 2);
         assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
         assert_eq!(count(&db, "SELECT indexed FROM file"), 1);
+    }
+
+    #[test]
+    fn a_file_that_cant_be_read_is_no_new_history() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_dir, home, mut db, projects) = store();
+        let folder = projects.join("-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
+        let locked = folder.join("s2.jsonl");
+        std::fs::write(&locked, line("Fix the parser.")).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(ingest(&mut db, home.path()).unwrap());
+        // Tried again, as it is each time, it reads nothing.
+        assert!(!ingest(&mut db, home.path()).unwrap());
     }
 
     #[test]

@@ -248,5 +248,6 @@ there.
 
 Installed copies read `appcast.xml` from the latest release, so publishing
 the release offers the update. If a run fails after creating its draft
-release, run it again: the draft is replaced. A published release is never
-changed; tag the next version instead.
+release, re-run all its jobs: the draft is replaced. Re-running only the
+failed jobs fails after a day, when the unsigned app's artifact expires. A
+published release is never changed; tag the next version instead.

@@ -25,6 +25,12 @@ pub fn connect(agent: &dyn Agent, home: &Path) -> Result<()> {
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|error| Error::Failed(error.to_string()))?;
+    if temporary(&exe) {
+        return Err(Error::Failed(format!(
+            "Turnscope runs from {}, which goes away when its disk image is ejected or its drive removed: move Turnscope to Applications and connect from there",
+            exe.display()
+        )));
+    }
     let exe = exe.to_string_lossy();
     let path = login_path();
     for (n, folder) in agent.folders(home).iter().enumerate() {
@@ -59,6 +65,13 @@ pub fn connect(agent: &dyn Agent, home: &Path) -> Result<()> {
         return Err(Error::Failed(failed));
     }
     Ok(())
+}
+
+/// Whether `exe` is on a disk image or a drive, which `/Volumes` holds, or
+/// in the read-only copy macOS runs a downloaded app from (App
+/// Translocation): an agent connected to it would lose it once that's gone.
+fn temporary(exe: &Path) -> bool {
+    exe.starts_with("/Volumes") || exe.to_string_lossy().contains("/AppTranslocation/")
 }
 
 /// Remove the server from `agent`, in each of its folders, with the agent's
@@ -165,4 +178,30 @@ fn login_path() -> Option<String> {
     let said = String::from_utf8_lossy(&output.stdout);
     let path = said.rsplit_once("__path__=")?.1.trim();
     (output.status.success() && !path.is_empty()).then(|| path.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    #[test]
+    fn an_engine_on_a_disk_image_a_drive_or_translocated_is_temporary() {
+        for (exe, temporary) in [
+            (
+                "/Volumes/Turnscope/Turnscope.app/Contents/Helpers/turnscope",
+                true,
+            ),
+            (
+                "/private/var/folders/ab/T/AppTranslocation/0A1B/d/Turnscope.app/Contents/Helpers/turnscope",
+                true,
+            ),
+            (
+                "/Applications/Turnscope.app/Contents/Helpers/turnscope",
+                false,
+            ),
+            ("/Users/me/Volumes/target/release/turnscope", false),
+        ] {
+            assert_eq!(super::temporary(Path::new(exe)), temporary, "{exe}");
+        }
+    }
 }
