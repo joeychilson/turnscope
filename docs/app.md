@@ -106,7 +106,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   `turnscope serve --socket` once for the socket's path, starts `serve` when
   nothing listens, and says `hello` on each connection. It hands the store
   events in order: its phase (connecting, connected, or failed and why),
-  each status and each alert, `hello`'s first. A status or alert it
+  each `hello` result, each status and each alert. A status or alert it
   can't read drops the connection, so the store hears that it failed.
   `request` sends a request and waits for its result.
   [protocol.md](protocol.md#lifecycle) says how it reconnects and replaces
