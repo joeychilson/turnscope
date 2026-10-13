@@ -188,172 +188,157 @@ mod tests {
 
     #[test]
     fn keys_of_known_shapes_are_redacted_and_words_like_them_are_not() {
-        let text = "export OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef0123456789abcdef and \
-                    ANTHROPIC=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA; pip install sk-learn";
-        assert_eq!(
-            redact(text),
-            "export OPENROUTER_API_KEY=[redacted] and ANTHROPIC=[redacted]; pip install sk-learn"
-        );
-        assert_eq!(
-            redact("curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345' x"),
-            "curl -H 'Authorization: Bearer [redacted]' x"
-        );
-        assert_eq!(
-            redact("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop end"),
-            "token [redacted] end"
-        );
-        assert_eq!(redact("AKIAIOSFODNN7EXAMPLE"), "[redacted]");
-        assert_eq!(
-            redact("task-0123456789abcdefghij0123"),
-            "task-0123456789abcdefghij0123"
-        );
-        assert_eq!(redact("plain text, ünïcödé"), "plain text, ünïcödé");
-        assert_eq!(
-            redact("authorization: bearer abcdefghijklmnopqrstuvwxyz012345"),
-            "authorization: bearer [redacted]"
-        );
-        assert_eq!(
-            redact(
-                "cat id_ed25519\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----\ndone"
+        for (text, redacted) in [
+            (
+                "export OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef0123456789abcdef and \
+                    ANTHROPIC=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA; pip install sk-learn",
+                "export OPENROUTER_API_KEY=[redacted] and ANTHROPIC=[redacted]; pip install sk-learn",
             ),
-            "cat id_ed25519\n[redacted]\ndone"
-        );
-        assert_eq!(
-            redact("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"),
-            "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
-        );
-        assert_eq!(
-            redact(
-                "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGZha2UAAAAA\n=AAAA\n-----END PGP PRIVATE KEY BLOCK-----"
+            (
+                "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345' x",
+                "curl -H 'Authorization: Bearer [redacted]' x",
             ),
-            "[redacted]"
-        );
+            (
+                "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop end",
+                "token [redacted] end",
+            ),
+            ("AKIAIOSFODNN7EXAMPLE", "[redacted]"),
+            (
+                "task-0123456789abcdefghij0123",
+                "task-0123456789abcdefghij0123",
+            ),
+            ("plain text, ünïcödé", "plain text, ünïcödé"),
+            (
+                "authorization: bearer abcdefghijklmnopqrstuvwxyz012345",
+                "authorization: bearer [redacted]",
+            ),
+            (
+                "cat id_ed25519\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----\ndone",
+                "cat id_ed25519\n[redacted]\ndone",
+            ),
+            (
+                "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+                "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+            ),
+            (
+                "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGZha2UAAAAA\n=AAAA\n-----END PGP PRIVATE KEY BLOCK-----",
+                "[redacted]",
+            ),
+        ] {
+            assert_eq!(redact(text), redacted, "{text}");
+        }
     }
 
     #[test]
     fn a_key_read_with_line_numbers_is_redacted() {
-        assert_eq!(
-            redact(
-                "     1\t-----BEGIN OPENSSH PRIVATE KEY-----\n     2\tb3BlbnNzaC1rZXktdjEAAAAAb3BlbnNzaC1rZXktdjEAAAAA\n     3\t-----END OPENSSH PRIVATE KEY-----\n     4\t"
+        for (text, redacted) in [
+            (
+                "     1\t-----BEGIN OPENSSH PRIVATE KEY-----\n     2\tb3BlbnNzaC1rZXktdjEAAAAAb3BlbnNzaC1rZXktdjEAAAAA\n     3\t-----END OPENSSH PRIVATE KEY-----\n     4\t",
+                "     1\t[redacted]\n     4\t",
             ),
-            "     1\t[redacted]\n     4\t"
-        );
-        assert_eq!(
-            redact(
-                "     1\t-----BEGIN OPENSSH PRIVATE KEY-----\n     2\tb3BlbnNzaC1rZXktdjEAAAAAb3BlbnNzaC1rZXktdjEAAAAA\n     3\tb3BlbnNzaC1rZXktdjEAAAAA\n     4\t"
+            (
+                "     1\t-----BEGIN OPENSSH PRIVATE KEY-----\n     2\tb3BlbnNzaC1rZXktdjEAAAAAb3BlbnNzaC1rZXktdjEAAAAA\n     3\tb3BlbnNzaC1rZXktdjEAAAAA\n     4\t",
+                "     1\t[redacted]\n     4\t",
             ),
-            "     1\t[redacted]\n     4\t"
-        );
-        assert_eq!(
-            redact(
-                "     1\t-----BEGIN PGP PRIVATE KEY BLOCK-----\n     2\t\n     3\tlQOYBGZha2UAAAAAlQOYBGZha2UAAAAA\n     4\tlQOYBGZha2UAAAAA"
+            (
+                "     1\t-----BEGIN PGP PRIVATE KEY BLOCK-----\n     2\t\n     3\tlQOYBGZha2UAAAAAlQOYBGZha2UAAAAA\n     4\tlQOYBGZha2UAAAAA",
+                "     1\t[redacted]",
             ),
-            "     1\t[redacted]"
-        );
+        ] {
+            assert_eq!(redact(text), redacted, "{text}");
+        }
     }
 
     #[test]
     fn a_key_in_a_diff_is_redacted() {
-        assert_eq!(
-            redact(
-                "@@ -1,3 +0,0 @@\n------BEGIN OPENSSH PRIVATE KEY-----\n-b3BlbnNzaC1rZXktdjEAAAAA\n------END OPENSSH PRIVATE KEY-----\n"
+        for (text, redacted) in [
+            (
+                "@@ -1,3 +0,0 @@\n------BEGIN OPENSSH PRIVATE KEY-----\n-b3BlbnNzaC1rZXktdjEAAAAA\n------END OPENSSH PRIVATE KEY-----\n",
+                "@@ -1,3 +0,0 @@\n-[redacted]\n",
             ),
-            "@@ -1,3 +0,0 @@\n-[redacted]\n"
-        );
-        assert_eq!(
-            redact(
-                "@@ -0,0 +1,3 @@\n+-----BEGIN OPENSSH PRIVATE KEY-----\n+b3BlbnNzaC1rZXktdjEAAAAA\n+-----END OPENSSH PRIVATE KEY-----\n"
+            (
+                "@@ -0,0 +1,3 @@\n+-----BEGIN OPENSSH PRIVATE KEY-----\n+b3BlbnNzaC1rZXktdjEAAAAA\n+-----END OPENSSH PRIVATE KEY-----\n",
+                "@@ -0,0 +1,3 @@\n+[redacted]\n",
             ),
-            "@@ -0,0 +1,3 @@\n+[redacted]\n"
-        );
+        ] {
+            assert_eq!(redact(text), redacted, "{text}");
+        }
     }
 
     #[test]
     fn an_indented_key_is_redacted() {
-        assert_eq!(
-            redact(
-                "tls:\n  key: |\n    -----BEGIN EC PRIVATE KEY-----\n    MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n    MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n    -----END EC PRIVATE KEY-----\n  port: 443"
+        for (text, redacted) in [
+            (
+                "tls:\n  key: |\n    -----BEGIN EC PRIVATE KEY-----\n    MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n    MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n    -----END EC PRIVATE KEY-----\n  port: 443",
+                "tls:\n  key: |\n    [redacted]\n  port: 443",
             ),
-            "tls:\n  key: |\n    [redacted]\n  port: 443"
-        );
-        assert_eq!(
-            redact(
-                "key: |\n  -----BEGIN EC PRIVATE KEY-----\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"
+            (
+                "key: |\n  -----BEGIN EC PRIVATE KEY-----\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n",
+                "key: |\n  [redacted]\n",
             ),
-            "key: |\n  [redacted]\n"
-        );
+        ] {
+            assert_eq!(redact(text), redacted, "{text}");
+        }
     }
 
     #[test]
     fn a_key_in_a_json_string_is_redacted() {
-        assert_eq!(
-            redact(
-                r#"{"private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END RSA PRIVATE KEY-----\n", "type": "x"}"#
+        for (text, redacted) in [
+            (
+                r#"{"private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END RSA PRIVATE KEY-----\n", "type": "x"}"#,
+                r#"{"private_key": "[redacted]\n", "type": "x"}"#,
             ),
-            r#"{"private_key": "[redacted]\n", "type": "x"}"#
-        );
-        assert_eq!(
-            redact(
-                r#"{"content":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n"}"#
+            (
+                r#"{"content":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n"}"#,
+                r#"{"content":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n[redacted]\n"}"#,
             ),
-            r#"{"content":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n[redacted]\n"}"#
-        );
-        assert_eq!(
-            redact(
-                r#""-----BEGIN PRIVATE KEY-----\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC""#
+            (
+                r#""-----BEGIN PRIVATE KEY-----\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC""#,
+                r#""[redacted]""#,
             ),
-            r#""[redacted]""#
-        );
+        ] {
+            assert_eq!(redact(text), redacted, "{text}");
+        }
     }
 
     #[test]
     fn a_key_cut_short_is_redacted_and_what_follows_it_is_not() {
-        assert_eq!(
-            redact(
-                "$ head -3 id_rsa\n-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n$ ls"
+        for (text, redacted) in [
+            (
+                "$ head -3 id_rsa\n-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n$ ls",
+                "$ head -3 id_rsa\n[redacted]\n$ ls",
             ),
-            "$ head -3 id_rsa\n[redacted]\n$ ls"
-        );
-        assert_eq!(
-            redact(
-                "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\n\r\nWhy is it cut short?"
+            (
+                "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\n\r\nWhy is it cut short?",
+                "[redacted]\r\n\r\nWhy is it cut short?",
             ),
-            "[redacted]\r\n\r\nWhy is it cut short?"
-        );
-        assert_eq!(
-            redact(
-                "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGZha2UAAAAAlQOYBGZha2UAAAAA\nlQOYBGZha2UAAAAA"
+            (
+                "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGZha2UAAAAAlQOYBGZha2UAAAAA\nlQOYBGZha2UAAAAA",
+                "[redacted]",
             ),
-            "[redacted]"
-        );
-        assert_eq!(
-            redact("-----BEGIN PRIVATE KEY----- starts a key"),
-            "[redacted] starts a key"
-        );
-        assert_eq!(
-            redact(
-                "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+            (
+                "-----BEGIN PRIVATE KEY----- starts a key",
+                "[redacted] starts a key",
             ),
-            "[redacted]\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
-        );
-        assert_eq!(
-            redact(
-                "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC"
+            (
+                "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+                "[redacted]\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
             ),
-            "[redacted]"
-        );
-        assert_eq!(
-            redact(
-                "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC  \nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\t\nAAAAAAAA==  \n"
+            (
+                "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+                "[redacted]",
             ),
-            "[redacted]  \n"
-        );
-        assert_eq!(
-            redact(
-                r#""-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC  \nAAAAAAAA==""#
+            (
+                "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC  \nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\t\nAAAAAAAA==  \n",
+                "[redacted]  \n",
             ),
-            r#""[redacted]""#
-        );
+            (
+                r#""-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC  \nAAAAAAAA==""#,
+                r#""[redacted]""#,
+            ),
+        ] {
+            assert_eq!(redact(text), redacted, "{text}");
+        }
     }
 
     #[test]

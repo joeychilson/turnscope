@@ -299,7 +299,7 @@ pub struct Tokens {
 }
 
 /// One entry of a conversation.
-#[derive(Debug, PartialEq, serde::Serialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub kind: Kind,
     pub at: Option<i64>,
@@ -325,7 +325,7 @@ pub enum Kind {
     Task,
 }
 
-#[derive(Debug, PartialEq, serde::Serialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Tool {
     pub name: String,
     pub input: String,
@@ -333,7 +333,7 @@ pub struct Tool {
     pub failed: bool,
     /// The files its edits name, as the agent names them: absolute, or
     /// within the session's folder.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
     /// Whether its edits took: a call that failed made none, unless its
     /// agent says it went on past what failed.
@@ -345,7 +345,7 @@ pub struct Tool {
 }
 
 /// What a tool call is to a handoff.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Role {
     /// It read: a file, a search, a page. The next agent reads it again as
     /// it needs, so it's named in a line.
@@ -355,6 +355,7 @@ pub enum Role {
     /// It ran a subagent, whose output is its report.
     Subagent,
     /// Anything else, as a command or an edit: the work itself.
+    #[default]
     Work,
 }
 

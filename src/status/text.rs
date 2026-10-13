@@ -4,16 +4,7 @@
 
 use super::{Account, Limit, Outlook, Stale, State, Status, Unknown};
 use crate::agents;
-use crate::time::{self, HOUR, MINUTE};
-
-/// A time as people read it: `15:00 (in 3h)`, or gone by, `09:00 (3h ago)`.
-fn when(at: i64, now: i64) -> String {
-    let span = time::span(at - now);
-    match at >= now {
-        true => format!("{} (in {span})", time::clock(at, now)),
-        false => format!("{} ({span} ago)", time::clock(at, now)),
-    }
-}
+use crate::time::{self, HOUR, MINUTE, when};
 
 /// Hours of work as people say them: to ten minutes, `1h 50m`, and from
 /// ten hours, to the hour, `26h`.
@@ -178,7 +169,9 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
                 }
             )
         }
-        Outlook::UsedUp { back: Some(back) } => format!("Used up; back {}.", when(back.at, now)),
+        Outlook::UsedUp { back: Some(back) } => {
+            format!("Used up; back {}.", when(back.at, now))
+        }
         Outlook::UsedUp { back: None } => "Used up.".to_owned(),
         Outlook::Unknown {
             reason: Unknown::NotEnoughData,

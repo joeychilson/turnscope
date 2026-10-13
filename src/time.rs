@@ -107,6 +107,15 @@ pub fn clock(at: i64, now: i64) -> String {
     }
 }
 
+/// A time as people read it: `15:00 (in 3h)`, or gone by, `09:00 (3h ago)`.
+pub fn when(at: i64, now: i64) -> String {
+    let span = span(at - now);
+    match at >= now {
+        true => format!("{} (in {span})", clock(at, now)),
+        false => format!("{} ({span} ago)", clock(at, now)),
+    }
+}
+
 /// A length of time: `45m`, `3h 20m`, `2d 4h`.
 pub fn span(ms: i64) -> String {
     let minutes = (ms.abs() + MINUTE / 2) / MINUTE;
