@@ -14,6 +14,9 @@
   an agent to that one, which is gone once the image is ejected.
 - **Claude Code usage** from a backend that sends an empty cache split
   counts its cache writes.
+- **Search** quotes the message it found with a quote or backslash in it
+  escaped, as the rest of a session's text within a line is. A `"` in it
+  could end the quote early, so its words read as Turnscope's own.
 
 ## 0.1.2
 

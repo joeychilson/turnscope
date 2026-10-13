@@ -310,6 +310,11 @@ fn every_command_answers_as_its_snapshot_says() {
         ),
         // Words said in different messages of one session find it.
         ("sessions-search", vec!["sessions", "--search", "CSV RFC"]),
+        // Words said together, so the message that says them is quoted.
+        (
+            "sessions-search-said",
+            vec!["sessions", "--search", "quoted commas"],
+        ),
         // A unique start of an agent's own id names the session.
         ("sessions-show", vec!["sessions", "show", "0f6e3f6a"]),
         (
