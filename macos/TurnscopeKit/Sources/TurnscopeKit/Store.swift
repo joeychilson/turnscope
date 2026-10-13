@@ -41,8 +41,6 @@ public final class Store {
     /// The settings serve last sent. A change serve refuses goes back to
     /// these.
     @ObservationIgnored private(set) var served: Settings?
-    /// Every agent's name, by id, as the status gives them.
-    private var names: [String: String] = [:]
     /// For a fixed status, the time its words are as of, whatever the clock
     /// says. It's the status's own time, so it reads the same whenever it's
     /// drawn.
@@ -57,7 +55,7 @@ public final class Store {
         self.client = client
         self.fromDiskImage = fromDiskImage
         frozen = client == nil ? status?.at : nil
-        if let status { show(status) }
+        self.status = status
         guard let client else { return }
         listening = Task { [weak self] in
             for await event in client.events {
@@ -97,7 +95,8 @@ public final class Store {
     /// Words as of `now`, or as of a fixed status's time, with agents named
     /// as in the status.
     public func words(now: Date = .now) -> Words {
-        Words(now: frozen ?? now, names: names)
+        let names = (status?.agents ?? []).map { ($0.id, $0.name) }
+        return Words(now: frozen ?? now, names: Dictionary(names, uniquingKeysWith: { first, _ in first }))
     }
 
     /// The agent in use to offer to connect: one that can't ask Turnscope
@@ -243,23 +242,15 @@ public final class Store {
         // a planned reconnect, such as replacing another engine's serve, is
         // under way.
         case .phase(.connecting): break
-        case .hello(let hello):
-            take(hello.status)
-            hello.alerts.forEach(onAlert)
         case .status(let status): take(status)
         case .alert(let alert): onAlert(alert)
         }
     }
 
     private func take(_ status: Status) {
-        show(status)
+        self.status = status
         served = status.settings
         askWhatUsed()
         onChange()
-    }
-
-    private func show(_ status: Status) {
-        self.status = status
-        names = Dictionary(status.agents.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
     }
 }

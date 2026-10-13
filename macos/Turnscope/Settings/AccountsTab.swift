@@ -10,11 +10,9 @@ struct AccountsTab: View {
     @Environment(Store.self) private var store
 
     var body: some View {
-        let keys = store.all.filter(\.apiKey)
-        let subscriptions = store.all.filter { !$0.apiKey }
         VStack(alignment: .leading, spacing: 14) {
-            group("Subscriptions", subscriptions)
-            group("API keys", keys)
+            group("Subscriptions", store.all.filter { !$0.apiKey })
+            group("API keys", store.all.filter(\.apiKey))
         }
     }
 

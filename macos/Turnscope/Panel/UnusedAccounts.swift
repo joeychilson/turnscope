@@ -24,32 +24,20 @@ struct UnusedAccounts: View {
             ? words.hidden(hidden.count)
             : words.unused(accounts.count, besideOthers: besideOthers)
         VStack(alignment: .leading, spacing: Row.spacing) {
-            Button {
-                withAnimation(spring) {
-                    navigation.unusedOpen.toggle()
-                    if !navigation.unusedOpen {
-                        if accounts.contains(where: { $0.id == navigation.open }) { navigation.open = nil }
-                        navigation.hiddenShown = false
-                    }
+            Fold(text: label, open: open) {
+                navigation.unusedOpen.toggle()
+                if !navigation.unusedOpen {
+                    if accounts.contains(where: { $0.id == navigation.open }) { navigation.open = nil }
+                    navigation.hiddenShown = false
                 }
-            } label: {
-                Fold(text: label, open: open)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(label)
-            .accessibilityHint(open ? "Folds them" : "Lists them")
             if open {
                 VStack(spacing: Row.spacing) {
                     ForEach(accounts) { AccountRow(account: $0) }
                     if !hidden.isEmpty && !accounts.isEmpty {
-                        Button {
-                            withAnimation(spring) { navigation.hiddenShown.toggle() }
-                        } label: {
-                            Fold(text: words.hidden(hidden.count), open: navigation.hiddenShown)
+                        Fold(text: words.hidden(hidden.count), open: navigation.hiddenShown) {
+                            navigation.hiddenShown.toggle()
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(words.hidden(hidden.count))
-                        .accessibilityHint(navigation.hiddenShown ? "Folds them" : "Lists them")
                     }
                     if navigation.hiddenShown || accounts.isEmpty {
                         ForEach(hidden) { HiddenRow(account: $0) }
@@ -62,24 +50,31 @@ struct UnusedAccounts: View {
     }
 }
 
-/// A line that folds rows away, showing what it holds and a chevron.
+/// A line that folds rows away, showing what it holds and a chevron. A click
+/// runs `toggle`, animated.
 private struct Fold: View {
     var text: String
     var open: Bool
+    var toggle: () -> Void
 
     var body: some View {
-        Hover { hover in
-            HStack(spacing: 8) {
-                Text(text).font(.line).foregroundStyle(.secondary)
-                Spacer(minLength: 6)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(open ? 90 : 0))
+        Button { withAnimation(spring, toggle) } label: {
+            Hover { hover in
+                HStack(spacing: 8) {
+                    Text(text).font(.line).foregroundStyle(.secondary)
+                    Spacer(minLength: 6)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(open ? 90 : 0))
+                }
+                .padding(Row.padding)
+                .rowBackground(hover)
             }
-            .padding(Row.padding)
-            .rowBackground(hover)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(text)
+        .accessibilityHint(open ? "Folds them" : "Lists them")
     }
 }
 

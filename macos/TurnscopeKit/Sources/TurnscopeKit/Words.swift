@@ -23,14 +23,10 @@ import Foundation
 /// Words as of `now`, in `calendar`'s time zone, with agents named as in
 /// their status (`Store.words`).
 public struct Words: Sendable {
-    var now: Date
-    var calendar: Calendar
+    var now = Date.now
+    var calendar = Calendar.autoupdatingCurrent
     /// Every agent's name, by id.
-    var names: [String: String]
-
-    init(now: Date = .now, calendar: Calendar = .autoupdatingCurrent, names: [String: String] = [:]) {
-        (self.now, self.calendar, self.names) = (now, calendar, names)
-    }
+    var names: [String: String] = [:]
 
     /// The name of the agent `id`, such as "Claude Code", or its id if the
     /// status doesn't name it.
@@ -39,11 +35,6 @@ public struct Words: Sendable {
     }
 
     // MARK: Figures
-
-    /// A percent, "67%".
-    func percent(_ value: Int) -> String {
-        "\(max(0, min(100, value)))%"
-    }
 
     /// An amount of dollars, written for reading: "$9.96" under ten dollars,
     /// "$84" and "$1,250" from ten up, and "$0" for none. With `down`, it's
@@ -59,13 +50,7 @@ public struct Words: Sendable {
         let cents = down ? (value * 100 + hair).rounded(.down) : (value * 100).rounded()
         if cents < 1000 { return "$" + String(format: "%.2f", cents / 100) }
         let whole = Int(down ? (value + hair).rounded(.down) : value.rounded())
-        let digits = String(whole)
-        var grouped = ""
-        for (index, digit) in digits.enumerated() {
-            if index > 0 && (digits.count - index) % 3 == 0 { grouped.append(",") }
-            grouped.append(digit)
-        }
-        return "$" + grouped
+        return "$" + whole.formatted(.number.locale(Locale(identifier: "en_US")))
     }
 
     /// What's left of a limit, as its figure: "67%", or "$9.96" for a limit
@@ -73,7 +58,7 @@ public struct Words: Sendable {
     /// far as this Mac knows, as serve says.
     public func left(_ limit: LimitStatus) -> String {
         if let money = limit.money { return dollars(money.leftUsd, down: true) }
-        return percent(limit.leftPercent)
+        return "\(max(0, min(100, limit.leftPercent)))%"
     }
 
     /// Whether a month's cost is unknown because none of the usage had a

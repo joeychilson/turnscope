@@ -9,7 +9,7 @@ extension Words {
     /// "Monthly", "Opus weekly". An API key's own limit is named for the
     /// agents that hold the key: "Pi's key".
     public func name(_ limit: LimitStatus) -> String {
-        if !limit.heldBy.isEmpty { return "\(whose(limit.heldBy)) key" }
+        if !limit.heldBy.isEmpty { return "\(list(limit.heldBy.map(agent), "and"))'s key" }
         guard let scope = limit.scope else { return limit.name }
         return "\(scope) \(limit.name.lowercased())"
     }
@@ -18,12 +18,6 @@ extension Words {
     /// weekly".
     private func inSentence(_ limit: LimitStatus) -> String {
         limit.scope == nil && limit.heldBy.isEmpty ? name(limit).lowercased() : name(limit)
-    }
-
-    /// Who a key belongs to, by the agents that hold it: "Pi's", "OpenCode
-    /// and Pi's".
-    private func whose(_ agents: [String]) -> String {
-        "\(list(agents.map(agent), "and"))'s"
     }
 
     /// What a limit's figure is left of. For a weekly or monthly limit on
@@ -36,13 +30,6 @@ extension Words {
         case "monthly": "this month"
         default: "of \(inSentence(limit))"
         }
-    }
-
-    /// When a limit resets, as a phrase: "Resets 3 PM", "Resets in 2h". Nil
-    /// for a limit that doesn't reset, or that reset since it was read.
-    private func resets(_ limit: LimitStatus) -> String? {
-        guard let window = limit.window, limit.resetSince == nil else { return nil }
-        return "Resets \(at(window.resets))"
     }
 
     /// How a limit stands in a few words, for a row: "5 hours runs out 2
@@ -109,7 +96,7 @@ extension Words {
     public func window(_ limit: LimitStatus) -> String? {
         if let reset = limit.resetSince { return "Reset \(ago(reset))" }
         if case .usedUp(let back) = limit.outlook { return back.map { "Back \(at($0))" } ?? "Used up" }
-        return resets(limit)
+        return limit.window.map { "Resets \(at($0.resets))" }
     }
 
     /// What's ahead for a limit, if anything, shown beside its name before
@@ -223,15 +210,9 @@ extension Words {
     public func opened(_ account: AccountStatus, headlined: Bool = false) -> String? {
         if headlined && account.limits.isEmpty { return nil }
         if let trouble = trouble(account) { return trouble }
-        if account.refilledAt != nil { return sinceReset }
+        if account.refilledAt != nil { return "Full since the reset, unless used on the web or another device." }
         guard account.limits.isEmpty else { return nil }
         return account.spend.flatMap(pace)
-    }
-
-    /// What can't be known about an account when every limit reset since it
-    /// was read.
-    var sinceReset: String {
-        "Full since the reset, unless used on the web or another device."
     }
 
     /// What the panel says before any account is found. While the agents'
@@ -337,17 +318,13 @@ extension Words {
         phrase.replacingOccurrences(of: " ", with: "\u{00A0}")
     }
 
-    /// A session's share of a limit, to the nearest point, since shares are
-    /// approximate: "13%", or "<1%" under half a point.
-    func share(_ points: Double) -> String {
-        points < 0.5 ? "<1%" : "\(Int(points.rounded()))%"
-    }
-
     /// What a session that used a limit says under its title: its share if
     /// known, where it ran, and, if `agents`, the agent it ran in: "40% ·
-    /// app", "12% · api · Codex".
+    /// app", "12% · api · Codex". The share is to the nearest point, since
+    /// shares are approximate, or "<1%" under half a point.
     public func used(_ used: UsedMost, agents: Bool) -> String {
-        ([used.sharePercent.map(share), used.project, agents ? agent(used.agent) : nil] as [String?])
+        let share = used.sharePercent.map { $0 < 0.5 ? "<1%" : "\(Int($0.rounded()))%" }
+        return ([share, used.project, agents ? agent(used.agent) : nil] as [String?])
             .compactMap { $0 }.joined(separator: " · ")
     }
 

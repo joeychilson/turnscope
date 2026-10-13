@@ -122,7 +122,7 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(full.refilledAt == at("2026-09-30T11:30:00Z"))
     #expect(words.status(full) == "Weekly reset 11:30 AM")
     #expect(words.rowFigure(full) == ("100%", nil))
-    #expect(words.opened(full) == words.sinceReset)
+    #expect(words.opened(full) == "Full since the reset, unless used on the web or another device.")
 }
 
 @Test func theVerdictSaysTheMostUrgentAndWhenItsBack() {

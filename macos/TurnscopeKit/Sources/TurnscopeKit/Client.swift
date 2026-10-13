@@ -36,11 +36,9 @@ public final class Client {
     public enum Event: Sendable {
         /// It entered a phase.
         case phase(Phase)
-        /// `hello`'s answer, on every connection.
-        case hello(HelloResult)
-        /// A status serve pushed.
+        /// A status: `hello`'s on each connection, then each serve pushes.
         case status(Status)
-        /// An alert serve pushed.
+        /// An alert: those `hello` returns, then each serve pushes.
         case alert(Alert)
     }
 
@@ -171,13 +169,10 @@ public final class Client {
             connection.close()
             self.connection = nil
         }
-        switch try await greet(connection, engine: engine, replacing: replacing) {
-        case .greeted(let hello):
-            phase = .connected
-            emit.yield(.hello(hello))
-            let unread = await listening.value
-            return .dropped(why: unread?.description ?? "Turnscope's engine stopped")
-        case .another(let why):
+        let hello: HelloResult
+        do throws(ClientError) {
+            hello = try await greet(connection, engine: engine, replacing: replacing)
+        } catch .unsupported(let why) where replacing {
             log.notice("replacing serve: \(why, privacy: .public)")
             // It answers and exits, which closes the connection. A serve that
             // does neither is left to end the way serve normally does.
@@ -187,39 +182,31 @@ public final class Client {
             deadline.cancel()
             return .replaced
         }
-    }
-
-    /// The result of `hello`.
-    private enum Greeting {
-        case greeted(HelloResult)
-        /// Serve runs another engine or speaks another protocol, so it's to
-        /// be replaced. Carries the reason.
-        case another(String)
+        phase = .connected
+        emit.yield(.status(hello.status))
+        for alert in hello.alerts { emit.yield(.alert(alert)) }
+        let unread = await listening.value
+        return .dropped(why: unread?.description ?? "Turnscope's engine stopped")
     }
 
     /// Say hello on `connection` and read the answer. The engine it names is
     /// read first, so a serve of an engine other than `engine` is spotted by
-    /// that alone, whatever else it says, and is to be replaced if
-    /// `replacing`. Then the whole answer is read.
+    /// that alone, whatever else it says, and if `replacing` is
+    /// `unsupported`, like one that speaks another protocol. Then the whole
+    /// answer is read.
     private func greet(_ connection: Channel, engine: String?,
-                       replacing: Bool) async throws(ClientError) -> Greeting {
+                       replacing: Bool) async throws(ClientError) -> HelloResult {
         struct Server: Decodable { var server: String }
         let deadline = connection.end(after: helloWait)
         defer { deadline.cancel() }
-        let line: Data
-        do throws(ClientError) {
-            line = try await connection.ask("hello", HelloParams(protocol: protocolVersion))
-        } catch .unsupported(let why) where replacing {
-            return .another(why)
-        }
+        let line = try await connection.ask("hello", HelloParams(protocol: protocolVersion))
         let server = try decode(Answer<Server>.self, from: line).result.server
-        if replacing, let engine, server != engine { return .another("it runs \(server), not \(engine)") }
-        return .greeted(try decode(Answer<HelloResult>.self, from: line).result)
+        if replacing, let engine, server != engine { throw .unsupported("it runs \(server), not \(engine)") }
+        return try decode(Answer<HelloResult>.self, from: line).result
     }
 
     /// Handle a notification serve pushed: `method`, in `line`.
     private func pushed(_ method: String, _ line: Data) throws(ClientError) {
-        struct Pushed<P: Decodable>: Decodable { var params: P }
         switch method {
         case "status": emit.yield(.status(try decode(Pushed<Status>.self, from: line).params))
         case "alert": emit.yield(.alert(try decode(Pushed<Alert>.self, from: line).params))
@@ -259,11 +246,6 @@ private func decode<T: Decodable>(_: T.Type, from line: Data) throws(ClientError
     }
 }
 
-/// An answer, as the app reads it.
-private struct Answer<R: Decodable>: Decodable {
-    var result: R
-}
-
 /// Why a request has no answer, as a sentence to show.
 public enum ClientError: Error, Equatable, Sendable, CustomStringConvertible {
     case notConnected
@@ -272,7 +254,8 @@ public enum ClientError: Error, Equatable, Sendable, CustomStringConvertible {
     case closed(String)
     /// Serve answered with an error, which says why.
     case refused(String)
-    /// Serve doesn't speak this app's protocol, and says which it does.
+    /// Serve doesn't speak this app's protocol, and says which it does, or
+    /// runs another engine.
     case unsupported(String)
     case unreadable(String)
     /// A request couldn't be written for serve, and why.
@@ -451,7 +434,7 @@ struct Asked: Encodable {
     /// The line written to serve.
     func line() throws(ClientError) -> Data {
         do {
-            var line = try Contract.encoder.encode(self)
+            var line = try JSONEncoder().encode(self)
             line.append(0x0A)
             return line
         } catch {
@@ -467,17 +450,11 @@ private struct Engine: Sendable {
     var binary: URL
     var arguments: [String]
 
-    /// A socket connected to serve, and the serve process, if one was
-    /// started.
-    struct Opened {
-        var socket: Int32
-        var serve: Process?
-    }
-
     /// Connect to serve's socket at `path`. If nothing is listening, start
-    /// serve and keep trying for five seconds while it starts.
-    nonisolated func open(_ path: String) async throws(ClientError) -> sending Opened {
-        if let socket = Engine.connect(to: path) { return Opened(socket: socket, serve: nil) }
+    /// serve and keep trying for five seconds while it starts. Returns the
+    /// socket, and the serve process if it started one.
+    nonisolated func open(_ path: String) async throws(ClientError) -> sending (socket: Int32, serve: Process?) {
+        if let socket = Engine.connect(to: path) { return (socket, nil) }
         let serve = Process()
         serve.executableURL = binary
         serve.arguments = ["serve"] + arguments
@@ -497,7 +474,7 @@ private struct Engine: Sendable {
             } catch {
                 throw .closed("Turnscope stopped")
             }
-            if let socket = Engine.connect(to: path) { return Opened(socket: socket, serve: serve) }
+            if let socket = Engine.connect(to: path) { return (socket, serve) }
         }
         throw .unavailable("Turnscope's engine didn't start")
     }

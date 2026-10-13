@@ -35,7 +35,6 @@ struct AccountRow: View {
         let lines = open && !account.limits.isEmpty
         let usedMost = store.usedMost(account)
         let used = open && !usedMost.isEmpty
-        let deciding = account.decidingLimit
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: Row.gap) {
                 Logo(account: account, size: Row.logo)
@@ -44,7 +43,7 @@ struct AccountRow: View {
                     if !lines {
                         Text(words.status(account))
                             .font(.small)
-                            .foregroundStyle((deciding?.standing ?? .lasts).ink(lasting: .secondary))
+                            .foregroundStyle(account.standing.ink(lasting: .secondary))
                             .lineLimit(1)
                             .transition(appears)
                     }
@@ -53,14 +52,22 @@ struct AccountRow: View {
                 // before the space between them and the figure is shared.
                 .layoutPriority(1)
                 Spacer(minLength: 8)
-                HideButton(account: account, shown: hover)
+                // Sized to a name's line, and always given its room, so
+                // nothing moves when it shows on hover.
+                Button(action: hide) { Image(systemName: "eye.slash") }
+                    .buttonStyle(IconButton(width: 22, height: 16))
+                    .opacity(hover ? 1 : 0)
+                    .allowsHitTesting(hover)
+                    .accessibilityHidden(!hover)
+                    .help("Hide \(account.title) from the menu bar and the panel")
+                    .accessibilityLabel("Hide \(account.title)")
                 // Once the limit lines show, they say what the figure does,
                 // so it fades as they open, like the line under the name.
                 if !lines {
                     // The text after the figure says what it is, so they
                     // read as one: "$10 of $30", "$84 this month".
                     let said = words.rowFigure(account)
-                    let left = Text(said.figure).foregroundStyle((deciding?.standing ?? .lasts).ink(lasting: .primary))
+                    let left = Text(said.figure).foregroundStyle(account.standing.ink(lasting: .primary))
                     let then = Text(said.then.map { " \($0)" } ?? "")
                         .font(.name).foregroundStyle(.secondary)
                     Text("\(left)\(then)")
@@ -76,10 +83,14 @@ struct AccountRow: View {
             .accessibilityAddTraits(openable ? .isButton : [])
             .accessibilityHint(openable ? (open ? "Closes it" : "Opens it") : "")
             .accessibilityAction(.default) { if openable { toggle() } }
-            .accessibilityAction(named: "Hide") { withAnimation(spring) { store.setHidden(true, for: account.id) } }
+            .accessibilityAction(named: "Hide", hide)
             if open {
                 VStack(alignment: .leading, spacing: 10) {
-                    if lines { LimitLines(limits: account.limits, last: note == nil && !used) }
+                    if lines {
+                        ForEach(account.limits) { limit in
+                            LimitLine(limit: limit, last: note == nil && !used && limit.id == account.limits.last?.id)
+                        }
+                    }
                     if let note {
                         Text(note)
                             .font(.line).foregroundStyle(.secondary)
@@ -105,31 +116,23 @@ struct AccountRow: View {
             return .handled
         }
         .contextMenu {
-            Button("Hide \(account.title)") { withAnimation(spring) { store.setHidden(true, for: account.id) } }
+            Button("Hide \(account.title)", action: hide)
         }
+    }
+
+    private func hide() {
+        withAnimation(spring) { store.setHidden(true, for: account.id) }
     }
 
     /// Open it in place, closing any other, or close it if it's open.
     private func toggle() {
-        withAnimation(spring) { navigation.toggle(account.id) }
+        withAnimation(spring) { navigation.open = navigation.open == account.id ? nil : account.id }
     }
 }
 
-/// Every limit, one line each, across the full width of a row: its name, its
-/// times and what's left, above its bar. Every limit of every account uses
-/// the same bar.
-struct LimitLines: View {
-    var limits: [LimitStatus]
-    /// Whether they're the last thing in their row.
-    var last: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(limits) { LimitLine(limit: $0, last: last && $0.id == limits.last?.id) }
-        }
-    }
-}
-
+/// A limit's line, across the full width of a row: its name, its times and
+/// what's left, above its bar. Every limit of every account uses the same
+/// bar.
 private struct LimitLine: View {
     @Environment(Store.self) private var store
     @Environment(Navigation.self) private var navigation

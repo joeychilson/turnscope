@@ -1,5 +1,5 @@
 // Pieces shared by account rows, in the panel and in Settings: an account's
-// title, its name with the agents that use it, and its Hide button.
+// title, and its name with the agents that use it.
 
 import SwiftUI
 import TurnscopeKit
@@ -43,28 +43,5 @@ struct AccountName: View {
                     .lineLimit(1).truncationMode(.tail)
             }
         }
-    }
-}
-
-/// A button on an account's row that hides the account. It's sized to a
-/// name's line and the row always keeps room for it. It shows only while
-/// `shown`, so nothing moves when it appears.
-struct HideButton: View {
-    @Environment(Store.self) private var store
-    var account: AccountStatus
-    var shown: Bool
-
-    var body: some View {
-        Button {
-            withAnimation(spring) { store.setHidden(true, for: account.id) }
-        } label: {
-            Image(systemName: "eye.slash")
-        }
-        .buttonStyle(IconButton(width: 22, height: 16))
-        .opacity(shown ? 1 : 0)
-        .allowsHitTesting(shown)
-        .accessibilityHidden(!shown)
-        .help("Hide \(account.title) from the menu bar and the panel")
-        .accessibilityLabel("Hide \(account.title)")
     }
 }
