@@ -257,17 +257,13 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
     for session in &mut sessions {
         used(db, session, now)?;
     }
-    let wanted: Vec<String> = words
-        .iter()
-        .map(|word| word.trim_matches('"').to_lowercase())
-        .collect();
     for session in sessions
         .iter_mut()
         .filter(|session| session.mentions.is_some_and(|mentions| mentions > 0))
         .take(SAYING)
     {
         let held = holding.get(&session.id).unwrap_or(&session.id);
-        session.said = said(db, held, &wanted).map(|said| Said {
+        session.said = said(db, held, &words).map(|said| Said {
             subagent: (held != &session.id).then(|| held.clone()),
             ..said
         });
@@ -634,7 +630,7 @@ fn said(db: &Connection, id: &str, words: &[String]) -> Option<Said> {
     let words: Vec<Vec<char>> = words
         .iter()
         .map(|word| {
-            let word: String = plain(word).into_iter().collect();
+            let word: String = plain(&word.to_lowercase()).into_iter().collect();
             format!(
                 " {} ",
                 word.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -999,10 +995,10 @@ pub fn text(page: &Page, cite: Cite, yours: Option<&str>, now: i64) -> String {
                 format!(" in its subagent `{subagent}`")
             });
             out += &format!(
-                "\n  #{} {}{within}: \"{}\"",
+                "\n  #{} {}{within}: {}",
                 said.entry,
                 kind(said.kind),
-                said.text
+                in_quotes(&said.text, usize::MAX)
             );
         }
     }
@@ -1083,7 +1079,32 @@ pub fn detail_text(detail: &Detail, now: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cite, Entry, Kind, Reading, page, page_text};
+    use super::{Cite, Entry, Kind, Page, Reading, Said, Summary, page, page_text, text};
+
+    #[test]
+    fn what_a_search_quotes_is_escaped_as_json() {
+        let found = Page {
+            sessions: vec![Summary {
+                id: "codex:s1".to_owned(),
+                agent: "codex".to_owned(),
+                mentions: Some(1),
+                said: Some(Said {
+                    subagent: None,
+                    entry: 3,
+                    kind: Kind::Assistant,
+                    text: r#"Split on "," and keep \ as is."#.to_owned(),
+                }),
+                ..Summary::default()
+            }],
+            found: 1,
+            next: None,
+        };
+        let listed = text(&found, Cite::Command, None, 0);
+        assert!(
+            listed.ends_with(r#"#3 assistant: "Split on \",\" and keep \\ as is.""#),
+            "{listed}"
+        );
+    }
 
     #[test]
     fn counted_back_from_the_end_it_counts_the_entries_wanted() {
