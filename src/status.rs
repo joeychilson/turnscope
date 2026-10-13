@@ -21,7 +21,7 @@ use crate::time::{self, DAY, HOUR, MINUTE};
 use crate::{Result, agents};
 
 mod text;
-pub use text::{fit, limit_text, line, text, verdict};
+pub use text::{fit, limit_text, line, login_agents, text, verdict};
 
 /// How recently a response must have drawn on an account for it to be in use.
 const IN_USE: i64 = 30 * MINUTE;
@@ -158,8 +158,7 @@ impl State {
     pub fn why(&self) -> Option<Stale> {
         match self {
             State::Live { .. } => None,
-            State::AsOf { why, .. } => Some(*why),
-            State::Unread { why } => Some(*why),
+            State::AsOf { why, .. } | State::Unread { why } => Some(*why),
         }
     }
 }
@@ -207,6 +206,20 @@ impl Limit {
         match &self.scope {
             Some(scope) => format!("{} ({scope})", self.name),
             None => self.name.clone(),
+        }
+    }
+
+    /// Its name in lowercase, with `hours` after a count of hours and its
+    /// model before it: "weekly", "5h" or "5-hour", "Opus weekly".
+    pub fn lowercase(&self, hours: &str) -> String {
+        let name = self.name.to_lowercase();
+        let name = match name.split_once(' ') {
+            Some((count, "hours")) if count.parse::<u32>().is_ok() => format!("{count}{hours}"),
+            _ => name,
+        };
+        match &self.scope {
+            Some(scope) => format!("{scope} {name}"),
+            None => name,
         }
     }
 
@@ -259,7 +272,7 @@ impl Moment {
         let at = (at + MINUTE / 2).div_euclid(MINUTE) * MINUTE;
         let horizon = if at - now < 3 * HOUR {
             Horizon::Soon
-        } else if time::local(at).date() == time::local(now).date() {
+        } else if time::today(at, now) {
             Horizon::Today
         } else if at - now < 7 * DAY {
             Horizon::ThisWeek
@@ -382,9 +395,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
          WHERE s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)
            AND s.account IS NOT NULL",
     )?;
-    for row in rows.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
-    })? {
+    for row in rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))? {
         let (agent, account, key): (String, String, Option<String>) = row?;
         let agents = signed.entry(account).or_default();
         if !agents.contains(&agent) {
@@ -720,32 +731,24 @@ fn outlook(window: &Window, now: i64) -> Outlook {
 /// read, on all its usage where any is, the most urgent, then the soonest
 /// out, then the least left. When every one reset since, the last to.
 fn deciding(limits: &[Limit]) -> Option<&Limit> {
-    let known: Vec<&Limit> = limits
+    limits
         .iter()
         .filter(|limit| limit.reset_since.is_none())
-        .collect();
-    if known.is_empty() {
-        return limits.iter().max_by_key(|limit| limit.reset_since);
-    }
-    let whole: Vec<&Limit> = known
-        .iter()
-        .copied()
-        .filter(|limit| limit.whole())
-        .collect();
-    let candidates = if whole.is_empty() { known } else { whole };
-    candidates.into_iter().min_by_key(|limit| {
-        let least = match &limit.outlook {
-            Outlook::Lasts {
-                left_at_reset: Some(spread),
-            } => spread.likely,
-            _ => limit.left_percent,
-        };
-        (
-            Reverse(limit.urgency()),
-            limit.runs_out().unwrap_or(i64::MAX),
-            least,
-        )
-    })
+        .min_by_key(|limit| {
+            let least = match &limit.outlook {
+                Outlook::Lasts {
+                    left_at_reset: Some(spread),
+                } => spread.likely,
+                _ => limit.left_percent,
+            };
+            (
+                !limit.whole(),
+                Reverse(limit.urgency()),
+                limit.runs_out().unwrap_or(i64::MAX),
+                least,
+            )
+        })
+        .or_else(|| limits.iter().max_by_key(|limit| limit.reset_since))
 }
 
 /// The order every front-end lists accounts in: those in use, the most
@@ -796,30 +799,24 @@ fn spend(db: &rusqlite::Connection, account: &str, now: i64) -> Result<Spend> {
 
 /// The accounts `name` names: its id, or part of its title, label or id.
 pub fn named<'a>(status: &'a Status, name: &str) -> crate::Result<Vec<&'a Account>> {
+    if let Some(exact) = status.accounts.iter().find(|account| account.id == name) {
+        return Ok(vec![exact]);
+    }
     let wanted = name.to_lowercase();
-    let exact: Vec<&Account> = status
+    let found: Vec<&Account> = status
         .accounts
         .iter()
-        .filter(|account| account.id == name)
+        .filter(|account| {
+            [
+                Some(&account.title),
+                account.label.as_ref(),
+                Some(&account.id),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|text| text.to_lowercase().contains(&wanted))
+        })
         .collect();
-    let found: Vec<&Account> = if exact.is_empty() {
-        status
-            .accounts
-            .iter()
-            .filter(|account| {
-                [
-                    Some(&account.title),
-                    account.label.as_ref(),
-                    Some(&account.id),
-                ]
-                .into_iter()
-                .flatten()
-                .any(|text| text.to_lowercase().contains(&wanted))
-            })
-            .collect()
-    } else {
-        exact
-    };
     if found.is_empty() {
         let known: Vec<String> = status
             .accounts

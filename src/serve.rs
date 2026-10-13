@@ -15,6 +15,7 @@
 //! raised. Should that thread stop, serve stops too, so the app starts one
 //! that keeps it.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
@@ -330,19 +331,11 @@ impl Server {
 
     /// Answer a line; `false` once asked to shut down.
     fn answer(&mut self, client: u64, line: &[u8]) -> bool {
-        let reply =
-            |id: Value, result: std::result::Result<Value, (i64, String, Option<Value>)>| {
-                match result {
-                    Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                    Err((code, message, data)) => {
-                        let mut error = json!({ "code": code, "message": message });
-                        if let Some(data) = data {
-                            error["data"] = data;
-                        }
-                        json!({ "jsonrpc": "2.0", "id": id, "error": error })
-                    }
-                }
-            };
+        let reply = |id: Value, result: std::result::Result<Value, Value>| match result {
+            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Err(error) => json!({ "jsonrpc": "2.0", "id": id, "error": error }),
+        };
+        let refused = |code: i64, message: String| json!({ "code": code, "message": message });
         let request: Value = match serde_json::from_slice(line) {
             Ok(request) => request,
             Err(error) => {
@@ -350,7 +343,7 @@ impl Server {
                     client,
                     &reply(
                         Value::Null,
-                        Err((-32700, format!("not JSON: {error}"), None)),
+                        Err(refused(-32700, format!("not JSON: {error}"))),
                     ),
                 );
                 return true;
@@ -362,7 +355,7 @@ impl Server {
                 client,
                 &reply(
                     id,
-                    Err((-32600, "a request needs a method".to_owned(), None)),
+                    Err(refused(-32600, "a request needs a method".to_owned())),
                 ),
             );
             return true;
@@ -372,13 +365,12 @@ impl Server {
             return true;
         };
         let params = request.get("params").cloned().unwrap_or_default();
-        fn given<T: for<'a> Deserialize<'a>>(
-            params: Value,
-        ) -> std::result::Result<T, (i64, String, Option<Value>)> {
-            serde_json::from_value(params)
-                .map_err(|error| (-32602, format!("parameters that don't fit: {error}"), None))
+        fn given<T: for<'a> Deserialize<'a>>(params: Value) -> std::result::Result<T, Value> {
+            serde_json::from_value(params).map_err(|error| {
+                json!({ "code": -32602, "message": format!("parameters that don't fit: {error}") })
+            })
         }
-        let failed = |error: Error| (-32000, error.to_string(), None);
+        let failed = move |error: Error| refused(-32000, error.to_string());
         let greeted = self
             .clients
             .get(&client)
@@ -400,7 +392,8 @@ impl Server {
                             "this turnscope speaks protocol {PROTOCOL}, not {}",
                             hello.protocol
                         );
-                        return Err((-32001, message, Some(json!({ "supported": [PROTOCOL] }))));
+                        let data = json!({ "supported": [PROTOCOL] });
+                        return Err(json!({ "code": -32001, "message": message, "data": data }));
                     }
                     let status = AppStatus::of(&self.db, &self.home, now).map_err(failed)?;
                     let alerts = alerts::pending(&self.db, now).map_err(failed)?;
@@ -411,7 +404,7 @@ impl Server {
                     Ok(json!({ "server": server, "status": status, "alerts": alerts }))
                 })
             }
-            _ if !greeted => Err((-32002, "send hello first".to_owned(), None)),
+            _ if !greeted => Err(refused(-32002, "send hello first".to_owned())),
             "alerts.ack" => {
                 #[derive(Deserialize)]
                 struct Ack {
@@ -462,11 +455,8 @@ impl Server {
                     agent: String,
                 }
                 match given::<Asked>(params).and_then(|asked| {
-                    agents::by_id(&asked.agent).ok_or((
-                        -32602,
-                        format!("no agent is {}", asked.agent),
-                        None,
-                    ))
+                    agents::by_id(&asked.agent)
+                        .ok_or_else(|| refused(-32602, format!("no agent is {}", asked.agent)))
                 }) {
                     // It runs the agent's own commands, for up to minutes:
                     // answered when done, so nothing else waits.
@@ -487,7 +477,7 @@ impl Server {
                     Err(error) => Err(error),
                 }
             }
-            other => Err((-32601, format!("no method {other}"), None)),
+            other => Err(refused(-32601, format!("no method {other}"))),
         };
         let changed = result.is_ok() && matches!(method, "settings.set" | "account.hide");
         self.send(client, &reply(id, result));
@@ -500,13 +490,9 @@ impl Server {
     /// The sessions that used most of a limit in its window, with the points
     /// of it each took, of the status last pushed.
     fn breakdown(&self, account: &str, limit: &str, now: i64) -> Result<Vec<UsedMost>> {
-        let worked_out;
         let status = match &self.sent {
-            Some((status, _)) => status,
-            None => {
-                worked_out = status::status(&self.db, now)?;
-                &worked_out
-            }
+            Some((status, _)) => Cow::Borrowed(status),
+            None => Cow::Owned(status::status(&self.db, now)?),
         };
         let found = status
             .accounts
@@ -519,8 +505,15 @@ impl Server {
                 ))
             })
             .ok_or_else(|| Error::NotFound(format!("no limit {limit} of {account}")))?;
-        let (used, points) =
-            usage::breakdown(&self.db, found.0, found.1, None, usage::By::Session, 3, now)?;
+        let (used, points) = usage::breakdown(
+            &self.db,
+            found.0,
+            Some(found.1),
+            None,
+            usage::By::Session,
+            3,
+            now,
+        )?;
         let mut sessions = Vec::new();
         for (row, points) in used.rows.iter().zip(points) {
             let (title, project, agent, running) = crate::sessions::brief(&self.db, &row.key, now)?;
@@ -568,22 +561,16 @@ mod tests {
             let path = format!("{}/contract/{name}", env!("CARGO_MANIFEST_DIR"));
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
         };
-        let again =
-            |value: &Value, read: fn(Value) -> Value| assert_eq!(&read(value.clone()), value);
-        let status = |value: Value| {
-            serde_json::to_value(serde_json::from_value::<super::AppStatus>(value).unwrap())
-                .unwrap()
-        };
-        let alert = |value: Value| {
-            serde_json::to_value(serde_json::from_value::<crate::alerts::Alert>(value).unwrap())
-                .unwrap()
-        };
-        again(&example("status.notification.json")["params"], status);
-        again(&example("alert.notification.json")["params"], alert);
+        fn again<T: serde::Serialize + serde::de::DeserializeOwned>(value: &Value) {
+            let read: T = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(&serde_json::to_value(read).unwrap(), value);
+        }
+        again::<super::AppStatus>(&example("status.notification.json")["params"]);
+        again::<crate::alerts::Alert>(&example("alert.notification.json")["params"]);
         let hello = example("hello.result.json");
-        again(&hello["result"]["status"], status);
+        again::<super::AppStatus>(&hello["result"]["status"]);
         for each in hello["result"]["alerts"].as_array().unwrap() {
-            again(each, alert);
+            again::<crate::alerts::Alert>(each);
         }
     }
 }
