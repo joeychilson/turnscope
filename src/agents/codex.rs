@@ -338,10 +338,6 @@ fn typed(text: &str) -> String {
     super::without_tags(text, INJECTED)
 }
 
-fn id(native: &str) -> String {
-    format!("codex:{native}")
-}
-
 impl Agent for Codex {
     fn info(&self) -> &'static Info {
         &INFO
@@ -390,7 +386,7 @@ impl Agent for Codex {
                 super::lines(file, cursor.offset, |bytes| {
                     match serde_json::from_slice::<Named>(bytes) {
                         Ok(named) => read
-                            .session(&id(&named.id))
+                            .session(&INFO.session(&named.id))
                             .title(Title::Generated, &named.thread_name),
                         Err(_) => read.skipped += 1,
                     }
@@ -410,7 +406,7 @@ impl Agent for Codex {
     }
 
     fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        let thread = id(native);
+        let thread = INFO.session(native);
         // A thread's rollouts, oldest first by the time in their names.
         let mut rollouts: Vec<&PathBuf> = files
             .iter()
@@ -541,7 +537,10 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
             if !copied {
                 cursor.recorded = cursor.recorded.plus(&usage);
             }
-            let session = payload.thread_id.as_deref().map_or(thread.clone(), id);
+            let session = payload
+                .thread_id
+                .as_deref()
+                .map_or(thread.clone(), |native| INFO.session(native));
             respond(
                 response.clone(),
                 session,
@@ -596,8 +595,11 @@ fn in_copy(line: &Line, thread: &str, copying: &mut bool) -> bool {
     let Some(payload) = &line.payload else {
         return *copying;
     };
-    let names =
-        |native: &Option<String>| native.as_deref().is_some_and(|native| id(native) == thread);
+    let names = |native: &Option<String>| {
+        native
+            .as_deref()
+            .is_some_and(|native| INFO.session(native) == thread)
+    };
     match (&*line.kind, payload.kind.as_deref()) {
         ("session_meta", _) if !names(&payload.id) => *copying = true,
         ("event_msg", Some("thread_settings_applied")) if names(&payload.thread_id) => {
@@ -615,7 +617,7 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
         return;
     }
     let Some(native) = &meta.id else { return };
-    let thread = id(native);
+    let thread = INFO.session(native);
     cursor.provider = meta.model_provider.clone();
     cursor.copied_until = meta
         .parent_thread_id
@@ -625,11 +627,11 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
     let session = read.session(&thread);
     session.parent = match (&meta.parent_thread_id, &meta.forked_from_id) {
         (Some(parent), _) => Some(Parent {
-            id: id(parent),
+            id: INFO.session(parent),
             link: Link::Subagent,
         }),
         (None, Some(fork)) if fork != native => Some(Parent {
-            id: id(fork),
+            id: INFO.session(fork),
             link: Link::Fork,
         }),
         _ => None,
@@ -939,16 +941,7 @@ mod tests {
 
     fn rollout(dir: &Path, name: &str, lines: &[Value]) -> PathBuf {
         let file = dir.join(format!("sessions/2026/09/30/rollout-{name}.jsonl"));
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(
-            &file,
-            lines
-                .iter()
-                .map(|line| format!("{line}\n"))
-                .collect::<String>(),
-        )
-        .unwrap();
-        file
+        crate::agents::jsonl(file, lines)
     }
 
     fn line(ordinal: i64, kind: &str, payload: Value) -> Value {

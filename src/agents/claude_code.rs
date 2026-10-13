@@ -215,7 +215,7 @@ struct Cursor {
     described: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Copy {
     parent: String,
     /// The call the copy runs through; without one, the first prompt ends it.
@@ -307,15 +307,7 @@ impl Attachment<'_> {
         {
             return None;
         }
-        let text = match self.prompt.as_ref()? {
-            Value::String(text) => text.clone(),
-            blocks => blocks
-                .as_array()?
-                .iter()
-                .filter_map(|block| block["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        };
+        let text = super::texts(self.prompt.as_ref()?).join("\n");
         Some((typed(&text), !self.meta)).filter(|(text, _)| !text.is_empty())
     }
 }
@@ -396,7 +388,6 @@ struct Counts {
     /// cache keeps it.
     #[serde(default)]
     cache_creation_input_tokens: u64,
-    #[serde(default)]
     cache_creation: Option<CacheCreation>,
     output_tokens: u64,
 }
@@ -434,30 +425,24 @@ impl Counts {
 struct Usage {
     #[serde(flatten)]
     counts: Counts,
-    #[serde(default)]
     iterations: Option<Vec<Counts>>,
-    #[serde(default)]
     output_tokens_details: Option<OutputDetails>,
-    #[serde(default)]
     server_tool_use: Option<ServerTools>,
-    #[serde(default)]
     speed: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct OutputDetails {
-    #[serde(default)]
     thinking_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
 struct ServerTools {
-    #[serde(default)]
     web_search_requests: Option<u64>,
 }
 
 /// A subagent's description, `agent-<id>.meta.json`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct Meta {
     description: Option<String>,
     #[serde(rename = "parentAgentId")]
@@ -482,10 +467,6 @@ fn named(file: &Path) -> Option<(String, Option<String>)> {
     }
 }
 
-fn id(native: &str) -> String {
-    format!("claude-code:{native}")
-}
-
 impl Agent for ClaudeCode {
     fn info(&self) -> &'static Info {
         &INFO
@@ -496,36 +477,17 @@ impl Agent for ClaudeCode {
     }
 
     fn files(&self, folder: &Path) -> Vec<PathBuf> {
+        let jsonl = |path: &PathBuf| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        };
         let mut files = Vec::new();
-        let projects = std::fs::read_dir(folder.join("projects"))
-            .into_iter()
-            .flatten();
-        for project in projects.flatten() {
-            for entry in std::fs::read_dir(project.path())
-                .into_iter()
-                .flatten()
-                .flatten()
-            {
-                let path = entry.path();
-                if path
-                    .extension()
-                    .is_some_and(|extension| extension == "jsonl")
-                {
-                    files.push(path);
-                } else if path.is_dir() {
-                    let subagents = std::fs::read_dir(path.join("subagents"))
-                        .into_iter()
-                        .flatten();
-                    files.extend(
-                        subagents
-                            .flatten()
-                            .map(|entry| entry.path())
-                            .filter(|path| {
-                                path.extension()
-                                    .is_some_and(|extension| extension == "jsonl")
-                            }),
-                    );
-                }
+        let projects = super::entries(&folder.join("projects"));
+        for path in projects.flat_map(|project| super::entries(&project)) {
+            if jsonl(&path) {
+                files.push(path);
+            } else if path.is_dir() {
+                files.extend(super::entries(&path.join("subagents")).filter(jsonl));
             }
         }
         files
@@ -534,7 +496,7 @@ impl Agent for ClaudeCode {
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
         let (session, agent) = named(file)
             .ok_or_else(|| Error::Failed(format!("{} isn't a Claude Code log", file.display())))?;
-        let own = id(agent.as_deref().unwrap_or(&session));
+        let own = INFO.session(agent.as_deref().unwrap_or(&session));
         let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
         let mut read = Read::default();
 
@@ -544,48 +506,40 @@ impl Agent for ClaudeCode {
             let meta = std::fs::read(file.with_file_name(format!("agent-{agent}.meta.json")))
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Meta>(&bytes).ok());
-            match meta {
-                Some(meta) => {
-                    let parent = meta
-                        .parent_agent_id
-                        .filter(|parent| !parent.is_empty())
-                        .unwrap_or(session.clone());
-                    if meta.is_fork && cursor.offset == 0 {
-                        cursor.copy = meta.tool_use_id.map(|call| Copy {
-                            parent: id(&parent),
-                            through: Some(call),
-                        });
-                    }
-                    // A fork here is a subagent begun with a copy of its
-                    // parent's context: it's still the parent's subagent.
-                    let described = read.session(&own);
-                    described.parent = Some(Parent {
-                        id: id(&parent),
-                        link: Link::Subagent,
-                    });
-                    if let Some(task) = meta.description {
-                        described.title(Title::Task, &task);
-                    }
-                    cursor.described = true;
-                }
-                // Read without its description, a fork's copy would read as
-                // the fork's own, so a new log waits for it, and for one
-                // read while Claude Code was still writing it, which won't
-                // parse. An error, so it's tried again at the next read.
-                None if cursor.offset == 0 && begun_lately(file) => {
-                    return Err(Error::Failed(format!(
-                        "{} waits for its description",
-                        file.display()
-                    )));
-                }
-                None => {
-                    read.session(&own).parent = Some(Parent {
-                        id: id(&session),
-                        link: Link::Subagent,
-                    });
-                    cursor.described = true;
-                }
+            // Read without its description, a fork's copy would read as the
+            // fork's own, so a new log waits for it, and for one read while
+            // Claude Code was still writing it, which won't parse. An error,
+            // so it's tried again at the next read.
+            if meta.is_none() && cursor.offset == 0 && begun_lately(file) {
+                return Err(Error::Failed(format!(
+                    "{} waits for its description",
+                    file.display()
+                )));
             }
+            let meta = meta.unwrap_or_default();
+            let parent = INFO.session(
+                meta.parent_agent_id
+                    .as_deref()
+                    .filter(|parent| !parent.is_empty())
+                    .unwrap_or(&session),
+            );
+            if meta.is_fork && cursor.offset == 0 {
+                cursor.copy = meta.tool_use_id.map(|call| Copy {
+                    parent: parent.clone(),
+                    through: Some(call),
+                });
+            }
+            // A fork here is a subagent begun with a copy of its parent's
+            // context: it's still the parent's subagent.
+            let described = read.session(&own);
+            described.parent = Some(Parent {
+                id: parent,
+                link: Link::Subagent,
+            });
+            if let Some(task) = meta.description {
+                described.title(Title::Task, &task);
+            }
+            cursor.described = true;
         }
 
         cursor.offset = super::lines(file, cursor.offset, |bytes| {
@@ -606,7 +560,9 @@ impl Agent for ClaudeCode {
                 let named = named(file)?;
                 (named.1.as_deref().unwrap_or(&named.0) == native).then_some((file, named))
             })
-            .ok_or_else(|| Error::NotFound(format!("the log of claude-code:{native} is gone")))?;
+            .ok_or_else(|| {
+                Error::NotFound(format!("the log of {} is gone", INFO.session(native)))
+            })?;
         let meta: Option<Meta> = agent.as_ref().and_then(|agent| {
             let meta = std::fs::read(file.with_file_name(format!("agent-{agent}.meta.json")));
             serde_json::from_slice(&meta.ok()?).ok()
@@ -682,12 +638,7 @@ impl Agent for ClaudeCode {
         let item = if own {
             "Claude Code-credentials".to_owned()
         } else {
-            use sha2::Digest as _;
-            let digest = sha2::Sha256::digest(folder.as_os_str().as_encoded_bytes());
-            let hex: String = digest[..4]
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect();
+            let hex = crate::sha256_hex(folder.as_os_str().as_encoded_bytes(), 4);
             format!("Claude Code-credentials-{hex}")
         };
         // Read with `/usr/bin/security`, the tool Claude Code writes it with,
@@ -701,26 +652,19 @@ impl Agent for ClaudeCode {
         let output = crate::output_within(&mut security, Duration::from_secs(20))
             .map_err(|error| failed(error.to_string()))?;
         // 44: no such item.
-        let kept: Option<Value> = match output.status.code() {
-            Some(0) => Some(
-                serde_json::from_slice(&output.stdout)
-                    .map_err(|error| failed(error.to_string()))?,
-            ),
-            Some(44) => None,
+        let kept: Value = match output.status.code() {
+            Some(0) => {
+                serde_json::from_slice(&output.stdout).map_err(|error| failed(error.to_string()))?
+            }
+            Some(44) => Value::Null,
             code => return Err(failed(format!("security exited with {code:?}"))),
         };
-        let token = kept
-            .as_ref()
-            .and_then(|kept| kept.pointer("/claudeAiOauth/accessToken")?.as_str());
-        let credential = match (kept.as_ref(), token) {
-            (Some(kept), Some(token)) => {
+        let token = kept.pointer("/claudeAiOauth/accessToken");
+        let credential = match token.and_then(Value::as_str) {
+            Some(token) => {
                 // Whose it is: a plan belongs to an organization, and one
                 // account can be in several.
-                let config = if own {
-                    home.join(".claude.json")
-                } else {
-                    folder.join(".claude.json")
-                };
+                let config = if own { home } else { folder }.join(".claude.json");
                 let config = super::json_file(&config)?.unwrap_or_default();
                 let part = |pointer: &str| {
                     config
@@ -752,7 +696,7 @@ impl Agent for ClaudeCode {
                         .map(str::to_owned),
                 })
             }
-            _ => None,
+            None => None,
         };
         Ok(vec![Login {
             provider: "anthropic".to_owned(),
@@ -762,10 +706,8 @@ impl Agent for ClaudeCode {
 
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String> {
         // Its own folder's settings are beside it; another's are inside it.
-        let settings = match folder == home.join(".claude") {
-            true => home.join(".claude.json"),
-            false => folder.join(".claude.json"),
-        };
+        let own = folder == home.join(".claude");
+        let settings = if own { home } else { folder }.join(".claude.json");
         super::json_mcp_command(&settings, "/mcpServers/turnscope/command")
     }
 
@@ -806,7 +748,7 @@ fn in_copy(line: &Line, copy: &mut Option<Copy>, prompted: &mut bool) -> bool {
         "fork-context-ref" => {
             if !*prompted && copy.is_none() {
                 *copy = line.parent_session_id.as_deref().map(|parent| Copy {
-                    parent: id(parent),
+                    parent: INFO.session(parent),
                     through: None,
                 });
             }
@@ -825,7 +767,7 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
     // subagent's link, from its description, stays.
     if let ("fork-context-ref", Some(parent)) = (&*line.kind, line.parent_session_id.as_deref()) {
         read.session(own).parent.get_or_insert(Parent {
-            id: id(parent),
+            id: INFO.session(parent),
             link: Link::Fork,
         });
     }
@@ -839,7 +781,7 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
     // A subagent's lines name the session it ran in; its agent id says whose
     // they are.
     let owner = match (&line.agent_id, &line.session_id) {
-        (Some(agent), _) | (None, Some(agent)) if !agent.is_empty() => id(agent),
+        (Some(agent), _) | (None, Some(agent)) if !agent.is_empty() => INFO.session(agent),
         _ => own.to_owned(),
     };
     match &*line.kind {
@@ -888,7 +830,7 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
         }
         "continued-in" => {
             if let Some(next) = line.continued_in.as_deref() {
-                read.session(&id(next)).parent = Some(Parent {
+                read.session(&INFO.session(next)).parent = Some(Parent {
                     id: owner,
                     link: Link::Continuation,
                 });
@@ -1034,15 +976,7 @@ fn converse(line: &Line, bytes: &[u8], subagent: bool, conversation: &mut Conver
         return;
     }
     for block in blocks.iter().filter(|block| block["type"] == "tool_result") {
-        let output = match &block["content"] {
-            Value::String(text) => text.clone(),
-            Value::Array(parts) => parts
-                .iter()
-                .filter_map(|part| part["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => String::new(),
-        };
+        let output = super::texts(&block["content"]).join("\n");
         // Claude Code's own note closing a command's output, not the
         // command's.
         let output = match output.rfind("Shell cwd was reset to ") {
@@ -1090,64 +1024,42 @@ fn begun_lately(file: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     /// A session's log of `lines` in a project folder, and its file.
-    fn log(dir: &Path, name: &str, lines: &[serde_json::Value]) -> PathBuf {
-        let file = dir.join("projects/-work-app").join(name);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
-        std::fs::write(&file, text).unwrap();
-        file
+    fn log(dir: &Path, name: &str, lines: &[Value]) -> PathBuf {
+        crate::agents::jsonl(dir.join("projects/-work-app").join(name), lines)
     }
 
-    fn assistant(
-        session: &str,
-        message: &str,
-        request: &str,
-        at: &str,
-        usage: serde_json::Value,
-        content: serde_json::Value,
-    ) -> serde_json::Value {
-        serde_json::json!({"type": "assistant", "sessionId": session, "requestId": request, "timestamp": at,
-            "message": {"id": message, "model": "claude-opus-5", "role": "assistant", "usage": usage, "content": content}})
+    /// The `n`th response, `msg_<n>` of the request `req_<n>`.
+    fn assistant(session: &str, n: u32, at: &str, usage: Value, content: Value) -> Value {
+        json!({"type": "assistant", "sessionId": session, "requestId": format!("req_{n}"), "timestamp": at,
+            "message": {"id": format!("msg_{n}"), "model": "claude-opus-5", "role": "assistant", "usage": usage, "content": content}})
     }
 
-    fn usage(input: u64, output: u64) -> serde_json::Value {
-        serde_json::json!({"input_tokens": input, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 30,
+    fn usage(input: u64, output: u64) -> Value {
+        json!({"input_tokens": input, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 30,
             "cache_creation": {"ephemeral_5m_input_tokens": 10, "ephemeral_1h_input_tokens": 20}, "output_tokens": output})
     }
 
     #[test]
     fn a_response_written_as_it_streams_is_one_response_at_its_most() {
         let dir = tempfile::tempdir().unwrap();
-        let text = serde_json::json!([{"type": "text", "text": "Done."}]);
+        let text = json!([{"type": "text", "text": "Done."}]);
         let file = log(
             dir.path(),
             "s1.jsonl",
             &[
-                serde_json::json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z", "cwd": "/work/app",
+                json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z", "cwd": "/work/app",
                 "message": {"role": "user", "content": "<command-name>/review</command-name><command-args>src</command-args>"}}),
-                assistant(
-                    "s1",
-                    "msg_1",
-                    "req_1",
-                    "2026-09-30T09:00:01Z",
-                    usage(5, 16),
-                    text.clone(),
-                ),
-                assistant(
-                    "s1",
-                    "msg_1",
-                    "req_1",
-                    "2026-09-30T09:00:02Z",
-                    usage(5, 900),
-                    text,
-                ),
+                assistant("s1", 1, "2026-09-30T09:00:01Z", usage(5, 16), text.clone()),
+                assistant("s1", 1, "2026-09-30T09:00:02Z", usage(5, 900), text),
                 // Claude Code's own reply costs nothing.
-                serde_json::json!({"type": "assistant", "sessionId": "s1", "timestamp": "2026-09-30T09:00:03Z",
+                json!({"type": "assistant", "sessionId": "s1", "timestamp": "2026-09-30T09:00:03Z",
                 "message": {"id": "msg_2", "model": "<synthetic>", "role": "assistant", "usage": usage(0, 0), "content": []}}),
-                serde_json::json!({"type": "ai-title", "sessionId": "s1", "aiTitle": "Review src"}),
+                json!({"type": "ai-title", "sessionId": "s1", "aiTitle": "Review src"}),
             ],
         );
         let read = ClaudeCode.read(&file, "").unwrap();
@@ -1185,17 +1097,16 @@ mod tests {
     fn a_response_of_several_calls_is_their_sum_at_the_largest_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let mut counted = usage(0, 0);
-        counted["iterations"] = serde_json::json!([usage(1000, 10), usage(3000, 20)]);
+        counted["iterations"] = json!([usage(1000, 10), usage(3000, 20)]);
         let file = log(
             dir.path(),
             "s1.jsonl",
             &[assistant(
                 "s1",
-                "msg_1",
-                "req_1",
+                1,
                 "2026-09-30T09:00:01Z",
                 counted,
-                serde_json::json!([]),
+                json!([]),
             )],
         );
         let response = &ClaudeCode.read(&file, "").unwrap().responses["msg_1:req_1"];
@@ -1213,36 +1124,17 @@ mod tests {
     #[test]
     fn a_forks_copy_of_its_parents_history_is_the_parents() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("projects/-work-app/s1/subagents");
-        std::fs::create_dir_all(&folder).unwrap();
+        let call = json!([{"type": "tool_use", "id": "call_1", "name": "Agent", "input": {}}]);
+        let mut own = assistant("s1", 2, "2026-09-30T09:05:00Z", usage(7, 70), json!([]));
+        own["agentId"] = json!("f1");
+        let mut copied = assistant("s1", 1, "2026-09-30T09:00:00Z", usage(5, 50), call);
+        copied["agentId"] = json!("f1");
+        let file = log(dir.path(), "s1/subagents/agent-f1.jsonl", &[copied, own]);
         std::fs::write(
-            folder.join("agent-f1.meta.json"),
+            file.with_file_name("agent-f1.meta.json"),
             r#"{"description": "Try the other parser", "isFork": true, "toolUseId": "call_1"}"#,
         )
         .unwrap();
-        let line = |value: serde_json::Value| format!("{value}\n");
-        let call =
-            serde_json::json!([{"type": "tool_use", "id": "call_1", "name": "Agent", "input": {}}]);
-        let mut own = assistant(
-            "s1",
-            "msg_2",
-            "req_2",
-            "2026-09-30T09:05:00Z",
-            usage(7, 70),
-            serde_json::json!([]),
-        );
-        own["agentId"] = serde_json::json!("f1");
-        let mut copied = assistant(
-            "s1",
-            "msg_1",
-            "req_1",
-            "2026-09-30T09:00:00Z",
-            usage(5, 50),
-            call,
-        );
-        copied["agentId"] = serde_json::json!("f1");
-        let file = folder.join("agent-f1.jsonl");
-        std::fs::write(&file, line(copied) + &line(own)).unwrap();
         let read = ClaudeCode.read(&file, "").unwrap();
         let copy = &read.responses["msg_1:req_1"];
         assert_eq!((copy.session.as_str(), copy.copy), ("claude-code:s1", true));
@@ -1264,16 +1156,13 @@ mod tests {
     #[test]
     fn a_fork_waits_for_a_description_half_written() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("projects/-work-app/s1/subagents");
-        std::fs::create_dir_all(&folder).unwrap();
+        let file = log(dir.path(), "s1/subagents/agent-f1.jsonl", &[json!({})]);
         // As read while Claude Code is still writing it.
         std::fs::write(
-            folder.join("agent-f1.meta.json"),
+            file.with_file_name("agent-f1.meta.json"),
             r#"{"description": "Try the oth"#,
         )
         .unwrap();
-        let file = folder.join("agent-f1.jsonl");
-        std::fs::write(&file, "{}\n").unwrap();
         assert!(ClaudeCode.read(&file, "").is_err());
     }
 
@@ -1283,9 +1172,7 @@ mod tests {
         let fork = log(
             dir.path(),
             "s2.jsonl",
-            &[
-                serde_json::json!({"type": "fork-context-ref", "sessionId": "s2", "parentSessionId": "s1"}),
-            ],
+            &[json!({"type": "fork-context-ref", "sessionId": "s2", "parentSessionId": "s1"})],
         );
         let read = ClaudeCode.read(&fork, "").unwrap();
         assert!(
@@ -1303,25 +1190,18 @@ mod tests {
         for (name, usage) in [
             (
                 "s1.jsonl",
-                serde_json::json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "output_tokens": 16}),
+                json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "output_tokens": 16}),
             ),
             (
                 "s2.jsonl",
-                serde_json::json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "cache_creation": {},
+                json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "cache_creation": {},
                     "output_tokens": 16}),
             ),
         ] {
             let file = log(
                 dir.path(),
                 name,
-                &[assistant(
-                    "s1",
-                    "msg_1",
-                    "req_1",
-                    "2026-09-30T09:00:00Z",
-                    usage,
-                    serde_json::json!([]),
-                )],
+                &[assistant("s1", 1, "2026-09-30T09:00:00Z", usage, json!([]))],
             );
             let read = ClaudeCode.read(&file, "").unwrap();
             let tokens = &read.responses["msg_1:req_1"].tokens;
@@ -1348,11 +1228,10 @@ mod tests {
             "s1.jsonl",
             &[assistant(
                 "s1",
-                "msg_1",
-                "req_1",
+                1,
                 "2026-09-30T09:00:00Z",
-                serde_json::json!({"input_tokens": 5, "cache_read_input_tokens": 100}),
-                serde_json::json!([]),
+                json!({"input_tokens": 5, "cache_read_input_tokens": 100}),
+                json!([]),
             )],
         );
         let read = ClaudeCode.read(&file, "").unwrap();
@@ -1363,7 +1242,7 @@ mod tests {
     fn a_line_outside_a_repository_leaves_the_branch_as_it_was() {
         let dir = tempfile::tempdir().unwrap();
         let line = |branch: &str| {
-            serde_json::json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
+            json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
                 "gitBranch": branch, "message": {"role": "user", "content": "Go on."}})
         };
         let file = log(dir.path(), "s1.jsonl", &[line("main"), line("")]);
@@ -1379,24 +1258,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // A continuation's copy of s1's response, and after `/clear`, a
         // response of its own, both naming s1.
-        let mut copied = assistant(
-            "s2",
-            "msg_1",
-            "req_1",
-            "2026-09-30T09:00:00Z",
-            usage(5, 50),
-            serde_json::json!([]),
-        );
-        copied["session_id"] = serde_json::json!("s1");
-        let mut own = assistant(
-            "s2",
-            "msg_2",
-            "req_2",
-            "2026-09-30T09:10:00Z",
-            usage(5, 50),
-            serde_json::json!([]),
-        );
-        own["session_id"] = serde_json::json!("s1");
+        let mut copied = assistant("s2", 1, "2026-09-30T09:00:00Z", usage(5, 50), json!([]));
+        copied["session_id"] = json!("s1");
+        let mut own = assistant("s2", 2, "2026-09-30T09:10:00Z", usage(5, 50), json!([]));
+        own["session_id"] = json!("s1");
         let file = log(dir.path(), "s2.jsonl", &[copied.clone(), own]);
         let new = ClaudeCode.read(&file, "").unwrap();
         for response in new.responses.values() {
@@ -1406,14 +1271,14 @@ mod tests {
             );
         }
         let mut original = copied;
-        original["sessionId"] = serde_json::json!("s1");
+        original["sessionId"] = json!("s1");
         original.as_object_mut().unwrap().remove("session_id");
         let old = log(
             dir.path(),
             "s1.jsonl",
             &[
                 original,
-                serde_json::json!({"type": "continued-in", "sessionId": "s1", "continuedInSessionId": "s2"}),
+                json!({"type": "continued-in", "sessionId": "s1", "continuedInSessionId": "s2"}),
             ],
         );
         let old = ClaudeCode.read(&old, "").unwrap();
@@ -1439,16 +1304,15 @@ mod tests {
             &[
                 assistant(
                     "s1",
-                    "m1",
-                    "r1",
+                    1,
                     "2026-09-30T09:00:00Z",
                     usage(10, 5),
-                    serde_json::json!([{"type": "tool_use", "id": "t1", "name": "Agent", "input": {"description": "Fix the parser"}}]),
+                    json!([{"type": "tool_use", "id": "t1", "name": "Agent", "input": {"description": "Fix the parser"}}]),
                 ),
-                serde_json::json!({"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:01Z",
+                json!({"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:01Z",
                     "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
                         "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a7 (internal ID)"}]}]}}),
-                serde_json::json!({"type": "attachment", "uuid": "a1", "sessionId": "s1", "timestamp": "2026-09-30T09:05:00Z",
+                json!({"type": "attachment", "uuid": "a1", "sessionId": "s1", "timestamp": "2026-09-30T09:05:00Z",
                     "attachment": {"type": "queued_command", "commandMode": "prompt", "isMeta": true, "prompt": hand_back}}),
             ],
         );
@@ -1464,21 +1328,21 @@ mod tests {
     #[test]
     fn what_the_person_typed_mid_turn_is_read_and_a_command_titles_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let line = serde_json::json!({"type": "user", "uuid": "u2", "sessionId": "s1", "timestamp": "2026-09-30T09:00:02Z",
+        let line = json!({"type": "user", "uuid": "u2", "sessionId": "s1", "timestamp": "2026-09-30T09:00:02Z",
             "message": {"role": "user", "content": "Fix <pasted_content id=\"a1\">the parser</pasted_content id=\"a1\">."}});
         let file = log(
             dir.path(),
             "s1.jsonl",
             &[
-                serde_json::json!({"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
+                json!({"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
                     "message": {"role": "user", "content": "<command-name>/clear</command-name><command-args></command-args>"}}),
                 line.clone(),
                 line,
-                serde_json::json!({"type": "attachment", "uuid": "a1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:09Z",
+                json!({"type": "attachment", "uuid": "a1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:09Z",
                     "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": "Also the tests."}}),
-                serde_json::json!({"type": "attachment", "uuid": "a2", "sessionId": "s1", "timestamp": "2026-09-30T09:00:10Z",
+                json!({"type": "attachment", "uuid": "a2", "sessionId": "s1", "timestamp": "2026-09-30T09:00:10Z",
                     "attachment": {"type": "queued_command", "commandMode": "task-notification", "prompt": "<task-notification>done</task-notification>"}}),
-                serde_json::json!({"type": "attachment", "uuid": "a3", "sessionId": "s1", "timestamp": "2026-09-30T09:00:11Z",
+                json!({"type": "attachment", "uuid": "a3", "sessionId": "s1", "timestamp": "2026-09-30T09:00:11Z",
                     "attachment": {"type": "queued_command", "commandMode": "prompt", "isMeta": true,
                         "prompt": "<agent-message from=\"a1\">Done: the parser is fixed.</agent-message>"}}),
             ],
@@ -1523,17 +1387,16 @@ mod tests {
             dir.path(),
             "s1.jsonl",
             &[
-                serde_json::json!({"type": "user", "sessionId": "s1", "message": {"role": "user", "content": "Fix it. <system-reminder>be brief</system-reminder>"}}),
+                json!({"type": "user", "sessionId": "s1", "message": {"role": "user", "content": "Fix it. <system-reminder>be brief</system-reminder>"}}),
                 assistant(
                     "s1",
-                    "msg_1",
-                    "req_1",
+                    1,
                     "2026-09-30T09:00:01Z",
                     usage(5, 9),
-                    serde_json::json!([{"type": "thinking", "thinking": "Run the tests."}, {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}]),
+                    json!([{"type": "thinking", "thinking": "Run the tests."}, {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}]),
                 ),
-                serde_json::json!({"type": "user", "sessionId": "s1", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "1 failed", "is_error": true}]}}),
-                serde_json::json!({"type": "user", "sessionId": "s1", "isCompactSummary": true, "message": {"role": "user", "content":
+                json!({"type": "user", "sessionId": "s1", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "1 failed", "is_error": true}]}}),
+                json!({"type": "user", "sessionId": "s1", "isCompactSummary": true, "message": {"role": "user", "content":
                     format!("<notice/>\nA notice.\n{CONTINUED}\n\nSummary:\nTests fail.\n\nIf you need specific details from before compaction, read it.\nContinue the conversation from where it left off.")}}),
             ],
         );

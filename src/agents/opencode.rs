@@ -46,8 +46,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    Agent, Conversation, Credential, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role,
-    Secret, Title, Tokens,
+    Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
+    Tokens,
 };
 use crate::{Error, Result};
 
@@ -82,10 +82,6 @@ struct Cursor {
 /// How long before the latest `time_updated` seen a read starts, so a row
 /// committed after one stamped later is read.
 const LATE: i64 = 10_000;
-
-fn id(native: &str) -> String {
-    format!("opencode:{native}")
-}
 
 fn open(file: &Path) -> Result<Connection> {
     let failed =
@@ -136,17 +132,17 @@ impl Agent for OpenCode {
             let (created, updated): (i64, i64) =
                 (row.get(5).map_err(failed)?, row.get(6).map_err(failed)?);
             cursor.sessions = cursor.sessions.max(updated);
-            let session = read.session(&id(&native));
+            let session = read.session(&INFO.session(&native));
             session.parent = match (
                 parent.filter(|parent| !parent.is_empty()),
                 fork.filter(|fork| !fork.is_empty()),
             ) {
                 (Some(parent), _) => Some(Parent {
-                    id: id(&parent),
+                    id: INFO.session(&parent),
                     link: Link::Subagent,
                 }),
                 (None, Some(fork)) => Some(Parent {
-                    id: id(&fork),
+                    id: INFO.session(&fork),
                     link: Link::Fork,
                 }),
                 _ => None,
@@ -208,7 +204,7 @@ impl Agent for OpenCode {
                 read.skipped += unseen;
                 continue;
             };
-            let session = id(&native);
+            let session = INFO.session(&native);
             read.session(&session).saw(created);
             let completed = data["time"]["completed"].as_i64();
             if let Some(completed) = completed {
@@ -448,25 +444,7 @@ impl Agent for OpenCode {
                 }
                 let value: Value = serde_json::from_str(&value).unwrap_or_default();
                 let reads = crate::providers::by_id(&provider).map(|provider| provider.info().id);
-                let (secret, key) = match value["type"].as_str() {
-                    Some("key") => (value["key"].as_str(), true),
-                    // OpenRouter's sign-in gives OpenCode a key.
-                    Some("oauth") => (value["access"].as_str(), provider == "openrouter"),
-                    _ => (None, false),
-                };
-                logins.push(Login {
-                    credential: reads.zip(secret.filter(|secret| !secret.is_empty())).map(
-                        |(reads, secret)| Credential {
-                            provider: reads,
-                            secret: Secret::new(secret),
-                            key,
-                            expires: value["expires"].as_i64(),
-                            identity: None,
-                            plan: None,
-                        },
-                    ),
-                    provider,
-                });
+                logins.push(super::kept_login(provider, reads, &value, "key"));
             }
         }
         Ok(logins)
@@ -536,6 +514,73 @@ mod tests {
         }
         db.execute("INSERT INTO credential VALUES ('opencode-go', '{\"type\":\"key\",\"key\":\"sk-go\"}', 1, 1)", []).unwrap();
         file
+    }
+
+    #[test]
+    fn the_latest_active_sign_in_or_key_to_each_provider_is_its_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = database(dir.path());
+        let db = Connection::open(&file).unwrap();
+        for (provider, value, active, at) in [
+            (
+                "openrouter",
+                r#"{"type":"oauth","access":"sk-or-made-up","expires":9}"#,
+                1,
+                2,
+            ),
+            (
+                "anthropic",
+                r#"{"type":"key","key":"sk-ant-made-up"}"#,
+                1,
+                3,
+            ),
+            ("anthropic", r#"{"type":"key","key":"sk-ant-older"}"#, 1, 1),
+            ("xai", r#"{"type":"key","key":"sk-made-up-inactive"}"#, 0, 4),
+        ] {
+            db.execute(
+                "INSERT INTO credential VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![provider, value, active, at],
+            )
+            .unwrap();
+        }
+        let mut read: Vec<_> = OpenCode
+            .logins(dir.path(), dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|login| {
+                let credential = login.credential.map(|credential| {
+                    let secret = credential.secret.expose().to_owned();
+                    (
+                        credential.provider,
+                        credential.key,
+                        credential.expires,
+                        secret,
+                    )
+                });
+                (login.provider, credential)
+            })
+            .collect();
+        read.sort();
+        let given = |provider: &'static str, key, expires, secret: &str| {
+            Some((provider, key, expires, secret.to_owned()))
+        };
+        assert_eq!(
+            read,
+            [
+                (
+                    "anthropic".to_owned(),
+                    given("anthropic", true, None, "sk-ant-made-up")
+                ),
+                (
+                    "opencode-go".to_owned(),
+                    given("opencode-go", true, None, "sk-go")
+                ),
+                (
+                    "openrouter".to_owned(),
+                    given("openrouter", true, Some(9), "sk-or-made-up")
+                ),
+            ]
+        );
     }
 
     #[test]

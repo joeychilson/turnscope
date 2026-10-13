@@ -38,12 +38,7 @@ pub fn socket_path(data: &Path) -> PathBuf {
     if path.as_os_str().len() <= 103 {
         return path;
     }
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(data.as_os_str().as_encoded_bytes());
-    let hash: String = digest[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let hash = crate::sha256_hex(data.as_os_str().as_encoded_bytes(), 8);
     std::env::temp_dir().join(format!("turnscope-{hash}.sock"))
 }
 
