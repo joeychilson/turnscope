@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
+use crate::Error;
 use crate::agents::Credential;
-use crate::{Error, Result};
 
 /// Every provider, in the order they're listed.
 pub static ALL: &[&dyn Provider] = &[
@@ -37,7 +37,7 @@ pub trait Provider: Sync {
     /// The account `credential` is to, from the credential alone.
     fn account(&self, credential: &Credential) -> Option<Account>;
     /// The account's limits now.
-    fn limits(&self, credential: &Credential, now: i64) -> std::result::Result<Limits, Problem>;
+    fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem>;
     /// For a provider whose keys don't say which plan they're to, what
     /// tells the plan `limits` were read from apart from any other. Accounts
     /// whose limits give the same mark are one plan.
@@ -115,13 +115,18 @@ fn api_account(provider: &str) -> Account {
     }
 }
 
+/// The plan `provider` knows by `id`, which the person knows by `label`.
+fn subscription(provider: &str, (id, label): (String, Option<String>)) -> Account {
+    Account {
+        id: format!("{provider}:{id}"),
+        kind: Kind::Subscription,
+        label,
+    }
+}
+
 /// Ask `url` with `credential`'s token and `headers`, for JSON. A 401 or 403
 /// is a refused login, unless it's an HTML page.
-fn ask(
-    url: &str,
-    credential: &Credential,
-    headers: &[&str],
-) -> std::result::Result<Value, Problem> {
+fn ask(url: &str, credential: &Credential, headers: &[&str]) -> Result<Value, Problem> {
     ask_refused_by(url, credential, headers, &[401, 403])
 }
 
@@ -131,12 +136,10 @@ fn ask_refused_by(
     credential: &Credential,
     headers: &[&str],
     refused: &[u16],
-) -> std::result::Result<Value, Problem> {
-    let mut lines = vec![format!(
-        "Authorization: Bearer {}",
-        credential.secret.expose()
-    )];
-    lines.extend(headers.iter().map(|header| (*header).to_owned()));
+) -> Result<Value, Problem> {
+    let authorization = format!("Authorization: Bearer {}", credential.secret.expose());
+    let mut lines = vec![authorization.as_str()];
+    lines.extend(headers);
     // 15 seconds, where models.dev's catalog gets 60: `guard` reads limits
     // inside an agent's hook, which holds the agent until it's done, and an
     // answer of limits is one small JSON object, not a download.
@@ -153,7 +156,7 @@ fn ask_refused_by(
 /// over counting only a JSON body, because no provider's refusal body has
 /// been measured: one that refuses with plain text or nothing would read as
 /// Unavailable at every read, and "sign in again" would never be said.
-fn answer(status: u16, body: &[u8], refused: &[u16]) -> std::result::Result<Value, Problem> {
+fn answer(status: u16, body: &[u8], refused: &[u16]) -> Result<Value, Problem> {
     match status {
         200..=299 => serde_json::from_slice(body).map_err(|_| Problem::Unavailable),
         status if refused.contains(&status) && !body.trim_ascii_start().starts_with(b"<") => {
@@ -173,7 +176,7 @@ fn answer(status: u16, body: &[u8], refused: &[u16]) -> std::result::Result<Valu
 /// what's sent, curl otherwise waits out all of `seconds` (measured
 /// 2026-10-12 at an address that drops everything: 5.0 seconds with
 /// `--connect-timeout 5`, all of `--max-time` without).
-pub fn get(url: &str, headers: &[String], seconds: u32) -> Result<(u16, Vec<u8>)> {
+pub fn get(url: &str, headers: &[&str], seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err(Error::Failed(
             "a header holds a line break, so nothing was sent".to_owned(),
@@ -219,23 +222,6 @@ pub fn get(url: &str, headers: &[String], seconds: u32) -> Result<(u16, Vec<u8>)
         .parse()
         .map_err(|_| failed(format!("status {status:?}")))?;
     Ok((status, output.stdout))
-}
-
-/// A time an answer gives as RFC 3339 text, or Unix seconds or milliseconds.
-fn time(value: &Value) -> Option<i64> {
-    match value {
-        Value::String(text) => crate::time::millis(text),
-        Value::Number(number) => {
-            let number = number.as_i64()?;
-            // Seconds until the year 5138, milliseconds after.
-            Some(if number < 100_000_000_000 {
-                number * 1000
-            } else {
-                number
-            })
-        }
-        _ => None,
-    }
 }
 
 /// Whether `window` is no window: null, or every value null, as providers
@@ -290,64 +276,25 @@ mod tests {
 
     #[test]
     fn a_refused_status_is_a_refused_login_unless_its_a_page() {
-        let json = br#"{"error": "unauthorized"}"#;
-        let page = b"<!DOCTYPE html><title>Just a moment...</title>";
+        let json: &[u8] = br#"{"error": "unauthorized"}"#;
+        let page: &[u8] = b"<!DOCTYPE html><title>Just a moment...</title>";
         assert_eq!(
             super::answer(200, json, &[401, 403]),
             Ok(json!({"error": "unauthorized"}))
         );
-        assert_eq!(
-            super::answer(200, page, &[401, 403]),
-            Err(Problem::Unavailable)
-        );
-        assert_eq!(super::answer(401, json, &[401, 403]), Err(Problem::SignIn));
-        assert_eq!(
-            super::answer(403, page, &[401, 403]),
-            Err(Problem::Unavailable)
-        );
-        assert_eq!(super::answer(403, json, &[401]), Err(Problem::Unavailable));
-        assert_eq!(
-            super::answer(429, json, &[401, 403]),
-            Err(Problem::Unavailable)
-        );
-    }
-
-    #[test]
-    fn an_empty_or_plain_refusal_is_a_refused_login() {
-        assert_eq!(super::answer(401, b"", &[401, 403]), Err(Problem::SignIn));
-        assert_eq!(
-            super::answer(401, b"Unauthorized", &[401, 403]),
-            Err(Problem::SignIn)
-        );
-        assert_eq!(
-            super::answer(403, b"\n  <html></html>", &[401, 403]),
-            Err(Problem::Unavailable)
-        );
-    }
-
-    #[test]
-    fn a_time_is_text_seconds_or_milliseconds() {
-        assert_eq!(
-            super::time(&json!("2026-10-01T12:00:00Z")),
-            Some(1_790_856_000_000)
-        );
-        assert_eq!(super::time(&json!(1_790_856_000)), Some(1_790_856_000_000));
-        assert_eq!(
-            super::time(&json!(1_790_856_000_000_i64)),
-            Some(1_790_856_000_000)
-        );
-        // Seconds until the year 5138, milliseconds after.
-        assert_eq!(
-            super::time(&json!(99_999_999_999_i64)),
-            Some(99_999_999_999_000)
-        );
-        assert_eq!(
-            super::time(&json!(100_000_000_000_i64)),
-            Some(100_000_000_000)
-        );
-        for not in [json!("soon"), json!(null), json!(1.5)] {
-            assert_eq!(super::time(&not), None);
+        for (status, body, problem) in [
+            (200, page, Problem::Unavailable),
+            (401, json, Problem::SignIn),
+            (403, page, Problem::Unavailable),
+            (429, json, Problem::Unavailable),
+            // An empty or plain refusal is a refused login.
+            (401, b"", Problem::SignIn),
+            (401, b"Unauthorized", Problem::SignIn),
+            (403, b"\n  <html></html>", Problem::Unavailable),
+        ] {
+            assert_eq!(super::answer(status, body, &[401, 403]), Err(problem));
         }
+        assert_eq!(super::answer(403, json, &[401]), Err(Problem::Unavailable));
     }
 
     #[test]

@@ -13,11 +13,12 @@
 //! finer figure, so it can say 1% used where the answer says 0: Turnscope
 //! shows up to a point more left than the console.
 
+use jiff::ToSpan;
+use jiff::tz::TimeZone;
 use serde_json::Value;
 
 use super::{Account, Info, Kind, Limits, Problem, Provider, Reading};
 use crate::agents::Credential;
-use crate::time::DAY;
 
 pub struct OpenCodeGo;
 
@@ -62,10 +63,11 @@ impl Provider for OpenCodeGo {
 fn parse(answer: &Value) -> Option<Vec<Reading>> {
     let usage = answer.get("usage").filter(|usage| usage.is_object())?;
     let mut readings = Vec::new();
-    for (key, name) in [
-        ("rolling", "5 hours"),
-        ("weekly", "Weekly"),
-        ("monthly", "Monthly"),
+    for (key, name, length) in [
+        // Always the last five hours: no start to measure from.
+        ("rolling", "5 hours", None),
+        ("weekly", "Weekly", Some(1.week())),
+        ("monthly", "Monthly", Some(1.month())),
     ] {
         let window = &usage[key];
         if super::absent(window) {
@@ -73,21 +75,13 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         }
         let resets = match &window["resetsAt"] {
             Value::Null => None,
-            at => Some(super::time(at)?),
+            at => Some(crate::time::millis(at.as_str()?)?),
         };
-        let starts = match key {
-            // Always the last five hours: no start to measure from.
-            "rolling" => None,
-            "weekly" => resets.map(|resets| resets - 7 * DAY),
-            _ => resets.and_then(|resets| {
-                let at = jiff::Timestamp::from_millisecond(resets).ok()?;
-                let month = at
-                    .to_zoned(jiff::tz::TimeZone::UTC)
-                    .checked_sub(jiff::Span::new().months(1))
-                    .ok()?;
-                Some(month.timestamp().as_millisecond())
-            }),
-        };
+        let starts = resets.zip(length).and_then(|(resets, length)| {
+            let at = jiff::Timestamp::from_millisecond(resets).ok()?;
+            let start = at.to_zoned(TimeZone::UTC).checked_sub(length).ok()?;
+            Some(start.timestamp().as_millisecond())
+        });
         readings.push(Reading {
             key: key.to_owned(),
             name: name.to_owned(),

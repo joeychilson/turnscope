@@ -18,7 +18,7 @@
 
 use serde_json::Value;
 
-use super::{Account, Info, Kind, Limits, Problem, Provider, Reading};
+use super::{Account, Info, Limits, Problem, Provider, Reading};
 use crate::agents::Credential;
 use crate::time::{DAY, HOUR};
 
@@ -39,12 +39,7 @@ impl Provider for Anthropic {
         if credential.key {
             return Some(super::api_account(INFO.id));
         }
-        let (id, label) = credential.identity.clone()?;
-        Some(Account {
-            id: format!("anthropic:{id}"),
-            kind: Kind::Subscription,
-            label,
-        })
+        Some(super::subscription(INFO.id, credential.identity.clone()?))
     }
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
@@ -73,26 +68,21 @@ fn parse(answer: &Value, now: i64) -> Option<Vec<Reading>> {
         if super::absent(window) || window.get("utilization").is_none() {
             continue;
         }
-        let (name, scope) = match key.as_str() {
-            "five_hour" => ("5 hours", None),
-            "seven_day" => ("Weekly", None),
+        let (name, scope, length) = match key.as_str() {
+            "five_hour" => ("5 hours", None, 5 * HOUR),
+            "seven_day" => ("Weekly", None, 7 * DAY),
             // The plan's use through other apps signed in with it.
-            "seven_day_oauth_apps" => ("Other apps weekly", None),
+            "seven_day_oauth_apps" => ("Other apps weekly", None, 7 * DAY),
             other => match other.strip_prefix("seven_day_") {
-                Some(model) => ("Weekly", Some(super::words(model))),
+                Some(model) => ("Weekly", Some(super::words(model)), 7 * DAY),
                 None => continue,
             },
-        };
-        let length = if key == "five_hour" {
-            5 * HOUR
-        } else {
-            7 * DAY
         };
         let used = window["utilization"].as_f64()?;
         let resets = match &window["resets_at"] {
             Value::Null if used == 0.0 => Some(now + length),
             Value::Null => None,
-            at => Some(super::time(at)?),
+            at => Some(crate::time::millis(at.as_str()?)?),
         };
         readings.push(Reading {
             key: key.clone(),

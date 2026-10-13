@@ -42,7 +42,7 @@ The file is named by the provider's id, with underscores for dashes:
 ```rust
 use serde_json::Value;
 
-use super::{Account, Info, Kind, Limits, Problem, Provider, Reading};
+use super::{Account, Info, Limits, Problem, Provider, Reading};
 use crate::agents::Credential;
 
 pub struct Acme;
@@ -58,7 +58,7 @@ static INFO: Info = Info {
 |---|---|---|
 | `id` | `&'static str` | As stored, as agents' logins name it, as the logo's file name, and as models.dev names it, so its models are priced. |
 | `name` | `&'static str` | As people know it. An API-key account is titled `<name> API key`. |
-| `subscription` | `Option<&'static str>` | What its plans are called, before the plan. A subscription account is titled `<subscription> <plan>`, such as `Claude Max`, or `<subscription>` alone when there's no plan or the name already ends with it, as `OpenCode Go` does. `None` for a provider that sells no plans: every account is then titled `<name> API key`. |
+| `subscription` | `Option<&'static str>` | What its plans are called, before the plan. A subscription account is titled `<subscription> <plan>`, such as `Claude Max`, or `<subscription>` alone when no plan is known, as `OpenCode Go` is. `None` for a provider that sells no plans: every account is then titled `<name> API key`. |
 
 ## 3. Implement `Provider`
 
@@ -72,12 +72,7 @@ impl Provider for Acme {
         if credential.key {
             return Some(super::api_account(INFO.id));
         }
-        let (id, label) = credential.identity.clone()?;
-        Some(Account {
-            id: format!("acme:{id}"),
-            kind: Kind::Subscription,
-            label,
-        })
+        Some(super::subscription(INFO.id, credential.identity.clone()?))
     }
 
     fn limits(&self, credential: &Credential, _now: i64) -> Result<Limits, Problem> {
@@ -102,7 +97,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         let seconds = window["length_seconds"].as_i64()?;
         let resets = match &window["resets_at"] {
             Value::Null => None,
-            at => Some(super::time(at)?),
+            at => Some(crate::time::millis(at.as_str()?)?),
         };
         readings.push(Reading {
             key: window["id"].as_str()?.to_owned(),
@@ -165,11 +160,11 @@ Helpers in `src/providers/mod.rs`:
 | `ask(url, credential, headers)` | GETs `url` with `Authorization: Bearer <secret>` and `headers`, for JSON, giving up after 15 seconds. A 2xx status gives the JSON, and a 401 or 403 `Problem::SignIn`, unless its body is an HTML page, such as a bot check's, which signing in again wouldn't get past. Anything else is `Problem::Unavailable`. |
 | `ask_refused_by(url, credential, headers, refused)` | As `ask`, with `refused` the statuses that mean a refused login, where a 403 can mean something else, as at xAI. |
 | `get(url, headers, seconds)` | The request itself, giving the status and body, for a provider whose token goes in another header. It gives up after `seconds`, or after 5 without a connection. A limit read passes 15, as `ask` does. |
-| `time(value)` | A time given as RFC 3339 text, or as Unix seconds or milliseconds. |
 | `absent(window)` | Whether a window is null or all nulls, as providers send one a plan doesn't have. |
 | `window_name(seconds)` | A window's name by its length: `Hourly`, `5 hours`, `Daily`, `Weekly`, `Monthly`, or `<n> days`. |
 | `words(key)` | A provider's key as words: `super_heavy` is `Super Heavy`. |
 | `api_account(provider)` | The one account, `<provider>:api`, that all of a provider's API keys draw on. |
+| `subscription(provider, (id, label))` | The subscription account `<provider>:<id>`, with `label`, from an id and label such as `credential.identity`. |
 
 How Turnscope calls it, every five minutes:
 

@@ -31,30 +31,36 @@ pub enum Period {
 
 /// The start of the local day, week (from Monday) or month `at` is in.
 pub fn start_of(period: Period, at: i64) -> i64 {
-    let day = local(at).date();
-    let start = match period {
-        Period::Day => day,
-        Period::Week => day
-            .checked_sub((day.weekday().to_monday_zero_offset() as i64).days())
-            .unwrap_or(day),
-        Period::Month => day.first_of_month(),
-    };
-    start_of_day(start)
+    window(period, at, &TimeZone::system()).0
 }
 
-/// The next period's start after `start`.
+/// The start of the period after the one `start` is in.
 pub fn next(period: Period, start: i64) -> i64 {
-    let day = local(start).date();
-    let span = match period {
-        Period::Day => 1.day(),
-        Period::Week => 1.week(),
-        Period::Month => 1.month(),
-    };
-    start_of_day(day.checked_add(span).unwrap_or(day))
+    window(period, start, &TimeZone::system()).1
 }
 
-fn start_of_day(day: Date) -> i64 {
-    day.to_zoned(TimeZone::system())
+/// When the day, week (from Monday) or month `at` is in starts in `zone`,
+/// and when the next one does.
+pub fn window(period: Period, at: i64, zone: &TimeZone) -> (i64, i64) {
+    let day = Timestamp::from_millisecond(at)
+        .unwrap_or_default()
+        .to_zoned(zone.clone())
+        .date();
+    let (start, span) = match period {
+        Period::Day => (day, 1.day()),
+        Period::Week => (
+            day.checked_sub((day.weekday().to_monday_zero_offset() as i64).days())
+                .unwrap_or(day),
+            1.week(),
+        ),
+        Period::Month => (day.first_of_month(), 1.month()),
+    };
+    let end = start.checked_add(span).unwrap_or(start);
+    (start_of_day(start, zone), start_of_day(end, zone))
+}
+
+fn start_of_day(day: Date, zone: &TimeZone) -> i64 {
+    day.to_zoned(zone.clone())
         .map(|zoned| zoned.timestamp().as_millisecond())
         .unwrap_or_default()
 }
@@ -77,7 +83,11 @@ pub fn parse(text: &str, now: i64) -> Result<i64> {
         _ => back('h', 1)
             .or_else(|| back('d', 24))
             .or_else(|| back('w', 24 * 7))
-            .or_else(|| text.parse::<Date>().ok().map(start_of_day))
+            .or_else(|| {
+                text.parse::<Date>()
+                    .ok()
+                    .map(|day| start_of_day(day, &TimeZone::system()))
+            })
             .or_else(|| millis(text)),
     };
     found.ok_or_else(|| {
@@ -135,7 +145,7 @@ mod tests {
     fn moments_read_as_people_write_them() {
         let now = millis("2026-10-08T15:00:00Z").unwrap();
         let at = |text: &str| parse(text, now).unwrap();
-        let day = |date: &str| start_of_day(date.parse().unwrap());
+        let day = |date: &str| start_of_day(date.parse().unwrap(), &TimeZone::system());
         assert_eq!(at("today"), day(&local(now).date().to_string()));
         assert_eq!(at("24h"), now - DAY);
         assert_eq!(at("2w"), now - 14 * DAY);

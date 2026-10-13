@@ -12,7 +12,7 @@
 
 use serde_json::Value;
 
-use super::{Account, Info, Kind, Limits, Problem, Provider, Reading};
+use super::{Account, Info, Limits, Problem, Provider, Reading};
 use crate::agents::{Credential, claims};
 
 pub struct OpenAi;
@@ -32,12 +32,7 @@ impl Provider for OpenAi {
         if credential.key {
             return Some(super::api_account(INFO.id));
         }
-        let (workspace, label) = workspace(credential)?;
-        Some(Account {
-            id: format!("openai:{workspace}"),
-            kind: Kind::Subscription,
-            label,
-        })
+        Some(super::subscription(INFO.id, workspace(credential)?))
     }
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
@@ -54,12 +49,8 @@ impl Provider for OpenAi {
     }
 }
 
-/// The workspace a sign-in is to and its owner's email: as the agent
-/// records them, or else as the token says.
+/// The workspace a sign-in is to and its owner's email, as the token says.
 fn workspace(credential: &Credential) -> Option<(String, Option<String>)> {
-    if let Some(identity) = &credential.identity {
-        return Some(identity.clone());
-    }
     let claims = claims(credential.secret.expose());
     let workspace = claims["https://api.openai.com/auth"]["chatgpt_account_id"]
         .as_str()
@@ -78,10 +69,7 @@ fn parse(answer: &Value, now: i64) -> Option<Limits> {
         .flatten()
     {
         // One without a name can't be told from the plan's own windows.
-        let scope = extra["limit_name"].as_str().filter(|name| !name.is_empty());
-        if let Some(scope) = scope
-            && !super::absent(&extra["rate_limit"])
-        {
+        if let Some(scope) = extra["limit_name"].as_str().filter(|name| !name.is_empty()) {
             readings.extend(windows(&extra["rate_limit"], Some(scope), now)?);
         }
     }

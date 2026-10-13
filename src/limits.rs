@@ -17,7 +17,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::agents::{self, Credential};
-use crate::providers::{self, Kind, Limits, Problem, Provider, Reading};
+use crate::providers::{self, Kind, Limits, Problem, Provider};
 use crate::{Result, ingest, now};
 
 /// How long limits stand before any process reads them again.
@@ -65,15 +65,10 @@ pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
     }
     let (signed_in, accounts) = gather(db, home)?;
     // Every account at once, so the slowest provider sets how long it takes.
-    let answers: Vec<(Held, std::result::Result<Limits, Problem>)> = std::thread::scope(|scope| {
+    let answers: Vec<(std::result::Result<Limits, Problem>, Held)> = std::thread::scope(|scope| {
         let reading: Vec<_> = accounts
             .into_values()
-            .map(|mut held| {
-                scope.spawn(move || {
-                    let answer = read(&mut held, now);
-                    (held, answer)
-                })
-            })
+            .map(|mut held| scope.spawn(move || (read(&mut held, now), held)))
             .collect();
         reading
             .into_iter()
@@ -191,7 +186,7 @@ fn gather(db: &Connection, home: &Path) -> Result<(Vec<SignedIn>, BTreeMap<Strin
 fn record(
     db: &mut Connection,
     mut signed_in: Vec<SignedIn>,
-    answers: Vec<(Held, std::result::Result<Limits, Problem>)>,
+    answers: Vec<(std::result::Result<Limits, Problem>, Held)>,
     now: i64,
 ) -> Result<Vec<(String, String, i64)>> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -239,7 +234,7 @@ fn record(
         }
     }
 
-    for (held, read) in answers {
+    for (read, held) in answers {
         let account = &held.account;
         if one.contains_key(&account.id) {
             continue;
@@ -279,10 +274,9 @@ fn record(
             params![
                 account.id,
                 info.id,
-                if account.kind == Kind::Subscription {
-                    "subscription"
-                } else {
-                    "apiKey"
+                match account.kind {
+                    Kind::Subscription => "subscription",
+                    Kind::ApiKey => "apiKey",
                 },
                 title,
                 account.label,
@@ -316,11 +310,11 @@ fn record(
 /// `plan_mark`, with the account that stands for them: one already known,
 /// so its history is kept, or else the first, accounts being in order.
 fn same_plan(
-    answers: &[(Held, std::result::Result<Limits, Problem>)],
+    answers: &[(std::result::Result<Limits, Problem>, Held)],
     existing: &HashSet<String>,
 ) -> BTreeMap<String, String> {
     let mut plans: BTreeMap<(&str, i64), Vec<&str>> = BTreeMap::new();
-    for (held, read) in answers {
+    for (read, held) in answers {
         if let Some(mark) = read
             .as_ref()
             .ok()
@@ -377,8 +371,7 @@ fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
 fn read(held: &mut Held, now: i64) -> std::result::Result<Limits, Problem> {
     held.credentials
         .sort_by_key(|credential| std::cmp::Reverse(credential.expires));
-    let mut readings: Option<Vec<Reading>> = None;
-    let mut plan = None;
+    let mut read: Option<Limits> = None;
     let mut problem = None;
     for credential in held
         .credentials
@@ -387,12 +380,12 @@ fn read(held: &mut Held, now: i64) -> std::result::Result<Limits, Problem> {
     {
         match held.provider.limits(credential, now) {
             Ok(limits) => {
-                plan = plan.or(limits.plan);
-                let read = readings.get_or_insert_with(Vec::new);
+                let read = read.get_or_insert_with(Limits::default);
+                read.plan = read.plan.take().or(limits.plan);
                 // What every key reads of the account itself is one limit.
                 for reading in limits.readings {
-                    if !read.iter().any(|known| known.key == reading.key) {
-                        read.push(reading);
+                    if !read.readings.iter().any(|known| known.key == reading.key) {
+                        read.readings.push(reading);
                     }
                 }
                 if held.account.kind == Kind::Subscription {
@@ -410,14 +403,13 @@ fn read(held: &mut Held, now: i64) -> std::result::Result<Limits, Problem> {
             }
         }
     }
-    readings
-        .map(|readings| Limits { plan, readings })
-        .ok_or(problem.unwrap_or(Problem::Expired))
+    read.ok_or(problem.unwrap_or(Problem::Expired))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::Reading;
 
     fn held(id: &str) -> Held {
         Held {
@@ -466,10 +458,10 @@ mod tests {
     fn keys_read_as_one_plan_are_the_account_already_known() {
         // Two keys to one plan, a key to another, and one not read.
         let answers = vec![
-            (held("opencode-go:key-a"), monthly(1_794_088_864_000)),
-            (held("opencode-go:key-b"), monthly(1_794_088_864_000)),
-            (held("opencode-go:key-c"), monthly(1_794_088_865_000)),
-            (held("opencode-go:key-d"), Err(Problem::Unavailable)),
+            (monthly(1_794_088_864_000), held("opencode-go:key-a")),
+            (monthly(1_794_088_864_000), held("opencode-go:key-b")),
+            (monthly(1_794_088_865_000), held("opencode-go:key-c")),
+            (Err(Problem::Unavailable), held("opencode-go:key-d")),
         ];
         let known = HashSet::from(["opencode-go:key-b".to_owned()]);
         assert_eq!(
@@ -496,7 +488,7 @@ mod tests {
         record(
             &mut db,
             vec![signed("/f1", "opencode-go:key-b")],
-            vec![(held("opencode-go:key-b"), monthly(1))],
+            vec![(monthly(1), held("opencode-go:key-b"))],
             1_000,
         )
         .unwrap();
@@ -512,8 +504,8 @@ mod tests {
                 signed("/f2", "opencode-go:key-a"),
             ],
             vec![
-                (held("opencode-go:key-a"), monthly(1)),
-                (held("opencode-go:key-b"), monthly(1)),
+                (monthly(1), held("opencode-go:key-a")),
+                (monthly(1), held("opencode-go:key-b")),
             ],
             2_000,
         )
@@ -544,7 +536,7 @@ mod tests {
         record(
             &mut db,
             Vec::new(),
-            vec![(held("opencode-go:key-b"), Err(Problem::Expired))],
+            vec![(Err(Problem::Expired), held("opencode-go:key-b"))],
             3_000,
         )
         .unwrap();
