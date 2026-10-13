@@ -84,8 +84,7 @@ struct Cursor {
 const LATE: i64 = 10_000;
 
 fn open(file: &Path) -> Result<Connection> {
-    let failed =
-        |error: rusqlite::Error| Error::Failed(format!("reading {}: {error}", file.display()));
+    let failed = |error| Error::Failed(format!("reading {}: {error}", file.display()));
     let db = Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(failed)?;
     db.busy_timeout(std::time::Duration::from_secs(2))
         .map_err(failed)?;
@@ -109,14 +108,13 @@ impl Agent for OpenCode {
         let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
         let db = open(file)?;
         let mut read = Read::default();
-        let failed =
-            |error: rusqlite::Error| Error::Failed(format!("reading {}: {error}", file.display()));
+        let failed = |error| Error::Failed(format!("reading {}: {error}", file.display()));
         // One read transaction, so sessions and messages are of one moment.
         let tx = db.unchecked_transaction().map_err(failed)?;
         let mut sessions = tx
             .prepare(&format!(
-                "SELECT s.id, s.parent_id, s.fork_session_id, s.directory, s.title, s.time_created,
-                     s.time_updated,
+                "SELECT s.id, nullif(s.parent_id, ''), nullif(s.fork_session_id, ''),
+                     nullif(s.directory, ''), s.title, s.time_created, s.time_updated,
                      (SELECT m.data FROM session_message m WHERE m.session_id = s.id
                          AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
                  FROM session_v2 s WHERE s.time_updated >= ?1"
@@ -133,10 +131,7 @@ impl Agent for OpenCode {
                 (row.get(5).map_err(failed)?, row.get(6).map_err(failed)?);
             cursor.sessions = cursor.sessions.max(updated);
             let session = read.session(&INFO.session(&native));
-            session.parent = match (
-                parent.filter(|parent| !parent.is_empty()),
-                fork.filter(|fork| !fork.is_empty()),
-            ) {
+            session.parent = match (parent, fork) {
                 (Some(parent), _) => Some(Parent {
                     id: INFO.session(&parent),
                     link: Link::Subagent,
@@ -147,10 +142,7 @@ impl Agent for OpenCode {
                 }),
                 _ => None,
             };
-            session.cwd = row
-                .get::<_, Option<String>>(3)
-                .map_err(failed)?
-                .filter(|cwd| !cwd.is_empty());
+            session.cwd = row.get(3).map_err(failed)?;
             session.saw(created);
             session.saw(updated);
             let first: Option<String> = row.get(7).map_err(failed)?;
@@ -171,8 +163,6 @@ impl Agent for OpenCode {
                 session.title(Title::Generated, &title);
             }
         }
-        drop(rows);
-        drop(sessions);
 
         let mut messages = tx
             .prepare(&format!(
@@ -239,13 +229,12 @@ impl Agent for OpenCode {
             }
             // A message has no tokens until its response ends.
             let tokens = &data["tokens"];
-            let count = |value: &Value| value.as_u64();
             let (Some(input), Some(output), Some(reasoning), Some(cache_read), Some(cache_write)) = (
-                count(&tokens["input"]),
-                count(&tokens["output"]),
-                count(&tokens["reasoning"]),
-                count(&tokens["cache"]["read"]),
-                count(&tokens["cache"]["write"]),
+                tokens["input"].as_u64(),
+                tokens["output"].as_u64(),
+                tokens["reasoning"].as_u64(),
+                tokens["cache"]["read"].as_u64(),
+                tokens["cache"]["write"].as_u64(),
             ) else {
                 continue;
             };
@@ -271,8 +260,7 @@ impl Agent for OpenCode {
                 id: message,
                 session,
                 copy: false,
-                at: data["time"]["completed"]
-                    .as_i64()
+                at: completed
                     .or(data["time"]["created"].as_i64())
                     .unwrap_or(created),
                 provider: provider.to_owned(),
@@ -284,8 +272,6 @@ impl Agent for OpenCode {
                 cost: data["cost"].as_f64(),
             });
         }
-        drop(rows);
-        drop(messages);
         cursor.said = said_at
             .into_iter()
             .filter(|(_, at)| *at > cursor.messages - LATE)
@@ -300,8 +286,7 @@ impl Agent for OpenCode {
             .iter()
             .find(|file| file.ends_with("opencode.db"))
             .ok_or_else(|| Error::NotFound("OpenCode's database is gone".to_owned()))?;
-        let failed =
-            |error: rusqlite::Error| Error::Failed(format!("reading {}: {error}", file.display()));
+        let failed = |error| Error::Failed(format!("reading {}: {error}", file.display()));
         let db = open(file)?;
         let mut statement = db
             .prepare(&format!(
@@ -319,12 +304,6 @@ impl Agent for OpenCode {
             else {
                 continue;
             };
-            // A field that isn't there is no text, not "null".
-            let text = |value: &Value| match value {
-                Value::String(text) => text.clone(),
-                Value::Null => String::new(),
-                other => other.to_string(),
-            };
             match kind.as_str() {
                 "user" => conversation.say(Kind::User, at, &text(&data["text"])),
                 "assistant" => {
@@ -336,67 +315,7 @@ impl Agent for OpenCode {
                             Some("reasoning") => {
                                 conversation.say(Kind::Reasoning, at, &text(&part["text"]))
                             }
-                            Some("tool") => {
-                                let call = part["id"].as_str();
-                                let state = &part["state"];
-                                conversation.call(
-                                    call,
-                                    at,
-                                    part["name"].as_str().unwrap_or("tool"),
-                                    state["input"].to_string(),
-                                );
-                                // A finished call's output is its `content`, a
-                                // string or a list of parts; a failed one's, its
-                                // error's message.
-                                let failed = state["status"] == "error"
-                                    || state["metadata"]["exit"]
-                                        .as_i64()
-                                        .is_some_and(|exit| exit != 0);
-                                let output = if state["status"] == "error" {
-                                    text(state["error"].get("message").unwrap_or(&state["error"]))
-                                } else {
-                                    match state["content"].as_array() {
-                                        Some(parts) => parts
-                                            .iter()
-                                            .filter_map(|part| part["text"].as_str())
-                                            .collect::<Vec<_>>()
-                                            .join("\n"),
-                                        None => text(&state["content"]),
-                                    }
-                                };
-                                if let Some(call) = call {
-                                    conversation.answer(call, output, failed);
-                                }
-                                // What an edit, a write or a patch changed, as
-                                // its result lists them, or its input names.
-                                if !failed {
-                                    let listed = state["metadata"]["files"].as_array();
-                                    let input = &state["input"];
-                                    let files: Vec<String> = match listed {
-                                        Some(listed) => listed
-                                            .iter()
-                                            .filter_map(|file| file["file"].as_str())
-                                            .map(str::to_owned)
-                                            .collect(),
-                                        None if matches!(
-                                            part["name"].as_str(),
-                                            Some("edit" | "write")
-                                        ) =>
-                                        {
-                                            input["filePath"]
-                                                .as_str()
-                                                .or(input["path"].as_str())
-                                                .map(str::to_owned)
-                                                .into_iter()
-                                                .collect()
-                                        }
-                                        None => super::patched(
-                                            input["patchText"].as_str().unwrap_or_default(),
-                                        ),
-                                    };
-                                    conversation.changed(files);
-                                }
-                            }
+                            Some("tool") => tool(part, at, &mut conversation),
                             _ => {}
                         }
                     }
@@ -421,9 +340,7 @@ impl Agent for OpenCode {
         let file = folder.join("opencode.db");
         let mut logins: Vec<Login> = Vec::new();
         if file.is_file() {
-            let failed = |error: rusqlite::Error| {
-                Error::Failed(format!("reading {}: {error}", file.display()))
-            };
+            let failed = |error| Error::Failed(format!("reading {}: {error}", file.display()));
             let db = open(&file)?;
             // Of several to one provider, the latest active one is in use.
             let rows: Vec<(String, String)> = db
@@ -465,6 +382,64 @@ impl Agent for OpenCode {
             _ => Role::Work,
         }
     }
+}
+
+/// A field as text: a string as it is, one that isn't there as none rather
+/// than "null", anything else as JSON.
+fn text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Add a tool call, a part of an assistant message, with its outcome.
+fn tool(part: &Value, at: Option<i64>, conversation: &mut Conversation) {
+    let (call, name, state) = (part["id"].as_str(), part["name"].as_str(), &part["state"]);
+    let input = &state["input"];
+    conversation.call(call, at, name.unwrap_or("tool"), input.to_string());
+    // A finished call's output is its `content`, a string or a list of parts;
+    // a failed one's, its error's message.
+    let failed = state["status"] == "error"
+        || state["metadata"]["exit"]
+            .as_i64()
+            .is_some_and(|exit| exit != 0);
+    let output = if state["status"] == "error" {
+        text(state["error"].get("message").unwrap_or(&state["error"]))
+    } else {
+        match state["content"].as_array() {
+            Some(parts) => parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            None => text(&state["content"]),
+        }
+    };
+    if let Some(call) = call {
+        conversation.answer(call, output, failed);
+    }
+    if failed {
+        return;
+    }
+    // What an edit, a write or a patch changed, as its result lists them, or
+    // its input names.
+    let files = match state["metadata"]["files"].as_array() {
+        Some(listed) => listed
+            .iter()
+            .filter_map(|file| file["file"].as_str())
+            .map(str::to_owned)
+            .collect(),
+        None if matches!(name, Some("edit" | "write")) => input["filePath"]
+            .as_str()
+            .or(input["path"].as_str())
+            .map(str::to_owned)
+            .into_iter()
+            .collect(),
+        None => super::patched(input["patchText"].as_str().unwrap_or_default()),
+    };
+    conversation.changed(files);
 }
 
 #[cfg(test)]

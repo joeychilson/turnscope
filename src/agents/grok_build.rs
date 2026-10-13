@@ -29,7 +29,6 @@
 //! finished, carries `synthetic_reason`. Every conversation opens with the
 //! system prompt, which isn't the session's to show.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -55,9 +54,6 @@ static INFO: Info = Info {
     session_var: None,
     cwd_var: None,
 };
-
-/// Where `auth.json` keeps the SuperGrok sign-in: the issuer and its client.
-const SIGN_IN: &str = "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828";
 
 /// What Grok Build adds to a message sent as the person's.
 const INJECTED: &[&str] = &[
@@ -142,15 +138,12 @@ impl Agent for GrokBuild {
                 facts.cwd = text(&summary["info"]["cwd"]);
                 facts.branch = text(&summary["head_branch"]);
                 if let Some(title) = text(&summary["generated_title"]) {
-                    let named = summary["title_is_manual"] == true;
-                    facts.title(
-                        if named {
-                            Title::Named
-                        } else {
-                            Title::Generated
-                        },
-                        &title,
-                    );
+                    let kind = if summary["title_is_manual"] == true {
+                        Title::Named
+                    } else {
+                        Title::Generated
+                    };
+                    facts.title(kind, &title);
                 }
                 if let Some(parent) = text(&summary["parent_session_id"]) {
                     facts.parent = Some(Parent {
@@ -182,7 +175,7 @@ impl Agent for GrokBuild {
                 })?;
             }
             _ => {
-                let sessions = file.ancestors().nth(3).map(Path::to_path_buf);
+                let sessions = file.ancestors().nth(3);
                 cursor.offset = super::lines(file, cursor.offset, |bytes| {
                     let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
                         read.skipped += 1;
@@ -196,10 +189,7 @@ impl Agent for GrokBuild {
                     match update["sessionUpdate"].as_str() {
                         Some("turn_completed") => {
                             let finished = std::mem::take(&mut cursor.finished);
-                            let theirs = match &sessions {
-                                Some(sessions) => subagents(sessions, &finished),
-                                None => BTreeMap::new(),
-                            };
+                            let theirs = subagents(sessions, &finished);
                             turn(update, at, &session, &theirs, &mut read);
                         }
                         Some("subagent_spawned") => {
@@ -285,11 +275,7 @@ impl Agent for GrokBuild {
                                 .parse::<i64>()
                                 .ok()
                         });
-                        conversation.answer(
-                            call,
-                            content.clone(),
-                            exit.is_some_and(|exit| exit != 0),
-                        );
+                        conversation.answer(call, content, exit.is_some_and(|exit| exit != 0));
                     }
                 }
                 _ => {}
@@ -300,7 +286,8 @@ impl Agent for GrokBuild {
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
         let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
-        let entry = &kept[SIGN_IN];
+        // The SuperGrok sign-in, under its issuer and client.
+        let entry = &kept["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"];
         let text = |field: &str| entry[field].as_str().filter(|text| !text.is_empty());
         Ok(vec![Login {
             provider: "xai".to_owned(),
@@ -355,19 +342,6 @@ impl Used {
         })
     }
 
-    fn plus(self, more: Used) -> Used {
-        Used {
-            input: self.input + more.input,
-            cache_read: self.cache_read + more.cache_read,
-            cache_write: self.cache_write + more.cache_write,
-            output: self.output + more.output,
-            reasoning: self.reasoning + more.reasoning,
-            calls: self.calls + more.calls,
-            // A charge not known in one makes the sum unknown.
-            ticks: self.ticks.zip(more.ticks).map(|(own, more)| own + more),
-        }
-    }
-
     fn less(self, theirs: Used) -> Used {
         Used {
             input: self.input.saturating_sub(theirs.input),
@@ -376,6 +350,7 @@ impl Used {
             output: self.output.saturating_sub(theirs.output),
             reasoning: self.reasoning.saturating_sub(theirs.reasoning),
             calls: self.calls.saturating_sub(theirs.calls),
+            // A charge not known in theirs makes what's left unknown.
             ticks: self
                 .ticks
                 .zip(theirs.ticks)
@@ -384,11 +359,11 @@ impl Used {
     }
 }
 
-/// What the turns of the subagents `finished` used, by model, from their own
-/// updates in `sessions`.
-fn subagents(sessions: &Path, finished: &[String]) -> BTreeMap<String, Used> {
-    let mut used: BTreeMap<String, Used> = BTreeMap::new();
-    let dirs: Vec<PathBuf> = super::entries(sessions).collect();
+/// What each turn of the subagents `finished` used, model by model, from
+/// their own updates in `sessions`.
+fn subagents(sessions: Option<&Path>, finished: &[String]) -> Vec<(String, Used)> {
+    let mut used = Vec::new();
+    let dirs: Vec<PathBuf> = sessions.into_iter().flat_map(super::entries).collect();
     for child in finished {
         let Some(updates) = dirs
             .iter()
@@ -411,9 +386,7 @@ fn subagents(sessions: &Path, finished: &[String]) -> BTreeMap<String, Used> {
                 .flatten()
             {
                 if let Some(each) = Used::of(each) {
-                    used.entry(model.clone())
-                        .and_modify(|total| *total = total.plus(each))
-                        .or_insert(each);
+                    used.push((model.clone(), each));
                 }
             }
         });
@@ -427,7 +400,7 @@ fn turn(
     update: &Value,
     at: Option<i64>,
     session: &str,
-    subagents: &BTreeMap<String, Used>,
+    subagents: &[(String, Used)],
     read: &mut Read,
 ) {
     let (Some(models), Some(prompt), Some(at)) = (
@@ -442,10 +415,10 @@ fn turn(
             read.skipped += 1;
             continue;
         };
-        let used = match subagents.get(model) {
-            Some(theirs) => used.less(*theirs),
-            None => used,
-        };
+        let used = subagents
+            .iter()
+            .filter(|(theirs, _)| theirs == model)
+            .fold(used, |used, (_, theirs)| used.less(*theirs));
         let Some(uncached) = used.input.checked_sub(used.cache_read + used.cache_write) else {
             read.skipped += 1;
             continue;
@@ -546,48 +519,6 @@ mod tests {
                 json!({"sessionUpdate": "turn_completed", "prompt_id": "p2", "usage": {"modelUsage": {"grok-4.6-build": used(10000, 5000, 4, 100)}}}),
             )],
         );
-        let parent = updates(
-            dir.path(),
-            "s1",
-            &[
-                update(
-                    1_790_000_001,
-                    json!({"sessionUpdate": "subagent_spawned", "child_session_id": "s2"}),
-                ),
-                update(
-                    1_790_000_055,
-                    json!({"sessionUpdate": "subagent_finished", "child_session_id": "s2"}),
-                ),
-                update(
-                    1_790_000_060,
-                    json!({"sessionUpdate": "turn_completed", "prompt_id": "p1", "usage": {"modelUsage": {"grok-4.6-build": used(30000, 20000, 10, 400)}}}),
-                ),
-            ],
-        );
-        let read = GrokBuild.read(&parent, "").unwrap();
-        let own = &read.responses["p1:grok-4.6-build"];
-        // 30,000 in, 20,000 cached, less the subagent's 10,000 and 5,000.
-        assert_eq!((own.tokens.input, own.tokens.cache_read), (5000, 15000));
-        assert_eq!((own.prompt, own.cost), (20000_u64.div_ceil(6), Some(3e-8)));
-        assert!(
-            read.sessions["grok-build:s2"]
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent.id == "grok-build:s1" && parent.link == Link::Subagent)
-        );
-    }
-
-    #[test]
-    fn a_growing_file_read_on_from_its_cursor_counts_the_subagents_that_finished_before() {
-        let dir = tempfile::tempdir().unwrap();
-        updates(
-            dir.path(),
-            "s2",
-            &[update(
-                1_790_000_050,
-                json!({"sessionUpdate": "turn_completed", "prompt_id": "p2", "usage": {"modelUsage": {"grok-4.6-build": used(10000, 5000, 4, 100)}}}),
-            )],
-        );
         let lines = [
             update(
                 1_790_000_000,
@@ -620,8 +551,16 @@ mod tests {
         // counted less it all the same.
         let own = &later.responses["p1:grok-4.6-build"];
         assert_eq!(own, &whole.responses["p1:grok-4.6-build"]);
+        // 30,000 in, 20,000 cached, less the subagent's 10,000 and 5,000.
         assert_eq!((own.tokens.input, own.tokens.cache_read), (5000, 15000));
+        assert_eq!((own.prompt, own.cost), (20000_u64.div_ceil(6), Some(3e-8)));
         assert!(later.sessions["grok-build:s1"].title.is_none());
+        assert!(
+            first.sessions["grok-build:s2"]
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.id == "grok-build:s1" && parent.link == Link::Subagent)
+        );
     }
 
     #[test]
