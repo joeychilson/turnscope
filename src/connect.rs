@@ -27,7 +27,7 @@ pub fn connect(agent: &dyn Agent, home: &Path) -> Result<()> {
         .map_err(|error| Error::Failed(error.to_string()))?;
     if temporary(&exe) {
         return Err(Error::Failed(format!(
-            "Turnscope runs from {}, which goes away when its disk image is ejected or its drive removed: move Turnscope to Applications and connect from there",
+            "Turnscope's engine runs from {}, which goes away when its disk image is ejected or its drive is removed. Put Turnscope in Applications, quit it, and open it from there a minute later to connect",
             exe.display()
         )));
     }

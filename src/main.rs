@@ -694,16 +694,21 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
             _ => {}
         }
     }
-    let mut failed = db
-        .prepare("SELECT path, failed FROM file WHERE failed IS NOT NULL ORDER BY path LIMIT 10")?;
-    for row in failed.query_map([], |row| {
+    let mut failed =
+        db.prepare("SELECT path, failed FROM file WHERE failed IS NOT NULL ORDER BY path")?;
+    let rows = failed.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
+    })?;
+    // One deleted isn't tried again; one in a folder that can't be looked
+    // into may still be there. Before the first ten, so deleted ones never
+    // hide one that's still failing.
+    let failing = rows.filter(|row| {
+        row.as_ref().map_or(true, |(path, _)| {
+            Path::new(path).try_exists().unwrap_or(true)
+        })
+    });
+    for row in failing.take(10) {
         let (path, why) = row?;
-        // One deleted isn't tried again.
-        if !Path::new(&path).exists() {
-            continue;
-        }
         // A reader's error often names its file already.
         let why = if why.contains(&path) {
             why
@@ -989,6 +994,33 @@ mod tests {
         std::fs::remove_file(&locked).unwrap();
         ingest::ingest(&mut db, home.path()).unwrap();
         assert!(!named(&db));
+    }
+
+    #[test]
+    fn doctor_names_a_file_that_cant_be_read_past_ten_deleted() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let folder = home.path().join(".claude/projects/-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        let locked: Vec<PathBuf> = (0..11)
+            .map(|n| folder.join(format!("s{n:02}.jsonl")))
+            .collect();
+        for file in &locked {
+            std::fs::write(file, "{}\n").unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let mut db = db::open(data.path()).unwrap();
+        ingest::ingest(&mut db, home.path()).unwrap();
+        // The ten listed first are deleted; the last still can't be read.
+        for file in &locked[..10] {
+            std::fs::remove_file(file).unwrap();
+        }
+        ingest::ingest(&mut db, home.path()).unwrap();
+        let notes = doctor(&db, home.path(), data.path(), now()).unwrap();
+        assert!(
+            notes.iter().any(|note| note.contains("s10.jsonl")),
+            "{notes:?}"
+        );
     }
 
     #[test]

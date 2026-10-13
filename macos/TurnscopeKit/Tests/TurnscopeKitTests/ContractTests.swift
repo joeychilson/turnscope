@@ -7,9 +7,6 @@ import Foundation
 import Testing
 @testable import TurnscopeKit
 
-private struct Answered<R: Decodable>: Decodable { var result: R }
-private struct Pushed<P: Decodable>: Decodable { var params: P }
-
 private struct Refused: Decodable {
     struct Error: Decodable {
         var code: Int
@@ -22,12 +19,12 @@ private struct Refused: Decodable {
 
 /// How the app reads each example that serve writes, by file name.
 private let answers: [String: @Sendable (Data) throws -> Void] = [
-    "hello.result.json": read(Answered<HelloResult>.self),
+    "hello.result.json": read(Answer<HelloResult>.self),
     "status.notification.json": read(Pushed<Status>.self),
     "alert.notification.json": read(Pushed<Alert>.self),
-    "alerts.ack.result.json": read(Answered<Done>.self),
-    "limit.breakdown.result.json": read(Answered<BreakdownResult>.self),
-    "done.result.json": read(Answered<Done>.self),
+    "alerts.ack.result.json": read(Answer<Done>.self),
+    "limit.breakdown.result.json": read(Answer<BreakdownResult>.self),
+    "done.result.json": read(Answer<Done>.self),
     "error.json": read(Refused.self),
 ]
 
@@ -71,7 +68,7 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
 }
 
 @Test func theStatusSaysWhatTheEngineDecided() throws {
-    let hello = try Contract.decoder.decode(Answered<HelloResult>.self, from: contract("hello.result.json")).result
+    let hello = try Contract.decoder.decode(Answer<HelloResult>.self, from: contract("hello.result.json")).result
     let status = hello.status
     let claude = status.accounts[0]
     #expect(claude.inUse && claude.standing == .runningOut)
@@ -127,7 +124,7 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
 }
 
 @Test func aSessionsShareMayBeUnknown() throws {
-    let answer = try Contract.decoder.decode(Answered<BreakdownResult>.self,
+    let answer = try Contract.decoder.decode(Answer<BreakdownResult>.self,
                                              from: contract("limit.breakdown.result.json"))
     #expect(answer.result.sessions.first?.sharePercent == 31.5)
     let unknown = #"{"session":"s","agent":"pi","sharePercent":null,"running":false}"#

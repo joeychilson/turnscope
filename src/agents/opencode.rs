@@ -187,7 +187,10 @@ impl Agent for OpenCode {
             let (created, updated): (i64, i64) =
                 (row.get(3).map_err(failed)?, row.get(4).map_err(failed)?);
             cursor.messages = cursor.messages.max(updated);
-            // A row read again only for being within `LATE` was counted.
+            // A row read again only for being within `LATE` was counted. One
+            // committed late, stamped at or before the last read, isn't:
+            // knowing it wasn't seen would take every bad row's id in the
+            // cursor, for a count only doctor shows.
             let unseen = u64::from(updated > mark);
             let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(5).map_err(failed)?)
             else {

@@ -29,7 +29,7 @@ Check it by running the app, or with `--fixture` and `--snapshot`.
 
 | File | Holds |
 |---|---|
-| `Contract.swift` | The protocol's types (`Status`, `AccountStatus`, `LimitStatus`, `Outlook`, `Alert`, `UsedMost`, each request's parameters), the JSON decoder and encoder, and `Contract.status(from:)` for fixtures |
+| `Contract.swift` | The protocol's types (`Status`, `AccountStatus`, `LimitStatus`, `Outlook`, `Alert`, `UsedMost`, each request's parameters), the JSON decoder, and `Contract.status(from:)` for fixtures |
 | `Client.swift` | The connection to `serve`: finding the socket, starting `serve`, `hello`, pushes, requests, reconnecting, and replacing another engine's `serve` |
 | `Store.swift` | The observable state views read, and the requests they make through it |
 | `Standing.swift` | Small facts read off the status: a limit's `standing` (lasts, running out, used up), an account's `decidingLimit`, `refused`, `refilledAt`, `twinned` |
