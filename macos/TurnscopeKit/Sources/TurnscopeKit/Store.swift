@@ -242,6 +242,9 @@ public final class Store {
         // a planned reconnect, such as replacing another engine's serve, is
         // under way.
         case .phase(.connecting): break
+        case .hello(let hello):
+            take(hello.status)
+            hello.alerts.forEach(onAlert)
         case .status(let status): take(status)
         case .alert(let alert): onAlert(alert)
         }
