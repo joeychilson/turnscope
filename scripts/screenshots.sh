@@ -35,11 +35,7 @@ jq '.params.agents |= map(.inUse = false)
 # Draw `$1` from the status in `$2`, opening what `$3` names, if anything.
 shot() {
   local name=$1 fixture=$2 opening=${3:-}
-  if [ -n "$opening" ]; then
-    "$app" --snapshot "$drawn/$name" --fixture "$fixture" --open "$opening"
-  else
-    "$app" --snapshot "$drawn/$name" --fixture "$fixture"
-  fi
+  "$app" --snapshot "$drawn/$name" --fixture "$fixture" ${opening:+--open "$opening"}
   for look in light dark; do
     mv "$drawn/$name/panel-$look.png" ".github/screenshots/$name-$look.png"
   done

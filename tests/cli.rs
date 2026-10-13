@@ -109,174 +109,68 @@ fn store() -> tempfile::TempDir {
     let data = tempfile::tempdir().unwrap();
     assert!(turnscope(data.path(), &["accounts"], None).status.success());
     let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
-    let at = |hours: f64| NOW - (hours * HOUR as f64) as i64;
-    let last = at(1.0 / 6.0);
-    for (id, provider, kind, title, label, read_at, problem) in [
-        (
-            "anthropic:acct-1:org-1",
-            "anthropic",
-            "subscription",
-            "Claude Max",
-            Some("me@example.com"),
-            Some(last),
-            None,
-        ),
-        (
-            "openai:acct-2",
-            "openai",
-            "subscription",
-            "ChatGPT Plus",
-            Some("me@example.com"),
-            Some(last),
-            None,
-        ),
-        (
-            "openrouter:api",
-            "openrouter",
-            "apiKey",
-            "OpenRouter API key",
-            None,
-            Some(last),
-            None,
-        ),
-        (
-            "xai:user-3",
-            "xai",
-            "subscription",
-            "SuperGrok",
-            Some("me@example.com"),
-            None,
-            Some("signIn"),
-        ),
-    ] {
-        db.execute(
-            "INSERT INTO account (id, provider, kind, title, label, read_at, problem) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, provider, kind, title, label, read_at, problem],
-        )
-        .unwrap();
-    }
-    let reading = |account: &str,
-                   key: &str,
-                   name: &str,
-                   read: i64,
-                   used: f64,
-                   size: Option<f64>,
-                   window: Option<(f64, f64)>| {
-        db.execute(
-            "INSERT INTO reading (account, limit_key, at, name, used, size, starts, resets) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![account, key, read, name, used, size, window.map(|(starts, _)| at(starts)), window.map(|(_, resets)| at(resets))],
-        )
-        .unwrap();
-    };
-    // Five hours from three hours ago, and a week from Monday.
-    for (hours, five, week) in [
-        (1.5, 35.0, 40.0),
-        (1.0, 45.0, 42.0),
-        (0.5, 60.0, 43.0),
-        (1.0 / 6.0, 75.0, 44.0),
-    ] {
-        reading(
-            "anthropic:acct-1:org-1",
-            "five_hour",
-            "5 hours",
-            at(hours),
-            five,
-            None,
-            Some((3.0, -2.0)),
-        );
-        reading(
-            "anthropic:acct-1:org-1",
-            "seven_day",
-            "Weekly",
-            at(hours),
-            week,
-            None,
-            Some((84.0, -84.0)),
-        );
-    }
-    for (hours, week) in [(26.0, 12.0), (1.0, 20.0), (1.0 / 6.0, 20.0)] {
-        reading(
-            "openai:acct-2",
-            "secondary_window",
-            "Weekly",
-            at(hours),
-            week,
-            None,
-            Some((60.0, -108.0)),
-        );
-    }
-    reading(
-        "openrouter:api",
-        "credits",
-        "Credits",
-        last,
-        30.0,
-        Some(50.0),
-        None,
-    );
-    reading(
-        "openrouter:api",
-        "key-0123456789abcdef",
-        "Weekly key limit",
-        last,
-        45.0,
-        Some(20.0),
-        Some((60.0, -108.0)),
-    );
-    // Signed in since two days ago, so the fixture's sessions a day ago drew
-    // on these accounts; OpenCode's, signed in to none, on no account.
-    let folder = |name: &str| home().join(name).to_string_lossy().into_owned();
-    for (agent, name, provider, account, key) in [
-        (
-            "claude-code",
-            ".claude",
-            "anthropic",
-            "anthropic:acct-1:org-1",
-            None,
-        ),
-        ("codex", ".codex", "openai", "openai:acct-2", None),
-        (
-            "pi",
-            ".pi/agent",
-            "openrouter",
-            "openrouter:api",
-            Some("0123456789abcdef"),
-        ),
-        ("grok-build", ".grok", "xai", "xai:user-3", None),
-    ] {
-        db.execute(
-            "INSERT INTO sign_in (agent, folder, provider, since, account, key) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![agent, folder(name), provider, at(48.0), account, key],
-        )
-        .unwrap();
-    }
     db.execute(
-        "INSERT INTO price (provider, model, since, cost) VALUES ('anthropic', 'claude-opus-5', 0, '{\"input\":5,\"output\":25,\"cache_read\":0.5,\"cache_write\":6.25}')",
-        [],
+        "INSERT INTO account (id, provider, kind, title, label, read_at, problem) VALUES
+             ('anthropic:acct-1:org-1', 'anthropic', 'subscription', 'Claude Max', 'me@example.com', ?1, NULL),
+             ('openai:acct-2', 'openai', 'subscription', 'ChatGPT Plus', 'me@example.com', ?1, NULL),
+             ('openrouter:api', 'openrouter', 'apiKey', 'OpenRouter API key', NULL, ?1, NULL),
+             ('xai:user-3', 'xai', 'subscription', 'SuperGrok', 'me@example.com', NULL, 'signIn')",
+        [NOW - HOUR / 6],
     )
     .unwrap();
-    // Read the history again, now priced and attributed.
-    db.execute("UPDATE state SET readers = 0", []).unwrap();
+    // Read, and its window started and resets, hours before now.
+    db.execute(
+        "WITH read (account, key, name, ago, used, size, starts, resets) AS (VALUES
+             -- Five hours from three hours ago, and a week from Monday.
+             ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1.5, 35, NULL, 3, -2),
+             ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1.5, 40, NULL, 84, -84),
+             ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1, 45, NULL, 3, -2),
+             ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1, 42, NULL, 84, -84),
+             ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 0.5, 60, NULL, 3, -2),
+             ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 0.5, 43, NULL, 84, -84),
+             ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1 / 6.0, 75, NULL, 3, -2),
+             ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1 / 6.0, 44, NULL, 84, -84),
+             ('openai:acct-2', 'secondary_window', 'Weekly', 26, 12, NULL, 60, -108),
+             ('openai:acct-2', 'secondary_window', 'Weekly', 1, 20, NULL, 60, -108),
+             ('openai:acct-2', 'secondary_window', 'Weekly', 1 / 6.0, 20, NULL, 60, -108),
+             ('openrouter:api', 'credits', 'Credits', 1 / 6.0, 30, 50, NULL, NULL),
+             ('openrouter:api', 'key-0123456789abcdef', 'Weekly key limit', 1 / 6.0, 45, 20, 60, -108))
+         INSERT INTO reading (account, limit_key, at, name, used, size, starts, resets)
+         SELECT account, key, ?1 - ago * ?2, name, used, size, ?1 - starts * ?2, ?1 - resets * ?2 FROM read",
+        [NOW, HOUR],
+    )
+    .unwrap();
+    // Signed in since two days ago, so the fixture's sessions a day ago drew
+    // on these accounts; OpenCode's, signed in to none, on no account.
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account, key) VALUES
+             ('claude-code', ?1 || '/.claude', 'anthropic', ?2, 'anthropic:acct-1:org-1', NULL),
+             ('codex', ?1 || '/.codex', 'openai', ?2, 'openai:acct-2', NULL),
+             ('pi', ?1 || '/.pi/agent', 'openrouter', ?2, 'openrouter:api', '0123456789abcdef'),
+             ('grok-build', ?1 || '/.grok', 'xai', ?2, 'xai:user-3', NULL)",
+        params![home().to_string_lossy(), NOW - 48 * HOUR],
+    )
+    .unwrap();
+    db.execute_batch(
+        "INSERT INTO price (provider, model, since, cost) VALUES ('anthropic', 'claude-opus-5', 0, '{\"input\":5,\"output\":25,\"cache_read\":0.5,\"cache_write\":6.25}');
+         -- Read the history again, now priced and attributed.
+         UPDATE state SET readers = 0;",
+    )
+    .unwrap();
     data
 }
 
-/// Compare `text` with the snapshot `name`, or write it under
-/// `TURNSCOPE_BLESS`; a snapshot that differs is added to `stale`.
-fn check(name: &str, text: &str, stale: &mut Vec<String>) {
+/// Whether `text` is the snapshot `name`; under `TURNSCOPE_BLESS`, it's
+/// written as the snapshot instead.
+fn fresh(name: &str, text: &str) -> bool {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/snapshots")
         .join(name);
     if std::env::var_os("TURNSCOPE_BLESS").is_some() {
         std::fs::write(&path, text).unwrap();
-    } else if std::fs::read_to_string(&path).ok().as_deref() != Some(text) {
-        stale.push(name.to_owned());
+        return true;
     }
-}
-
-/// `text` with the directories that differ from run to run named instead.
-fn steady(text: &str, data: &Path) -> String {
-    text.replace(&data.display().to_string(), "<data>")
-        .replace(&home().display().to_string(), "<home>")
+    std::fs::read_to_string(&path).ok().as_deref() == Some(text)
 }
 
 #[test]
@@ -361,12 +255,14 @@ fn every_command_answers_as_its_snapshot_says() {
                 "{name}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let text = steady(&String::from_utf8_lossy(&output.stdout), data.path());
-            check(
-                &format!("{name}.{}", if json { "json" } else { "txt" }),
-                &text,
-                &mut stale,
-            );
+            // The directories that differ from run to run, named instead.
+            let text = String::from_utf8_lossy(&output.stdout)
+                .replace(&data.path().display().to_string(), "<data>")
+                .replace(&home().display().to_string(), "<home>");
+            let name = format!("{name}.{}", if json { "json" } else { "txt" });
+            if !fresh(&name, &text) {
+                stale.push(name);
+            }
         }
     }
     assert!(
@@ -464,44 +360,29 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
 #[test]
 fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
     let data = store();
-    let guard = |below: &str| {
-        turnscope(
-            data.path(),
-            &[
-                "guard",
-                "--account",
-                "claude",
-                "--limit",
-                "5 hours",
-                "--below",
-                below,
-            ],
-            None,
-        )
-    };
-    assert_eq!(guard("50").status.code(), Some(2));
-    assert_eq!(
-        String::from_utf8_lossy(&guard("50").stderr).trim(),
-        "Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at this pace it runs out 13:00 (in 1h)."
-    );
-    assert_eq!(guard("20").status.code(), Some(0));
-    // One it can't follow blocks nothing.
-    let unknown = turnscope(
-        data.path(),
-        &[
+    let guard = |limit: &str, below: &str| {
+        let args = [
             "guard",
             "--account",
             "claude",
             "--limit",
-            "month",
+            limit,
             "--below",
-            "50",
-        ],
-        None,
+            below,
+        ];
+        turnscope(data.path(), &args, None)
+    };
+    let blocked = guard("5 hours", "50");
+    assert_eq!(blocked.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&blocked.stderr).trim(),
+        "Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at this pace it runs out 13:00 (in 1h)."
     );
-    assert_eq!(unknown.status.code(), Some(1));
+    assert_eq!(guard("5 hours", "20").status.code(), Some(0));
+    // One it can't follow blocks nothing.
+    assert_eq!(guard("month", "50").status.code(), Some(1));
     // Nor does one mistyped.
-    assert_eq!(guard("150").status.code(), Some(1));
+    assert_eq!(guard("5 hours", "150").status.code(), Some(1));
 }
 
 #[test]
@@ -531,16 +412,11 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
     let data = store();
     // Claude's last read 35 minutes ago, and nothing written since.
     let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
-    let shift = HOUR * 25 / 60;
-    db.execute(
-        "UPDATE reading SET at = at - ?1 WHERE account = 'anthropic:acct-1:org-1'",
-        [shift],
-    )
-    .unwrap();
-    db.execute(
-        "UPDATE account SET read_at = read_at - ?1 WHERE id = 'anthropic:acct-1:org-1'",
-        [shift],
-    )
+    db.execute_batch(&format!(
+        "UPDATE reading SET at = at - {shift} WHERE account = 'anthropic:acct-1:org-1';
+         UPDATE account SET read_at = read_at - {shift} WHERE id = 'anthropic:acct-1:org-1';",
+        shift = HOUR * 25 / 60
+    ))
     .unwrap();
     let output = turnscope(data.path(), &["status", "--account", "claude"], None);
     let text = String::from_utf8_lossy(&output.stdout);
@@ -575,14 +451,11 @@ fn an_mcp_session_answers_as_its_snapshot_says() {
         .collect();
     // A notification is answered with nothing.
     assert_eq!(replies.len(), requests.len() - 1);
-    let mut stale = Vec::new();
-    check(
-        "mcp.json",
-        &(serde_json::to_string_pretty(&replies).unwrap() + "\n"),
-        &mut stale,
-    );
     assert!(
-        stale.is_empty(),
+        fresh(
+            "mcp.json",
+            &(serde_json::to_string_pretty(&replies).unwrap() + "\n")
+        ),
         "mcp.json differs; run with TURNSCOPE_BLESS=1 and review the diff"
     );
 }
@@ -632,14 +505,14 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
         hello["result"]["server"],
         format!("turnscope {}", env!("CARGO_PKG_VERSION"))
     );
-    let accounts: Vec<&str> = hello["result"]["status"]["accounts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|account| account["id"].as_str().unwrap())
-        .collect();
+    let ids = |list: &str| -> Vec<String> {
+        let list = hello["result"]["status"][list].as_array().unwrap();
+        list.iter()
+            .map(|item| item["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
     assert_eq!(
-        accounts,
+        ids("accounts"),
         [
             "anthropic:acct-1:org-1",
             "openai:acct-2",
@@ -647,14 +520,8 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
             "xai:user-3"
         ]
     );
-    let agents: Vec<&str> = hello["result"]["status"]["agents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|agent| agent["id"].as_str().unwrap())
-        .collect();
     assert_eq!(
-        agents,
+        ids("agents"),
         ["claude-code", "codex", "opencode", "pi", "grok-build"]
     );
     let breakdown = ask(

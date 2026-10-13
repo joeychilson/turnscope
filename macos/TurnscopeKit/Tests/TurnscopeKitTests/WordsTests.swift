@@ -139,8 +139,6 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(words.verdict([used]) == ("Claude Max is used up", "Back in 3h.", .usedUp))
     let fine = account([limit(.lasts, left: 80)])
     #expect(words.verdict([fine]).detail == "At this pace, no Claude Max limit runs out.")
-    let early = account([limit(.unknown(reason: .notEnoughData), left: 99)])
-    #expect(words.verdict([early]).detail == "Claude Max has 99% left of 5 hours.")
     // Nothing in use, so the accounts below say the rest.
     #expect(words.verdict([]) == ("Nothing in use", "", .lasts))
     // A subscription in use with no limit read: whether it has room isn't

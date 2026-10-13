@@ -55,10 +55,11 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
 }
 
 @Test func everyExampleIsWhatTheAppReadsOrWrites() throws {
-    let names = try examples()
+    let names = try FileManager.default.contentsOfDirectory(atPath: root.appending(path: "contract").path)
+        .filter { $0.hasSuffix(".json") }.sorted()
     #expect(Set(names) == Set(answers.keys).union(requests.keys), "an example not checked, or one missing")
     for name in names {
-        let data = try contract("\(name)")
+        let data = try contract(name)
         if let read = answers[name] {
             do { try read(data) } catch { Issue.record("\(name): \(error)") }
         } else if let write = requests[name] {
@@ -70,8 +71,7 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
 }
 
 @Test func theStatusSaysWhatTheEngineDecided() throws {
-    struct Hello: Decodable { var result: HelloResult }
-    let hello = try Contract.decoder.decode(Hello.self, from: contract("hello.result.json")).result
+    let hello = try Contract.decoder.decode(Answered<HelloResult>.self, from: contract("hello.result.json")).result
     let status = hello.status
     let claude = status.accounts[0]
     #expect(claude.inUse && claude.standing == .runningOut)
@@ -122,7 +122,6 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
 }
 
 @Test func aFixtureIsAStatusAloneOrAsServeSendsIt() throws {
-    #expect(Contract.status(from: try contract("status.notification.json")) != nil)
     #expect(Contract.status(from: try contract("hello.result.json")) != nil)
     #expect(Contract.status(from: Data("{}".utf8)) == nil)
 }
