@@ -153,51 +153,34 @@ struct Usage {
 }
 
 impl Usage {
-    fn each(&self) -> [u64; 6] {
-        [
-            self.input_tokens,
-            self.cached_input_tokens,
-            self.cache_write_input_tokens,
-            self.output_tokens,
-            self.reasoning_output_tokens,
-            self.total_tokens,
-        ]
-    }
-
-    fn of(each: [u64; 6]) -> Usage {
-        let [
-            input_tokens,
-            cached_input_tokens,
-            cache_write_input_tokens,
-            output_tokens,
-            reasoning_output_tokens,
-            total_tokens,
-        ] = each;
-        Usage {
-            input_tokens,
-            cached_input_tokens,
-            cache_write_input_tokens,
-            output_tokens,
-            reasoning_output_tokens,
-            total_tokens,
-        }
-    }
-
     /// These counts less `other`'s, or `None` where one would fall below zero.
     fn minus(&self, other: &Usage) -> Option<Usage> {
-        let mut each = self.each();
-        for (count, less) in each.iter_mut().zip(other.each()) {
-            *count = count.checked_sub(less)?;
-        }
-        Some(Usage::of(each))
+        Some(Usage {
+            input_tokens: self.input_tokens.checked_sub(other.input_tokens)?,
+            cached_input_tokens: self
+                .cached_input_tokens
+                .checked_sub(other.cached_input_tokens)?,
+            cache_write_input_tokens: self
+                .cache_write_input_tokens
+                .checked_sub(other.cache_write_input_tokens)?,
+            output_tokens: self.output_tokens.checked_sub(other.output_tokens)?,
+            reasoning_output_tokens: self
+                .reasoning_output_tokens
+                .checked_sub(other.reasoning_output_tokens)?,
+            total_tokens: self.total_tokens.checked_sub(other.total_tokens)?,
+        })
     }
 
     fn plus(&self, other: &Usage) -> Usage {
-        let mut each = self.each();
-        for (count, more) in each.iter_mut().zip(other.each()) {
-            *count += more;
+        Usage {
+            input_tokens: self.input_tokens + other.input_tokens,
+            cached_input_tokens: self.cached_input_tokens + other.cached_input_tokens,
+            cache_write_input_tokens: self.cache_write_input_tokens
+                + other.cache_write_input_tokens,
+            output_tokens: self.output_tokens + other.output_tokens,
+            reasoning_output_tokens: self.reasoning_output_tokens + other.reasoning_output_tokens,
+            total_tokens: self.total_tokens + other.total_tokens,
         }
-        Usage::of(each)
     }
 
     /// Codex's input includes what was read from and written to the cache.
@@ -698,19 +681,17 @@ fn total(
         // A rollout's first total is all it has used, unless it took over its
         // thread's, as a resumed thread's may: then its request used what it
         // says it last used.
-        None => info
-            .last_token_usage
-            .filter(|last| last.total_tokens <= now.total_tokens)
-            .unwrap_or(now),
+        None => Some(
+            info.last_token_usage
+                .filter(|last| last.total_tokens <= now.total_tokens)
+                .unwrap_or(now),
+        ),
         // Within a rollout a total falls to what its last request used alone.
-        Some(before) if now.total_tokens < before.total_tokens => now,
-        Some(before) => match now.minus(&before) {
-            Some(growth) => growth,
-            None => return,
-        },
+        Some(before) if now.total_tokens < before.total_tokens => Some(now),
+        Some(before) => now.minus(&before),
     };
     let Some(growth) = growth
-        .minus(&recorded)
+        .and_then(|growth| growth.minus(&recorded))
         .filter(|growth| growth.total_tokens > 0)
     else {
         return;
@@ -965,6 +946,39 @@ mod tests {
         json!({"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]})
     }
 
+    /// Thread t1's first rollout: two requests and their replies.
+    fn first(dir: &Path) -> PathBuf {
+        rollout(
+            dir,
+            "2026-09-30T09-00-00-t1",
+            &[
+                line(
+                    0,
+                    "session_meta",
+                    json!({"id": "t1", "history_mode": "paginated"}),
+                ),
+                line(1, "response_item", message("user", "Add a retry.")),
+                line(2, "response_item", message("assistant", "Added one.")),
+                line(
+                    3,
+                    "response_item",
+                    message("user", "Make it five attempts."),
+                ),
+                line(4, "response_item", message("assistant", "Five now.")),
+            ],
+        )
+    }
+
+    /// The `session_meta` of a rewind of t1 to ordinal `at` of the rollout `base`.
+    fn rewind(at: i64, base: &str) -> Value {
+        line(
+            at,
+            "session_meta",
+            json!({"id": "t1", "history_mode": "paginated",
+                "history_base": {"thread_id": base, "end_ordinal_exclusive": at, "end_byte_offset": 0}}),
+        )
+    }
+
     #[test]
     fn a_scripts_output_is_its_commands_and_a_failing_one_fails_it() {
         let output = "Script completed\nWall time 0.4 seconds\nOutput:\n\
@@ -1070,35 +1084,8 @@ mod tests {
     }
 
     #[test]
-    fn a_subagents_copy_of_its_parents_totals_and_a_review_count_nothing() {
+    fn a_review_counts_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let subagent = rollout(
-            dir.path(),
-            "t2",
-            &[
-                line(
-                    0,
-                    "session_meta",
-                    json!({"id": "t2", "parent_thread_id": "t1", "subagent_history_start_ordinal": 3}),
-                ),
-                line(1, "turn_context", json!({"model": "gpt-5.5"})),
-                total(2, usage(9000, 0, 90), usage(9000, 0, 90)),
-                total(4, usage(9500, 0, 95), usage(500, 0, 5)),
-            ],
-        );
-        let read = Codex.read(&subagent, "").unwrap();
-        let counted: Vec<u64> = read
-            .responses
-            .values()
-            .map(|response| response.tokens.input)
-            .collect();
-        assert_eq!(counted, [500]);
-        assert!(
-            read.sessions["codex:t2"]
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent.id == "codex:t1")
-        );
         let review = rollout(
             dir.path(),
             "t3",
@@ -1122,33 +1109,25 @@ mod tests {
     fn a_forks_copy_of_its_parents_history_is_the_parents() {
         let dir = tempfile::tempdir().unwrap();
         let settings = |thread: &str, model: &str| json!({"type": "thread_settings_applied", "thread_id": thread, "thread_settings": {"model": model}});
-        let file = rollout(
-            dir.path(),
-            "t2",
-            &[
-                line(
-                    0,
-                    "session_meta",
-                    json!({"id": "t2", "forked_from_id": "t1", "history_mode": "legacy"}),
-                ),
-                line(1, "session_meta", json!({"id": "t1"})),
-                line(2, "turn_context", json!({"model": "gpt-5.4"})),
-                line(3, "response_item", message("user", "Plan the migration.")),
-                line(
-                    4,
-                    "token_usage_record",
-                    json!({"response_id": "resp_1", "thread_id": "t1", "usage": usage(1000, 0, 10)}),
-                ),
-                total(5, usage(1000, 0, 10), usage(1000, 0, 10)),
-                // A total the parent wrote before it wrote records.
-                total(6, usage(3000, 0, 30), usage(2000, 0, 20)),
-                line(7, "response_item", message("assistant", "Here's the plan.")),
-                line(8, "event_msg", settings("t1", "gpt-5.4")),
-            ],
-        );
-        let copy = Codex.read(&file, "").unwrap();
-        let mut text = std::fs::read_to_string(&file).unwrap();
-        for own in [
+        let lines = [
+            line(
+                0,
+                "session_meta",
+                json!({"id": "t2", "forked_from_id": "t1", "history_mode": "legacy"}),
+            ),
+            line(1, "session_meta", json!({"id": "t1"})),
+            line(2, "turn_context", json!({"model": "gpt-5.4"})),
+            line(3, "response_item", message("user", "Plan the migration.")),
+            line(
+                4,
+                "token_usage_record",
+                json!({"response_id": "resp_1", "thread_id": "t1", "usage": usage(1000, 0, 10)}),
+            ),
+            total(5, usage(1000, 0, 10), usage(1000, 0, 10)),
+            // A total the parent wrote before it wrote records.
+            total(6, usage(3000, 0, 30), usage(2000, 0, 20)),
+            line(7, "response_item", message("assistant", "Here's the plan.")),
+            line(8, "event_msg", settings("t1", "gpt-5.4")),
             line(9, "event_msg", settings("t2", "gpt-5.5")),
             line(10, "response_item", message("user", "Try it on staging.")),
             line(
@@ -1157,10 +1136,10 @@ mod tests {
                 json!({"response_id": "resp_2", "thread_id": "t2", "usage": usage(4000, 3000, 40)}),
             ),
             total(12, usage(7000, 3000, 70), usage(4000, 3000, 40)),
-        ] {
-            text += &format!("{own}\n");
-        }
-        std::fs::write(&file, text).unwrap();
+        ];
+        let file = rollout(dir.path(), "t2", &lines[..9]);
+        let copy = Codex.read(&file, "").unwrap();
+        rollout(dir.path(), "t2", &lines);
         let own = Codex.read(&file, &copy.cursor).unwrap();
 
         let mut responses: Vec<(&str, &str, &str)> = [&copy, &own]
@@ -1243,6 +1222,12 @@ mod tests {
             .map(|response| (response.tokens.input, response.model.as_str()))
             .collect();
         assert_eq!(counted, [(500, "gpt-5.5")]);
+        assert!(
+            read.sessions["codex:t2"]
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.id == "codex:t1" && parent.link == Link::Subagent)
+        );
         assert_eq!(
             read.said,
             [(
@@ -1268,14 +1253,6 @@ mod tests {
     #[test]
     fn a_rewind_keeps_the_history_before_it_below_its_ordinal() {
         let dir = tempfile::tempdir().unwrap();
-        let rewind = |at: i64, base: &str| {
-            line(
-                at,
-                "session_meta",
-                json!({"id": "t1", "history_mode": "paginated",
-                    "history_base": {"thread_id": base, "end_ordinal_exclusive": at, "end_byte_offset": 0}}),
-            )
-        };
         let said = |files: &[PathBuf]| {
             Codex
                 .transcript("t1", files)
@@ -1285,25 +1262,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let mut files = vec![
-            rollout(
-                dir.path(),
-                "2026-09-30T09-00-00-t1",
-                &[
-                    line(
-                        0,
-                        "session_meta",
-                        json!({"id": "t1", "history_mode": "paginated"}),
-                    ),
-                    line(1, "response_item", message("user", "Add a retry.")),
-                    line(2, "response_item", message("assistant", "Added one.")),
-                    line(
-                        3,
-                        "response_item",
-                        message("user", "Make it five attempts."),
-                    ),
-                    line(4, "response_item", message("assistant", "Five now.")),
-                ],
-            ),
+            first(dir.path()),
             // Rewound to before "Make it five attempts."
             rollout(
                 dir.path(),
@@ -1355,25 +1314,7 @@ mod tests {
     fn a_rewind_takes_what_it_went_back_past_out_of_search() {
         let home = tempfile::tempdir().unwrap();
         let folder = home.path().join(".codex");
-        let first = rollout(
-            &folder,
-            "2026-09-30T09-00-00-t1",
-            &[
-                line(
-                    0,
-                    "session_meta",
-                    json!({"id": "t1", "history_mode": "paginated"}),
-                ),
-                line(1, "response_item", message("user", "Add a retry.")),
-                line(2, "response_item", message("assistant", "Added one.")),
-                line(
-                    3,
-                    "response_item",
-                    message("user", "Make it five attempts."),
-                ),
-                line(4, "response_item", message("assistant", "Five now.")),
-            ],
-        );
+        let first = first(&folder);
         // After reading what's new, how many messages hold each word.
         let found = |db: &mut rusqlite::Connection| -> Vec<i64> {
             crate::ingest::ingest(db, home.path()).unwrap();
@@ -1397,12 +1338,7 @@ mod tests {
             &folder,
             "2026-09-30T09-05-00-t1_r2",
             &[
-                line(
-                    3,
-                    "session_meta",
-                    json!({"id": "t1", "history_mode": "paginated",
-                        "history_base": {"thread_id": "t1", "end_ordinal_exclusive": 3, "end_byte_offset": 0}}),
-                ),
+                rewind(3, "t1"),
                 line(4, "response_item", message("user", "Log each retry.")),
                 line(5, "response_item", message("assistant", "Each logs.")),
             ],
@@ -1541,23 +1477,19 @@ mod tests {
     #[test]
     fn usage_before_a_model_is_named_waits_for_it() {
         let dir = tempfile::tempdir().unwrap();
-        let file = rollout(
-            dir.path(),
-            "t1",
-            &[
-                line(0, "session_meta", json!({"id": "t1"})),
-                line(
-                    1,
-                    "token_usage_record",
-                    json!({"response_id": "resp_1", "usage": usage(100, 0, 1)}),
-                ),
-            ],
-        );
+        let lines = [
+            line(0, "session_meta", json!({"id": "t1"})),
+            line(
+                1,
+                "token_usage_record",
+                json!({"response_id": "resp_1", "usage": usage(100, 0, 1)}),
+            ),
+            line(2, "turn_context", json!({"model": "gpt-5.5"})),
+        ];
+        let file = rollout(dir.path(), "t1", &lines[..2]);
         let first = Codex.read(&file, "").unwrap();
         assert_eq!(first.responses["resp_1"].model, "");
-        let mut text = std::fs::read_to_string(&file).unwrap();
-        text += &format!("{}\n", line(2, "turn_context", json!({"model": "gpt-5.5"})));
-        std::fs::write(&file, text).unwrap();
+        rollout(dir.path(), "t1", &lines);
         let later = Codex.read(&file, &first.cursor).unwrap();
         assert_eq!(later.responses["resp_1"].model, "gpt-5.5");
     }
