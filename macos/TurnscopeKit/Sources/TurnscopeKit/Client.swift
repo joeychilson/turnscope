@@ -36,9 +36,12 @@ public final class Client {
     public enum Event: Sendable {
         /// It entered a phase.
         case phase(Phase)
-        /// A status: `hello`'s on each connection, then each serve pushes.
+        /// `hello`'s answer, on every connection: its status and alerts
+        /// handled as one.
+        case hello(HelloResult)
+        /// A status serve pushed.
         case status(Status)
-        /// An alert: those `hello` returns, then each serve pushes.
+        /// An alert serve pushed.
         case alert(Alert)
     }
 
@@ -183,8 +186,7 @@ public final class Client {
             return .replaced
         }
         phase = .connected
-        emit.yield(.status(hello.status))
-        for alert in hello.alerts { emit.yield(.alert(alert)) }
+        emit.yield(.hello(hello))
         let unread = await listening.value
         return .dropped(why: unread?.description ?? "Turnscope's engine stopped")
     }
