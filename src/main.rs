@@ -61,6 +61,15 @@ pub fn now() -> i64 {
         .unwrap_or_else(|| jiff::Timestamp::now().as_millisecond())
 }
 
+/// The first `bytes` bytes of the SHA-256 of `data`, in hex.
+pub fn sha256_hex(data: &[u8], bytes: usize) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(data)[..bytes]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[derive(Parser)]
 #[command(
     name = "turnscope",

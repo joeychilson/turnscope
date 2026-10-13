@@ -89,22 +89,6 @@ fn typed(text: &str) -> String {
     }
 }
 
-/// A line's text: a string, or its text parts.
-fn texts(content: &Value) -> Vec<&str> {
-    match content {
-        Value::String(text) => vec![text],
-        Value::Array(parts) => parts
-            .iter()
-            .filter_map(|part| part["text"].as_str())
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn id(native: &str) -> String {
-    format!("grok-build:{native}")
-}
-
 impl Agent for GrokBuild {
     fn info(&self) -> &'static Info {
         &INFO
@@ -115,21 +99,13 @@ impl Agent for GrokBuild {
     }
 
     fn files(&self, folder: &Path) -> Vec<PathBuf> {
-        let dirs = std::fs::read_dir(folder.join("sessions"))
-            .into_iter()
-            .flatten()
-            .flatten();
-        dirs.flat_map(|dir| {
-            std::fs::read_dir(dir.path())
-                .into_iter()
-                .flatten()
-                .flatten()
-        })
-        .flat_map(|session| {
-            ["summary.json", "updates.jsonl", "chat_history.jsonl"]
-                .map(|name| session.path().join(name))
-        })
-        .collect()
+        super::entries(&folder.join("sessions"))
+            .flat_map(|dir| super::entries(&dir))
+            .flat_map(|session| {
+                ["summary.json", "updates.jsonl", "chat_history.jsonl"]
+                    .map(|name| session.join(name))
+            })
+            .collect()
     }
 
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
@@ -140,7 +116,7 @@ impl Agent for GrokBuild {
             .ok_or_else(|| {
                 Error::Failed(format!("{} isn't a Grok Build session's", file.display()))
             })?;
-        let session = id(native);
+        let session = INFO.session(native);
         let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
         let mut read = Read::default();
         match file.file_name().and_then(|name| name.to_str()) {
@@ -178,7 +154,7 @@ impl Agent for GrokBuild {
                 }
                 if let Some(parent) = text(&summary["parent_session_id"]) {
                     facts.parent = Some(Parent {
-                        id: id(&parent),
+                        id: INFO.session(&parent),
                         link: Link::Fork,
                     });
                 }
@@ -194,12 +170,12 @@ impl Agent for GrokBuild {
                     };
                     match line["type"].as_str() {
                         Some("user") if line["synthetic_reason"].is_null() => {
-                            for text in texts(&line["content"]) {
+                            for text in super::texts(&line["content"]) {
                                 read.say(&session, &typed(text));
                             }
                         }
                         Some("assistant") => {
-                            read.say(&session, &texts(&line["content"]).join("\n"))
+                            read.say(&session, &super::texts(&line["content"]).join("\n"))
                         }
                         _ => {}
                     }
@@ -228,7 +204,7 @@ impl Agent for GrokBuild {
                         }
                         Some("subagent_spawned") => {
                             if let Some(child) = update["child_session_id"].as_str() {
-                                read.session(&id(child)).parent = Some(Parent {
+                                read.session(&INFO.session(child)).parent = Some(Parent {
                                     id: session.clone(),
                                     link: Link::Subagent,
                                 });
@@ -266,7 +242,7 @@ impl Agent for GrokBuild {
             let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
                 return;
             };
-            let content = texts(&line["content"]).join("\n");
+            let content = super::texts(&line["content"]).join("\n");
             match line["type"].as_str() {
                 Some("user") if line["synthetic_reason"].is_null() => {
                     let said = typed(&content);
@@ -278,9 +254,11 @@ impl Agent for GrokBuild {
                 }
                 // What Grok Build sent as the person's.
                 Some("user") => conversation.say(Kind::System, None, &content),
-                Some("reasoning") => {
-                    conversation.say(Kind::Reasoning, None, &texts(&line["summary"]).join("\n"))
-                }
+                Some("reasoning") => conversation.say(
+                    Kind::Reasoning,
+                    None,
+                    &super::texts(&line["summary"]).join("\n"),
+                ),
                 Some("assistant") => {
                     conversation.say(Kind::Assistant, None, &content);
                     for call in line["tool_calls"].as_array().into_iter().flatten() {
@@ -410,8 +388,7 @@ impl Used {
 /// updates in `sessions`.
 fn subagents(sessions: &Path, finished: &[String]) -> BTreeMap<String, Used> {
     let mut used: BTreeMap<String, Used> = BTreeMap::new();
-    let dirs = std::fs::read_dir(sessions).into_iter().flatten().flatten();
-    let dirs: Vec<PathBuf> = dirs.map(|dir| dir.path()).collect();
+    let dirs: Vec<PathBuf> = super::entries(sessions).collect();
     for child in finished {
         let Some(updates) = dirs
             .iter()
@@ -508,12 +485,11 @@ mod tests {
     use super::*;
 
     fn updates(dir: &Path, session: &str, lines: &[Value]) -> PathBuf {
-        let folder = dir.join("sessions/%2Fwork%2Fapp").join(session);
-        std::fs::create_dir_all(&folder).unwrap();
-        let file = folder.join("updates.jsonl");
-        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
-        std::fs::write(&file, text).unwrap();
-        file
+        let file = dir
+            .join("sessions/%2Fwork%2Fapp")
+            .join(session)
+            .join("updates.jsonl");
+        crate::agents::jsonl(file, lines)
     }
 
     fn used(input: u64, cached: u64, calls: u64, ticks: u64) -> Value {
@@ -651,16 +627,15 @@ mod tests {
     #[test]
     fn what_grok_build_adds_isnt_the_persons_and_its_system_prompt_isnt_shown() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("sessions/%2Fwork/s1");
-        std::fs::create_dir_all(&folder).unwrap();
-        let file = folder.join("chat_history.jsonl");
         let lines = [
             json!({"type": "system", "content": "You are Grok Build."}),
             json!({"type": "user", "content": "<rules>Be brief.</rules><git_status>clean</git_status>"}),
             json!({"type": "user", "content": "<user_query>Add a flag.</user_query>"}),
         ];
-        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
-        std::fs::write(&file, text).unwrap();
+        let file = crate::agents::jsonl(
+            dir.path().join("sessions/%2Fwork/s1/chat_history.jsonl"),
+            &lines,
+        );
         let entries = GrokBuild
             .transcript("s1", std::slice::from_ref(&file))
             .unwrap();

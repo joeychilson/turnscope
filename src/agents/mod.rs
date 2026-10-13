@@ -110,6 +110,13 @@ pub struct Info {
     pub cwd_var: Option<&'static str>,
 }
 
+impl Info {
+    /// The id of its session `native`, as stored: `claude-code:<native>`.
+    pub fn session(&self, native: &str) -> String {
+        format!("{}:{native}", self.id)
+    }
+}
+
 /// What one read of a file found.
 #[derive(Default)]
 pub struct Read {
@@ -210,7 +217,7 @@ pub struct Parent {
     pub link: Link,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum Link {
     Subagent,
     Fork,
@@ -292,7 +299,7 @@ pub struct Tokens {
 }
 
 /// One entry of a conversation.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Entry {
     pub kind: Kind,
     pub at: Option<i64>,
@@ -318,7 +325,7 @@ pub enum Kind {
     Task,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Tool {
     pub name: String,
     pub input: String,
@@ -338,7 +345,7 @@ pub struct Tool {
 }
 
 /// What a tool call is to a handoff.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     /// It read: a file, a search, a page. The next agent reads it again as
     /// it needs, so it's named in a line.
@@ -348,7 +355,6 @@ pub enum Role {
     /// It ran a subagent, whose output is its report.
     Subagent,
     /// Anything else, as a command or an edit: the work itself.
-    #[default]
     Work,
 }
 
@@ -456,11 +462,7 @@ impl Secret {
     /// The first 16 hex digits of its SHA-256: tells keys apart without
     /// saying either.
     pub fn fingerprint(&self) -> String {
-        use sha2::Digest as _;
-        sha2::Sha256::digest(self.0.as_bytes())[..8]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        crate::sha256_hex(self.0.as_bytes(), 8)
     }
 }
 
@@ -487,6 +489,15 @@ pub fn lines(path: &Path, from: u64, mut visit: impl FnMut(&[u8])) -> Result<u64
     }
 }
 
+/// What the folder `dir` holds; nothing where it can't be read.
+pub fn entries(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+}
+
 /// The JSON file at `path`, or `None` when there is none.
 pub fn json_file(path: &Path) -> Result<Option<Value>> {
     match std::fs::read(path) {
@@ -498,6 +509,47 @@ pub fn json_file(path: &Path) -> Result<Option<Value>> {
             "reading {}: {error}",
             path.display()
         ))),
+    }
+}
+
+/// The text of `content`: a string, or its parts' text.
+pub fn texts(content: &Value) -> Vec<&str> {
+    match content {
+        Value::String(text) => vec![text],
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The login to `provider` that `kept` holds, as Pi and OpenCode keep them:
+/// `{type: "oauth", access, expires}` for a sign-in, or `{type, key}` for an
+/// API key, its type `key_type`. `reads` is the provider that reads it.
+pub fn kept_login(
+    provider: String,
+    reads: Option<&'static str>,
+    kept: &Value,
+    key_type: &str,
+) -> Login {
+    let (secret, key) = match kept["type"].as_str() {
+        Some(kind) if kind == key_type => (kept["key"].as_str(), true),
+        // OpenRouter's sign-in gives the agent a key.
+        Some("oauth") => (kept["access"].as_str(), provider == "openrouter"),
+        _ => (None, false),
+    };
+    let secret = secret.filter(|secret| !secret.is_empty());
+    Login {
+        credential: reads.zip(secret).map(|(reads, secret)| Credential {
+            provider: reads,
+            secret: Secret::new(secret),
+            key,
+            expires: kept["expires"].as_i64(),
+            identity: None,
+            plan: None,
+        }),
+        provider,
     }
 }
 
@@ -520,22 +572,16 @@ pub fn claims(token: &str) -> Value {
 /// `signed`, the file the agent writes once signed in there: how a second
 /// account's folder is kept. Each once, a link counting as what it links to.
 pub fn own_and_found(home: &Path, own: &str, prefix: &str, signed: &str) -> Vec<PathBuf> {
-    let mut folders = vec![home.join(own)];
-    if let Ok(entries) = std::fs::read_dir(home) {
-        let mut found: Vec<PathBuf> = entries
-            .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.len() > prefix.len() && name.starts_with(prefix))
-                    && entry.path().join(signed).is_file()
-            })
-            .map(|entry| entry.path())
-            .collect();
-        found.sort();
-        folders.extend(found);
-    }
+    let mut folders: Vec<PathBuf> = entries(home)
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.len() > prefix.len() && name.starts_with(prefix))
+                && path.join(signed).is_file()
+        })
+        .collect();
+    folders.sort();
+    folders.insert(0, home.join(own));
     let mut seen = std::collections::HashSet::new();
     folders.retain(|folder| seen.insert(std::fs::canonicalize(folder).unwrap_or(folder.clone())));
     folders
@@ -629,6 +675,15 @@ pub fn toml_mcp_command(path: &Path) -> Option<String> {
             let (key, value) = line.split_once('=')?;
             (key.trim() == "command").then(|| value.trim().trim_matches('"').to_owned())
         })
+}
+
+/// `lines` written to `file` as JSON Lines, in a folder made for it.
+#[cfg(test)]
+pub fn jsonl(file: PathBuf, lines: &[Value]) -> PathBuf {
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    std::fs::write(&file, text).unwrap();
+    file
 }
 
 #[cfg(test)]

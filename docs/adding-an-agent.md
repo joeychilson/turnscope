@@ -103,7 +103,7 @@ impl Agent for Acme {
 |---|---|
 | `info` | `&INFO`. |
 | `folders` | The folders the agent keeps history and logins in under `home`, its own first. The first is taken as its own: the agent is installed when it exists, and `resume` adds `folder_var` for the others. `own_and_found(home, own, prefix, signed)` gives `home/own`, then each folder beside it whose name starts with `prefix` and that holds the file `signed`, such as `~/.acme-work/auth.json`: how a second account's folder is kept. |
-| `files` | Its history files in a folder. It runs at every catch-up, so it lists and doesn't read. A file that doesn't exist is passed over, so one the agent may keep can be listed without looking. |
+| `files` | Its history files in a folder. It runs at every catch-up, so it lists and doesn't read. A file that doesn't exist is passed over, so one the agent may keep can be listed without looking. `entries(dir)` lists what a folder holds, and nothing when it can't be read. |
 | `read` | What a file holds past `cursor` (empty: from the start), and the cursor to read on from ([below](#reading-history)). An error leaves the cursor as it was, so the file is tried again at the next catch-up. |
 | `transcript` | The conversation of the session `id`, the agent's own id without `acme:`, from the files that hold it ([below](#transcripts)). |
 | `logins` | One `Login` per provider the agent signs in to ([below](#logins)). |
@@ -115,7 +115,9 @@ A reader keeps its own cursor as a string. The readers here keep a serde
 struct as JSON. For a JSON Lines file, `lines(path, from, visit)` passes
 each complete line from byte `from` to `visit`, and returns where the next
 read starts: past the last line that ends with a newline, since one
-without is still being written.
+without is still being written. `INFO.session(native)` is a session's id
+as stored, `acme:<native>`, and `texts(content)` a message's text: a
+string, or its parts' `text`.
 
 ```rust
 #[derive(Default, Serialize, Deserialize)]
@@ -274,7 +276,10 @@ fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
   error when it doesn't parse. `crate::output_within(command, wait)` runs a
   command with nothing on its standard input and stops it after `wait`, as
   Claude Code's reader does for the Keychain. `claims(token)` reads a JSON
-  Web Token's claims, such as its expiry.
+  Web Token's claims, such as its expiry. `kept_login(provider, reads,
+  kept, key_type)` reads a login kept as Pi and OpenCode keep theirs:
+  `{type: "oauth", access, expires}` for a sign-in, or `{type, key}` for a
+  key.
 - A provider the folder held a login for and no longer lists is taken as
   signed out of, so `logins` only lists what the folder holds.
 

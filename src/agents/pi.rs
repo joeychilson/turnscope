@@ -37,8 +37,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    Agent, Conversation, Credential, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role,
-    Secret, Title, Tokens,
+    Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
+    Tokens,
 };
 use crate::{Error, Result};
 
@@ -57,10 +57,6 @@ static INFO: Info = Info {
     cwd_var: None,
 };
 
-/// Pi's names for providers other than their ids, and the provider each is:
-/// a ChatGPT sign-in is `openai-codex`, beside an OpenAI API key's `openai`.
-const ALIASES: &[(&str, &str)] = &[("openai-codex", "openai")];
-
 #[derive(Default, Serialize, Deserialize)]
 struct Cursor {
     offset: u64,
@@ -71,19 +67,6 @@ struct Cursor {
     /// The provider and model of the latest response, which a summary is
     /// written with.
     model: Option<(String, String)>,
-}
-
-fn id(native: &str) -> String {
-    format!("pi:{native}")
-}
-
-/// The session a file holds: its name's after the time.
-fn named(file: &str) -> Option<&str> {
-    Path::new(file)
-        .file_stem()?
-        .to_str()?
-        .split_once('_')
-        .map(|(_, native)| native)
 }
 
 /// The text of a message: a string, or its text blocks.
@@ -100,13 +83,6 @@ fn texts(message: &Value) -> Vec<&str> {
     }
 }
 
-/// Its response's model: the one the provider answered with, where it said.
-fn model(message: &Value) -> Option<&str> {
-    message["responseModel"]
-        .as_str()
-        .or(message["model"].as_str())
-}
-
 impl Agent for Pi {
     fn info(&self) -> &'static Info {
         &INFO
@@ -117,22 +93,13 @@ impl Agent for Pi {
     }
 
     fn files(&self, folder: &Path) -> Vec<PathBuf> {
-        let dirs = std::fs::read_dir(folder.join("sessions"))
-            .into_iter()
-            .flatten()
-            .flatten();
-        dirs.flat_map(|dir| {
-            std::fs::read_dir(dir.path())
-                .into_iter()
-                .flatten()
-                .flatten()
-        })
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "jsonl")
-        })
-        .collect()
+        super::entries(&folder.join("sessions"))
+            .flat_map(|dir| super::entries(&dir))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .collect()
     }
 
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
@@ -148,17 +115,18 @@ impl Agent for Pi {
                 let Some(native) = line["id"].as_str() else {
                     return;
                 };
-                let session = id(native);
+                let session = INFO.session(native);
                 let facts = read.session(&session);
                 facts.cwd = line["cwd"]
                     .as_str()
                     .filter(|cwd| !cwd.is_empty())
                     .map(str::to_owned);
+                // The parent's file, named for its session after the time.
                 facts.parent = line["parentSession"]
                     .as_str()
-                    .and_then(named)
-                    .map(|parent| Parent {
-                        id: id(parent),
+                    .and_then(|file| Path::new(file).file_stem()?.to_str()?.split_once('_'))
+                    .map(|(_, parent)| Parent {
+                        id: INFO.session(parent),
                         link: Link::Fork,
                     });
                 if let Some(at) = at {
@@ -215,8 +183,12 @@ impl Agent for Pi {
                             }
                         }
                         Some("assistant") => {
+                            // The model the provider answered with, where it said.
+                            let model = message["responseModel"]
+                                .as_str()
+                                .or(message["model"].as_str());
                             let (Some(provider), Some(model)) =
-                                (message["provider"].as_str(), model(message))
+                                (message["provider"].as_str(), model)
                             else {
                                 return;
                             };
@@ -318,41 +290,19 @@ impl Agent for Pi {
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
         let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
-        let mut logins = Vec::new();
-        for (name, entry) in kept.as_object().into_iter().flatten() {
-            let reads = ALIASES
-                .iter()
-                .find(|(known, _)| known == name)
-                .map(|(_, provider)| *provider)
-                .or_else(|| crate::providers::by_id(name).map(|provider| provider.info().id));
-            let (secret, key) = match entry["type"].as_str() {
-                Some("api_key") => (entry["key"].as_str(), true),
-                // OpenRouter's sign-in gives Pi a key.
-                Some("oauth") => (entry["access"].as_str(), name == "openrouter"),
-                _ => (None, false),
+        let logins = kept.as_object().into_iter().flatten().map(|(name, entry)| {
+            let reads = match name.as_str() {
+                // A ChatGPT sign-in, beside an OpenAI API key's `openai`.
+                "openai-codex" => Some("openai"),
+                name => crate::providers::by_id(name).map(|provider| provider.info().id),
             };
-            logins.push(Login {
-                provider: name.clone(),
-                credential: reads.zip(secret.filter(|secret| !secret.is_empty())).map(
-                    |(reads, secret)| Credential {
-                        provider: reads,
-                        secret: Secret::new(secret),
-                        key,
-                        expires: entry["expires"].as_i64(),
-                        identity: None,
-                        plan: None,
-                    },
-                ),
-            });
-        }
-        Ok(logins)
+            super::kept_login(name.clone(), reads, entry, "api_key")
+        });
+        Ok(logins.collect())
     }
 
-    fn mcp_command(&self, _folder: &Path, home: &Path) -> Option<String> {
-        super::json_mcp_command(
-            &home.join(".pi/agent/mcp.json"),
-            "/mcpServers/turnscope/command",
-        )
+    fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
+        super::json_mcp_command(&folder.join("mcp.json"), "/mcpServers/turnscope/command")
     }
 
     fn role(&self, name: &str) -> Role {
@@ -420,14 +370,64 @@ mod tests {
     use super::*;
 
     fn session(dir: &Path, name: &str, lines: &[Value]) -> PathBuf {
-        let file = dir.join(name);
-        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
-        std::fs::write(&file, text).unwrap();
-        file
+        crate::agents::jsonl(dir.join(name), lines)
     }
 
     fn usage(input: u64, cost: f64) -> Value {
         json!({"input": input, "cacheRead": 400, "cacheWrite": 30, "cacheWrite1h": 10, "output": 20, "reasoning": 8, "cost": {"total": cost}})
+    }
+
+    #[test]
+    fn a_kept_sign_in_or_key_is_read_as_a_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = json!({
+            "openrouter": {"type": "oauth", "access": "sk-or-made-up", "expires": 9},
+            "openai-codex": {"type": "oauth", "access": "made-up-token", "expires": 5},
+            "anthropic": {"type": "api_key", "key": "sk-ant-made-up"},
+            "xai": {"type": "api_key", "key": ""},
+            "made-up-provider": {"type": "api_key", "key": "made-up"},
+        });
+        std::fs::write(dir.path().join("auth.json"), kept.to_string()).unwrap();
+        let mut read: Vec<_> = Pi
+            .logins(dir.path(), dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|login| {
+                let credential = login.credential.map(|credential| {
+                    let secret = credential.secret.expose().to_owned();
+                    (
+                        credential.provider,
+                        credential.key,
+                        credential.expires,
+                        secret,
+                    )
+                });
+                (login.provider, credential)
+            })
+            .collect();
+        read.sort();
+        let given = |provider: &'static str, key, expires, secret: &str| {
+            Some((provider, key, expires, secret.to_owned()))
+        };
+        assert_eq!(
+            read,
+            [
+                (
+                    "anthropic".to_owned(),
+                    given("anthropic", true, None, "sk-ant-made-up")
+                ),
+                ("made-up-provider".to_owned(), None),
+                (
+                    "openai-codex".to_owned(),
+                    given("openai", false, Some(5), "made-up-token")
+                ),
+                (
+                    "openrouter".to_owned(),
+                    given("openrouter", true, Some(9), "sk-or-made-up")
+                ),
+                ("xai".to_owned(), None),
+            ]
+        );
     }
 
     #[test]
