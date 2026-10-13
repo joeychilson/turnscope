@@ -19,7 +19,7 @@ use crate::{Error, Result};
 
 /// Raised when a reader would read a file it read before differently: every
 /// file still there is then read again.
-const READERS: i64 = 5;
+const READERS: i64 = 6;
 
 /// How long a transaction writes history before it lets the write lock go,
 /// and for how long: another process's write waits no more than `db::open`'s

@@ -74,11 +74,15 @@ private struct ConnectNudge: View {
         if let agent = store.toConnect(dismissed: away) {
             HStack(spacing: Row.gap) {
                 Logo(agent: agent, size: Row.logo).foregroundStyle(.secondary)
-                // If connecting failed, say why instead of asking.
-                if let said = store.agentErrors[agent.id] ?? store.words().connection(agent, named: true) {
-                    Text(said).font(.line).foregroundStyle(.secondary)
+                // If connecting failed, say why instead of asking: that can be
+                // selected, to copy it.
+                if let error = store.agentErrors[agent.id] {
+                    Text(error).font(.line).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                } else if let unconnected = store.words().connection(agent, named: true) {
+                    Text(unconnected).font(.line).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
                 ConnectButton(agent: agent)

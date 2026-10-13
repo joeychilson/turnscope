@@ -17,6 +17,8 @@
 - **Search** quotes the message it found with a quote or backslash in it
   escaped, as the rest of a session's text within a line is. A `"` in it
   could end the quote early, so its words read as Turnscope's own.
+- Your agents' history is read again once after updating, so these fixes
+  apply to what was read before.
 
 ## 0.1.2
 
