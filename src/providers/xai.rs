@@ -10,8 +10,9 @@
 
 use serde_json::Value;
 
-use super::{Account, Info, Kind, Limits, Problem, Provider, Reading};
+use super::{Account, Info, Limits, Problem, Provider, Reading};
 use crate::agents::{Credential, claims};
+use crate::time::millis;
 
 pub struct Xai;
 
@@ -30,7 +31,7 @@ impl Provider for Xai {
         if credential.key {
             return Some(super::api_account(INFO.id));
         }
-        let (id, label) = match &credential.identity {
+        let identity = match &credential.identity {
             Some(identity) => identity.clone(),
             None => (
                 claims(credential.secret.expose())["sub"]
@@ -39,11 +40,7 @@ impl Provider for Xai {
                 None,
             ),
         };
-        Some(Account {
-            id: format!("xai:{id}"),
-            kind: Kind::Subscription,
-            label,
-        })
+        Some(super::subscription(INFO.id, identity))
     }
 
     fn limits(&self, credential: &Credential, _now: i64) -> Result<Limits, Problem> {
@@ -77,9 +74,9 @@ fn parse(answer: &Value) -> Option<Reading> {
     let period = match &config["currentPeriod"] {
         Value::Null => None,
         period => {
-            let (starts, resets) = (super::time(&period["start"])?, super::time(&period["end"])?);
-            (resets > starts).then_some((starts, resets))?;
-            Some((starts, resets))
+            let starts = millis(period["start"].as_str()?)?;
+            let resets = millis(period["end"].as_str()?)?;
+            Some((resets > starts).then_some((starts, resets))?)
         }
     };
     let used = match (config.get("creditUsagePercent"), period) {

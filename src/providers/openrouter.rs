@@ -11,12 +11,12 @@
 //! key without access to credits still reports its own limit. A limit of 0
 //! or less is no limit.
 
-use jiff::civil::Weekday;
 use jiff::tz::TimeZone;
 use serde_json::Value;
 
 use super::{Account, Info, Limits, Problem, Provider, Reading};
 use crate::agents::Credential;
+use crate::time::{self, Period};
 
 pub struct OpenRouter;
 
@@ -71,58 +71,27 @@ fn own_limit(answer: &Value, key: &str, now: i64) -> Option<Vec<Reading>> {
     let Some(limit) = data["limit"].as_f64().filter(|limit| *limit > 0.0) else {
         return Some(Vec::new());
     };
-    // The window this is in, by UTC days, weeks from Monday, and months.
-    let today = jiff::Timestamp::from_millisecond(now)
-        .ok()?
-        .to_zoned(TimeZone::UTC)
-        .date();
-    let monday = today
-        .nth_weekday(-1, Weekday::Monday)
-        .ok()
-        .filter(|_| today.weekday() != Weekday::Monday)
-        .unwrap_or(today);
-    let (name, used_in, window) = match data["limit_reset"].as_str() {
+    let (name, used_in, period) = match data["limit_reset"].as_str() {
         None => ("Key limit", "usage", None),
-        Some("daily") => (
-            "Daily key limit",
-            "usage_daily",
-            Some((today, jiff::Span::new().days(1))),
-        ),
-        Some("weekly") => (
-            "Weekly key limit",
-            "usage_weekly",
-            Some((monday, jiff::Span::new().weeks(1))),
-        ),
-        Some("monthly") => (
-            "Monthly key limit",
-            "usage_monthly",
-            Some((today.first_of_month(), jiff::Span::new().months(1))),
-        ),
+        Some("daily") => ("Daily key limit", "usage_daily", Some(Period::Day)),
+        Some("weekly") => ("Weekly key limit", "usage_weekly", Some(Period::Week)),
+        Some("monthly") => ("Monthly key limit", "usage_monthly", Some(Period::Month)),
         Some(_) => return None,
     };
     let spent = match data["limit_remaining"].as_f64() {
         Some(remaining) => limit - remaining,
         None => data[used_in].as_f64()?,
     };
-    let (starts, resets) = match window {
-        Some((start, span)) => {
-            let start = start.to_zoned(TimeZone::UTC).ok()?;
-            let end = start.checked_add(span).ok()?;
-            (
-                Some(start.timestamp().as_millisecond()),
-                Some(end.timestamp().as_millisecond()),
-            )
-        }
-        None => (None, None),
-    };
+    // By UTC days, weeks from Monday, and months.
+    let window = period.map(|period| time::window(period, now, &TimeZone::UTC));
     Some(vec![Reading {
         key: key.to_owned(),
         name: name.to_owned(),
         scope: None,
         used: spent / limit * 100.0,
         size: Some(limit),
-        starts,
-        resets,
+        starts: window.map(|(starts, _)| starts),
+        resets: window.map(|(_, resets)| resets),
     }])
 }
 
