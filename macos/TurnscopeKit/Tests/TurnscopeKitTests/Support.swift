@@ -7,7 +7,7 @@ import Foundation
 import Synchronization
 
 /// The repository's root, five folders up from this file.
-private let root = URL(fileURLWithPath: #filePath)
+let root = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     .deletingLastPathComponent().deletingLastPathComponent()
 
@@ -21,12 +21,6 @@ func example(_ name: String) -> String {
     root.appending(path: "contract/\(name)").path
 }
 
-/// Every example in `contract/`, by file name.
-func examples() throws -> [String] {
-    try FileManager.default.contentsOfDirectory(atPath: root.appending(path: "contract").path)
-        .filter { $0.hasSuffix(".json") }.sorted()
-}
-
 /// The `result` of the contract's `hello` answer, as JSON.
 func helloResult() throws -> [String: Any] {
     let hello = try JSONSerialization.jsonObject(with: contract("hello.result.json")) as? [String: Any]
@@ -37,11 +31,6 @@ func helloResult() throws -> [String: Any] {
 /// this build's engine.
 func engine() throws -> String {
     try helloResult()["server"] as? String ?? ""
-}
-
-/// `json` serialized as JSON data.
-func json(_ json: Any) throws -> Data {
-    try JSONSerialization.data(withJSONObject: json)
 }
 
 /// The folder where a test run keeps the files it makes. It's removed when
@@ -229,10 +218,12 @@ final class FakeServe: Sendable {
     }
 }
 
-/// Wait until `done` is true, for at most six seconds.
+/// Wait until `done` is true, for at most six seconds, and say whether it is.
 @MainActor
-func until(_ done: () -> Bool) async {
+@discardableResult
+func until(_ done: () -> Bool) async -> Bool {
     for _ in 0..<600 where !done() {
         try? await Task.sleep(for: .milliseconds(10))
     }
+    return done()
 }

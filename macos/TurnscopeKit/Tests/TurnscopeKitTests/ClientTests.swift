@@ -21,8 +21,7 @@ private func serve(at path: String = socketPath(),
 /// defaults to the engine named in the contract's `hello`.
 @MainActor
 private func store(over serve: FakeServe, version: String? = nil) throws -> (Client, Store) {
-    let started = marker()
-    let client = Client(binary: try binary(socket: serve.path, started: started, version: version))
+    let client = Client(binary: try binary(socket: serve.path, started: marker(), version: version))
     return (client, Store(client: client))
 }
 
@@ -31,6 +30,15 @@ private func store(over serve: FakeServe, version: String? = nil) throws -> (Cli
 @MainActor
 private func connected(_ client: Client, _ store: Store) async {
     await until { client.phase == .connected && store.status != nil && store.failure == nil }
+}
+
+/// A client and a store over `serve`, started, once they're connected.
+@MainActor
+private func connected(to serve: FakeServe) async throws -> (Client, Store) {
+    let (client, store) = try store(over: serve)
+    client.start()
+    await connected(client, store)
+    return (client, store)
 }
 
 @MainActor
@@ -57,8 +65,7 @@ private func connected(_ client: Client, _ store: Store) async {
     // hello again, which is all it takes to get back in sync.
     serve.drop()
     await until { client.phase != .connected }
-    await until { serve.methods.filter { $0 == "hello" }.count == 2 }
-    #expect(serve.methods.filter { $0 == "hello" }.count == 2)
+    #expect(await until { serve.methods.filter { $0 == "hello" }.count == 2 })
     await connected(client, store)
     #expect(store.failure == nil)
     // The store said so as serve went away, and again once it was back.
@@ -70,16 +77,13 @@ private func connected(_ client: Client, _ store: Store) async {
 @Test func whatServePushesIsTakenAsItComes() async throws {
     let serve = try serve()
     defer { serve.close() }
-    let (client, store) = try store(over: serve)
+    let (client, store) = try await connected(to: serve)
     var told: [Int] = []
     store.onAlert = { told.append($0.id) }
-    client.start()
-    await connected(client, store)
     var status = try helloResult()["status"] as? [String: Any] ?? [:]
     status["accounts"] = []
     serve.push("status", status)
-    await until { store.all.isEmpty }
-    #expect(store.all.isEmpty)
+    #expect(await until { store.all.isEmpty })
     let alert = try JSONSerialization.jsonObject(with: contract("alert.notification.json")) as? [String: Any]
     var pushed = alert?["params"] as? [String: Any] ?? [:]
     pushed["id"] = 42
@@ -96,9 +100,7 @@ private func connected(_ client: Client, _ store: Store) async {
 @Test func aPushItCantReadSaysWhatsShownIsOutOfDateAndConnectsAgain() async throws {
     let serve = try serve()
     defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await connected(client, store)
+    let (client, store) = try await connected(to: serve)
     serve.push("status", ["accounts": "not a list"])
     await until { store.failure != nil }
     #expect(store.failure?.hasPrefix("Turnscope couldn't read what its engine sent") == true)
@@ -122,8 +124,7 @@ private func connected(_ client: Client, _ store: Store) async {
     client.start()
     await until { store.failure != nil }
     #expect(store.failure == "Turnscope's engine didn't answer")
-    await until { serve.methods.filter { $0 == "hello" }.count >= 2 }
-    #expect(serve.methods.filter { $0 == "hello" }.count >= 2)
+    #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 2 })
     client.stop()
 }
 
@@ -137,9 +138,7 @@ private func connected(_ client: Client, _ store: Store) async {
         }
     }
     defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await connected(client, store)
+    let (client, store) = try await connected(to: serve)
     store.setHidden(true, for: "openai:acct-2")
     // It's hidden at once, before serve answers, and put back once serve
     // refuses.
@@ -158,9 +157,7 @@ private func connected(_ client: Client, _ store: Store) async {
 @Test func anAgentShowsConnectedOnceServeHasConnectedIt() async throws {
     let serve = try serve()
     defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await connected(client, store)
+    let (client, store) = try await connected(to: serve)
     let connection = { (id: String) in store.status?.agents.first { $0.id == id }?.connection }
     // Before the next status says so, so the old button doesn't come back
     // in between.
@@ -177,9 +174,7 @@ private func connected(_ client: Client, _ store: Store) async {
 @Test func theSettingsChangeAtOnceAndGoToServeWhole() async throws {
     let serve = try serve()
     defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await connected(client, store)
+    let (client, store) = try await connected(to: serve)
     store.setNotify { $0.reset = false }
     #expect(store.notify?.reset == false)
     await until { !serve.params(of: "settings.set").isEmpty }
@@ -193,16 +188,14 @@ private func connected(_ client: Client, _ store: Store) async {
     // Serve sends a status with other settings, then refuses the change.
     var status = try helloResult()["status"] as? [String: Any] ?? [:]
     status["settings"] = ["notify": ["runningOut": true, "usedUp": true, "reset": true, "signIn": false]]
-    let newer = try json(status)
+    let newer = try JSONSerialization.data(withJSONObject: status)
     let serve = try serve { method, _, serve in
         guard method == "settings.set" else { return .done }
         serve.push("status", (try? JSONSerialization.jsonObject(with: newer)) ?? [:])
         return .error("the settings couldn't be saved")
     }
     defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await connected(client, store)
+    let (client, store) = try await connected(to: serve)
     store.setNotify { $0.reset = false }
     #expect(store.notify?.reset == false)
     await until { store.notify?.signIn == false && store.notify?.reset == true }
@@ -218,9 +211,7 @@ private func connected(_ client: Client, _ store: Store) async {
                                        "agent": "claude-code", "sharePercent": 31.5, "running": true]]])
     let serve = try serve { method, _, _ in method == "limit.breakdown" ? used : .done }
     defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await connected(client, store)
+    let (client, store) = try await connected(to: serve)
     #expect(!serve.methods.contains("limit.breakdown"))
     let claude = try #require(store.all.first { $0.id == "anthropic:acct-1:org-1" })
     store.watch(claude.id)
@@ -246,9 +237,7 @@ private func connected(_ client: Client, _ store: Store) async {
 @Test func whatUsedEachAccountListedIsAskedAsThePanelOpens() async throws {
     let serve = try serve { method, _, _ in method == "limit.breakdown" ? .of(["sessions": []]) : .done }
     defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await connected(client, store)
+    let (client, store) = try await connected(to: serve)
     store.askWhatUsedEach()
     let listed = Set(store.all.filter { !$0.hidden && $0.deciding != nil }.map(\.id))
     await until { serve.params(of: "limit.breakdown").count == listed.count }
@@ -264,8 +253,7 @@ private func connected(_ client: Client, _ store: Store) async {
     let store = Store(client: client)
     client.start()
     // The client ran `serve`. It comes up a moment later, as serve does.
-    await until { FileManager.default.fileExists(atPath: started.path) }
-    #expect(FileManager.default.fileExists(atPath: started.path))
+    #expect(await until { FileManager.default.fileExists(atPath: started.path) })
     let serve = try serve(at: path)
     defer { serve.close() }
     await until { store.status != nil }
@@ -366,8 +354,7 @@ private func connected(_ client: Client, _ store: Store) async {
     // and keeps trying.
     await until { store.failure != nil }
     #expect(store.failure == "this serve speaks protocol 2")
-    await until { serve.methods.filter { $0 == "hello" }.count >= 3 }
-    #expect(serve.methods.filter { $0 == "hello" }.count >= 3)
+    #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 3 })
     #expect(serve.methods.filter { $0 == "shutdown" }.count == 1)
     client.stop()
 }
@@ -397,8 +384,7 @@ private func connected(_ client: Client, _ store: Store) async {
     #expect(store.status == nil)
     #expect(!serve.methods.contains("shutdown"))
     // It connects again on its own and says hello again.
-    await until { serve.methods.filter { $0 == "hello" }.count >= 2 }
-    #expect(serve.methods.filter { $0 == "hello" }.count >= 2)
+    #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 2 })
     client.stop()
 }
 

@@ -17,10 +17,7 @@ func theRealEngineIsStartedSaysHelloAndTakesChanges() async throws {
     let binary = URL(fileURLWithPath: try #require(realEngine))
     let data = FileManager.default.temporaryDirectory.appending(path: "ts-\(UUID().uuidString.prefix(8))")
     defer { try? FileManager.default.removeItem(at: data) }
-    let home = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().deletingLastPathComponent()
-        .appending(path: "tests/fixtures/home")
+    let home = root.appending(path: "tests/fixtures/home")
     // Stay off the network while this test runs. The engine it starts reads
     // this variable.
     setenv("TURNSCOPE_OFFLINE", "1", 1)
@@ -36,8 +33,7 @@ func theRealEngineIsStartedSaysHelloAndTakesChanges() async throws {
     // A change goes through serve, which then pushes a status that has it.
     // It's shown at once, so only what serve sent says serve has it.
     store.setNotify { $0.reset = false }
-    await until { store.served?.notify.reset == false }
-    #expect(store.served?.notify.reset == false)
+    #expect(await until { store.served?.notify.reset == false })
     #expect(store.failure == nil)
     let _: Done = try await client.request("shutdown")
     client.stop()
