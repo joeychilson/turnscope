@@ -206,7 +206,7 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, and before the `continue` prompt. |
-| `serve` | On a thread of its own: at start, 250 ms after the agents' folders stop changing (a second at most), and at least every minute. |
+| `serve` | On a thread of its own: at start, 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up, and at least every minute. |
 
 While `serve` runs, the other processes rarely find anything new to read.
 

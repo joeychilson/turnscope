@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- **The app's engine** uses far less CPU while many agents work at once,
+  as in an eval run. While their folders keep changing, it reads their
+  history at most every 5 seconds, not about every second, so the panel can
+  show what an agent wrote up to 5 seconds late.
+
 ## 0.1.3
 
 - **The app's engine** works out the status again only after reading
