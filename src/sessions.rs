@@ -23,7 +23,7 @@ pub use handoff::handoff;
 
 /// How follow-ups are named: as a command for a person, as a tool call for
 /// an agent.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub enum Cite {
     Command,
     Tool,
@@ -87,7 +87,7 @@ pub struct Page {
     pub next: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
     pub id: String,
@@ -120,7 +120,7 @@ pub struct Summary {
 /// A message that holds the words searched for: the subagent's session it's
 /// in, when it isn't the one listed, its entry, who said it, and the text
 /// around them.
-#[derive(Serialize, Clone)]
+#[derive(Serialize)]
 pub struct Said {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent: Option<String>,
@@ -180,8 +180,7 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
     };
     let mut statement = db.prepare(&format!(
         "{TREES}
-         SELECT r.id, r.agent, r.title, r.cwd, r.project, r.branch, r.started, max(s.last), count(*) - 1,
-             group_concat(s.id, char(31))
+         SELECT r.id, r.agent, r.title, r.cwd, r.project, r.branch, r.started, group_concat(s.id, char(31))
          FROM tree JOIN session r ON r.id = tree.root JOIN session s ON s.id = tree.id
          WHERE (?1 IS NULL OR r.agent = ?1)
            AND (?2 IS NULL OR r.project = ?2 OR r.cwd = ?3
@@ -201,7 +200,7 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
     // together most: itself where it does as much.
     let mut holding: std::collections::HashMap<String, String> = Default::default();
     while let Some(row) = rows.next()? {
-        let tree: String = row.get(9)?;
+        let tree: String = row.get(7)?;
         if let Some(matched) = &matched
             && !tree.split('\u{1f}').any(|id| matched.contains(id))
         {
@@ -221,7 +220,6 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         if let Some((_, _, held)) = most {
             holding.insert(id.clone(), held.to_owned());
         }
-        let active: i64 = row.get(7)?;
         found.push(Summary {
             id,
             agent: row.get(1)?,
@@ -230,21 +228,12 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
             project: row.get(4)?,
             branch: row.get(5)?,
             started: row.get(6)?,
-            active,
-            running: now - active <= RUNNING,
-            subagents: row.get::<_, i64>(8)? as u64,
-            responses: 0,
-            tokens: Tokens::default(),
-            cost_usd: 0.0,
-            unpriced: 0,
             mentions,
-            said: None,
+            ..Summary::default()
         });
     }
     // Found by words, those with them together most often first.
-    if !words.is_empty() {
-        found.sort_by_key(|session| Reverse(session.mentions));
-    }
+    found.sort_by_key(|session| Reverse(session.mentions));
     let total = found.len();
     // A page starts after the session the page before ended at.
     let start = match &query.cursor {
@@ -263,10 +252,8 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
     };
     let most = query.count.clamp(1, 100);
     let mut sessions: Vec<Summary> = found.into_iter().skip(start).take(most + 1).collect();
-    let next = (sessions.len() > most).then(|| {
-        sessions.truncate(most);
-        sessions.last().map(|session| session.id.clone())
-    });
+    let next = (sessions.len() > most).then(|| sessions[most - 1].id.clone());
+    sessions.truncate(most);
     for session in &mut sessions {
         used(db, session, now)?;
     }
@@ -288,11 +275,12 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
     Ok(Page {
         sessions,
         found: total,
-        next: next.flatten(),
+        next,
     })
 }
 
-/// Add up what a session and the sessions in its tree used.
+/// Add up what a session and the sessions in its tree used, and when the
+/// latest of them was active.
 fn used(db: &Connection, session: &mut Summary, now: i64) -> Result<()> {
     let mut statement = db.prepare_cached(&format!(
         "{SUBTREE}
@@ -318,10 +306,9 @@ fn used(db: &Connection, session: &mut Summary, now: i64) -> Result<()> {
         session.cost_usd = row.get(7)?;
         session.unpriced = count(8)?;
         session.subagents = count(9)?;
-        // Active as its latest subagent was.
         if let Some(last) = row.get::<_, Option<i64>>(10)? {
-            session.active = session.active.max(last);
-            session.running = now - session.active <= RUNNING;
+            session.active = last;
+            session.running = now - last <= RUNNING;
         }
         Ok(())
     })?;
@@ -375,10 +362,9 @@ pub fn show(db: &Connection, home: &Path, id: &str, now: i64) -> Result<Detail> 
     let (agent, native) = parse(id)?;
     let (folder, parent, mut summary) = db
         .query_row(
-            "SELECT agent, title, cwd, project, branch, started, last, folder, parent FROM session WHERE id = ?1",
+            "SELECT agent, title, cwd, project, branch, started, folder, parent FROM session WHERE id = ?1",
             [id],
             |row| {
-            let last: Option<i64> = row.get(6)?;
             let summary = Summary {
                 id: id.to_owned(),
                 agent: row.get(0)?,
@@ -387,17 +373,9 @@ pub fn show(db: &Connection, home: &Path, id: &str, now: i64) -> Result<Detail> 
                 project: row.get(3)?,
                 branch: row.get(4)?,
                 started: row.get(5)?,
-                active: last.unwrap_or_default(),
-                running: last.is_some_and(|last| now - last <= RUNNING),
-                subagents: 0,
-                responses: 0,
-                tokens: Tokens::default(),
-                cost_usd: 0.0,
-                unpriced: 0,
-                mentions: None,
-                said: None,
+                ..Summary::default()
             };
-            Ok((row.get::<_, String>(7)?, row.get::<_, Option<String>>(8)?, summary))
+            Ok((row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?, summary))
         },
         )
         .optional()?
@@ -490,12 +468,10 @@ fn missing(id: &str) -> Error {
 /// an agent's own id, as long as only one session's matches.
 pub fn resolve(db: &Connection, id: &str) -> Result<String> {
     let id = id.trim();
-    let exact: Option<String> = db
-        .query_row("SELECT id FROM session WHERE id = ?1", [id], |row| {
-            row.get(0)
-        })
-        .optional()?;
-    if let Some(exact) = exact {
+    let exact = db.query_row("SELECT id FROM session WHERE id = ?1", [id], |row| {
+        row.get(0)
+    });
+    if let Some(exact) = exact.optional()? {
         return Ok(exact);
     }
     if id.len() < 4 {
@@ -592,14 +568,11 @@ pub fn latest(
 ) -> Result<(String, Vec<Summary>)> {
     let query = Query {
         folder: Some(folder.to_path_buf()),
-        count: 4,
+        count: 3,
+        except: except.map(str::to_owned),
         ..Query::default()
     };
-    let page = find(db, home, &query, crate::now())?;
-    let mut others = page
-        .sessions
-        .into_iter()
-        .filter(|session| Some(session.id.as_str()) != except);
+    let mut others = find(db, home, &query, crate::now())?.sessions.into_iter();
     let latest = others.next().ok_or_else(|| {
         let other = if except.is_some() {
             "other than yours "
@@ -611,7 +584,7 @@ pub fn latest(
             folder.display()
         ))
     })?;
-    Ok((latest.id, others.take(2).collect()))
+    Ok((latest.id, others.collect()))
 }
 
 /// What a handoff taken by default says before it: that it's the latest
@@ -1134,8 +1107,7 @@ mod tests {
             from,
             count: 30,
             kinds,
-            search: None,
-            failed: false,
+            ..Reading::default()
         };
         assert_eq!(shown(reading(12, vec![])), [12, 13, 14]);
         assert_eq!(shown(reading(-2, vec![])), [13, 14]);
@@ -1164,9 +1136,7 @@ mod tests {
             let reading = Reading {
                 from,
                 count: 30,
-                kinds: vec![],
-                search: None,
-                failed: false,
+                ..Reading::default()
             };
             page_text("s", &entries, &reading, Cite::Tool, 0)
         };
