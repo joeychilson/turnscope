@@ -184,7 +184,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func makePanel() -> PanelWindow {
         let actions = PanelActions(
-            quit: { NSApp.terminate(nil) },
             close: { [weak self] in self?.close() },
             notificationsOff: { [weak self] in await self?.notifier.off() ?? false }
         )

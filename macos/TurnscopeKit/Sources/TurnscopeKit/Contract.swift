@@ -92,20 +92,18 @@ public enum AccountState: Decodable, Equatable, Sendable {
     case unread(why: Stale)
 
     private enum Keys: String, CodingKey { case kind, readAt, why }
+    private enum Kind: String, Decodable { case live, asOf, unread }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
-        switch try c.decode(String.self, forKey: .kind) {
-        case "live": self = .live(readAt: try c.decode(Date.self, forKey: .readAt))
-        case "asOf": self = .asOf(readAt: try c.decode(Date.self, forKey: .readAt),
-                                  why: try c.decode(Stale.self, forKey: .why))
-        case "unread": self = .unread(why: try c.decode(Stale.self, forKey: .why))
-        case let kind: throw unknownKind(kind, at: .kind, in: c)
+        switch try c.decode(Kind.self, forKey: .kind) {
+        case .live: self = .live(readAt: try c.decode(Date.self, forKey: .readAt))
+        case .asOf: self = .asOf(readAt: try c.decode(Date.self, forKey: .readAt),
+                                 why: try c.decode(Stale.self, forKey: .why))
+        case .unread: self = .unread(why: try c.decode(Stale.self, forKey: .why))
         }
     }
-}
 
-extension AccountState {
     /// Why it isn't read now, if it isn't.
     public var why: Stale? {
         switch self {
@@ -184,15 +182,15 @@ public enum Outlook: Decodable, Equatable, Sendable {
     case unknown(reason: UnknownReason)
 
     private enum Keys: String, CodingKey { case kind, likely, back, reason }
+    private enum Kind: String, Decodable { case lasts, runsOut, usedUp, unknown }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
-        switch try c.decode(String.self, forKey: .kind) {
-        case "lasts": self = .lasts
-        case "runsOut": self = .runsOut(likely: try c.decode(Moment.self, forKey: .likely))
-        case "usedUp": self = .usedUp(back: try c.decodeIfPresent(Moment.self, forKey: .back))
-        case "unknown": self = .unknown(reason: try c.decode(UnknownReason.self, forKey: .reason))
-        case let kind: throw unknownKind(kind, at: .kind, in: c)
+        switch try c.decode(Kind.self, forKey: .kind) {
+        case .lasts: self = .lasts
+        case .runsOut: self = .runsOut(likely: try c.decode(Moment.self, forKey: .likely))
+        case .usedUp: self = .usedUp(back: try c.decodeIfPresent(Moment.self, forKey: .back))
+        case .unknown: self = .unknown(reason: try c.decode(UnknownReason.self, forKey: .reason))
         }
     }
 }
@@ -331,7 +329,7 @@ struct Done: Decodable, Sendable {}
 
 // MARK: Reading and writing JSON
 
-/// How the contract's JSON is read and written.
+/// How the contract's JSON is read.
 public enum Contract {
     /// Reads times as UTC milliseconds.
     public static let decoder: JSONDecoder = {
@@ -340,25 +338,17 @@ public enum Contract {
         return decoder
     }()
 
-    static let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .millisecondsSince1970
-        return encoder
-    }()
-
     /// A status read from a file as a fixture: a status on its own, a
     /// `status` notification, or a `hello` answer.
     public static func status(from data: Data) -> Status? {
-        struct Pushed: Decodable { var params: Status }
-        struct Hello: Decodable { var result: HelloResult }
-        return (try? decoder.decode(Status.self, from: data))
-            ?? (try? decoder.decode(Pushed.self, from: data))?.params
-            ?? (try? decoder.decode(Hello.self, from: data))?.result.status
+        (try? decoder.decode(Status.self, from: data))
+            ?? (try? decoder.decode(Pushed<Status>.self, from: data))?.params
+            ?? (try? decoder.decode(Answer<HelloResult>.self, from: data))?.result.status
     }
 }
 
-/// The error for a `kind` that no case matches, at `key` in `container`.
-private func unknownKind<Key: CodingKey>(_ kind: String, at key: Key, in container: KeyedDecodingContainer<Key>)
-    -> DecodingError {
-    .dataCorruptedError(forKey: key, in: container, debugDescription: "no kind is \(kind)")
-}
+/// An answer to a request, as the app reads it.
+struct Answer<R: Decodable>: Decodable { var result: R }
+
+/// A notification serve pushed, as the app reads it.
+struct Pushed<P: Decodable>: Decodable { var params: P }

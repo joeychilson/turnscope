@@ -32,7 +32,6 @@ struct FirstPage: View {
                     VStack(spacing: Row.spacing) {
                         ForEach(inUse) { AccountRow(account: $0, headlined: $0.id == inUse.first?.id) }
                     }
-                    .padding(.horizontal, 8)
                     // Accounts used this week are always shown, under a
                     // heading that says what they are. They open in place
                     // like the rest.
@@ -41,19 +40,17 @@ struct FirstPage: View {
                             SectionTitle(text: "Used this week")
                             ForEach(recent) { AccountRow(account: $0) }
                         }
-                        .padding(.horizontal, 8)
                         .padding(.top, inUse.isEmpty ? 0 : Row.groups)
                     }
                     if !unused.isEmpty || !hidden.isEmpty {
                         UnusedAccounts(accounts: unused, hidden: hidden,
                                        besideOthers: !inUse.isEmpty || !recent.isEmpty)
-                            .padding(.horizontal, 8)
                             .padding(.top, Row.spacing)
                     }
                     ConnectNudge()
-                        .padding(.horizontal, 8)
                         .padding(.top, 4)
                 }
+                .padding(.horizontal, 8)
             }
             // Its buttons line up with the rows' edges, as close to the
             // panel's corner as the rows are to its side.
@@ -78,14 +75,10 @@ private struct ConnectNudge: View {
             HStack(spacing: Row.gap) {
                 Logo(agent: agent, size: Row.logo).foregroundStyle(.secondary)
                 // If connecting failed, say why instead of asking.
-                if let error = store.agentErrors[agent.id] {
-                    Text(error).font(.line).foregroundStyle(.secondary)
+                if let said = store.agentErrors[agent.id] ?? store.words().connection(agent, named: true) {
+                    Text(said).font(.line).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                } else if let unconnected = store.words().connection(agent, named: true) {
-                    Text(unconnected)
-                        .font(.line).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
                 ConnectButton(agent: agent)
@@ -238,7 +231,7 @@ private struct Footer: View {
                 .keyboardShortcut(",", modifiers: .command)
                 .help("Settings")
                 .accessibilityLabel("Settings")
-            Button(action: actions.quit) { Image(systemName: "power") }
+            Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
                 .buttonStyle(IconButton())
                 .keyboardShortcut("q", modifiers: .command)
                 .help("Quit Turnscope")

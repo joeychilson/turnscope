@@ -49,32 +49,25 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// Post `alert` in `words`, with `accounts` as of the last status.
-    /// Returns whether macOS accepted it.
+    /// Returns whether macOS accepted it, which it doesn't while Turnscope's
+    /// notifications are off.
     func tell(_ alert: Alert, accounts: [AccountStatus], words: Words) async -> Bool {
         if alert.kind == .signIn { signingIn.insert(alert.account) }
-        return await post(words.note(alert, accounts: accounts), id: alert.replaces, account: alert.account)
-    }
-
-    /// Post `note`. Returns whether macOS accepted it, which it doesn't while
-    /// Turnscope's notifications are off.
-    private func post(_ note: Words.Note, id: String, account: String) async -> Bool {
-        do {
-            try await UNUserNotificationCenter.current().add(request(note, id: id, account: account))
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    private func request(_ note: Words.Note, id: String, account: String) -> UNNotificationRequest {
+        let note = words.note(alert, accounts: accounts)
         let content = UNMutableNotificationContent()
         content.title = note.title
         content.subtitle = note.subtitle
         content.body = note.body
         content.sound = .default
-        content.threadIdentifier = account
-        content.userInfo = ["account": account]
-        return UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        content.threadIdentifier = alert.account
+        content.userInfo = ["account": alert.account]
+        do {
+            try await UNUserNotificationCenter.current()
+                .add(UNNotificationRequest(identifier: alert.replaces, content: content, trigger: nil))
+            return true
+        } catch {
+            return false
+        }
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,

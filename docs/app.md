@@ -54,7 +54,7 @@ Check it by running the app, or with `--fixture` and `--snapshot`.
 | `Panel/Window.swift` | The panel's shell: its glass, edge and shadow, and the pages it slides between |
 | `Panel/FirstPage.swift` | The panel's first page: the headline, the account lists, the offer to connect an agent, the footer |
 | `Panel/AccountRow.swift` | An account's row, its limit lines and bars, and the sessions that used it most |
-| `Panel/RowParts.swift` | Parts shared by account rows: an account's title, its name, the Hide button |
+| `Panel/RowParts.swift` | Parts shared by account rows: an account's title and its name |
 | `Panel/UnusedAccounts.swift` | The fold for accounts not used this week, and hidden accounts |
 | `Settings/SettingsPage.swift` | The Settings page and its tabs |
 | `Settings/GeneralTab.swift` | Menu bar, opening at login, notifications, updates |
@@ -106,7 +106,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   `turnscope serve --socket` once for the socket's path, starts `serve` when
   nothing listens, and says `hello` on each connection. It hands the store
   events in order: its phase (connecting, connected, or failed and why),
-  each `hello` result, each status and each alert. A status or alert it
+  each status and each alert, `hello`'s first. A status or alert it
   can't read drops the connection, so the store hears that it failed.
   `request` sends a request and waits for its result.
   [protocol.md](protocol.md#lifecycle) says how it reconnects and replaces
@@ -132,7 +132,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   to connect an agent too, since an app moved to Applications can be
   talking to the one still running from the image.
 - **Views** get the store from the SwiftUI environment, with `Navigation`,
-  `Updater` and `PanelActions` (quit, close, and whether notifications are
+  `Updater` and `PanelActions` (close, and whether notifications are
   off).
 - **`Words`** writes every figure and sentence made from the status: what's
   left, times, a limit's line, the headline, the menu bar's figures and

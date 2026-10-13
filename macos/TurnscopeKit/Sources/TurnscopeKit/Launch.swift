@@ -63,10 +63,8 @@ public struct Opening: Equatable, Sendable {
 }
 
 /// The tabs in Settings, as the panel shows them.
-public enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
+public enum SettingsTab: String, CaseIterable, Sendable {
     case general, agents, accounts
-
-    public var id: Self { self }
 
     /// The name shown on its tab, such as "General".
     public var title: String { rawValue.capitalized }

@@ -28,11 +28,6 @@ final class Navigation {
     /// opens and each minute while it's open, so a closed panel never wakes.
     var now = Date.now
 
-    /// Open `account` in place, closing any other, or close it if it's open.
-    func toggle(_ account: String) {
-        open = open == account ? nil : account
-    }
-
     /// Go to `page`. The direction is set a frame ahead, so the page that's
     /// leaving uses it too.
     func go(_ to: Page, tab: SettingsTab? = nil) {
