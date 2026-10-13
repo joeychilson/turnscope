@@ -201,9 +201,11 @@ impl Agent for OpenCode {
             let (created, updated): (i64, i64) =
                 (row.get(3).map_err(failed)?, row.get(4).map_err(failed)?);
             cursor.messages = cursor.messages.max(updated);
+            // A row read again only for being within `LATE` was counted.
+            let unseen = u64::from(updated > mark);
             let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(5).map_err(failed)?)
             else {
-                read.skipped += 1;
+                read.skipped += unseen;
                 continue;
             };
             let session = id(&native);
@@ -255,7 +257,7 @@ impl Agent for OpenCode {
                 data["model"]["providerID"].as_str(),
                 data["model"]["id"].as_str(),
             ) else {
-                read.skipped += 1;
+                read.skipped += unseen;
                 continue;
             };
             let tokens = Tokens {
@@ -628,6 +630,27 @@ mod tests {
             )]
         );
         assert!(OpenCode.read(&file, &later.cursor).unwrap().said.is_empty());
+    }
+
+    #[test]
+    fn a_row_that_cant_be_read_is_counted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = database(dir.path());
+        let db = Connection::open(&file).unwrap();
+        db.execute(
+            "INSERT INTO session_message VALUES ('m4', 's1', 'assistant', 3, 2600, 2600, 'not JSON')",
+            [],
+        )
+        .unwrap();
+        let first = OpenCode.read(&file, "").unwrap();
+        assert_eq!(first.skipped, 1);
+        // Within `LATE` of it, so it's read again.
+        db.execute(
+            "INSERT INTO session_message VALUES ('m5', 's1', 'user', 4, 2700, 2700, '{\"text\": \"Thanks.\"}')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(OpenCode.read(&file, &first.cursor).unwrap().skipped, 0);
     }
 
     #[test]

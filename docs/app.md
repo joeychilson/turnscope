@@ -128,7 +128,9 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   (App Translocation), the app offers to connect no agent
   (`Store.fromDiskImage`), and Settings → Agents turns off its switches and
   says to move Turnscope to Applications. An agent connected there would
-  run an engine that's gone once the image is ejected.
+  run an engine that's gone once the image is ejected. The engine refuses
+  to connect an agent too, since an app moved to Applications can be
+  talking to the one still running from the image.
 - **Views** get the store from the SwiftUI environment, with `Navigation`,
   `Updater` and `PanelActions` (quit, close, and whether notifications are
   off).
