@@ -22,7 +22,7 @@ pub fn local(at: i64) -> Zoned {
         .to_zoned(TimeZone::system())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy)]
 pub enum Period {
     Day,
     Week,
@@ -96,15 +96,13 @@ pub fn today(at: i64, now: i64) -> bool {
 /// A time to come or gone, as a clock says it: `15:00` today, `Mon 09:30`
 /// within a week, `Oct 12 09:30` beyond.
 pub fn clock(at: i64, now: i64) -> String {
-    let (at, now) = (local(at), local(now));
-    let days = (at.date() - now.date()).get_days().abs();
-    if at.date() == now.date() {
-        at.strftime("%H:%M").to_string()
-    } else if days < 7 {
-        at.strftime("%a %H:%M").to_string()
-    } else {
-        at.strftime("%b %-d %H:%M").to_string()
-    }
+    let at = local(at);
+    let format = match (at.date() - local(now).date()).get_days().abs() {
+        0 => "%H:%M",
+        1..7 => "%a %H:%M",
+        _ => "%b %-d %H:%M",
+    };
+    at.strftime(format).to_string()
 }
 
 /// A time as people read it: `15:00 (in 3h)`, or gone by, `09:00 (3h ago)`.

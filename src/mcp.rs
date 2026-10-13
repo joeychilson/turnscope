@@ -150,22 +150,20 @@ impl Caller {
                 .output()
                 .ok()?;
             let table = String::from_utf8_lossy(&table.stdout).into_owned();
-            // Columns are padded with runs of spaces.
-            let rows: Vec<(u32, u32, &str)> = table
+            let rows: Vec<(u32, u32, Vec<&str>)> = table
                 .lines()
                 .filter_map(|line| {
-                    let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
-                    let rest = rest.trim_start();
-                    let (parent, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-                    Some((pid.parse().ok()?, parent.parse().ok()?, args.trim_start()))
+                    let mut words = line.split_whitespace();
+                    let (pid, parent) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+                    Some((pid, parent, words.collect()))
                 })
                 .collect();
             // Up to eight ancestors; one a runtime runs is its script.
             let mut pid = std::os::unix::process::parent_id();
             for _ in 0..8 {
-                let &(_, parent, args) = rows.iter().find(|(id, _, _)| *id == pid)?;
+                let (_, parent, args) = rows.iter().find(|(id, _, _)| *id == pid)?;
                 let mut words = args
-                    .split_whitespace()
+                    .iter()
                     .map(|word| word.rsplit('/').next().unwrap_or(word));
                 let first = words.next().unwrap_or_default();
                 let name = match first {
@@ -184,7 +182,7 @@ impl Caller {
                 if found.is_some() {
                     return found;
                 }
-                pid = parent;
+                pid = *parent;
             }
             None
         };
@@ -236,9 +234,17 @@ impl Caller {
         Ok(page.sessions.into_iter().next().map(|found| found.id))
     }
 
-    /// The account the caller draws on: its session's, or its agent's latest
-    /// in its folder.
-    pub fn account(&self, db: &Connection, home: &Path) -> Result<Option<String>> {
+    /// The account the caller draws on, in `status`: its session's, or its
+    /// agent's latest in its folder.
+    pub fn account<'a>(
+        &self,
+        db: &Connection,
+        home: &Path,
+        status: &'a status::Status,
+    ) -> Result<Option<&'a status::Account>> {
+        let found = |id: Option<String>| {
+            id.and_then(|id| status.accounts.iter().find(|account| account.id == id))
+        };
         if let Some(session) = &self.session {
             let account = db
                 .query_row(
@@ -248,7 +254,7 @@ impl Caller {
                 )
                 .optional()?;
             if account.is_some() {
-                return Ok(account);
+                return Ok(found(account));
             }
         }
         let Some(agent) = self.agent else {
@@ -258,14 +264,14 @@ impl Caller {
             .agent_folder
             .clone()
             .or_else(|| agent.folders(home).into_iter().next());
-        Ok(db
+        Ok(found(db
             .query_row(
                 "SELECT account FROM response WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
                  ORDER BY at DESC LIMIT 1",
                 rusqlite::params![agent.info().id, folder.map(|folder| folder.to_string_lossy().into_owned())],
                 |row| row.get(0),
             )
-            .optional()?)
+            .optional()?))
     }
 }
 
@@ -298,27 +304,19 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
 
 /// The reply to a line, or `None` for a notification.
 fn reply(server: &mut Server, line: &str) -> Option<Value> {
-    let failure = |id: Value, code: i64, message: String, data: Option<Value>| {
-        let mut error = json!({ "code": code, "message": message });
-        if let Some(data) = data {
-            error["data"] = data;
-        }
+    let failure = |id: Value, code: i64, message: String| {
+        let error = json!({ "code": code, "message": message });
         json!({ "jsonrpc": "2.0", "id": id, "error": error })
     };
     let message: Value = match serde_json::from_str(line) {
         Ok(message) => message,
         Err(error) => {
-            return Some(failure(
-                Value::Null,
-                -32700,
-                format!("not JSON: {error}"),
-                None,
-            ));
+            return Some(failure(Value::Null, -32700, format!("not JSON: {error}")));
         }
     };
     let id = message.get("id").cloned();
     let Some(method) = message["method"].as_str() else {
-        return id.map(|id| failure(id, -32600, "a request needs a method".to_owned(), None));
+        return id.map(|id| failure(id, -32600, "a request needs a method".to_owned()));
     };
     // A notification asks for no reply.
     let id = id?;
@@ -326,13 +324,9 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
     let modern = params["_meta"].get("io.modelcontextprotocol/protocolVersion");
     if let Some(version) = modern.filter(|version| *version != MODERN) {
         let supported: Vec<&str> = std::iter::once(MODERN).chain(EARLIER).collect();
-        let data = json!({ "supported": supported, "requested": version });
-        return Some(failure(
-            id,
-            -32022,
-            "Unsupported protocol version".to_owned(),
-            Some(data),
-        ));
+        let mut reply = failure(id, -32022, "Unsupported protocol version".to_owned());
+        reply["error"]["data"] = json!({ "supported": supported, "requested": version });
+        return Some(reply);
     }
     let instructions = format!(
         "Turnscope reads the history and subscription limits of the coding agents on this Mac ({}). {INSTRUCTIONS}",
@@ -381,12 +375,8 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or_default();
             let Some(tool) = TOOLS.iter().find(|tool| tool.name == name) else {
-                return Some(failure(
-                    id,
-                    -32602,
-                    format!("Unknown tool: {name}; tools/list lists them"),
-                    None,
-                ));
+                let message = format!("Unknown tool: {name}; tools/list lists them");
+                return Some(failure(id, -32602, message));
             };
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
             // Each answer is as of now: what changed since is read first.
@@ -417,20 +407,11 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
             json!({ "messages": [{ "role": "user", "content": { "type": "text", "text": text } }] })
         }
         "prompts/get" => {
-            return Some(failure(
-                id,
-                -32602,
-                "Unknown prompt; prompts/list lists them".to_owned(),
-                None,
-            ));
+            let message = "Unknown prompt; prompts/list lists them".to_owned();
+            return Some(failure(id, -32602, message));
         }
         other => {
-            return Some(failure(
-                id,
-                -32601,
-                format!("Method not found: {other}"),
-                None,
-            ));
+            return Some(failure(id, -32601, format!("Method not found: {other}")));
         }
     };
     if modern.is_some()
@@ -466,18 +447,6 @@ fn input<T: for<'a> Deserialize<'a>>(arguments: Value) -> Result<T> {
         .map_err(|error| Error::Usage(format!("arguments that don't fit: {error}")))
 }
 
-/// The caller's account.
-fn callers<'a>(server: &Server, status: &'a status::Status) -> Result<&'a status::Account> {
-    let yours = server.caller.account(&server.db, &server.home)?;
-    status
-        .accounts
-        .iter()
-        .find(|account| Some(&account.id) == yours.as_ref())
-        .ok_or_else(|| {
-            Error::NotFound("whose account is asking isn't known: name one with account".to_owned())
-        })
-}
-
 fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -490,10 +459,8 @@ fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
     let input: Input = input(arguments)?;
     let now = crate::now();
     let status = status::status(&server.db, now)?;
-    let yours = server.caller.account(&server.db, &server.home)?;
-    let mine = yours
-        .as_ref()
-        .and_then(|yours| status.accounts.iter().find(|account| &account.id == yours));
+    let mine = server.caller.account(&server.db, &server.home, &status)?;
+    let yours = mine.map(|mine| mine.id.as_str());
     let shown: Vec<&status::Account> = status
         .accounts
         .iter()
@@ -512,7 +479,7 @@ fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
         (None, _, _) => shown,
     };
     // The one asked about first.
-    shown.sort_by_key(|account| Some(&account.id) != yours.as_ref());
+    shown.sort_by_key(|account| Some(account.id.as_str()) != yours);
     let Some(first) = shown.first() else {
         return Ok("No account's limits have been read yet: no agent here is signed in to one Turnscope reads.".to_owned());
     };
@@ -523,7 +490,7 @@ fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
     Ok(format!(
         "{fit}{}\n\n{}",
         status::verdict(first, now),
-        status::text(&status, &shown, yours.as_deref())
+        status::text(&status, &shown, yours)
     ))
 }
 
@@ -546,7 +513,16 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
     let account = match (input.account.as_deref(), input.all) {
         (Some(name), _) => Some(crate::one_account(&status, name)?),
         (None, true) => None,
-        (None, false) => Some(callers(server, &status)?),
+        (None, false) => Some(
+            server
+                .caller
+                .account(&server.db, &server.home, &status)?
+                .ok_or_else(|| {
+                    Error::NotFound(
+                        "whose account is asking isn't known: name one with account".to_owned(),
+                    )
+                })?,
+        ),
     };
     let limit = match (account, &input.limit) {
         (Some(account), Some(name)) => Some(account.limit(name)?),
@@ -577,25 +553,17 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
     // With no limit read, what the account's usage cost, over the last week
     // unless asked; every account's over the 30 days the command line's
     // `usage` takes.
-    let breakdown = |by: By, top: usize| match (account, limit) {
-        (Some(account), Some(limit)) => {
-            usage::breakdown(&server.db, account, limit, since, by, top, now)
-        }
-        _ => usage::usage(
+    let breakdown = |by: By, top: usize| match account {
+        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now),
+        None => usage::usage(
             &server.db,
             &usage::Query {
-                since: since.unwrap_or_else(|| match account.map(|account| account.kind) {
-                    Some(crate::providers::Kind::ApiKey) => {
-                        time::start_of(time::Period::Month, now)
-                    }
-                    Some(crate::providers::Kind::Subscription) => now - 7 * time::DAY,
-                    None => now - 30 * time::DAY,
-                }),
+                since: since.unwrap_or(now - 30 * time::DAY),
                 until: now,
                 by,
                 agent: None,
                 model: None,
-                account: account.map(|account| account.id.clone()),
+                account: None,
                 top,
             },
         )

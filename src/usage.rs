@@ -47,7 +47,7 @@ pub struct Usage {
     pub rest: Option<Row>,
 }
 
-#[derive(Serialize, Default, Clone)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Row {
     pub key: String,
@@ -107,17 +107,15 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     };
     let mut filters = vec!["r.at >= ?", "r.at < ?"];
     let mut values: Vec<Value> = vec![query.since.into(), query.until.into()];
-    if let Some(agent) = &query.agent {
-        filters.push("r.agent = ?");
-        values.push(agent.clone().into());
-    }
-    if let Some(account) = &query.account {
-        filters.push("r.account = ?");
-        values.push(account.clone().into());
-    }
-    if let Some(model) = &query.model {
-        filters.push("instr(lower(r.model), ?) > 0");
-        values.push(model.clone().into());
+    for (filter, value) in [
+        ("r.agent = ?", &query.agent),
+        ("r.account = ?", &query.account),
+        ("instr(lower(r.model), ?) > 0", &query.model),
+    ] {
+        if let Some(value) = value {
+            filters.push(filter);
+            values.push(value.clone().into());
+        }
     }
     let sql = format!(
         "{trees} SELECT {key}, {name}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
@@ -264,12 +262,11 @@ pub fn text(usage: &Usage, shares: Option<(&str, &[Option<f64>])>) -> String {
         time::local(minute).strftime("%a %b %-d %H:%M").to_string()
     };
     let mut out = format!(
-        "{} to {}: {} responses, {}{}\n",
+        "{} to {}: {} responses, {}\n",
         date(usage.since),
         date(usage.until),
         count(usage.total.responses),
-        dollars(usage.total.cost_usd),
-        unpriced(&usage.total),
+        cost(usage.total.cost_usd, usage.total.unpriced),
     );
     // Time's earlier rows, added up, come before it; anything else's rest
     // after.
@@ -355,17 +352,17 @@ pub fn text(usage: &Usage, shares: Option<(&str, &[Option<f64>])>) -> String {
 /// What used a limit: `account`'s usage in `limit`'s window, or since
 /// `since`, by `by`, each row with the points of the limit it took (its share
 /// of the cost, of what's used), approximate, as providers say how much of a
-/// limit is used but not by what.
+/// limit is used but not by what. With no limit, the account's usage.
 pub fn breakdown(
     db: &Connection,
     account: &crate::status::Account,
-    limit: &crate::status::Limit,
+    limit: Option<&crate::status::Limit>,
     since: Option<i64>,
     by: By,
     top: usize,
     now: i64,
 ) -> Result<(Usage, Vec<Option<f64>>)> {
-    let window = limit.window.and_then(|window| window.starts_at);
+    let window = limit.and_then(|limit| limit.window?.starts_at);
     let usage = usage(
         db,
         &Query {
@@ -383,21 +380,19 @@ pub fn breakdown(
             // whose ids name it as its scope does: "Opus" in
             // `claude-opus-5`.
             model: limit
-                .scope
-                .as_ref()
+                .and_then(|limit| limit.scope.as_ref())
                 .map(|scope| scope.to_lowercase().replace(' ', "-")),
             top,
         },
     )?;
     // Points, for the limit's own window alone.
-    let used = f64::from(100 - limit.left_percent);
+    let used = limit
+        .filter(|_| since.is_none() && window.is_some() && usage.total.cost_usd > 0.0)
+        .map(|limit| f64::from(100 - limit.left_percent));
     let points = usage
         .rows
         .iter()
-        .map(|row| {
-            (since.is_none() && window.is_some() && usage.total.cost_usd > 0.0)
-                .then(|| row.cost_usd / usage.total.cost_usd * used)
-        })
+        .map(|row| used.map(|used| row.cost_usd / usage.total.cost_usd * used))
         .collect();
     Ok((usage, points))
 }
@@ -430,7 +425,8 @@ mod tests {
             )
             .unwrap();
         }
-        let (usage, points) = breakdown(&db, &account, opus, None, By::Model, 10, now).unwrap();
+        let (usage, points) =
+            breakdown(&db, &account, Some(opus), None, By::Model, 10, now).unwrap();
         let rows: Vec<&str> = usage.rows.iter().map(|row| row.key.as_str()).collect();
         assert_eq!(rows, ["claude-opus-5"]);
         assert_eq!(points, [Some(f64::from(100 - opus.left_percent))]);

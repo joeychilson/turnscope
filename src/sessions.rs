@@ -596,18 +596,23 @@ pub fn also_here(others: &[Summary], now: i64) -> String {
     out + "\n\n"
 }
 
-#[derive(Default)]
+/// What of a session to read; `turnscope sessions read` takes it as flags.
+#[derive(Default, clap::Args)]
 pub struct Reading {
-    /// The first entry, by number; when it's negative, counted back from the
-    /// end over the entries wanted, as -10 for the last ten of them.
+    /// The first entry; negative counts back from the end over the entries wanted, as -10 for the last ten
+    #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
     pub from: i64,
-    /// How many entries, at most 100.
+    /// How many entries, up to 100; a page also ends at about 3,000 tokens
+    #[arg(long, short = 'n', default_value_t = 30)]
     pub count: usize,
-    /// Only entries of these kinds.
+    /// Only these kinds: user, assistant, reasoning, tool, system, summary (the agent's own, when it compacted) or task (a subagent's brief)
+    #[arg(long, value_delimiter = ',')]
     pub kinds: Vec<Kind>,
-    /// Only entries holding all these words.
+    /// Only entries holding all these words
+    #[arg(long)]
     pub search: Option<String>,
-    /// Only tool calls that failed.
+    /// Only tool calls that failed; with --from -1, the last
+    #[arg(long)]
     pub failed: bool,
 }
 

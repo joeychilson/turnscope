@@ -76,27 +76,18 @@ pub fn sha256_hex(data: &[u8], bytes: usize) -> String {
     version,
     about = "The limits, usage and sessions of the coding agents on this Mac",
     after_help = "Commands that print data take --json.\n\
-        Exit codes: 0 done, 1 failed (the message says how to fix it), 2 bad usage, 3 what you named doesn't exist."
+        Exit codes: 0 done, 1 failed (the message says how to fix it), 2 bad usage, 3 what you named doesn't exist.",
+    next_help_heading = "Global options"
 )]
 struct Cli {
     /// Where Turnscope keeps its data [default: ~/Library/Application Support/com.joeychilson.turnscope]
-    #[arg(
-        long,
-        global = true,
-        value_name = "DIR",
-        help_heading = "Global options"
-    )]
+    #[arg(long, global = true, value_name = "DIR")]
     data: Option<PathBuf>,
     /// Whose agents' history and logins to read [default: $HOME]
-    #[arg(
-        long,
-        global = true,
-        value_name = "DIR",
-        help_heading = "Global options"
-    )]
+    #[arg(long, global = true, value_name = "DIR")]
     home: Option<PathBuf>,
     /// Print JSON instead of text
-    #[arg(long, global = true, help_heading = "Global options")]
+    #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
     command: Command,
@@ -241,21 +232,8 @@ enum SessionAction {
     Read {
         /// The session's id, or a unique start of it, as `turnscope sessions` lists them
         session: String,
-        /// The first entry; negative counts back from the end over the entries wanted, as -10 for the last ten
-        #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
-        from: i64,
-        /// How many entries, up to 100; a page also ends at about 3,000 tokens
-        #[arg(long, short = 'n', default_value_t = 30)]
-        count: usize,
-        /// Only these kinds: user, assistant, reasoning, tool, system, summary (the agent's own, when it compacted) or task (a subagent's brief)
-        #[arg(long, value_delimiter = ',')]
-        kinds: Vec<agents::Kind>,
-        /// Only entries holding all these words
-        #[arg(long)]
-        search: Option<String>,
-        /// Only tool calls that failed; with --from -1, the last
-        #[arg(long)]
-        failed: bool,
+        #[command(flatten)]
+        reading: sessions::Reading,
     },
 }
 
@@ -367,6 +345,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
         );
     }
+    let connecting = matches!(command, Command::Connect { .. });
     let now = now();
     let time_of = |text: &Option<String>| {
         text.as_deref()
@@ -414,7 +393,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             let (account, limit) = limit_of(&db, home, &status, account.as_deref(), &name)?;
             let by = by.unwrap_or(usage::By::Session);
             let (used, shares) =
-                usage::breakdown(&db, account, limit, time_of(&from)?, by, top, now)?;
+                usage::breakdown(&db, account, Some(limit), time_of(&from)?, by, top, now)?;
             let heading = format!(
                 "{} · {}\n",
                 account.full_title(),
@@ -471,26 +450,11 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             print(json!(detail), sessions::detail_text(&detail, now))
         }
         Command::Sessions {
-            action:
-                Some(SessionAction::Read {
-                    session,
-                    from,
-                    count,
-                    kinds,
-                    search,
-                    failed,
-                }),
+            action: Some(SessionAction::Read { session, reading }),
             ..
         } => {
             let session = sessions::resolve(&db, &session)?;
             let entries = sessions::transcript(&db, &session)?;
-            let reading = sessions::Reading {
-                from,
-                count,
-                kinds,
-                search,
-                failed,
-            };
             let (shown, next) = sessions::page(&entries, &reading);
             let shown: Vec<_> = shown
                 .into_iter()
@@ -560,19 +524,16 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 status::hide(&db, &found.id, hidden)?;
             }
             let status = status::status(&db, now)?;
-            let lines: Vec<String> = status
+            let (lines, listed): (Vec<String>, Vec<_>) = status
                 .accounts
                 .iter()
                 .map(|account| {
                     let hidden = if account.hidden { " · hidden" } else { "" };
-                    format!("{} · {}{hidden}", account.full_title(), account.id)
+                    let title = account.full_title();
+                    let line = format!("{title} · {}{hidden}", account.id);
+                    (line, json!({ "id": account.id, "title": title, "kind": account.kind, "hidden": account.hidden }))
                 })
-                .collect();
-            let listed: Vec<_> = status
-                .accounts
-                .iter()
-                .map(|account| json!({ "id": account.id, "title": account.full_title(), "kind": account.kind, "hidden": account.hidden }))
-                .collect();
+                .unzip();
             print(json!(listed), lines.join("\n"))
         }
         Command::Config { action } => {
@@ -604,23 +565,17 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             );
             print(json!(settings), text)
         }
-        Command::Connect { agent: Some(id) } => {
+        Command::Connect { agent: Some(id) } | Command::Disconnect { agent: id } => {
             let agent = agents::find(&id)?;
-            connect::connect(agent, home)?;
-            let text = format!(
-                "{} now runs Turnscope's MCP server. Start a new session in it to use it.",
-                agent.info().name
-            );
-            print(json!({ "agent": id, "connected": true }), text)
-        }
-        Command::Disconnect { agent: id } => {
-            let agent = agents::find(&id)?;
-            connect::disconnect(agent, home)?;
-            let text = format!(
-                "{} no longer runs Turnscope's MCP server. Sessions already open keep it until they end.",
-                agent.info().name
-            );
-            print(json!({ "agent": id, "connected": false }), text)
+            let text = if connecting {
+                connect::connect(agent, home)?;
+                "now runs Turnscope's MCP server. Start a new session in it to use it."
+            } else {
+                connect::disconnect(agent, home)?;
+                "no longer runs Turnscope's MCP server. Sessions already open keep it until they end."
+            };
+            let text = format!("{} {text}", agent.info().name);
+            print(json!({ "agent": id, "connected": connecting }), text)
         }
         Command::Connect { agent: None } => {
             let agents = status::agents(home, &status::status(&db, now)?.accounts);
@@ -687,21 +642,17 @@ fn limit_of<'a>(
         |account: &&status::Account| account.limits.iter().any(|limit| limit.answers_to(name));
     let account = match account {
         Some(account) => one_account(status, account)?,
-        None => {
-            let yours = mcp::Caller::detect().account(db, home)?;
-            status
-                .accounts
-                .iter()
-                .find(|account| Some(&account.id) == yours.as_ref() && has(account))
-                .or_else(|| {
-                    status
-                        .accounts
-                        .iter()
-                        .filter(|account| !account.hidden)
-                        .find(has)
-                })
-                .ok_or_else(|| Error::NotFound(format!("no account has a limit named {name}")))?
-        }
+        None => mcp::Caller::detect()
+            .account(db, home, status)?
+            .filter(has)
+            .or_else(|| {
+                status
+                    .accounts
+                    .iter()
+                    .filter(|account| !account.hidden)
+                    .find(has)
+            })
+            .ok_or_else(|| Error::NotFound(format!("no account has a limit named {name}")))?,
     };
     Ok((account, account.limit(name)?))
 }
@@ -722,14 +673,7 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
     }
     let status = status::status(db, now)?;
     for account in &status.accounts {
-        let agents = match account.agents.as_slice() {
-            [] => "the agent that uses it".to_owned(),
-            ids => ids
-                .iter()
-                .map(|id| agents::name(id))
-                .collect::<Vec<_>>()
-                .join(" or "),
-        };
+        let agents = status::login_agents(account);
         let title = account.full_title();
         match (&account.state, account.state.why()) {
             (_, Some(status::Stale::SignIn)) => notes.push(format!(
@@ -832,27 +776,23 @@ fn guard(
     let status = status::status(&db, now)?;
     let account = match account {
         Some(name) => one_account(&status, name)?,
-        None => {
-            let yours = mcp::Caller::detect().account(&db, home)?;
-            let Some(found) = status
-                .accounts
-                .iter()
-                .find(|account| Some(&account.id) == yours.as_ref())
-            else {
-                return Ok(None);
-            };
-            found
-        }
+        None => match mcp::Caller::detect().account(&db, home, &status)? {
+            Some(yours) => yours,
+            None => return Ok(None),
+        },
     };
     let found = account.limit(limit)?;
     if found.left_percent >= below {
         return Ok(None);
     }
-    let called = format!("{}'s {}", account.title, limit_called(found));
-    let when = |at: i64| match at >= now {
-        true => format!("{} (in {})", time::clock(at, now), time::span(at - now)),
-        false => format!("{} ({} ago)", time::clock(at, now), time::span(now - at)),
+    // As a sentence names it: "weekly limit", "5-hour limit", "Opus weekly
+    // limit".
+    let called = found.lowercase("-hour");
+    let called = match called.ends_with("limit") {
+        true => format!("{}'s {called}", account.title),
+        false => format!("{}'s {called} limit", account.title),
     };
+    let when = |at: i64| time::when(at, now);
     Ok(Some(match &found.outlook {
         status::Outlook::UsedUp { back } => format!(
             "{called} is used up{}.",
@@ -875,25 +815,6 @@ fn guard(
     }))
 }
 
-/// A limit as a sentence names it: "weekly limit", "5-hour limit", "Opus
-/// weekly limit".
-fn limit_called(limit: &status::Limit) -> String {
-    let name = limit.name.to_lowercase();
-    let name = match name.split_once(' ') {
-        Some((count, "hours")) if count.parse::<u32>().is_ok() => format!("{count}-hour"),
-        _ => name,
-    };
-    let name = match &limit.scope {
-        Some(scope) => format!("{scope} {name}"),
-        None => name,
-    };
-    if name.ends_with("limit") {
-        name
-    } else {
-        format!("{name} limit")
-    }
-}
-
 /// One line for an agent's status line: the account it draws on, by
 /// `account`, the session the harness names on standard input, or the
 /// calling agent; else the first account in use. From the database alone,
@@ -905,7 +826,10 @@ fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String>
     let id = match account {
         // A line is better than none: of several named, the first.
         Some(name) => Some(status::named(&status, name).ok()?.first()?.id.clone()),
-        None => harness(&db).or_else(|| mcp::Caller::detect().account(&db, home).ok().flatten()),
+        None => harness(&db).or_else(|| {
+            let yours = mcp::Caller::detect().account(&db, home, &status).ok()?;
+            yours.map(|account| account.id.clone())
+        }),
     };
     let account = match id {
         Some(id) => status.accounts.iter().find(|account| account.id == id)?,
