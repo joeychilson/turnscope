@@ -144,7 +144,11 @@ An agent that keeps a SQLite database, as OpenCode does, is opened read-only
 and read on from a little before the latest `time_updated` seen, since a
 row can be committed after one stamped later (`src/agents/opencode.rs`).
 Rows read again are reported again, which changes nothing, but what they
-say is indexed only once.
+say is indexed only once. `Stat::of` in `src/ingest.rs` looks for a
+write-ahead log only beside a file whose name ends in `.db`, as OpenCode's
+does. For a database named otherwise, add its ending there: until a
+checkpoint, new rows are only in the log, and the file itself doesn't
+change.
 
 What a read returns, in `Read`:
 
