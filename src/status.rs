@@ -530,10 +530,21 @@ fn limits(
     keys: &BTreeMap<String, Vec<String>>,
     now: i64,
 ) -> Result<(Vec<Limit>, bool)> {
-    // The start of each slot of work on the account.
+    // The start of each slot of work on the account: one seek in
+    // `response_account` per slot, over grouping every response. With a
+    // made-up account of 233,000 responses in the last two weeks, grouping
+    // took 80 ms of CPU and seeking 12 ms, each time serve pushed. The cost:
+    // an account with 2,000 responses spread over 1,194 slots took 4.3 ms,
+    // not 1.5 ms.
     let worked: Vec<i64> = db
         .prepare_cached(
-            "SELECT min(at) FROM response WHERE account = ?1 AND at >= ?2 GROUP BY at / ?3 ORDER BY 1",
+            "WITH RECURSIVE slot (at) AS (
+                 SELECT min(at) FROM response WHERE account = ?1 AND at >= ?2
+                 UNION ALL
+                 SELECT (SELECT min(at) FROM response WHERE account = ?1 AND at >= (slot.at / ?3 + 1) * ?3)
+                 FROM slot WHERE slot.at IS NOT NULL
+             )
+             SELECT at FROM slot WHERE at IS NOT NULL",
         )?
         .query_map(params![account, now - WORKED, forecast::SLOT], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;

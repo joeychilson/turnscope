@@ -6,6 +6,7 @@
 //! and given the account its folder was signed into when it was made.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -77,13 +78,21 @@ struct Stat {
 impl Stat {
     /// A SQLite database's changes reach its file only at a checkpoint, so
     /// when its write-ahead log changed is when it did; the log's size isn't
-    /// counted, as a checkpoint shrinks it.
+    /// counted, as a checkpoint shrinks it. Of the files agents list, only a
+    /// `.db` file has a log: looking beside every file cost a second stat
+    /// for each, 67M instructions of a catch-up that read nothing with 5,700
+    /// files.
     fn of(path: &Path) -> Option<Stat> {
         let modified = |meta: &std::fs::Metadata| meta.mtime() * 1_000_000_000 + meta.mtime_nsec();
         let meta = std::fs::metadata(path).ok()?;
-        let mut wal = path.as_os_str().to_owned();
-        wal.push("-wal");
-        let wal = std::fs::metadata(wal).map_or(i64::MIN, |wal| modified(&wal));
+        let wal = match path.extension().is_some_and(|extension| extension == "db") {
+            true => {
+                let mut wal = path.as_os_str().to_owned();
+                wal.push("-wal");
+                std::fs::metadata(wal).map_or(i64::MIN, |wal| modified(&wal))
+            }
+            false => i64::MIN,
+        };
         Some(Stat {
             size: meta.size() as i64,
             modified: modified(&meta).max(wal),
@@ -126,7 +135,9 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
         read_again(db)?;
     }
 
-    let mut known: HashMap<PathBuf, Known> = db
+    // By the path's bytes: a `PathBuf` hashes component by component. With
+    // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
+    let mut known: HashMap<OsString, Known> = db
         .prepare("SELECT path, agent, size, modified, inode, cursor FROM file")?
         .query_map([], |row| {
             let known = Known {
@@ -138,7 +149,7 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
                 },
                 cursor: row.get(5)?,
             };
-            Ok((PathBuf::from(row.get::<_, String>(0)?), known))
+            Ok((OsString::from(row.get::<_, String>(0)?), known))
         })?
         .collect::<rusqlite::Result<_>>()?;
 
@@ -157,15 +168,15 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     // keeps its inode, and on one volume APFS numbers new files in order
     // rather than reusing a number. Read on from where it was, it's not read
     // twice.
-    let listed: HashSet<&PathBuf> = found.iter().map(|(.., path, _)| path).collect();
-    let mut moved: HashMap<i64, (PathBuf, Known)> = known
-        .extract_if(|path, _| !listed.contains(path))
+    let listed: HashSet<&OsStr> = found.iter().map(|(.., path, _)| path.as_os_str()).collect();
+    let mut moved: HashMap<i64, (OsString, Known)> = known
+        .extract_if(|path, _| !listed.contains(path.as_os_str()))
         .map(|(path, was)| (was.stat.inode, (path, was)))
         .collect();
 
     let mut due = Vec::new();
     for (agent, folder, path, stat) in found {
-        let was = match known.remove(&path) {
+        let was = match known.remove(path.as_os_str()) {
             Some(was) => Some(was),
             None => match moved.remove(&stat.inode) {
                 Some((from, was)) if was.agent == agent.info().id => {
@@ -949,5 +960,44 @@ mod tests {
         assert!(!ingest(&mut db, home.path()).unwrap());
         std::fs::write(&log, line("Fix the parser.").repeat(2)).unwrap();
         assert!(ingest(&mut db, home.path()).unwrap());
+    }
+
+    #[test]
+    fn a_change_only_in_a_databases_write_ahead_log_is_read() {
+        let (_dir, home, mut db, _) = store();
+        let folder = home.path().join(".local/share/opencode");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("opencode.db");
+        // Held open, as OpenCode holds it, with no checkpoint.
+        let opencode = Connection::open(&file).unwrap();
+        opencode
+            .execute_batch(&format!(
+                "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; {}",
+                include_str!("../tests/fixtures/home/.local/share/opencode/opencode.sql")
+            ))
+            .unwrap();
+        assert!(ingest(&mut db, home.path()).unwrap());
+        let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+        opencode
+            .execute_batch(
+                r#"INSERT INTO session_v2 VALUES ('ses_new', NULL, NULL, '/work/web', 'Add a footer',
+                       1790748000000, 1790748060000);
+                   INSERT INTO session_message VALUES ('msg_new', 'ses_new', 'assistant', 1,
+                       1790748000000, 1790748060000,
+                       '{"model": {"providerID": "opencode-go", "id": "glm-5.3"},
+                         "time": {"created": 1790748000000, "completed": 1790748060000},
+                         "tokens": {"input": 100, "output": 20, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+                         "content": [{"type": "text", "text": "Added."}]}');"#,
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            modified
+        );
+        assert!(ingest(&mut db, home.path()).unwrap());
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM session WHERE id LIKE '%ses_new'"),
+            1
+        );
     }
 }
