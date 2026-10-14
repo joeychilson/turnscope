@@ -2,15 +2,14 @@
 
 ## 0.1.4
 
-- **The app's engine** uses much less CPU. While the agents' folders keep
-  changing, as with many agents at work at once, it reads their history at
-  most every 5 seconds, not about every second, so the panel can show what
-  an agent wrote up to 5 seconds late. Working out the status no longer
-  reads every response of the last two weeks, and checking for new usage
-  does less for each history file. With a made-up history of 5,700 files
-  and 233,000 responses in the last two weeks, it used 0.7% of a core while
-  one agent worked, down from 8.4%, and 2.6% with ten at work, down from
-  18.3%.
+- **The app's engine** uses much less CPU. It reads the agents' history no
+  sooner than 5 seconds after it last did, not as soon as their writes
+  pause, so the panel can show what an agent wrote up to 5 seconds late.
+  Working out the status no longer reads every response of the last two
+  weeks, and checking for new usage does less for each history file. With
+  a made-up history of 5,700 files and 233,000 responses in the last two
+  weeks, it used 0.7% of a core while one agent worked, down from 8.4%,
+  and 2.6% with ten at work, down from 18.3%.
 
 ## 0.1.3
 

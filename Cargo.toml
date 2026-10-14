@@ -1,7 +1,7 @@
 [package]
 name = "turnscope"
 description = "The limits, usage and sessions of the coding agents on this Mac: a CLI, an MCP server, and the menu bar app's daemon"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
