@@ -8,12 +8,12 @@
 //! restart reconnects without reading anything again.
 //!
 //! One thread answers requests. Another keeps the data current: it reads
-//! what changed 250 ms after the agents' folders do, and each minute reads
-//! history, limits when due and prices when due. After each that read
-//! anything new, ran in a new minute or followed another process's write,
-//! serve pushes the status, if what it shows changed, with the alerts it
-//! raised. Should that thread stop, serve stops too, so the app starts one
-//! that keeps it.
+//! what changed 250 ms after the agents' folders do, no sooner than 5 s
+//! after it last did, and each minute reads history, limits when due and
+//! prices when due. After each that read anything new, ran in a new minute
+//! or followed another process's write, serve pushes the status, if what it
+//! shows changed, with the alerts it raised. Should that thread stop, serve
+//! stops too, so the app starts one that keeps it.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -215,11 +215,26 @@ pub fn run(home: &Path, data: &Path, linger: Duration) -> Result<()> {
     Ok(())
 }
 
-/// Keep the data current: 250 ms after the agents' folders change, and each
-/// minute, as horizons and outlooks move with the clock.
+/// The least time from one catch-up's end to the next one's start, while
+/// agents write in their folders: 5 s, over catching up as soon as writes
+/// settle, a second at most. Many agents at work at once, as in an eval
+/// run, never let writes settle, so serve caught up all the while: each
+/// catch-up looks at every history file, and works out the status when it
+/// read something. Over 5,000 sessions, with a stand-in agent writing ten
+/// of them ten times a second for 30 s, serve ran 9.8G instructions without
+/// the gap and 3.2G with it. The cost: the panel shows what an agent wrote
+/// up to 5 s late.
+const GAP: Duration = Duration::from_secs(5);
+
+/// Keep the data current: 250 ms after the agents' folders change, no
+/// sooner than `GAP` after the last catch-up, and each minute, as horizons
+/// and outlooks move with the clock.
 fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
     let mut db = crate::db::open(data)?;
     let (changed, changes) = mpsc::channel();
+    // Any write, not only to history: macOS reports a write when its file
+    // is closed, and Codex keeps a session's file open, and OpenCode its
+    // database, while they work. Their other writes are what show it.
     let mut watcher = notify::recommended_watcher(move |_: notify::Result<notify::Event>| {
         let _ = changed.send(());
     })
@@ -256,6 +271,7 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
             }
             pushed = Some(now);
         }
+        let waited = Instant::now();
         match changes.recv_timeout(Duration::from_secs(60)) {
             Ok(()) => {
                 // Let a burst of writes settle, a second at most.
@@ -263,6 +279,9 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
                 while changes.recv_timeout(Duration::from_millis(250)).is_ok()
                     && start.elapsed() < Duration::from_secs(1)
                 {}
+                // The next catch-up reads what's written meanwhile.
+                std::thread::sleep(GAP.saturating_sub(waited.elapsed()));
+                while changes.try_recv().is_ok() {}
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
