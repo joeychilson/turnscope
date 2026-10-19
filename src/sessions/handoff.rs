@@ -440,11 +440,10 @@ fn story(
     if parts.is_empty() {
         return (String::new(), stop);
     }
-    let from = full.map_or(since, |at| at + 1);
-    let left_out = match from > since {
-        true => format!(" {}", left_out(since, from - 1)),
-        false => String::new(),
-    };
+    let from = full.as_ref().map_or(since, |cut| cut.end() + 1);
+    let left_out = full.map_or(String::new(), |cut| {
+        format!(" {}", left_out(*cut.start(), *cut.end()))
+    });
     let section = format!(
         "\n## What it found and did, from #{from}\n\nIts messages, reasoning and subagents' reports, oldest first; its other tool calls are left out.{left_out}\n\n{}\n",
         parts
@@ -486,13 +485,9 @@ fn stopped(entries: &[Entry], stop: usize, quoted: &[usize], share: usize, now: 
             })
         },
     );
-    // A system note is left out wherever it falls, not for room.
-    let gap = full
-        .and_then(|at| {
-            let from = (stop + 1..=at).find(|&next| entries[next].kind != Kind::System)?;
-            Some(format!("\n\n{}", left_out(from, at)))
-        })
-        .unwrap_or_default();
+    let gap = full.map_or(String::new(), |cut| {
+        format!("\n\n{}", left_out(*cut.start(), *cut.end()))
+    });
     let what = match (last.kind, entries.len() - stop - 1) {
         (Kind::Assistant, 0) => "Its last message, the session's last entry.".to_owned(),
         (Kind::Assistant, count) => format!(
@@ -514,20 +509,27 @@ fn stopped(entries: &[Entry], stop: usize, quoted: &[usize], share: usize, now: 
 
 /// The entries in `range` that fit in `room` characters, taken newest first
 /// and given oldest first, each as `text_of` gives it, skipped where it
-/// gives none; and the entry that didn't fit, where one didn't.
+/// gives none; and, where one didn't fit, the entries left out for room:
+/// from the first it gives text for to the one that didn't fit.
 fn fit(
     range: std::ops::Range<usize>,
     room: usize,
     text_of: impl Fn(usize) -> Option<String>,
-) -> (Vec<(usize, String)>, Option<usize>) {
+) -> (
+    Vec<(usize, String)>,
+    Option<std::ops::RangeInclusive<usize>>,
+) {
     let mut left = room;
     let mut parts = Vec::new();
     let mut full = None;
-    for at in range.rev() {
+    for at in range.clone().rev() {
         let Some(text) = text_of(at) else { continue };
         // Two characters for the blank line between entries.
         if text.len() + 2 > left {
-            full = Some(at);
+            // An entry it gives no text for, such as a system note, is left
+            // out wherever it falls, not for room.
+            let first = (range.start..at).find(|&older| text_of(older).is_some());
+            full = Some(first.unwrap_or(at)..=at);
             break;
         }
         left -= text.len() + 2;
@@ -1043,6 +1045,35 @@ mod tests {
         assert!(
             none.contains("\nEntry #2 is left out for room.\n"),
             "{none}"
+        );
+    }
+
+    /// The story says which entries it had no room for: from the first it
+    /// would show to the one that didn't fit.
+    #[test]
+    fn the_story_says_just_what_it_left_out_for_room() {
+        let entries = [
+            said(Kind::System, 0, "A reminder."),
+            call(
+                "Bash",
+                r#"{"command": "cargo test"}"#,
+                "ok",
+                false,
+                Role::Work,
+            ),
+            said(Kind::Assistant, 2, &"Read the parser. ".repeat(60)),
+            said(Kind::Assistant, 3, "The quoted-comma test fails."),
+            said(Kind::Assistant, 4, "Fixing the tokenizer."),
+        ];
+        let (section, _) = story(&entries, 0, 4, &[], 600, 10 * MINUTE);
+        // The note and the tool call are left out wherever they fall.
+        assert!(
+            section.contains(" Entry #2 is left out for room.\n"),
+            "{section}"
+        );
+        assert!(
+            section.contains("\n## What it found and did, from #3\n"),
+            "{section}"
         );
     }
 

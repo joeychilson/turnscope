@@ -25,6 +25,11 @@
   of them. The entries it says it left out for room no longer start or
   end with a system note, which a handoff always leaves out, so a note
   alone is no longer said to be left out for room.
+- **Handoff:** "What it found and did" no longer counts the system notes
+  and tool calls before the first entry it had no room for as left out
+  for room. With a system note at #0 and a tool call at #1, which it
+  leaves out wherever they fall, it said "Entries #0 to #2 are left out
+  for room." It now says "Entry #2 is left out for room."
 - **`status`, `check_limits` and `doctor`** say why an account can't be
   read in the same words. `check_limits`' verdict on the first account
   says how to fix it, as the others do, not only that its limits can't be
