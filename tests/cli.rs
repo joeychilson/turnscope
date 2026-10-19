@@ -454,7 +454,15 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
     let output = turnscope(data.path(), &["status", "--account", "claude"], None);
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(
-        text.contains("As of 11:25 (35m ago): it couldn't be read since."),
+        text.contains(
+            "As of 11:25 (35m ago): it couldn't be read since; it's tried again every 5 minutes."
+        ),
+        "{text}"
+    );
+    let output = turnscope(data.path(), &["doctor"], None);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("Claude Max (me@example.com): it couldn't be read since 11:25; it's tried again every 5 minutes."),
         "{text}"
     );
 }

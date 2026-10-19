@@ -21,7 +21,7 @@ use crate::time::{self, DAY, HOUR, MINUTE};
 use crate::{Result, agents};
 
 mod text;
-pub use text::{fit, limit_text, line, login_agents, text, verdict};
+pub use text::{fit, limit_text, line, stale, text, verdict};
 
 /// How recently a response must have drawn on an account for it to be in use.
 const IN_USE: i64 = 30 * MINUTE;
@@ -166,7 +166,7 @@ impl State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Stale {
-    /// No agent here is signed into it now.
+    /// No agent here is signed in to it now.
     SignedOut,
     /// Its provider refused the login.
     SignIn,

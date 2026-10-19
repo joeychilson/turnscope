@@ -18,7 +18,7 @@ fn worked(hours: f64) -> String {
 }
 
 /// The agents to open to sign in to `account` again: `Codex or Pi`.
-pub fn login_agents(account: &Account) -> String {
+fn login_agents(account: &Account) -> String {
     match account.agents.as_slice() {
         [] => "the agent that uses it".to_owned(),
         ids => ids
@@ -27,6 +27,32 @@ pub fn login_agents(account: &Account) -> String {
             .collect::<Vec<_>>()
             .join(" or "),
     }
+}
+
+/// Why `account`'s limits aren't read now, and what to do about it: `its
+/// login was refused; sign in again in Codex`. Read before, it says since
+/// when, or only `since` when the time of that read is `dated` beside it.
+pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
+    let (why, read_at) = match account.state {
+        State::Live { .. } => return None,
+        State::AsOf { read_at, why } => (why, Some(read_at)),
+        State::Unread { why } => (why, None),
+    };
+    let agents = login_agents(account);
+    Some(match why {
+        Stale::SignedOut => "no agent here is signed in to it now".to_owned(),
+        Stale::SignIn => format!("its login was refused; sign in again in {agents}"),
+        Stale::Expired => format!("its login expired; open {agents} to update"),
+        Stale::ReadFailed => format!(
+            "it couldn't be read {}; it's tried again every {} minutes",
+            match read_at {
+                Some(_) if dated => "since".to_owned(),
+                Some(read_at) => format!("since {}", time::clock(read_at, now)),
+                None => "yet".to_owned(),
+            },
+            crate::limits::DUE / MINUTE
+        ),
+    })
 }
 
 /// The status of `accounts`, `yours` marked so.
@@ -53,37 +79,16 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
             }
         }
         out += "\n";
-        let agents = login_agents(account);
-        out += &match &account.state {
-            State::Unread { why } => match why {
-                Stale::SignedOut => "  No agent here is signed in to it.\n".to_owned(),
-                Stale::SignIn => format!("  Its login was refused: sign in again in {agents}.\n"),
-                Stale::Expired => format!("  Its login expired: open {agents} to update.\n"),
-                Stale::ReadFailed => {
-                    "  It couldn't be read yet: it's tried again every 5 minutes.\n".to_owned()
-                }
-            },
-            State::AsOf { read_at, why } => {
-                let as_of = format!(
-                    "As of {} ({} ago)",
-                    time::clock(*read_at, now),
+        if let Some(stale) = stale(account, true, now) {
+            out += &match account.state {
+                State::AsOf { read_at, .. } => format!(
+                    "  As of {} ({} ago): {stale}.\n",
+                    time::clock(read_at, now),
                     time::span(now - read_at)
-                );
-                match why {
-                    Stale::SignedOut => {
-                        format!("  {as_of}: no agent here is signed into it now.\n")
-                    }
-                    Stale::SignIn => {
-                        format!("  {as_of}: its login was refused; sign in again in {agents}.\n")
-                    }
-                    Stale::Expired => {
-                        format!("  {as_of}: its login expired; open {agents} to update.\n")
-                    }
-                    Stale::ReadFailed => format!("  {as_of}: it couldn't be read since.\n"),
-                }
-            }
-            State::Live { .. } => String::new(),
-        };
+                ),
+                _ => format!("  {}{}.\n", stale[..1].to_uppercase(), &stale[1..]),
+            };
+        }
         for limit in &account.limits {
             out += &format!("  {}\n", limit_text(limit, now));
         }
@@ -94,11 +99,11 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
                 ""
             };
             let pace = spend.forecast_usd.map_or(String::new(), |forecast| {
-                format!(", on pace for about ${forecast:.2}")
+                format!(", on pace for about {}", crate::usage::dollars(forecast))
             });
             out += &format!(
-                "  This month, across its keys: ${:.2}{pace}{partial}.\n",
-                spend.month_usd
+                "  This month, across its keys: {}{pace}{partial}.\n",
+                crate::usage::dollars(spend.month_usd)
             );
         }
         out += "\n";
@@ -109,7 +114,11 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
 /// What's left of `limit`: `25%`, or of money, `$11.00 of $20.00`.
 fn left(limit: &Limit) -> String {
     match limit.money {
-        Some(money) => format!("${:.2} of ${:.2}", money.left_usd, money.size_usd),
+        Some(money) => format!(
+            "{} of {}",
+            crate::usage::dollars(money.left_usd),
+            crate::usage::dollars(money.size_usd)
+        ),
         None => format!("{}%", limit.left_percent),
     }
 }
@@ -280,30 +289,18 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
 /// and for how much work, by the limit on all its usage that runs out first.
 pub fn verdict(account: &Account, now: i64) -> String {
     let title = account.full_title();
+    let Some(stale) = stale(account, true, now) else {
+        return standing(account, &title, now);
+    };
     match account.state {
-        State::Unread { why } => format!(
-            "{title}: {}.",
-            match why {
-                Stale::SignIn => "its login was refused, so its limits can't be read",
-                Stale::Expired => "its login expired, so its limits can't be read",
-                Stale::SignedOut => "no agent here is signed in to it, so its limits can't be read",
-                Stale::ReadFailed => "its limits couldn't be read yet",
-            }
-        ),
         // What's said rests on an earlier read, and an agent acts on this
         // line first.
-        State::AsOf { read_at, why } => format!(
-            "{} That's as of {}: {}.",
+        State::AsOf { read_at, .. } => format!(
+            "{} That's as of {}: {stale}.",
             standing(account, &title, now),
-            time::clock(read_at, now),
-            match why {
-                Stale::SignIn => "its login was refused since",
-                Stale::Expired => "its login expired since",
-                Stale::SignedOut => "no agent here is signed in to it now",
-                Stale::ReadFailed => "it couldn't be read since",
-            }
+            time::clock(read_at, now)
         ),
-        State::Live { .. } => standing(account, &title, now),
+        _ => format!("{title}: {stale}."),
     }
 }
 
@@ -480,5 +477,67 @@ mod tests {
             fit(&account, 2.0, now).unwrap(),
             "2 more hours of work don't fit: 5 hours runs out after about 30m of work."
         );
+    }
+
+    fn example() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../contract/status.notification.json")).unwrap()
+    }
+
+    #[test]
+    fn dollars_from_a_thousand_have_a_comma_as_on_the_status_line() {
+        let mut example = example();
+        let key = &mut example["params"]["accounts"][2];
+        key["spend"] =
+            serde_json::json!({"monthUsd": 1234.5, "forecastUsd": 2469.0, "partial": false});
+        key["limits"][0]["money"] = serde_json::json!({"leftUsd": 1234.5, "sizeUsd": 2000.0});
+        let status: Status = serde_json::from_value(example["params"].clone()).unwrap();
+        let said = text(&status, &[&status.accounts[2]], None);
+        assert!(
+            said.contains("Key limit: $1,234.50 of $2,000.00 left"),
+            "{said}"
+        );
+        assert!(
+            said.contains("This month, across its keys: $1,234.50, on pace for about $2,469.00."),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn why_an_account_isnt_read_is_said_the_same_way_everywhere() {
+        let status: Status = serde_json::from_value(example()["params"].clone()).unwrap();
+        for (title, why) in [
+            ("ChatGPT Pro", "no agent here is signed in to it now."),
+            (
+                "OpenRouter API key",
+                "it couldn't be read since; it's tried again every 5 minutes.",
+            ),
+            (
+                "OpenCode Go",
+                "its login was refused; sign in again in Claude Code.",
+            ),
+            (
+                "SuperGrok",
+                "its login was refused; sign in again in Claude Code.",
+            ),
+            (
+                "Anthropic API key",
+                "it couldn't be read yet; it's tried again every 5 minutes.",
+            ),
+        ] {
+            let account = status.accounts.iter().find(|a| a.title == title).unwrap();
+            let said = text(&status, &[account], None);
+            let under_title = said.lines().nth(1).unwrap();
+            match account.state {
+                State::Unread { .. } => {
+                    assert_eq!(
+                        under_title,
+                        format!("  {}{}", why[..1].to_uppercase(), &why[1..])
+                    )
+                }
+                _ => assert!(under_title.ends_with(&format!(": {why}")), "{under_title}"),
+            }
+            let verdict = verdict(account, status.at);
+            assert!(verdict.ends_with(&format!(": {why}")), "{verdict}");
+        }
     }
 }
