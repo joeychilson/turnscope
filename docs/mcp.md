@@ -240,8 +240,9 @@ window, so with any other `since` the column is left out, and a line says
 from when the window runs and to leave `since` out for them.
 
 An account with no limit read, such as one whose login expired, still has
-its usage broken down: over the last 7 days unless `since` says otherwise,
-without the limit's line or shares.
+its usage broken down, without the limit's line or shares: unless `since`
+says otherwise, over this month for an API key and the last 7 days for a
+subscription.
 
 Called with `{"account": "claude", "limit": "week", "by": "model"}`:
 
