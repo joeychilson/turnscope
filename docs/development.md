@@ -170,10 +170,11 @@ and the disk image, and checks that the update's signature passes with
 
 ## CI
 
-**Verify** (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull
-requests, unless only Markdown, `docs/` or `.github/screenshots/` changed.
-A change to `docs/cli.md` runs it, since a test checks its examples. The
-release runs it too. A new push to a pull request cancels its earlier
+**Verify** (`.github/workflows/ci.yml`) runs on every pull request, since
+its checks are required to merge. On pushes to `main` it runs unless only
+Markdown, `docs/` or `.github/screenshots/` changed; a change to
+`docs/cli.md` runs it, since a test checks its examples. The release runs
+it too. A new push to a pull request cancels its earlier
 run.
 
 | Job | Runner | Steps |

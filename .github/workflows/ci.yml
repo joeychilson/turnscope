@@ -1,13 +1,14 @@
 name: Verify
 
-# Not for a change to only Markdown, docs or screenshots, except
-# docs/cli.md, whose examples a test checks against the snapshots.
+# On main, not for a change to only Markdown, docs or screenshots, except
+# docs/cli.md, whose examples a test checks against the snapshots. Every
+# pull request runs it: its checks are required, and one skipped never
+# reports, so the pull request could never merge.
 on:
   push:
     branches: [main]
     paths: ["**", "!**/*.md", "!docs/**", "!.github/screenshots/**", "docs/cli.md"]
   pull_request:
-    paths: ["**", "!**/*.md", "!docs/**", "!.github/screenshots/**", "docs/cli.md"]
   workflow_call:
 
 permissions:
