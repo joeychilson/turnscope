@@ -16,6 +16,11 @@
   read in the same words. `check_limits`' verdict on the first account
   says how to fix it, as the others do, not only that its limits can't be
   read. `status` writes $1,000 or more with a comma, as `statusline` does.
+- **Handoff:** a read by OpenCode's `read` or Claude Code's `NotebookRead`
+  is named by its file, not by its input as JSON. So is a failed OpenCode
+  `edit` or `write`, or Claude Code `NotebookEdit`, under "What failed",
+  and it no longer shows there once a later one of the same file passed,
+  as a failed Claude Code `Edit` already didn't.
 
 ## 0.1.4
 

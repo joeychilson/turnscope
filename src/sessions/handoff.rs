@@ -312,6 +312,9 @@ fn tasks(entries: &[Entry], share: usize) -> String {
     )
 }
 
+/// The keys a tool's input names a file under, as each agent's tools do.
+const PATHS: [&str; 4] = ["file_path", "filePath", "notebook_path", "path"];
+
 /// The files the work was in from `since` on, as a handoff's section: those
 /// its tools read or changed, and those its commands named that are in its
 /// folder `cwd`, the latest first, with how often. Up to 15, within
@@ -355,7 +358,7 @@ fn files(entries: &[Entry], since: usize, cwd: Option<&str>, share: usize) -> St
         let Ok(input) = serde_json::from_str::<serde_json::Value>(&tool.input) else {
             continue;
         };
-        for key in ["file_path", "filePath", "notebook_path", "path"] {
+        for key in PATHS {
             if let Some(file) = input[key].as_str() {
                 let changed = tool.files.iter().any(|known| known == file);
                 if !changed {
@@ -643,29 +646,21 @@ fn gist(tool: &Tool) -> String {
     let said = serde_json::from_str::<serde_json::Value>(&tool.input)
         .ok()
         .and_then(|input| {
-            [
-                "description",
-                "command",
-                "cmd",
-                "file_path",
-                "path",
-                "pattern",
-                "query",
-                "url",
-                "prompt",
-            ]
-            .iter()
-            .find_map(|key| match input.get(key)? {
-                serde_json::Value::String(text) => Some(text.clone()),
-                serde_json::Value::Array(words) => Some(
-                    words
-                        .iter()
-                        .filter_map(|word| word.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                ),
-                _ => None,
-            })
+            ["description", "command", "cmd"]
+                .iter()
+                .chain(&PATHS)
+                .chain(&["pattern", "query", "url", "prompt"])
+                .find_map(|key| match input.get(key)? {
+                    serde_json::Value::String(text) => Some(text.clone()),
+                    serde_json::Value::Array(words) => Some(
+                        words
+                            .iter()
+                            .filter_map(|word| word.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                    _ => None,
+                })
         })
         .unwrap_or_else(|| match commands(tool).as_slice() {
             [] => tool.input.clone(),
@@ -1107,6 +1102,38 @@ mod tests {
             "#2 tool `Bash` (failed): \"Run tests\"",
             "#4 tool `Read`: \"src/csv.rs\"",
         ] {
+            assert!(
+                handoff.lines().any(|shown| shown == line),
+                "{line} is missing:\n{handoff}"
+            );
+        }
+    }
+
+    /// A read is named by its path under whichever key its agent's tool
+    /// takes it: OpenCode's `read` takes `filePath`, Claude Code's
+    /// `NotebookRead` `notebook_path`.
+    #[test]
+    fn a_read_is_named_by_its_path() {
+        for (name, key) in [("read", "filePath"), ("NotebookRead", "notebook_path")] {
+            let entries = [
+                said(Kind::User, 0, "Fix the CSV parser."),
+                said(Kind::Assistant, 1, "Reading the parser."),
+                call(
+                    name,
+                    serde_json::json!({ key: "src/csv.rs" }),
+                    "",
+                    false,
+                    Role::Read,
+                ),
+            ];
+            let handoff = brief(
+                &session("CSV", 2 * MINUTE),
+                &entries,
+                BUDGET,
+                Cite::Tool,
+                3 * MINUTE,
+            );
+            let line = format!("#2 tool `{name}`: \"src/csv.rs\"");
             assert!(
                 handoff.lines().any(|shown| shown == line),
                 "{line} is missing:\n{handoff}"
