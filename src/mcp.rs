@@ -234,6 +234,27 @@ impl Caller {
         Ok(page.sessions.into_iter().next().map(|found| found.id))
     }
 
+    /// The session a handoff takes: the one `session` names, or else the
+    /// latest in `folder` other than the caller's own, with the two before
+    /// it.
+    pub fn session_to_hand_off(
+        &self,
+        db: &Connection,
+        home: &Path,
+        session: Option<&str>,
+        folder: Option<PathBuf>,
+    ) -> Result<(String, Vec<sessions::Summary>)> {
+        if let Some(session) = session {
+            return Ok((sessions::resolve(db, session)?, Vec::new()));
+        }
+        // Only a tool's caller can lack one: the command line passes its own.
+        let folder = folder.ok_or_else(|| {
+            Error::Usage("which folder you work in isn't known: give folder or session".to_owned())
+        })?;
+        let own = self.own_session(db, home, &folder)?;
+        sessions::latest(db, home, &folder, own.as_deref())
+    }
+
     /// The account the caller draws on, in `status`: its session's, or its
     /// agent's latest in its folder.
     pub fn account<'a>(
@@ -246,13 +267,7 @@ impl Caller {
             id.and_then(|id| status.accounts.iter().find(|account| account.id == id))
         };
         if let Some(session) = &self.session {
-            let account = db
-                .query_row(
-                    "SELECT account FROM response WHERE session = ?1 AND account IS NOT NULL ORDER BY at DESC LIMIT 1",
-                    [session],
-                    |row| row.get(0),
-                )
-                .optional()?;
+            let account = sessions::account(db, session)?;
             if account.is_some() {
                 return Ok(found(account));
             }
@@ -290,13 +305,13 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
     };
     let mut stdout = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
-        let line = line.map_err(|error| Error::Failed(error.to_string()))?;
+        let line = line?;
         if line.trim().is_empty() {
             continue;
         }
         if let Some(reply) = reply(&mut server, &line) {
-            let written = writeln!(stdout, "{reply}").and_then(|()| stdout.flush());
-            written.map_err(|error| Error::Failed(error.to_string()))?;
+            writeln!(stdout, "{reply}")?;
+            stdout.flush()?;
         }
     }
     Ok(())
@@ -759,24 +774,16 @@ fn handoff(server: &mut Server, arguments: Value) -> Result<String> {
         folder: Option<PathBuf>,
     }
     let input: Input = input(arguments)?;
-    let (session, others) = match input.session {
-        Some(session) => (sessions::resolve(&server.db, &session)?, Vec::new()),
-        None => {
-            let folder = input
-                .folder
-                .map(|given| folder(server, given))
-                .or(server.caller.folder.clone())
-                .ok_or_else(|| {
-                    Error::Usage(
-                        "which folder you work in isn't known: give folder or session".to_owned(),
-                    )
-                })?;
-            let own = server
-                .caller
-                .own_session(&server.db, &server.home, &folder)?;
-            sessions::latest(&server.db, &server.home, &folder, own.as_deref())?
-        }
-    };
+    let folder = input
+        .folder
+        .map(|given| folder(server, given))
+        .or(server.caller.folder.clone());
+    let (session, others) = server.caller.session_to_hand_off(
+        &server.db,
+        &server.home,
+        input.session.as_deref(),
+        folder,
+    )?;
     let now = crate::now();
     Ok(sessions::also_here(&others, now)
         + &sessions::handoff(&server.db, &session, Cite::Tool, now)?)

@@ -52,6 +52,12 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Error {
+        Error::Failed(error.to_string())
+    }
+}
+
 /// Now, in UTC milliseconds; `TURNSCOPE_NOW` fixes it, so output can be
 /// reproduced.
 pub fn now() -> i64 {
@@ -511,17 +517,16 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             )
         }
         Command::Handoff { session, folder } => {
-            let (session, others) = match session {
-                Some(session) => (sessions::resolve(&db, &session)?, Vec::new()),
-                // Run by an agent, not the session it's run from.
-                None => {
-                    let folder = folder
-                        .map_or_else(std::env::current_dir, std::path::absolute)
-                        .unwrap_or_default();
-                    let own = mcp::Caller::detect().own_session(&db, home, &folder)?;
-                    sessions::latest(&db, home, &folder, own.as_deref())?
-                }
-            };
+            let folder = folder
+                .map_or_else(std::env::current_dir, std::path::absolute)
+                .unwrap_or_default();
+            // Run by an agent, not the session it's run from.
+            let (session, others) = mcp::Caller::detect().session_to_hand_off(
+                &db,
+                home,
+                session.as_deref(),
+                Some(folder),
+            )?;
             let handoff = sessions::handoff(&db, &session, sessions::Cite::Command, now)?;
             print(
                 json!({ "session": session, "others": others, "handoff": handoff }),
@@ -862,28 +867,22 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
     });
     let text = receive.recv_timeout(Duration::from_millis(300)).ok()?;
     let given: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let one = |sql: &str, value: &str| -> Option<String> {
-        db.query_row(sql, [value], |row| row.get(0)).ok()
-    };
     // The agent names its session by its own id.
     given["session_id"]
         .as_str()
         .and_then(|session| sessions::resolve(db, session).ok())
-        .and_then(|session| {
-            one(
-                "SELECT account FROM response WHERE session = ?1 AND account IS NOT NULL ORDER BY at DESC LIMIT 1",
-                &session,
-            )
-        })
+        .and_then(|session| sessions::account(db, &session).ok().flatten())
         .or_else(|| {
             let folder = given["workspace"]["current_dir"]
                 .as_str()
                 .or(given["cwd"].as_str())?;
-            one(
+            db.query_row(
                 "SELECT r.account FROM response r JOIN session s ON s.id = r.session
                  WHERE s.cwd = ?1 AND r.account IS NOT NULL ORDER BY r.at DESC LIMIT 1",
-                folder,
+                [folder],
+                |row| row.get(0),
             )
+            .ok()
         })
 }
 
