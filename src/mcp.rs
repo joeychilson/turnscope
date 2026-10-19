@@ -607,7 +607,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         },
     );
     if let Some(limit) = limit {
-        out += &format!("{}\n", status::limit_text(limit, status.at));
+        out += &format!("{}\n", status::limit_text(limit, now));
     }
     if !used.rows.is_empty() {
         // Shares are known only over a limit's own window.
