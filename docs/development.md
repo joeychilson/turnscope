@@ -1,8 +1,8 @@
 # Development
 
 How to build, test and release Turnscope. [AGENTS.md](../AGENTS.md) has
-the map of the repo, the rules, and what to update when you change
-something. [architecture.md](architecture.md) explains how the engine works.
+the rules and what to update when you change something.
+[architecture.md](architecture.md) explains how the engine works.
 
 ## Requirements
 
