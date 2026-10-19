@@ -466,7 +466,7 @@ fn stopped(entries: &[Entry], stop: usize, quoted: &[usize], share: usize, now: 
         ..SAID
     };
     let first = render(stop, last, &opening, now);
-    let (after, _) = fit(
+    let (after, full) = fit(
         stop + 1..entries.len(),
         share.saturating_sub(first.len()),
         |at| {
@@ -483,11 +483,9 @@ fn stopped(entries: &[Entry], stop: usize, quoted: &[usize], share: usize, now: 
             })
         },
     );
-    let from = after.first().map_or(entries.len(), |(at, _)| *at);
-    let gap = match from > stop + 1 && from < entries.len() {
-        true => format!("\n\n{}", left_out(stop + 1, from - 1)),
-        false => String::new(),
-    };
+    let gap = full.map_or(String::new(), |at| {
+        format!("\n\n{}", left_out(stop + 1, at))
+    });
     let what = match (last.kind, entries.len() - stop - 1) {
         (Kind::Assistant, 0) => "Its last message, the session's last entry.".to_owned(),
         (Kind::Assistant, count) => format!(
@@ -992,6 +990,47 @@ mod tests {
             failed(&other).contains("#0 tool `Bash` (failed)"),
             "{}",
             failed(&other)
+        );
+    }
+
+    /// Where it stopped says which entries after the last message it had no
+    /// room for, as the story does: from the first after it to the one that
+    /// didn't fit.
+    #[test]
+    fn where_it_stopped_says_just_what_it_left_out_for_room() {
+        let failed = "test quoted_commas ... FAILED\n";
+        let tests = |output: &str| {
+            call(
+                "Bash",
+                r#"{"command": "cargo test"}"#,
+                output,
+                true,
+                Role::Work,
+            )
+        };
+        let stop = |after: Vec<Entry>| {
+            let mut entries = vec![
+                said(Kind::User, 0, "Fix the CSV parser."),
+                said(Kind::Assistant, 1, "Running the tests."),
+            ];
+            entries.extend(after);
+            stopped(&entries, 1, &[], 1000, 10 * MINUTE)
+        };
+        // A system note is left out wherever it falls, not for room.
+        let noted = stop(vec![said(Kind::System, 2, "A reminder."), tests(failed)]);
+        assert!(!noted.contains("left out for room"), "{noted}");
+        // Room ran out at #2; the note after it doesn't count with it.
+        let cut = stop(vec![
+            tests(&failed.repeat(60)),
+            said(Kind::System, 3, "A reminder."),
+            tests(failed),
+        ]);
+        assert!(cut.contains("\nEntry #2 is left out for room.\n"), "{cut}");
+        // With room for none of the entries after the last message.
+        let none = stop(vec![tests(&failed.repeat(60))]);
+        assert!(
+            none.contains("\nEntry #2 is left out for room.\n"),
+            "{none}"
         );
     }
 
