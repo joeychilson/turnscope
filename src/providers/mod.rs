@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::Error;
 use crate::agents::Credential;
+use crate::time::{DAY, HOUR};
 
 /// Every provider, in the order they're listed.
 pub static ALL: &[&dyn Provider] = &[
@@ -252,11 +253,11 @@ pub fn words(key: &str) -> String {
         .join(" ")
 }
 
-/// What a window `seconds` long is called: `5 hours`, `Weekly`.
-fn window_name(seconds: i64) -> String {
-    let hours = (seconds + 1800) / 3600;
+/// What a window `length` ms long is called: `5 hours`, `Weekly`.
+fn window_name(length: i64) -> String {
+    let hours = (length + HOUR / 2) / HOUR;
     // Whole days, as a window across a clock change is an hour off.
-    let days = (seconds + 43_200) / 86_400;
+    let days = (length + DAY / 2) / DAY;
     match (hours, days) {
         (0 | 1, _) => "Hourly".to_owned(),
         (hours, _) if hours < 23 => format!("{hours} hours"),
@@ -299,17 +300,16 @@ mod tests {
 
     #[test]
     fn a_window_is_named_by_its_length_rounded() {
-        let named = |length: i64| super::window_name(length / 1000);
-        assert_eq!(named(HOUR + 29 * MINUTE), "Hourly");
-        assert_eq!(named(HOUR + 30 * MINUTE), "2 hours");
-        assert_eq!(named(22 * HOUR + 29 * MINUTE), "22 hours");
-        assert_eq!(named(22 * HOUR + 30 * MINUTE), "Daily");
+        assert_eq!(super::window_name(HOUR + 29 * MINUTE), "Hourly");
+        assert_eq!(super::window_name(HOUR + 30 * MINUTE), "2 hours");
+        assert_eq!(super::window_name(22 * HOUR + 29 * MINUTE), "22 hours");
+        assert_eq!(super::window_name(22 * HOUR + 30 * MINUTE), "Daily");
         // A week across a clock change is an hour off.
-        assert_eq!(named(7 * DAY - HOUR), "Weekly");
-        assert_eq!(named(7 * DAY + HOUR), "Weekly");
-        assert_eq!(named(14 * DAY), "14 days");
-        assert_eq!(named(28 * DAY), "Monthly");
-        assert_eq!(named(31 * DAY), "Monthly");
-        assert_eq!(named(32 * DAY), "32 days");
+        assert_eq!(super::window_name(7 * DAY - HOUR), "Weekly");
+        assert_eq!(super::window_name(7 * DAY + HOUR), "Weekly");
+        assert_eq!(super::window_name(14 * DAY), "14 days");
+        assert_eq!(super::window_name(28 * DAY), "Monthly");
+        assert_eq!(super::window_name(31 * DAY), "Monthly");
+        assert_eq!(super::window_name(32 * DAY), "32 days");
     }
 }

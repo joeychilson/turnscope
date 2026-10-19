@@ -87,7 +87,7 @@ fn parse(answer: &Value) -> Option<Reading> {
     Some(Reading {
         key: "pool".to_owned(),
         name: period.map_or("Usage".to_owned(), |(starts, resets)| {
-            super::window_name((resets - starts) / 1000)
+            super::window_name(resets - starts)
         }),
         scope: None,
         used,

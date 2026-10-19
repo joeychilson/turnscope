@@ -94,18 +94,18 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         if super::absent(window) {
             continue;
         }
-        let seconds = window["length_seconds"].as_i64()?;
+        let length = window["length_seconds"].as_i64()? * 1000;
         let resets = match &window["resets_at"] {
             Value::Null => None,
             at => Some(crate::time::millis(at.as_str()?)?),
         };
         readings.push(Reading {
             key: window["id"].as_str()?.to_owned(),
-            name: super::window_name(seconds),
+            name: super::window_name(length),
             scope: None,
             used: window["used_percent"].as_f64()?,
             size: None,
-            starts: resets.map(|resets| resets - seconds * 1000),
+            starts: resets.map(|resets| resets - length),
             resets,
         });
     }
