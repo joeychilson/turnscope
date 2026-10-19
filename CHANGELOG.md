@@ -20,6 +20,10 @@
   read in the same words. `check_limits`' verdict on the first account
   says how to fix it, as the others do, not only that its limits can't be
   read. `status` writes $1,000 or more with a comma, as `statusline` does.
+- **The notification that a limit is back** comes for one OpenRouter key's
+  limit while another key's limit is used up. A key's limit stops only that
+  key, as the status line already took it, but the notification was dropped
+  as if the whole account were still stopped.
 
 ## 0.1.4
 

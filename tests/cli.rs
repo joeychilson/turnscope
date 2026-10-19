@@ -508,15 +508,7 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
     assert!(turnscope(data.path(), &["sessions"], None).status.success());
     let socket =
         String::from_utf8(turnscope(data.path(), &["serve", "--socket"], None).stdout).unwrap();
-    let mut serve = Command::new(env!("CARGO_BIN_EXE_turnscope"))
-        .env("TZ", "UTC")
-        .env("TURNSCOPE_NOW", NOW.to_string())
-        .env("TURNSCOPE_OFFLINE", "1")
-        .arg("--data")
-        .arg(data.path())
-        .arg("--home")
-        .arg(home())
-        .args(["serve", "--linger", "5"])
+    let mut serve = command(data.path(), &["serve", "--linger", "5"])
         .spawn()
         .unwrap();
     let stream = (0..100)

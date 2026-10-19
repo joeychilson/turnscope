@@ -22,8 +22,13 @@ use crate::status;
 use crate::usage::By;
 use crate::{Error, Result, sessions, time, usage};
 
-const MODERN: &str = "2026-07-28";
-const EARLIER: [&str; 2] = ["2025-11-25", "2025-06-18"];
+/// The current revision first; the rest are the `initialize` handshake's.
+const SUPPORTED: [&str; 3] = ["2026-07-28", "2025-11-25", "2025-06-18"];
+const MODERN: &str = SUPPORTED[0];
+const EARLIER: &[&str] = SUPPORTED.split_at(1).1;
+
+const TTL_MS: u64 = 3_600_000;
+const CACHE_SCOPE: &str = "public";
 
 const INSTRUCTIONS: &str = "It knows which agent you are, the folder you work in, your session where \
 your agent says, and your account, so \"my limit\" needs no ids. It only reads. Before work that takes \
@@ -40,7 +45,7 @@ struct Tool {
     description: &'static str,
     /// Its input's JSON Schema.
     input: &'static str,
-    answer: fn(&mut Server, Value) -> Result<String>,
+    answer: fn(&Server, Value) -> Result<String>,
 }
 
 static TOOLS: &[Tool] = &[
@@ -234,6 +239,27 @@ impl Caller {
         Ok(page.sessions.into_iter().next().map(|found| found.id))
     }
 
+    /// The session a handoff takes: the one `session` names, or else the
+    /// latest in `folder` other than the caller's own, with the two before
+    /// it.
+    pub fn session_to_hand_off(
+        &self,
+        db: &Connection,
+        home: &Path,
+        session: Option<&str>,
+        folder: Option<PathBuf>,
+    ) -> Result<(String, Vec<sessions::Summary>)> {
+        if let Some(session) = session {
+            return Ok((sessions::resolve(db, session)?, Vec::new()));
+        }
+        // Only a tool's caller can lack one: the command line passes its own.
+        let folder = folder.ok_or_else(|| {
+            Error::Usage("which folder you work in isn't known: give folder or session".to_owned())
+        })?;
+        let own = self.own_session(db, home, &folder)?;
+        sessions::latest(db, home, &folder, own.as_deref())
+    }
+
     /// The account the caller draws on, in `status`: its session's, or its
     /// agent's latest in its folder.
     pub fn account<'a>(
@@ -246,13 +272,7 @@ impl Caller {
             id.and_then(|id| status.accounts.iter().find(|account| account.id == id))
         };
         if let Some(session) = &self.session {
-            let account = db
-                .query_row(
-                    "SELECT account FROM response WHERE session = ?1 AND account IS NOT NULL ORDER BY at DESC LIMIT 1",
-                    [session],
-                    |row| row.get(0),
-                )
-                .optional()?;
+            let account = sessions::account(db, session)?;
             if account.is_some() {
                 return Ok(found(account));
             }
@@ -290,13 +310,13 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
     };
     let mut stdout = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
-        let line = line.map_err(|error| Error::Failed(error.to_string()))?;
+        let line = line?;
         if line.trim().is_empty() {
             continue;
         }
         if let Some(reply) = reply(&mut server, &line) {
-            let written = writeln!(stdout, "{reply}").and_then(|()| stdout.flush());
-            written.map_err(|error| Error::Failed(error.to_string()))?;
+            writeln!(stdout, "{reply}")?;
+            stdout.flush()?;
         }
     }
     Ok(())
@@ -323,9 +343,8 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
     let params = &message["params"];
     let modern = params["_meta"].get("io.modelcontextprotocol/protocolVersion");
     if let Some(version) = modern.filter(|version| *version != MODERN) {
-        let supported: Vec<&str> = std::iter::once(MODERN).chain(EARLIER).collect();
         let mut reply = failure(id, -32022, "Unsupported protocol version".to_owned());
-        reply["error"]["data"] = json!({ "supported": supported, "requested": version });
+        reply["error"]["data"] = json!({ "supported": SUPPORTED, "requested": version });
         return Some(reply);
     }
     let instructions = format!(
@@ -350,11 +369,11 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
             json!({ "protocolVersion": version, "capabilities": capabilities, "serverInfo": server_info, "instructions": instructions })
         }
         "server/discover" => json!({
-            "supportedVersions": std::iter::once(MODERN).chain(EARLIER).collect::<Vec<_>>(),
+            "supportedVersions": SUPPORTED,
             "capabilities": capabilities,
             "instructions": instructions,
-            "ttlMs": 3_600_000,
-            "cacheScope": "public",
+            "ttlMs": TTL_MS,
+            "cacheScope": CACHE_SCOPE,
         }),
         "ping" => json!({}),
         "tools/list" => {
@@ -418,8 +437,8 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
         && let Some(fields) = result.as_object_mut()
     {
         if matches!(method, "tools/list" | "prompts/list") {
-            fields.insert("ttlMs".to_owned(), json!(3_600_000));
-            fields.insert("cacheScope".to_owned(), json!("public"));
+            fields.insert("ttlMs".to_owned(), json!(TTL_MS));
+            fields.insert("cacheScope".to_owned(), json!(CACHE_SCOPE));
         }
         fields.insert("resultType".to_owned(), json!("complete"));
         fields.insert(
@@ -447,7 +466,7 @@ fn input<T: for<'a> Deserialize<'a>>(arguments: Value) -> Result<T> {
         .map_err(|error| Error::Usage(format!("arguments that don't fit: {error}")))
 }
 
-fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
+fn check_limits(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -494,7 +513,7 @@ fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
     ))
 }
 
-fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
+fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -550,11 +569,13 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
         }
     };
     let top = input.top.unwrap_or(5).clamp(1, 20);
-    // With no limit read, what the account's usage cost, over the last week
-    // unless asked; every account's over the 30 days the command line's
-    // `usage` takes.
+    // Unless asked since a time, one account's usage over its limit's window
+    // or, with none, this month for an API key and the last 7 days otherwise,
+    // with every row's share or none; every account's over the 30 days the
+    // command line's `usage` takes, with none.
     let breakdown = |by: By, top: usize| match account {
-        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now),
+        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now)
+            .map(|(used, points)| (used, points.into_iter().collect::<Option<Vec<_>>>())),
         None => usage::usage(
             &server.db,
             &usage::Query {
@@ -567,10 +588,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
                 top,
             },
         )
-        .map(|used| {
-            let none = vec![None; used.rows.len()];
-            (used, none)
-        }),
+        .map(|used| (used, None)),
     };
     let (used, points) = breakdown(by, top)?;
     let mut out = format!(
@@ -593,66 +611,12 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
         out += &format!("{}\n", status::limit_text(limit, now));
     }
     if !used.rows.is_empty() {
-        let what = match by {
-            By::Project => "Project",
-            By::Model => "Model",
-            By::Agent => "Agent",
-            _ => "Session",
-        };
         // Shares are known only over a limit's own window.
-        let shares = limit.filter(|_| points.iter().all(Option::is_some));
-        match shares {
-            Some(limit) => {
-                out += &format!(
-                    "\n| {what} | Cost | Responses | % of {} |\n|---|--:|--:|--:|\n",
-                    limit.named()
-                );
-            }
-            None => out += &format!("\n| {what} | Cost | Responses |\n|---|--:|--:|\n"),
-        }
-        let yours = server.caller.session.as_deref();
-        for (row, points) in used.rows.iter().zip(&points) {
-            let name = match (&row.name, by) {
-                (Some(name), By::Session) => format!(
-                    "`{}` {}{}",
-                    row.key,
-                    sessions::title(Some(name.as_str())),
-                    if Some(row.key.as_str()) == yours {
-                        " (yours)"
-                    } else {
-                        ""
-                    }
-                ),
-                (Some(name), _) => name.clone(),
-                (None, _) => row.key.clone(),
-            };
-            let share = match (shares, points) {
-                (Some(_), Some(points)) => format!(" {} |", usage::share(*points)),
-                _ => String::new(),
-            };
-            out += &format!(
-                "| {name} | {} | {} |{share}\n",
-                usage::cost(row.cost_usd, row.unpriced),
-                usage::count(row.responses)
-            );
-        }
-        if let Some(rest) = &used.rest {
-            // What the rows shown leave of the points used.
-            let share = shares.map_or(String::new(), |limit| {
-                let shown: f64 = points.iter().flatten().sum();
-                let used = f64::from(100 - limit.left_percent);
-                format!(" {} |", usage::share((used - shown).max(0.0)))
-            });
-            let rows = match rest.key.as_str() {
-                "1 more" => format!("1 more {}", what.to_lowercase()),
-                more => format!("{more} {}s", what.to_lowercase()),
-            };
-            out += &format!(
-                "| {rows} | {} | {} |{share}\n",
-                usage::cost(rest.cost_usd, rest.unpriced),
-                usage::count(rest.responses)
-            );
-        }
+        let shares = limit.zip(points.as_deref());
+        out += &format!(
+            "\n{}",
+            usage::markdown(&used, shares, server.caller.session.as_deref())
+        );
     }
     // Asked since a time, as the calendar week for "this week" of a weekly
     // limit, the shares are left out: say how to get them.
@@ -695,7 +659,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
     Ok(out.trim_end().to_owned())
 }
 
-fn find_sessions(server: &mut Server, arguments: Value) -> Result<String> {
+fn find_sessions(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -751,7 +715,7 @@ fn folder(server: &Server, given: PathBuf) -> PathBuf {
     path.components().collect()
 }
 
-fn handoff(server: &mut Server, arguments: Value) -> Result<String> {
+fn handoff(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -759,30 +723,22 @@ fn handoff(server: &mut Server, arguments: Value) -> Result<String> {
         folder: Option<PathBuf>,
     }
     let input: Input = input(arguments)?;
-    let (session, others) = match input.session {
-        Some(session) => (sessions::resolve(&server.db, &session)?, Vec::new()),
-        None => {
-            let folder = input
-                .folder
-                .map(|given| folder(server, given))
-                .or(server.caller.folder.clone())
-                .ok_or_else(|| {
-                    Error::Usage(
-                        "which folder you work in isn't known: give folder or session".to_owned(),
-                    )
-                })?;
-            let own = server
-                .caller
-                .own_session(&server.db, &server.home, &folder)?;
-            sessions::latest(&server.db, &server.home, &folder, own.as_deref())?
-        }
-    };
+    let folder = input
+        .folder
+        .map(|given| folder(server, given))
+        .or(server.caller.folder.clone());
+    let (session, others) = server.caller.session_to_hand_off(
+        &server.db,
+        &server.home,
+        input.session.as_deref(),
+        folder,
+    )?;
     let now = crate::now();
     Ok(sessions::also_here(&others, now)
         + &sessions::handoff(&server.db, &session, Cite::Tool, now)?)
 }
 
-fn read_session(server: &mut Server, arguments: Value) -> Result<String> {
+fn read_session(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -806,9 +762,12 @@ fn read_session(server: &mut Server, arguments: Value) -> Result<String> {
         search: input.search,
         failed: input.failed,
     };
+    let (shown, next) = sessions::page(&entries, &reading);
     Ok(sessions::page_text(
         &session,
         &entries,
+        &shown,
+        next,
         &reading,
         Cite::Tool,
         crate::now(),
