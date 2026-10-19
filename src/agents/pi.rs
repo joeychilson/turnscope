@@ -110,106 +110,7 @@ impl Agent for Pi {
                 read.skipped += 1;
                 return;
             };
-            let at = line["timestamp"].as_str().and_then(crate::time::millis);
-            if line["type"] == "session" {
-                let Some(native) = line["id"].as_str() else {
-                    return;
-                };
-                let session = INFO.session(native);
-                let facts = read.session(&session);
-                facts.cwd = line["cwd"]
-                    .as_str()
-                    .filter(|cwd| !cwd.is_empty())
-                    .map(str::to_owned);
-                // The parent's file, named for its session after the time.
-                facts.parent = line["parentSession"]
-                    .as_str()
-                    .and_then(|file| Path::new(file).file_stem()?.to_str()?.split_once('_'))
-                    .map(|(_, parent)| Parent {
-                        id: INFO.session(parent),
-                        link: Link::Fork,
-                    });
-                if let Some(at) = at {
-                    facts.saw(at);
-                }
-                (cursor.session, cursor.began) = (Some(session), at);
-                return;
-            }
-            let Some(session) = cursor.session.clone() else {
-                return;
-            };
-            let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
-            if let (false, Some(at)) = (copy, at) {
-                read.session(&session).saw(at);
-            }
-            // A copy's entry id is its parent's, under the parent's own
-            // session, so it can't name a response of this one.
-            let entry = line["id"]
-                .as_str()
-                .filter(|_| !copy)
-                .map(|entry| format!("{session}:{entry}"));
-            match line["type"].as_str() {
-                Some("session_info") if !copy => {
-                    if let Some(name) = line["name"].as_str() {
-                        read.session(&session).title(Title::Named, name);
-                    }
-                }
-                Some("usage") => {
-                    if let (Some(provider), Some(model), Some(id)) =
-                        (line["provider"].as_str(), line["model"].as_str(), entry)
-                    {
-                        let used = (provider, model);
-                        charge(&line["usage"], used, id, &session, copy, at, &mut read);
-                    }
-                }
-                Some("compaction" | "branch_summary") => {
-                    if let (Some((provider, model)), Some(id)) = (cursor.model.clone(), entry)
-                        && line["usage"].is_object()
-                    {
-                        let used = (provider.as_str(), model.as_str());
-                        charge(&line["usage"], used, id, &session, copy, at, &mut read);
-                    }
-                }
-                Some("message") => {
-                    let message = &line["message"];
-                    match message["role"].as_str() {
-                        Some("user") if !copy => {
-                            for text in texts(message) {
-                                read.say(&session, text);
-                                if !cursor.titled {
-                                    read.session(&session).title(Title::Prompt, text);
-                                    cursor.titled = true;
-                                }
-                            }
-                        }
-                        Some("assistant") => {
-                            // The model the provider answered with, where it said.
-                            let model = message["responseModel"]
-                                .as_str()
-                                .or(message["model"].as_str());
-                            let (Some(provider), Some(model)) =
-                                (message["provider"].as_str(), model)
-                            else {
-                                return;
-                            };
-                            cursor.model = Some((provider.to_owned(), model.to_owned()));
-                            if !copy {
-                                read.say(&session, &texts(message).join("\n"));
-                            }
-                            // A copy without a response id couldn't be told
-                            // from its parent's.
-                            let id = message["responseId"].as_str().map(str::to_owned).or(entry);
-                            if let Some(id) = id {
-                                let at = message["timestamp"].as_i64().or(at);
-                                let used = (provider, model);
-                                charge(&message["usage"], used, id, &session, copy, at, &mut read);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
+            read_line(&line, &mut cursor, &mut read);
         })?;
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
@@ -308,6 +209,108 @@ impl Agent for Pi {
             "read" | "grep" | "find" | "ls" => Role::Read,
             _ => Role::Work,
         }
+    }
+}
+
+fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
+    let at = line["timestamp"].as_str().and_then(crate::time::millis);
+    if line["type"] == "session" {
+        let Some(native) = line["id"].as_str() else {
+            return;
+        };
+        let session = INFO.session(native);
+        let facts = read.session(&session);
+        facts.cwd = line["cwd"]
+            .as_str()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned);
+        // The parent's file, named for its session after the time.
+        facts.parent = line["parentSession"]
+            .as_str()
+            .and_then(|file| Path::new(file).file_stem()?.to_str()?.split_once('_'))
+            .map(|(_, parent)| Parent {
+                id: INFO.session(parent),
+                link: Link::Fork,
+            });
+        if let Some(at) = at {
+            facts.saw(at);
+        }
+        (cursor.session, cursor.began) = (Some(session), at);
+        return;
+    }
+    let Some(session) = cursor.session.clone() else {
+        return;
+    };
+    let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
+    if let (false, Some(at)) = (copy, at) {
+        read.session(&session).saw(at);
+    }
+    // A copy's entry id is its parent's, under the parent's own
+    // session, so it can't name a response of this one.
+    let entry = line["id"]
+        .as_str()
+        .filter(|_| !copy)
+        .map(|entry| format!("{session}:{entry}"));
+    match line["type"].as_str() {
+        Some("session_info") if !copy => {
+            if let Some(name) = line["name"].as_str() {
+                read.session(&session).title(Title::Named, name);
+            }
+        }
+        Some("usage") => {
+            if let (Some(provider), Some(model), Some(id)) =
+                (line["provider"].as_str(), line["model"].as_str(), entry)
+            {
+                let used = (provider, model);
+                charge(&line["usage"], used, id, &session, copy, at, read);
+            }
+        }
+        Some("compaction" | "branch_summary") => {
+            if let (Some((provider, model)), Some(id)) = (cursor.model.clone(), entry)
+                && line["usage"].is_object()
+            {
+                let used = (provider.as_str(), model.as_str());
+                charge(&line["usage"], used, id, &session, copy, at, read);
+            }
+        }
+        Some("message") => {
+            let message = &line["message"];
+            match message["role"].as_str() {
+                Some("user") if !copy => {
+                    for text in texts(message) {
+                        read.say(&session, text);
+                        if !cursor.titled {
+                            read.session(&session).title(Title::Prompt, text);
+                            cursor.titled = true;
+                        }
+                    }
+                }
+                Some("assistant") => {
+                    // The model the provider answered with, where it said.
+                    let model = message["responseModel"]
+                        .as_str()
+                        .or(message["model"].as_str());
+                    let (Some(provider), Some(model)) = (message["provider"].as_str(), model)
+                    else {
+                        return;
+                    };
+                    cursor.model = Some((provider.to_owned(), model.to_owned()));
+                    if !copy {
+                        read.say(&session, &texts(message).join("\n"));
+                    }
+                    // A copy without a response id couldn't be told
+                    // from its parent's.
+                    let id = message["responseId"].as_str().map(str::to_owned).or(entry);
+                    if let Some(id) = id {
+                        let at = message["timestamp"].as_i64().or(at);
+                        let used = (provider, model);
+                        charge(&message["usage"], used, id, &session, copy, at, read);
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
 }
 

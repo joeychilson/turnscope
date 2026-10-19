@@ -36,7 +36,7 @@ use serde_json::Value;
 
 use super::{
     Agent, Conversation, Credential, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role,
-    Secret, Title, Tokens,
+    Secret, Session, Title, Tokens,
 };
 use crate::{Error, Result};
 
@@ -118,105 +118,15 @@ impl Agent for GrokBuild {
         match file.file_name().and_then(|name| name.to_str()) {
             // Rewritten whole.
             Some("summary.json") => {
-                let summary = super::json_file(file)?.unwrap_or_default();
+                let json = super::json_file(file)?.unwrap_or_default();
                 // A session opened and left before anything was said.
-                if summary["num_messages"] == 0 {
+                if json["num_messages"] == 0 {
                     return Ok(read);
                 }
-                let facts = read.session(&session);
-                for at in ["created_at", "updated_at", "last_active_at"] {
-                    if let Some(at) = summary[at].as_str().and_then(crate::time::millis) {
-                        facts.saw(at);
-                    }
-                }
-                let text = |field: &Value| {
-                    field
-                        .as_str()
-                        .filter(|text| !text.is_empty())
-                        .map(str::to_owned)
-                };
-                facts.cwd = text(&summary["info"]["cwd"]);
-                facts.branch = text(&summary["head_branch"]);
-                if let Some(title) = text(&summary["generated_title"]) {
-                    let kind = if summary["title_is_manual"] == true {
-                        Title::Named
-                    } else {
-                        Title::Generated
-                    };
-                    facts.title(kind, &title);
-                }
-                if let Some(parent) = text(&summary["parent_session_id"]) {
-                    facts.parent = Some(Parent {
-                        id: INFO.session(&parent),
-                        link: Link::Fork,
-                    });
-                }
+                summary(&json, read.session(&session));
             }
-            Some("chat_history.jsonl") => {
-                // It holds the session's conversation, which reading the
-                // session finds through it.
-                read.session(&session);
-                cursor.offset = super::lines(file, cursor.offset, |bytes| {
-                    let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
-                        read.skipped += 1;
-                        return;
-                    };
-                    match line["type"].as_str() {
-                        Some("user") if line["synthetic_reason"].is_null() => {
-                            for text in super::texts(&line["content"]) {
-                                read.say(&session, &typed(text));
-                            }
-                        }
-                        Some("assistant") => {
-                            read.say(&session, &super::texts(&line["content"]).join("\n"))
-                        }
-                        _ => {}
-                    }
-                })?;
-            }
-            _ => {
-                let sessions = file.ancestors().nth(3);
-                cursor.offset = super::lines(file, cursor.offset, |bytes| {
-                    let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
-                        read.skipped += 1;
-                        return;
-                    };
-                    let at = line["timestamp"].as_i64().map(|seconds| seconds * 1000);
-                    if let Some(at) = at {
-                        read.session(&session).saw(at);
-                    }
-                    let update = &line["params"]["update"];
-                    match update["sessionUpdate"].as_str() {
-                        Some("turn_completed") => {
-                            let finished = std::mem::take(&mut cursor.finished);
-                            let theirs = subagents(sessions, &finished);
-                            turn(update, at, &session, &theirs, &mut read);
-                        }
-                        Some("subagent_spawned") => {
-                            if let Some(child) = update["child_session_id"].as_str() {
-                                read.session(&INFO.session(child)).parent = Some(Parent {
-                                    id: session.clone(),
-                                    link: Link::Subagent,
-                                });
-                            }
-                        }
-                        Some("subagent_finished") => {
-                            if let Some(child) = update["child_session_id"].as_str() {
-                                cursor.finished.push(child.to_owned());
-                            }
-                        }
-                        Some("user_message_chunk") if !cursor.titled => {
-                            let text =
-                                typed(update["content"]["text"].as_str().unwrap_or_default());
-                            if !text.is_empty() {
-                                read.session(&session).title(Title::Prompt, &text);
-                                cursor.titled = true;
-                            }
-                        }
-                        _ => {}
-                    }
-                })?;
-            }
+            Some("chat_history.jsonl") => history(file, &session, &mut cursor, &mut read)?,
+            _ => updates(file, &session, &mut cursor, &mut read)?,
         }
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
@@ -314,6 +224,105 @@ impl Agent for GrokBuild {
             _ => Role::Work,
         }
     }
+}
+
+/// Note in `facts` what its session's `summary.json`, `summary`, says.
+fn summary(summary: &Value, facts: &mut Session) {
+    for at in ["created_at", "updated_at", "last_active_at"] {
+        if let Some(at) = summary[at].as_str().and_then(crate::time::millis) {
+            facts.saw(at);
+        }
+    }
+    let text = |field: &Value| {
+        field
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    facts.cwd = text(&summary["info"]["cwd"]);
+    facts.branch = text(&summary["head_branch"]);
+    if let Some(title) = text(&summary["generated_title"]) {
+        let kind = if summary["title_is_manual"] == true {
+            Title::Named
+        } else {
+            Title::Generated
+        };
+        facts.title(kind, &title);
+    }
+    if let Some(parent) = text(&summary["parent_session_id"]) {
+        facts.parent = Some(Parent {
+            id: INFO.session(&parent),
+            link: Link::Fork,
+        });
+    }
+}
+
+/// Read what was said in `chat_history.jsonl` past `cursor` into `read`.
+fn history(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
+    // It holds the session's conversation, which reading the
+    // session finds through it.
+    read.session(session);
+    cursor.offset = super::lines(file, cursor.offset, |bytes| {
+        let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
+            read.skipped += 1;
+            return;
+        };
+        match line["type"].as_str() {
+            Some("user") if line["synthetic_reason"].is_null() => {
+                for text in super::texts(&line["content"]) {
+                    read.say(session, &typed(text));
+                }
+            }
+            Some("assistant") => read.say(session, &super::texts(&line["content"]).join("\n")),
+            _ => {}
+        }
+    })?;
+    Ok(())
+}
+
+/// Read `updates.jsonl` past `cursor` into `read`.
+fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
+    let sessions = file.ancestors().nth(3);
+    cursor.offset = super::lines(file, cursor.offset, |bytes| {
+        let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
+            read.skipped += 1;
+            return;
+        };
+        let at = line["timestamp"].as_i64().map(|seconds| seconds * 1000);
+        if let Some(at) = at {
+            read.session(session).saw(at);
+        }
+        let update = &line["params"]["update"];
+        match update["sessionUpdate"].as_str() {
+            Some("turn_completed") => {
+                let finished = std::mem::take(&mut cursor.finished);
+                let theirs = subagents(sessions, &finished);
+                turn(update, at, session, &theirs, read);
+            }
+            Some("subagent_spawned") => {
+                if let Some(child) = update["child_session_id"].as_str() {
+                    read.session(&INFO.session(child)).parent = Some(Parent {
+                        id: session.to_owned(),
+                        link: Link::Subagent,
+                    });
+                }
+            }
+            Some("subagent_finished") => {
+                if let Some(child) = update["child_session_id"].as_str() {
+                    cursor.finished.push(child.to_owned());
+                }
+            }
+            Some("user_message_chunk") if !cursor.titled => {
+                let text = typed(update["content"]["text"].as_str().unwrap_or_default());
+                if !text.is_empty() {
+                    read.session(session).title(Title::Prompt, &text);
+                    cursor.titled = true;
+                }
+            }
+            _ => {}
+        }
+    })?;
+    Ok(())
 }
 
 /// One model's usage in a turn, as `modelUsage` gives it.
