@@ -123,7 +123,7 @@ month.
 
 | Flag | |
 |---|---|
-| `--account <name>` | Only the accounts this names. It may name several. |
+| `--account <name>` | Only the accounts this names, hidden or not. It may name several. |
 | `--all` | Hidden accounts too. |
 | `--hours <n>` | Whether n more hours of work fit the first account shown, at its pace of work. Zero or more; decimals work. |
 

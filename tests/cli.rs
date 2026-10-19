@@ -499,6 +499,23 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
 }
 
 #[test]
+fn status_shows_a_hidden_account_it_names() {
+    let data = store();
+    let hide = turnscope(data.path(), &["accounts", "hide", "supergrok"], None);
+    assert!(hide.status.success());
+    let status = |args: &[&str]| {
+        let output = turnscope(data.path(), args, None);
+        assert!(output.status.success(), "{args:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let grok = "SuperGrok (me@example.com) · via Grok Build · hidden";
+    let named = status(&["status", "--account", "supergrok"]);
+    assert!(named.starts_with(grok), "{named:?}");
+    assert!(!status(&["status"]).contains(grok));
+    assert!(status(&["status", "--all"]).contains(grok));
+}
+
+#[test]
 fn an_mcp_session_answers_as_its_snapshot_says() {
     let data = store();
     let requests = [

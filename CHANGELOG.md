@@ -2,6 +2,8 @@
 
 ## 0.1.5
 
+- **`status --account`** shows a hidden account it names, as
+  `check_limits` does. It left it out unless `--all` was given too.
 - **Hide and Show** name the account with its label when its row shows
   one, for VoiceOver, in the Hide button's help and in the right-click
   menu. Two accounts with the same title were both "Hide Claude Max".

@@ -391,11 +391,14 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             hours,
         } => {
             let status = status::status(&db, now)?;
-            let mut shown: Vec<&status::Account> = match &account {
+            let shown: Vec<&status::Account> = match &account {
                 Some(name) => status::named(&status, name)?,
-                None => status.accounts.iter().collect(),
+                None => status
+                    .accounts
+                    .iter()
+                    .filter(|account| all || !account.hidden)
+                    .collect(),
             };
-            shown.retain(|account| all || !account.hidden);
             let fit = match (hours, shown.first()) {
                 (Some(hours), Some(first)) => Some(status::fit(first, hours, now)?),
                 _ => None,
