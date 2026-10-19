@@ -52,6 +52,9 @@
   does. Late in a minute, `check_limits` could say a limit resets "14:00
   (in 1h 59m)" above a line that says "14:00 (in 2h)", and `statusline`
   could say "out in 59m" while `status` said "13:00 (in 1h)".
+- **The app** says it's reading your agents' history until the first read
+  is done, also when it connects while that read runs. It stopped saying so
+  once the read had begun.
 
 ## 0.1.4
 

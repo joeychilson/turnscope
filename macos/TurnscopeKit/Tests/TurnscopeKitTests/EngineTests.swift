@@ -27,7 +27,7 @@ func theRealEngineIsStartedSaysHelloAndTakesChanges() async throws {
     client.start()
     // Nothing is listening, so the client starts serve, which reads the
     // history first.
-    await until { store.status?.historyReadAt != nil }
+    await until { store.status?.historyRead == true }
     #expect(client.phase == .connected)
     #expect(store.status?.agents.isEmpty == false)
     // A change goes through serve, which then pushes a status that has it.

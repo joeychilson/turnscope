@@ -369,7 +369,7 @@
       }
     ],
     "at": 1791460800000,
-    "historyReadAt": 1791460740000,
+    "historyRead": true,
     "settings": {
       "notify": {
         "reset": true,

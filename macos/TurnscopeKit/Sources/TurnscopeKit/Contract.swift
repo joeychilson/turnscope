@@ -10,16 +10,16 @@
 import Foundation
 
 /// The protocol version this app speaks.
-public let protocolVersion = 1
+public let protocolVersion = 2
 
 // MARK: Status
 
 /// Everything the app shows, as of `at`.
 public struct Status: Decodable, Equatable, Sendable {
     public var at: Date
-    /// When the agents' history was last read through. Nil while it's being
-    /// read for the first time.
-    public var historyReadAt: Date?
+    /// Whether the agents' history has been read through once. False while
+    /// it's being read for the first time.
+    public var historyRead: Bool
     /// Every account, in the order to list them: accounts in use first,
     /// most urgent first.
     public var accounts: [AccountStatus]

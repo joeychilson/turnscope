@@ -40,8 +40,8 @@ const STALE: i64 = 30 * MINUTE;
 pub struct Status {
     /// The minute it's as of.
     pub at: i64,
-    /// When the agents' history was last read.
-    pub history_read_at: Option<i64>,
+    /// Whether the first read of the agents' history finished.
+    pub history_read: bool,
     /// In the order to list them: in use first, the most urgent first.
     pub accounts: Vec<Account>,
     pub settings: crate::alerts::Settings,
@@ -492,7 +492,9 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
     rank(&mut accounts);
     Ok(Status {
         at: now,
-        history_read_at: db.query_row("SELECT history_at FROM state", [], |row| row.get(0))?,
+        history_read: db.query_row("SELECT history_at IS NOT NULL FROM state", [], |row| {
+            row.get(0)
+        })?,
         accounts,
         settings: crate::alerts::settings(db)?,
     })

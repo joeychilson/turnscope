@@ -38,7 +38,7 @@ Try it by hand, with the app running or after `turnscope serve &`:
 
 ```sh
 nc -U "$(turnscope serve --socket)"
-{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":1}}
+{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":2}}
 ```
 
 ## Lifecycle
@@ -78,7 +78,7 @@ sync. Until `hello` succeeds, any other request but `shutdown` gets
 `-32002`.
 
 ```json
-{"id":1,"jsonrpc":"2.0","method":"hello","params":{"protocol":1}}
+{"id":1,"jsonrpc":"2.0","method":"hello","params":{"protocol":2}}
 ```
 
 ```json
@@ -88,7 +88,7 @@ sync. Until `hello` succeeds, any other request but `shutdown` gets
 A protocol the server doesn't speak gets `-32001` (`error.json`):
 
 ```json
-{"error":{"code":-32001,"data":{"supported":[1]},"message":"this turnscope speaks protocol 1, not 2"},"id":1,"jsonrpc":"2.0"}
+{"error":{"code":-32001,"data":{"supported":[2]},"message":"this turnscope speaks protocol 2, not 3"},"id":1,"jsonrpc":"2.0"}
 ```
 
 ## Requests
@@ -165,7 +165,7 @@ take a message within 2 seconds is dropped.
 | `-32601` | No such method | `no method <method>` |
 | `-32602` | Parameters that don't fit, or an unknown agent | `parameters that don't fit: <why>`, `no agent is <id>` |
 | `-32000` | The engine couldn't do it | Why, such as `no limit <key> of <account>` |
-| `-32001` | Unsupported protocol. `data.supported` lists those spoken | `this turnscope speaks protocol 1, not <n>` |
+| `-32001` | Unsupported protocol. `data.supported` lists those spoken | `this turnscope speaks protocol 2, not <n>` |
 | `-32002` | A request before `hello` | `send hello first` |
 
 ## Conventions
@@ -192,7 +192,7 @@ and MCP server use those.
 | Field | Type | Holds |
 |---|---|---|
 | `at` | ms | The minute it was worked out for |
-| `historyReadAt` | ms or null | When the agents' history was last read. Null until the first read finishes |
+| `historyRead` | bool | Whether the first read of the agents' history finished |
 | `accounts` | [Account] | Every account, hidden ones too, in the order to list them |
 | `agents` | [Agent] | Every agent Turnscope reads, installed or not |
 | `settings` | Settings | The user's settings |
@@ -447,7 +447,7 @@ sent, not when it was raised.
 
 ## Versioning
 
-`protocol` is an integer, now `1`: `PROTOCOL` in `src/serve.rs` and
+`protocol` is an integer, now `2`: `PROTOCOL` in `src/serve.rs` and
 `protocolVersion` in `Contract.swift`. Within a version, fields may be
 added, and clients ignore fields they don't know. Anything else needs a new
 version: a new enum value, a field removed or renamed, or a field with a
