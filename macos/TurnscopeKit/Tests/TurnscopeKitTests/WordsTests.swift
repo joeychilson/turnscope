@@ -380,11 +380,6 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     var held = limit(.lasts, key: "key-1", name: "Credits", left: 50)
     held.heldBy = ["codex", "pi"]
     #expect(words.name(held) == "Codex and Pi's key")
-    // A limit that reset since it was read doesn't say when it resets next,
-    // which isn't known until it's read again.
-    var reset = limit(.lasts, left: 100)
-    reset.resetSince = at("2026-09-30T11:00:00Z")
-    #expect(words.short(reset) == "5 hours lasts")
 }
 
 @Test func anAccountSaysWhichAgentsItsReadThrough() {

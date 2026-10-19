@@ -44,7 +44,7 @@ extension Words {
         case .runsOut(let likely):
             return "\(name) \(plural(limit) ? "run" : "runs") out \(at(likely))"
         case .lasts, .unknown:
-            if let window = limit.window, limit.resetSince == nil {
+            if let window = limit.window {
                 return "\(name) resets \(at(window.resets))"
             }
             return limit.money == nil ? "\(name) lasts" : name
@@ -102,7 +102,7 @@ extension Words {
     /// What's ahead for a limit, if anything, shown beside its name before
     /// when it resets: when it runs out, "Runs out Wed 10:10 AM".
     public func ahead(_ limit: LimitStatus) -> String? {
-        guard limit.resetSince == nil, case .runsOut(let likely) = limit.outlook else { return nil }
+        guard case .runsOut(let likely) = limit.outlook else { return nil }
         return "Runs out \(at(likely))"
     }
 
@@ -139,9 +139,7 @@ extension Words {
             let after = back.map { "Back \(at($0))." }
             return ("\(account.title) is used up", after ?? "It isn't known when it's back.", .usedUp)
         case .runsOut(let likely):
-            let headline = likely.horizon == .soon
-                ? "\(account.title) runs out \(unbroken("in \(stretch(likely.at.timeIntervalSince(now)))"))"
-                : "\(account.title) runs out \(unbroken(when(likely.at)))"
+            let headline = "\(account.title) runs out \(unbroken(likely.horizon == .soon ? at(likely) : when(likely.at)))"
             // When it's back, which is what you plan around.
             let back = limit.window.map { "Back \(at($0.resets))." }
             return (headline, back ?? "", .runningOut)
