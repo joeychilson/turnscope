@@ -7,8 +7,8 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use super::{
-    Cite, Room, Summary, clock_now, cut, cut_middle, in_quotes, kind, plural, quote, render, show,
-    title, transcript, when,
+    Cite, Room, Summary, call_head, clock_now, cut, cut_middle, in_quotes, kind, plural, quote,
+    render, summary, title, transcript, when,
 };
 use crate::Result;
 use crate::agents::{self, Entry, Kind, Role, Tool};
@@ -39,10 +39,10 @@ const BUDGET: usize = 16_000;
 /// what the next agent needs most: the requests, where it stopped, what's
 /// failing, the task list and files, the summary. The story has the rest,
 /// so at any budget the parts needed most come whole.
-pub fn handoff(db: &Connection, home: &Path, id: &str, cite: Cite, now: i64) -> Result<String> {
-    let detail = show(db, home, id, now)?;
+pub fn handoff(db: &Connection, id: &str, cite: Cite, now: i64) -> Result<String> {
+    let session = summary(db, id, now)?;
     let entries = transcript(db, id)?;
-    Ok(brief(&detail.summary, &entries, BUDGET, cite, now))
+    Ok(brief(&session, &entries, BUDGET, cite, now))
 }
 
 /// The handoff of `session`, whose conversation is `entries`, in about
@@ -318,9 +318,9 @@ fn tasks(entries: &[Entry], share: usize) -> String {
 /// `share` characters.
 fn files(entries: &[Entry], since: usize, cwd: Option<&str>, share: usize) -> String {
     // Each file's name, the last entry it was in, and how often it was
-    // read, changed or named.
-    let mut seen: Vec<(String, usize, [usize; 3])> = Vec::new();
-    let mut note = |file: &str, at: usize, how: usize| {
+    // read and changed: neither, for one only its commands named.
+    let mut seen: Vec<(String, usize, usize, usize)> = Vec::new();
+    let mut note = |file: &str, at: usize, read: usize, changed: usize| {
         let file = cwd
             .and_then(|cwd| file.strip_prefix(cwd)?.strip_prefix('/'))
             .unwrap_or(file)
@@ -338,22 +338,19 @@ fn files(entries: &[Entry], since: usize, cwd: Option<&str>, share: usize) -> St
         if file.is_empty() || !is_file || built {
             return;
         }
-        match seen.iter_mut().find(|(known, _, _)| *known == file) {
-            Some((_, last, counts)) => {
+        match seen.iter_mut().find(|(known, ..)| *known == file) {
+            Some((_, last, reads, changes)) => {
                 *last = at;
-                counts[how] += 1;
+                *reads += read;
+                *changes += changed;
             }
-            None => {
-                let mut counts = [0; 3];
-                counts[how] = 1;
-                seen.push((file, at, counts));
-            }
+            None => seen.push((file, at, read, changed)),
         }
     };
     for (at, entry) in entries.iter().enumerate().skip(since) {
         let Some(tool) = &entry.tool else { continue };
         for file in tool.files.iter().filter(|_| tool.edited) {
-            note(file, at, 1);
+            note(file, at, 0, 1);
         }
         let Ok(input) = serde_json::from_str::<serde_json::Value>(&tool.input) else {
             continue;
@@ -362,38 +359,36 @@ fn files(entries: &[Entry], since: usize, cwd: Option<&str>, share: usize) -> St
             if let Some(file) = input[key].as_str() {
                 let changed = tool.files.iter().any(|known| known == file);
                 if !changed {
-                    note(file, at, 0);
+                    note(file, at, 1, 0);
                 }
             }
         }
         // A command names files too: those that are in its folder.
-        let command = input["command"]
-            .as_str()
-            .or_else(|| input["cmd"].as_str())
-            .unwrap_or_default();
-        for word in command.split(|c: char| c.is_whitespace() || "'\"`;|&()<>=,".contains(c)) {
-            let word = word.trim_end_matches(':');
-            if word.contains('.')
-                && !word.starts_with('-')
-                && cwd.is_some_and(|cwd| {
-                    // Joined, an absolute path would leave the folder.
-                    let path = Path::new(cwd).join(word);
-                    path.starts_with(cwd) && path.is_file()
-                })
-            {
-                note(word, at, 2);
+        for command in commands(tool) {
+            for word in command.split(|c: char| c.is_whitespace() || "'\"`;|&()<>=,".contains(c)) {
+                let word = word.trim_end_matches(':');
+                if word.contains('.')
+                    && !word.starts_with('-')
+                    && cwd.is_some_and(|cwd| {
+                        // Joined, an absolute path would leave the folder.
+                        let path = Path::new(cwd).join(word);
+                        path.starts_with(cwd) && path.is_file()
+                    })
+                {
+                    note(word, at, 0, 0);
+                }
             }
         }
     }
     if seen.is_empty() {
         return String::new();
     }
-    seen.sort_by_key(|(_, last, _)| std::cmp::Reverse(*last));
+    seen.sort_by_key(|(_, last, ..)| std::cmp::Reverse(*last));
     let mut used = 0;
     let lines: Vec<String> = seen
         .iter()
         .take(15)
-        .map(|(file, _, [read, changed, _])| {
+        .map(|(file, _, read, changed)| {
             let how: Vec<String> = [(changed, "changed"), (read, "read")]
                 .iter()
                 .filter(|(count, _)| **count > 0)
@@ -430,35 +425,30 @@ fn story(
     now: i64,
 ) -> (String, usize) {
     // Its heading and the line under it take room too.
-    let mut left = room.saturating_sub(250);
-    let mut parts: Vec<String> = Vec::new();
-    let mut from = since;
-    for at in (since..stop.min(entries.len())).rev() {
+    let (parts, full) = fit(since..stop, room.saturating_sub(250), |at| {
         let entry = &entries[at];
-        let text = match (&entry.tool, entry.kind) {
+        Some(match (&entry.tool, entry.kind) {
             _ if quoted.contains(&at) => asked_above(at, entry, now),
             (Some(tool), _) if role(tool) == Role::Subagent => report(at, entry, tool, now),
-            (Some(_), _) | (None, Kind::System | Kind::Summary) => continue,
+            (Some(_), _) | (None, Kind::System | Kind::Summary) => return None,
             _ => render(at, entry, &SAID, now),
-        };
-        if text.len() + 2 > left {
-            from = at + 1;
-            break;
-        }
-        left -= text.len() + 2;
-        parts.push(text);
-    }
+        })
+    });
     if parts.is_empty() {
         return (String::new(), stop);
     }
-    parts.reverse();
+    let from = full.map_or(since, |at| at + 1);
     let left_out = match from > since {
         true => format!(" {}", left_out(since, from - 1)),
         false => String::new(),
     };
     let section = format!(
         "\n## What it found and did, from #{from}\n\nIts messages, reasoning and subagents' reports, oldest first; its other tool calls are left out.{left_out}\n\n{}\n",
-        parts.join("\n\n")
+        parts
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
     );
     (section, from)
 }
@@ -476,29 +466,24 @@ fn stopped(entries: &[Entry], stop: usize, quoted: &[usize], share: usize, now: 
         ..SAID
     };
     let first = render(stop, last, &opening, now);
-    let mut left = share.saturating_sub(first.len());
-    let mut after: Vec<String> = Vec::new();
-    let mut from = entries.len();
-    for at in (stop + 1..entries.len()).rev() {
-        let entry = &entries[at];
-        let text = match &entry.tool {
-            _ if quoted.contains(&at) => asked_above(at, entry, now),
-            Some(tool) => match role(tool) {
-                Role::Subagent => report(at, entry, tool, now),
-                Role::Read => line(at, entry, tool, now),
-                Role::Ask | Role::Work => render(at, entry, &SAID, now),
-            },
-            None if entry.kind == Kind::System => continue,
-            None => render(at, entry, &SAID, now),
-        };
-        if text.len() + 2 > left {
-            break;
-        }
-        left -= text.len() + 2;
-        after.push(text);
-        from = at;
-    }
-    after.reverse();
+    let (after, _) = fit(
+        stop + 1..entries.len(),
+        share.saturating_sub(first.len()),
+        |at| {
+            let entry = &entries[at];
+            Some(match &entry.tool {
+                _ if quoted.contains(&at) => asked_above(at, entry, now),
+                Some(tool) => match role(tool) {
+                    Role::Subagent => report(at, entry, tool, now),
+                    Role::Read => line(at, entry, tool, now),
+                    Role::Ask | Role::Work => render(at, entry, &SAID, now),
+                },
+                None if entry.kind == Kind::System => return None,
+                None => render(at, entry, &SAID, now),
+            })
+        },
+    );
+    let from = after.first().map_or(entries.len(), |(at, _)| *at);
     let gap = match from > stop + 1 && from < entries.len() {
         true => format!("\n\n{}", left_out(stop + 1, from - 1)),
         false => String::new(),
@@ -514,8 +499,37 @@ fn stopped(entries: &[Entry], stop: usize, quoted: &[usize], share: usize, now: 
     format!(
         "\n## Where it stopped\n\n{what}\n\n{first}{gap}{}{}\n",
         if after.is_empty() { "" } else { "\n\n" },
-        after.join("\n\n")
+        after
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
     )
+}
+
+/// The entries in `range` that fit in `room` characters, taken newest first
+/// and given oldest first, each as `text_of` gives it, skipped where it
+/// gives none; and the entry that didn't fit, where one didn't.
+fn fit(
+    range: std::ops::Range<usize>,
+    room: usize,
+    text_of: impl Fn(usize) -> Option<String>,
+) -> (Vec<(usize, String)>, Option<usize>) {
+    let mut left = room;
+    let mut parts = Vec::new();
+    let mut full = None;
+    for at in range.rev() {
+        let Some(text) = text_of(at) else { continue };
+        // Two characters for the blank line between entries.
+        if text.len() + 2 > left {
+            full = Some(at);
+            break;
+        }
+        left -= text.len() + 2;
+        parts.push((at, text));
+    }
+    parts.reverse();
+    (parts, full)
 }
 
 /// The tool calls from `since` up to `stop` that failed and weren't run
@@ -610,13 +624,7 @@ fn read_more(id: &str, cite: Cite, from: usize) -> String {
 
 /// A tool call in a line: its name, and what it was for as its input says.
 fn line(at: usize, entry: &Entry, tool: &Tool, now: i64) -> String {
-    let failed = if tool.failed { " (failed)" } else { "" };
-    format!(
-        "#{at} tool `{}`{failed}{}: {}",
-        tool.name,
-        when(entry, now),
-        gist(tool)
-    )
+    format!("{}: {}", call_head(at, entry, tool, now), gist(tool))
 }
 
 /// An entry quoted under what the person asked, named where it falls: by

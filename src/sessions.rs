@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
-use crate::agents::{self, Entry, Kind, Tokens};
+use crate::agents::{self, Entry, Kind, Tokens, Tool};
 use crate::redact::redact;
 use crate::time::{self, MINUTE};
 use crate::usage::count;
@@ -363,29 +363,39 @@ pub fn brief(
     .ok_or_else(|| missing(id))
 }
 
-pub fn show(db: &Connection, home: &Path, id: &str, now: i64) -> Result<Detail> {
-    let (agent, native) = parse(id)?;
-    let (folder, parent, mut summary) = db
+/// The session `id`, with what it and the sessions in its tree used.
+fn summary(db: &Connection, id: &str, now: i64) -> Result<Summary> {
+    let mut summary = db
         .query_row(
-            "SELECT agent, title, cwd, project, branch, started, folder, parent FROM session WHERE id = ?1",
+            "SELECT agent, title, cwd, project, branch, started FROM session WHERE id = ?1",
             [id],
             |row| {
-            let summary = Summary {
-                id: id.to_owned(),
-                agent: row.get(0)?,
-                title: row.get(1)?,
-                cwd: row.get(2)?,
-                project: row.get(3)?,
-                branch: row.get(4)?,
-                started: row.get(5)?,
-                ..Summary::default()
-            };
-            Ok((row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?, summary))
-        },
+                Ok(Summary {
+                    id: id.to_owned(),
+                    agent: row.get(0)?,
+                    title: row.get(1)?,
+                    cwd: row.get(2)?,
+                    project: row.get(3)?,
+                    branch: row.get(4)?,
+                    started: row.get(5)?,
+                    ..Summary::default()
+                })
+            },
         )
         .optional()?
         .ok_or_else(|| missing(id))?;
     used(db, &mut summary, now)?;
+    Ok(summary)
+}
+
+pub fn show(db: &Connection, home: &Path, id: &str, now: i64) -> Result<Detail> {
+    let (agent, native) = parse(id)?;
+    let summary = summary(db, id, now)?;
+    let (folder, parent): (String, Option<String>) = db.query_row(
+        "SELECT folder, parent FROM session WHERE id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     let models = db
         .prepare(&format!(
             "{SUBTREE} SELECT model FROM response WHERE session IN tree AND model != ''
@@ -844,10 +854,8 @@ const ONE: Room = Room {
 /// text from files, web pages and other people, and a heading in it mustn't
 /// pass for an entry around it.
 fn render(at: usize, entry: &Entry, room: &Room, now: i64) -> String {
-    let when = when(entry, now);
     let (head, body) = match &entry.tool {
         Some(tool) => {
-            let failed = if tool.failed { " (failed)" } else { "" };
             let output = tool
                 .output
                 .as_deref()
@@ -856,7 +864,7 @@ fn render(at: usize, entry: &Entry, room: &Room, now: i64) -> String {
                     format!("\nout: {}", cut_middle(output, room.tool_out))
                 });
             (
-                format!("#{at} tool `{}`{failed}{when}", tool.name),
+                call_head(at, entry, tool, now),
                 format!("{}{output}", cut(&input(&tool.input), room.tool_in)),
             )
         }
@@ -867,10 +875,17 @@ fn render(at: usize, entry: &Entry, room: &Room, now: i64) -> String {
                 _ => room.said,
             };
             let text = cut(entry.text.trim_end(), most);
+            let when = when(entry, now);
             (format!("#{at} {}{when}", kind(entry.kind)), text)
         }
     };
     format!("{head}\n{}", quote(&body))
+}
+
+/// A tool call's heading: its number and name, whether it failed, and when.
+fn call_head(at: usize, entry: &Entry, tool: &Tool, now: i64) -> String {
+    let failed = if tool.failed { " (failed)" } else { "" };
+    format!("#{at} tool `{}`{failed}{}", tool.name, when(entry, now))
 }
 
 /// A tool call's input, a field at a time: one-line fields first and the

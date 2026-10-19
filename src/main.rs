@@ -514,7 +514,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                     sessions::latest(&db, home, &folder, own.as_deref())?
                 }
             };
-            let handoff = sessions::handoff(&db, home, &session, sessions::Cite::Command, now)?;
+            let handoff = sessions::handoff(&db, &session, sessions::Cite::Command, now)?;
             print(
                 json!({ "session": session, "others": others, "handoff": handoff }),
                 sessions::also_here(&others, now) + &handoff,
