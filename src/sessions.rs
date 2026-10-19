@@ -36,6 +36,12 @@ const RUNNING: i64 = 5 * MINUTE;
 /// it the page ends, after one entry at least.
 const PAGE: usize = 12_000;
 
+/// The most sessions, or entries of a session, a page holds.
+pub const MOST: usize = 100;
+
+/// The entries a page of a session holds unless asked for another count.
+pub const ENTRIES: usize = 30;
+
 /// The sessions at the top of their trees, each with the sessions in its
 /// tree: subagents and forks, of any depth. One whose parent was never read
 /// is a top of its own.
@@ -69,7 +75,7 @@ pub struct Query {
     /// Active since.
     pub since: Option<i64>,
     pub running: bool,
-    /// How many, at most 100.
+    /// How many, 1 to `MOST`.
     pub count: usize,
     /// The last session of the page before.
     pub cursor: Option<String>,
@@ -250,10 +256,13 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         }
         None => 0,
     };
-    let most = query.count.clamp(1, 100);
-    let mut sessions: Vec<Summary> = found.into_iter().skip(start).take(most + 1).collect();
-    let next = (sessions.len() > most).then(|| sessions[most - 1].id.clone());
-    sessions.truncate(most);
+    let mut sessions: Vec<Summary> = found
+        .into_iter()
+        .skip(start)
+        .take(query.count + 1)
+        .collect();
+    let next = (sessions.len() > query.count).then(|| sessions[query.count - 1].id.clone());
+    sessions.truncate(query.count);
     for session in &mut sessions {
         used(db, session, now)?;
     }
@@ -603,7 +612,12 @@ pub struct Reading {
     #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
     pub from: i64,
     /// How many entries, up to 100; a page also ends at about 3,000 tokens
-    #[arg(long, short = 'n', default_value_t = 30)]
+    #[arg(
+        long,
+        short = 'n',
+        default_value_t = ENTRIES,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=MOST as u64)
+    )]
     pub count: usize,
     /// Only these kinds: user, assistant, reasoning, tool, system, summary (the agent's own, when it compacted) or task (a subagent's brief)
     #[arg(long, value_delimiter = ',')]
@@ -723,12 +737,11 @@ pub fn page<'a>(
         }
     };
     let mut wanted = wanted.into_iter().peekable();
-    let most = reading.count.clamp(1, 100);
     let mut shown: Vec<(usize, &Entry)> = Vec::new();
     let mut held = 0;
     while let Some(&(at, entry)) = wanted.peek() {
         let size = render(at, entry, &WHOLE, 0).len();
-        if shown.len() == most || (!shown.is_empty() && held + size > PAGE) {
+        if shown.len() == reading.count || (!shown.is_empty() && held + size > PAGE) {
             break;
         }
         held += size;
