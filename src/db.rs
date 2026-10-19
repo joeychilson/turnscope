@@ -6,6 +6,7 @@
 //! accounts, readings, sign-ins, prices as they were, alerts and settings
 //! exist nowhere else.
 
+use std::fs::File;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::Path;
 
@@ -222,19 +223,14 @@ pub fn open(dir: &Path) -> Result<Connection> {
     let revision = |db: &Connection| -> Result<i64> {
         let revision: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if revision > latest {
-            return Err(Error::Failed(
-                "a newer Turnscope has updated this data; update Turnscope".to_owned(),
-            ));
+            return Err(newer());
         }
         Ok(revision)
     };
     if revision(&db)? == latest {
         return Ok(db);
     }
-    let lock = dir.join("turnscope.lock");
-    let _lock = std::fs::File::create(&lock)
-        .and_then(|file| file.lock().map(|()| file))
-        .map_err(|error| Error::Failed(format!("locking {}: {error}", lock.display())))?;
+    let _lock = lock(&dir.join("turnscope.lock"))?;
     // Another process may have done it while this one waited.
     let done = revision(&db)?;
     if done == latest {
@@ -256,6 +252,20 @@ pub fn open(dir: &Path) -> Result<Connection> {
     tx.pragma_update(None, "application_id", APPLICATION_ID)?;
     tx.commit()?;
     Ok(db)
+}
+
+/// Hold the lock file at `path`, made if it's missing, until the file
+/// returned is dropped.
+pub fn lock(path: &Path) -> Result<File> {
+    File::create(path)
+        .and_then(|file| file.lock().map(|()| file))
+        .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
+}
+
+/// The error when a newer Turnscope has updated the data: this one would
+/// misread it, or undo what that one did.
+pub fn newer() -> Error {
+    Error::Failed("a newer Turnscope has updated this data; update Turnscope".to_owned())
 }
 
 #[cfg(test)]
