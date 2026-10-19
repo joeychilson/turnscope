@@ -118,7 +118,7 @@ pub fn told(window: &Window, at: i64, out: i64) -> bool {
 /// as of `at`.
 pub fn band(window: &Window, at: i64) -> (f64, f64) {
     let length = (window.resets - window.starts).max(1);
-    let left = ((window.resets - at) as f64 / length as f64).clamp(0.0, 1.0);
+    let left = (window.resets - at) as f64 / length as f64;
     let bucket = match left {
         left if left < 0.1 => 0,
         left if left < 0.25 => 1,
@@ -239,9 +239,10 @@ pub fn work_band(length: Option<i64>) -> (f64, f64) {
     }
 }
 
-/// Hours of work left at `rate` with `used` percent used, as the slow end,
-/// likely, and fast end of `band`: `None` when even the fastest lasts
-/// `until` its reset, as many hours of work as there are hours to it.
+/// Hours of work left at `rate` with `used` percent used: the fewest, at
+/// the fast end of `band`; the likely; and the most, at the slow end but no
+/// more than `until`, the hours to its reset. `None` when the likely hours
+/// reach `until`: it lasts until its reset even with work all the time.
 pub fn work_left(
     used: f64,
     rate: f64,
