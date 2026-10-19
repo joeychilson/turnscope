@@ -550,11 +550,13 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
         }
     };
     let top = input.top.unwrap_or(5).clamp(1, 20);
-    // With no limit read, what the account's usage cost, over the last week
-    // unless asked; every account's over the 30 days the command line's
-    // `usage` takes.
+    // Unless asked since a time, one account's usage over its limit's window
+    // or, with none, this month for an API key and the last 7 days otherwise,
+    // with every row's share or none; every account's over the 30 days the
+    // command line's `usage` takes, with none.
     let breakdown = |by: By, top: usize| match account {
-        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now),
+        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now)
+            .map(|(used, points)| (used, points.into_iter().collect::<Option<Vec<_>>>())),
         None => usage::usage(
             &server.db,
             &usage::Query {
@@ -567,10 +569,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
                 top,
             },
         )
-        .map(|used| {
-            let none = vec![None; used.rows.len()];
-            (used, none)
-        }),
+        .map(|used| (used, None)),
     };
     let (used, points) = breakdown(by, top)?;
     let mut out = format!(
@@ -593,66 +592,12 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
         out += &format!("{}\n", status::limit_text(limit, now));
     }
     if !used.rows.is_empty() {
-        let what = match by {
-            By::Project => "Project",
-            By::Model => "Model",
-            By::Agent => "Agent",
-            _ => "Session",
-        };
         // Shares are known only over a limit's own window.
-        let shares = limit.filter(|_| points.iter().all(Option::is_some));
-        match shares {
-            Some(limit) => {
-                out += &format!(
-                    "\n| {what} | Cost | Responses | % of {} |\n|---|--:|--:|--:|\n",
-                    limit.named()
-                );
-            }
-            None => out += &format!("\n| {what} | Cost | Responses |\n|---|--:|--:|\n"),
-        }
-        let yours = server.caller.session.as_deref();
-        for (row, points) in used.rows.iter().zip(&points) {
-            let name = match (&row.name, by) {
-                (Some(name), By::Session) => format!(
-                    "`{}` {}{}",
-                    row.key,
-                    sessions::title(Some(name.as_str())),
-                    if Some(row.key.as_str()) == yours {
-                        " (yours)"
-                    } else {
-                        ""
-                    }
-                ),
-                (Some(name), _) => name.clone(),
-                (None, _) => row.key.clone(),
-            };
-            let share = match (shares, points) {
-                (Some(_), Some(points)) => format!(" {} |", usage::share(*points)),
-                _ => String::new(),
-            };
-            out += &format!(
-                "| {name} | {} | {} |{share}\n",
-                usage::cost(row.cost_usd, row.unpriced),
-                usage::count(row.responses)
-            );
-        }
-        if let Some(rest) = &used.rest {
-            // What the rows shown leave of the points used.
-            let share = shares.map_or(String::new(), |limit| {
-                let shown: f64 = points.iter().flatten().sum();
-                let used = f64::from(100 - limit.left_percent);
-                format!(" {} |", usage::share((used - shown).max(0.0)))
-            });
-            let rows = match rest.key.as_str() {
-                "1 more" => format!("1 more {}", what.to_lowercase()),
-                more => format!("{more} {}s", what.to_lowercase()),
-            };
-            out += &format!(
-                "| {rows} | {} | {} |{share}\n",
-                usage::cost(rest.cost_usd, rest.unpriced),
-                usage::count(rest.responses)
-            );
-        }
+        let shares = limit.zip(points.as_deref());
+        out += &format!(
+            "\n{}",
+            usage::markdown(&used, shares, server.caller.session.as_deref())
+        );
     }
     // Asked since a time, as the calendar week for "this week" of a weekly
     // limit, the shares are left out: say how to get them.

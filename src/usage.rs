@@ -33,6 +33,20 @@ impl By {
             By::Model | By::Project | By::Agent | By::Account | By::Session => None,
         }
     }
+
+    /// The title of the column its rows are under.
+    fn title(self) -> &'static str {
+        match self {
+            By::Day => "Day",
+            By::Week => "Week of",
+            By::Month => "Month of",
+            By::Model => "Model",
+            By::Project => "Project",
+            By::Agent => "Agent",
+            By::Account => "Account",
+            By::Session => "Session",
+        }
+    }
 }
 
 pub struct Query {
@@ -245,7 +259,7 @@ pub fn dollars(amount: f64) -> String {
 
 /// A row's share of a limit, to the point, as shares are approximate:
 /// `13%`, and under half a point, `<1%`.
-pub fn share(points: f64) -> String {
+fn share(points: f64) -> String {
     if points < 0.5 {
         "<1%".to_owned()
     } else {
@@ -287,16 +301,7 @@ pub fn text(usage: &Usage, shares: Option<(&str, &[Option<f64>])>) -> String {
     if rows.is_empty() {
         return out + "Nothing was used.";
     }
-    let what = match usage.by {
-        By::Day => "Day",
-        By::Week => "Week of",
-        By::Month => "Month of",
-        By::Model => "Model",
-        By::Project => "Project",
-        By::Agent => "Agent",
-        By::Account => "Account",
-        By::Session => "Session",
-    };
+    let what = usage.by.title();
     let labels: Vec<String> = rows
         .iter()
         .map(|(row, _)| {
@@ -346,6 +351,67 @@ pub fn text(usage: &Usage, shares: Option<(&str, &[Option<f64>])>) -> String {
         );
     }
     out + "\nCosts are at list prices: what the same tokens cost on each provider's API."
+}
+
+/// Usage by anything but time as a Markdown table, its rest added up in a
+/// last row. With `shares`, a limit and each row's points of it, a column
+/// more. The asking session, `yours`, is marked.
+pub fn markdown(
+    usage: &Usage,
+    shares: Option<(&crate::status::Limit, &[f64])>,
+    yours: Option<&str>,
+) -> String {
+    let what = usage.by.title();
+    let mut out = match shares {
+        Some((limit, _)) => format!(
+            "| {what} | Cost | Responses | % of {} |\n|---|--:|--:|--:|\n",
+            limit.named()
+        ),
+        None => format!("| {what} | Cost | Responses |\n|---|--:|--:|\n"),
+    };
+    for (at, row) in usage.rows.iter().enumerate() {
+        let name = match (&row.name, usage.by) {
+            (Some(name), By::Session) => format!(
+                "`{}` {}{}",
+                row.key,
+                crate::sessions::title(Some(name.as_str())),
+                if Some(row.key.as_str()) == yours {
+                    " (yours)"
+                } else {
+                    ""
+                }
+            ),
+            (Some(name), _) => name.clone(),
+            (None, _) => row.key.clone(),
+        };
+        let points = shares.map_or(String::new(), |(_, points)| {
+            format!(" {} |", share(points[at]))
+        });
+        out += &format!(
+            "| {name} | {} | {} |{points}\n",
+            cost(row.cost_usd, row.unpriced),
+            count(row.responses)
+        );
+    }
+    if let Some(rest) = &usage.rest {
+        // What the rows shown leave of the points used.
+        let points = shares.map_or(String::new(), |(limit, points)| {
+            let shown: f64 = points.iter().sum();
+            let used = f64::from(100 - limit.left_percent);
+            format!(" {} |", share((used - shown).max(0.0)))
+        });
+        // Its key, made in `usage`, counts the rows it adds up: `3 more`.
+        let rows = match rest.key.as_str() {
+            "1 more" => format!("1 more {}", what.to_lowercase()),
+            more => format!("{more} {}s", what.to_lowercase()),
+        };
+        out += &format!(
+            "| {rows} | {} | {} |{points}\n",
+            cost(rest.cost_usd, rest.unpriced),
+            count(rest.responses)
+        );
+    }
+    out
 }
 
 /// What used a limit: `account`'s usage in `limit`'s window, or since
