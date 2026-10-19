@@ -16,9 +16,9 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use crate::Result;
 use crate::status::{Account, Limit, Moment, Outlook, State, Status};
-use crate::time::{DAY, MINUTE};
+use crate::time::DAY;
+use crate::{Result, forecast};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,11 +69,10 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
                      runs_out: Option<i64>|
      -> Result<()> {
         let key = limit.map_or("", |limit| limit.key.as_str());
-        // Resets drift by seconds from read to read.
         let known = tx
             .query_row(
                 "SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3 AND window BETWEEN ?4 - ?5 AND ?4 + ?5",
-                params![account.id, key, kind_name(kind), window, 5 * MINUTE],
+                params![account.id, key, kind_name(kind), window, forecast::DRIFT],
                 |_| Ok(()),
             )
             .optional()?;
@@ -141,7 +140,7 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
                 .query_map(params![account.id, limit.key, now - DAY], |row| row.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             for ended in used_up {
-                let this = (ended - window.resets.at).abs() <= 5 * MINUTE;
+                let this = forecast::same_reset(Some(ended), Some(window.resets.at));
                 if (ended <= now && limit.left_percent > 0) || (this && limit.left_percent > 1) {
                     raise(account, Some(limit), Kind::Reset, ended, None)?;
                 }
@@ -288,6 +287,7 @@ pub fn save_settings(db: &rusqlite::Connection, settings: &Settings) -> Result<(
 mod tests {
     use super::*;
     use crate::status::{Horizon, LimitWindow};
+    use crate::time::MINUTE;
 
     fn status(at: i64, left: u8, outlook: Outlook) -> Status {
         let resets = Moment {
