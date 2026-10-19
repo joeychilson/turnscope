@@ -795,11 +795,7 @@ fn converse(line: &Line, bytes: &[u8], conversation: &mut Conversation) {
     // A string, a list of parts with text, or an output's `{content}`.
     let text = |value: &Option<Value>| match value {
         Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(parts)) => parts
-            .iter()
-            .filter_map(|part| part["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
+        Some(parts @ Value::Array(_)) => super::texts(parts).join("\n"),
         Some(Value::Object(fields)) => match fields.get("content") {
             Some(Value::String(text)) => text.clone(),
             Some(content) => content.to_string(),
@@ -836,14 +832,7 @@ fn converse(line: &Line, bytes: &[u8], conversation: &mut Conversation) {
         // Only the readable summary; the rest is encrypted.
         (Some("reasoning"), _) => conversation.say(Kind::Reasoning, at, &text(&item.summary)),
         (Some("function_call" | "custom_tool_call"), _) => {
-            let input = item
-                .input
-                .or(item.arguments)
-                .map(|input| match input {
-                    Value::String(text) => text,
-                    other => other.to_string(),
-                })
-                .unwrap_or_default();
+            let input = super::text(&item.input.or(item.arguments).unwrap_or_default());
             let name = match (&item.namespace, &item.name) {
                 (Some(namespace), Some(name)) => format!("{namespace}.{name}"),
                 // A script that calls Codex's tools, named by those it calls.

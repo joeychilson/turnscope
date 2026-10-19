@@ -98,6 +98,8 @@ impl Agent for Acme {
 
 `Result` is `crate::Result`. Its errors are `Error::Failed` and
 `Error::NotFound`, each with a message saying what went wrong.
+`reading(path, error)` is the `Error::Failed` of a file that couldn't be
+read.
 
 | Method | Returns |
 |---|---|
@@ -105,7 +107,7 @@ impl Agent for Acme {
 | `folders` | The folders the agent keeps history and logins in under `home`, its own first. The first is taken as its own: the agent is installed when it exists, and `resume` adds `folder_var` for the others. `own_and_found(home, own, prefix, signed)` gives `home/own`, then each folder beside it whose name starts with `prefix` and that holds the file `signed`, such as `~/.acme-work/auth.json`: how a second account's folder is kept. |
 | `files` | Its history files in a folder. It runs at every catch-up, so it lists and doesn't read. A file that doesn't exist is passed over, so one the agent may keep can be listed without looking. `entries(dir)` lists what a folder holds, and nothing when it can't be read. |
 | `read` | What a file holds past `cursor` (empty: from the start), and the cursor to read on from ([below](#reading-history)). An error leaves the cursor as it was, so the file is tried again at the next catch-up. |
-| `transcript` | The conversation of the session `id`, the agent's own id without `acme:`, from the files that hold it ([below](#transcripts)). |
+| `transcript` | The conversation of the session `id`, the agent's own id without `acme:`, from the files that hold it, of which there's always at least one ([below](#transcripts)). |
 | `logins` | One `Login` per provider the agent signs in to ([below](#logins)). |
 | `mcp_command` | The command that the configuration `folder` uses runs for the `turnscope` MCP server, if any. An agent with `folder_var` keeps a configuration per folder: `connect` runs its command once for each folder, pointed at it with `folder_var`, so read the file that command writes for that folder. `json_mcp_command(path, pointer)` reads it at a JSON pointer in a JSON file; `toml_mcp_command(path)` reads `command` under `[mcp_servers.turnscope]` in a TOML file. The status compares it with this binary to show the agent as connected, outdated or available. |
 
@@ -117,7 +119,8 @@ each complete line from byte `from` to `visit`, and returns where the next
 read starts: past the last line that ends with a newline, since one
 without is still being written. `INFO.session(native)` is a session's id
 as stored, `acme:<native>`, and `texts(content)` a message's text: a
-string, or its parts' `text`.
+string, or its parts' `text`. `text(value)` is a field as text: a string
+as it is, nothing for null, anything else as JSON.
 
 ```rust
 #[derive(Default, Serialize, Deserialize)]

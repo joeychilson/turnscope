@@ -47,9 +47,9 @@ use serde_json::Value;
 
 use super::{
     Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
-    Tokens,
+    Tokens, text,
 };
-use crate::{Error, Result};
+use crate::Result;
 
 pub struct OpenCode;
 
@@ -84,7 +84,7 @@ struct Cursor {
 const LATE: i64 = 10_000;
 
 fn open(file: &Path) -> Result<Connection> {
-    let failed = |error| Error::Failed(format!("reading {}: {error}", file.display()));
+    let failed = |error| super::reading(file, error);
     let db = Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(failed)?;
     db.busy_timeout(std::time::Duration::from_secs(2))
         .map_err(failed)?;
@@ -108,188 +108,19 @@ impl Agent for OpenCode {
         let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
         let db = open(file)?;
         let mut read = Read::default();
-        let failed = |error| Error::Failed(format!("reading {}: {error}", file.display()));
         // One read transaction, so sessions and messages are of one moment.
-        let tx = db.unchecked_transaction().map_err(failed)?;
-        let mut sessions = tx
-            .prepare(&format!(
-                "SELECT s.id, nullif(s.parent_id, ''), nullif(s.fork_session_id, ''),
-                     nullif(s.directory, ''), s.title, s.time_created, s.time_updated,
-                     (SELECT m.data FROM session_message m WHERE m.session_id = s.id
-                         AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
-                 FROM session_v2 s WHERE s.time_updated >= ?1"
-            ))
-            .map_err(failed)?;
-        let mut rows = sessions.query([cursor.sessions - LATE]).map_err(failed)?;
-        while let Some(row) = rows.next().map_err(failed)? {
-            let (native, parent, fork): (String, Option<String>, Option<String>) = (
-                row.get(0).map_err(failed)?,
-                row.get(1).map_err(failed)?,
-                row.get(2).map_err(failed)?,
-            );
-            let (created, updated): (i64, i64) =
-                (row.get(5).map_err(failed)?, row.get(6).map_err(failed)?);
-            cursor.sessions = cursor.sessions.max(updated);
-            let session = read.session(&INFO.session(&native));
-            session.parent = match (parent, fork) {
-                (Some(parent), _) => Some(Parent {
-                    id: INFO.session(&parent),
-                    link: Link::Subagent,
-                }),
-                (None, Some(fork)) => Some(Parent {
-                    id: INFO.session(&fork),
-                    link: Link::Fork,
-                }),
-                _ => None,
-            };
-            session.cwd = row.get(3).map_err(failed)?;
-            session.saw(created);
-            session.saw(updated);
-            let first: Option<String> = row.get(7).map_err(failed)?;
-            if let Some(text) = first.and_then(|data| serde_json::from_str::<Value>(&data).ok()) {
-                session.title(Title::Prompt, text["text"].as_str().unwrap_or_default());
-            }
-            // OpenCode reads its placeholder as no title.
-            let placeholder = |title: &str| {
-                ["New session - ", "Child session - "].iter().any(|prefix| {
-                    title
-                        .strip_prefix(prefix)
-                        .and_then(crate::time::millis)
-                        .is_some()
-                })
-            };
-            let title: Option<String> = row.get(4).map_err(failed)?;
-            if let Some(title) = title.filter(|title| !placeholder(title)) {
-                session.title(Title::Generated, &title);
-            }
-        }
-
-        let mut messages = tx
-            .prepare(&format!(
-                "SELECT m.id, m.session_id, m.type, m.time_created, m.time_updated, m.data
-                 FROM session_message m LEFT JOIN session_v2 s ON s.id = m.session_id
-                 WHERE m.time_updated >= ?1 AND m.type IN ('user', 'assistant') AND {OWN}"
-            ))
-            .map_err(failed)?;
-        // A message is read again each time it changes, and while it's
-        // within `LATE` of the latest change; what it says is indexed once,
-        // when it's new or a response completes.
-        let mark = cursor.messages;
-        let was_said = std::mem::take(&mut cursor.said);
-        let mut said_at = Vec::new();
-        let mut rows = messages.query(params![mark - LATE]).map_err(failed)?;
-        while let Some(row) = rows.next().map_err(failed)? {
-            let (message, native, kind): (String, String, String) = (
-                row.get(0).map_err(failed)?,
-                row.get(1).map_err(failed)?,
-                row.get(2).map_err(failed)?,
-            );
-            let (created, updated): (i64, i64) =
-                (row.get(3).map_err(failed)?, row.get(4).map_err(failed)?);
-            cursor.messages = cursor.messages.max(updated);
-            // A row read again only for being within `LATE` was counted. One
-            // committed late, stamped at or before the last read, isn't:
-            // knowing it wasn't seen would take every bad row's id in the
-            // cursor, for a count only doctor shows.
-            let unseen = u64::from(updated > mark);
-            let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(5).map_err(failed)?)
-            else {
-                read.skipped += unseen;
-                continue;
-            };
-            let session = INFO.session(&native);
-            read.session(&session).saw(created);
-            let completed = data["time"]["completed"].as_i64();
-            if let Some(completed) = completed {
-                read.session(&session).saw(completed);
-            }
-            // What a prompt says is final once it's made, and a reply's once it
-            // completes.
-            let final_at = match kind.as_str() {
-                "user" => Some(created),
-                _ => completed,
-            }
-            .filter(|at| *at > mark - LATE);
-            let new = final_at.is_some() && !was_said.contains(&message);
-            if let Some(at) = final_at {
-                said_at.push((message.clone(), at));
-            }
-            if kind == "user" {
-                if new {
-                    read.say(&session, data["text"].as_str().unwrap_or_default());
-                }
-                continue;
-            }
-            if new {
-                for part in data["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|part| part["type"] == "text")
-                {
-                    read.say(&session, part["text"].as_str().unwrap_or_default());
-                }
-            }
-            // A message has no tokens until its response ends.
-            let tokens = &data["tokens"];
-            let (Some(input), Some(output), Some(reasoning), Some(cache_read), Some(cache_write)) = (
-                tokens["input"].as_u64(),
-                tokens["output"].as_u64(),
-                tokens["reasoning"].as_u64(),
-                tokens["cache"]["read"].as_u64(),
-                tokens["cache"]["write"].as_u64(),
-            ) else {
-                continue;
-            };
-            let (Some(provider), Some(model)) = (
-                data["model"]["providerID"].as_str(),
-                data["model"]["id"].as_str(),
-            ) else {
-                read.skipped += unseen;
-                continue;
-            };
-            let tokens = Tokens {
-                input,
-                cache_read,
-                cache_write_5m: cache_write,
-                cache_write_1h: 0,
-                output: output + reasoning,
-                reasoning,
-            };
-            if tokens == Tokens::default() {
-                continue;
-            }
-            read.respond(Response {
-                id: message,
-                session,
-                copy: false,
-                at: completed
-                    .or(data["time"]["created"].as_i64())
-                    .unwrap_or(created),
-                provider: provider.to_owned(),
-                model: model.to_owned(),
-                prompt: input + cache_read + cache_write,
-                tokens,
-                web_searches: 0,
-                priority: data["providerState"]["serviceTier"] == "priority",
-                cost: data["cost"].as_f64(),
-            });
-        }
-        cursor.said = said_at
-            .into_iter()
-            .filter(|(_, at)| *at > cursor.messages - LATE)
-            .map(|(message, _)| message)
-            .collect();
+        let tx = db
+            .unchecked_transaction()
+            .map_err(|error| super::reading(file, error))?;
+        sessions(&tx, file, &mut cursor, &mut read)?;
+        messages(&tx, file, &mut cursor, &mut read)?;
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
     }
 
     fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        let file = files
-            .iter()
-            .find(|file| file.ends_with("opencode.db"))
-            .ok_or_else(|| Error::NotFound("OpenCode's database is gone".to_owned()))?;
-        let failed = |error| Error::Failed(format!("reading {}: {error}", file.display()));
+        let file = &files[0];
+        let failed = |error| super::reading(file, error);
         let db = open(file)?;
         let mut statement = db
             .prepare(&format!(
@@ -343,7 +174,7 @@ impl Agent for OpenCode {
         let file = folder.join("opencode.db");
         let mut logins: Vec<Login> = Vec::new();
         if file.is_file() {
-            let failed = |error| Error::Failed(format!("reading {}: {error}", file.display()));
+            let failed = |error| super::reading(&file, error);
             let db = open(&file)?;
             // Of several to one provider, the latest active one is in use.
             let rows: Vec<(String, String)> = db
@@ -387,14 +218,184 @@ impl Agent for OpenCode {
     }
 }
 
-/// A field as text: a string as it is, one that isn't there as none rather
-/// than "null", anything else as JSON.
-fn text(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
+/// Read the sessions changed since `cursor` into `read`.
+fn sessions(db: &Connection, file: &Path, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
+    let failed = |error| super::reading(file, error);
+    let mut sessions = db
+        .prepare(&format!(
+            "SELECT s.id, nullif(s.parent_id, ''), nullif(s.fork_session_id, ''),
+                 nullif(s.directory, ''), s.title, s.time_created, s.time_updated,
+                 (SELECT m.data FROM session_message m WHERE m.session_id = s.id
+                     AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
+             FROM session_v2 s WHERE s.time_updated >= ?1"
+        ))
+        .map_err(failed)?;
+    let mut rows = sessions.query([cursor.sessions - LATE]).map_err(failed)?;
+    while let Some(row) = rows.next().map_err(failed)? {
+        let (native, parent, fork): (String, Option<String>, Option<String>) = (
+            row.get(0).map_err(failed)?,
+            row.get(1).map_err(failed)?,
+            row.get(2).map_err(failed)?,
+        );
+        let (created, updated): (i64, i64) =
+            (row.get(5).map_err(failed)?, row.get(6).map_err(failed)?);
+        cursor.sessions = cursor.sessions.max(updated);
+        let session = read.session(&INFO.session(&native));
+        session.parent = match (parent, fork) {
+            (Some(parent), _) => Some(Parent {
+                id: INFO.session(&parent),
+                link: Link::Subagent,
+            }),
+            (None, Some(fork)) => Some(Parent {
+                id: INFO.session(&fork),
+                link: Link::Fork,
+            }),
+            _ => None,
+        };
+        session.cwd = row.get(3).map_err(failed)?;
+        session.saw(created);
+        session.saw(updated);
+        let first: Option<String> = row.get(7).map_err(failed)?;
+        if let Some(text) = first.and_then(|data| serde_json::from_str::<Value>(&data).ok()) {
+            session.title(Title::Prompt, text["text"].as_str().unwrap_or_default());
+        }
+        // OpenCode reads its placeholder as no title.
+        let placeholder = |title: &str| {
+            ["New session - ", "Child session - "].iter().any(|prefix| {
+                title
+                    .strip_prefix(prefix)
+                    .and_then(crate::time::millis)
+                    .is_some()
+            })
+        };
+        let title: Option<String> = row.get(4).map_err(failed)?;
+        if let Some(title) = title.filter(|title| !placeholder(title)) {
+            session.title(Title::Generated, &title);
+        }
     }
+    Ok(())
+}
+
+/// Read the messages changed since `cursor` into `read`.
+fn messages(db: &Connection, file: &Path, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
+    let failed = |error| super::reading(file, error);
+    let mut messages = db
+        .prepare(&format!(
+            "SELECT m.id, m.session_id, m.type, m.time_created, m.time_updated, m.data
+             FROM session_message m LEFT JOIN session_v2 s ON s.id = m.session_id
+             WHERE m.time_updated >= ?1 AND m.type IN ('user', 'assistant') AND {OWN}"
+        ))
+        .map_err(failed)?;
+    // A message is read again each time it changes, and while it's
+    // within `LATE` of the latest change; what it says is indexed once,
+    // when it's new or a response completes.
+    let mark = cursor.messages;
+    let was_said = std::mem::take(&mut cursor.said);
+    let mut said_at = Vec::new();
+    let mut rows = messages.query(params![mark - LATE]).map_err(failed)?;
+    while let Some(row) = rows.next().map_err(failed)? {
+        let (message, native, kind): (String, String, String) = (
+            row.get(0).map_err(failed)?,
+            row.get(1).map_err(failed)?,
+            row.get(2).map_err(failed)?,
+        );
+        let (created, updated): (i64, i64) =
+            (row.get(3).map_err(failed)?, row.get(4).map_err(failed)?);
+        cursor.messages = cursor.messages.max(updated);
+        // A row read again only for being within `LATE` was counted. One
+        // committed late, stamped at or before the last read, isn't:
+        // knowing it wasn't seen would take every bad row's id in the
+        // cursor, for a count only doctor shows.
+        let unseen = u64::from(updated > mark);
+        let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(5).map_err(failed)?)
+        else {
+            read.skipped += unseen;
+            continue;
+        };
+        let session = INFO.session(&native);
+        read.session(&session).saw(created);
+        let completed = data["time"]["completed"].as_i64();
+        if let Some(completed) = completed {
+            read.session(&session).saw(completed);
+        }
+        // What a prompt says is final once it's made, and a reply's once it
+        // completes.
+        let final_at = match kind.as_str() {
+            "user" => Some(created),
+            _ => completed,
+        }
+        .filter(|at| *at > mark - LATE);
+        let new = final_at.is_some() && !was_said.contains(&message);
+        if let Some(at) = final_at {
+            said_at.push((message.clone(), at));
+        }
+        if kind == "user" {
+            if new {
+                read.say(&session, data["text"].as_str().unwrap_or_default());
+            }
+            continue;
+        }
+        if new {
+            for part in data["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|part| part["type"] == "text")
+            {
+                read.say(&session, part["text"].as_str().unwrap_or_default());
+            }
+        }
+        // A message has no tokens until its response ends.
+        let tokens = &data["tokens"];
+        let (Some(input), Some(output), Some(reasoning), Some(cache_read), Some(cache_write)) = (
+            tokens["input"].as_u64(),
+            tokens["output"].as_u64(),
+            tokens["reasoning"].as_u64(),
+            tokens["cache"]["read"].as_u64(),
+            tokens["cache"]["write"].as_u64(),
+        ) else {
+            continue;
+        };
+        let (Some(provider), Some(model)) = (
+            data["model"]["providerID"].as_str(),
+            data["model"]["id"].as_str(),
+        ) else {
+            read.skipped += unseen;
+            continue;
+        };
+        let tokens = Tokens {
+            input,
+            cache_read,
+            cache_write_5m: cache_write,
+            cache_write_1h: 0,
+            output: output + reasoning,
+            reasoning,
+        };
+        if tokens == Tokens::default() {
+            continue;
+        }
+        read.respond(Response {
+            id: message,
+            session,
+            copy: false,
+            at: completed
+                .or(data["time"]["created"].as_i64())
+                .unwrap_or(created),
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+            prompt: input + cache_read + cache_write,
+            tokens,
+            web_searches: 0,
+            priority: data["providerState"]["serviceTier"] == "priority",
+            cost: data["cost"].as_f64(),
+        });
+    }
+    cursor.said = said_at
+        .into_iter()
+        .filter(|(_, at)| *at > cursor.messages - LATE)
+        .map(|(message, _)| message)
+        .collect();
+    Ok(())
 }
 
 /// Add a tool call, a part of an assistant message, with its outcome.
@@ -411,13 +412,9 @@ fn tool(part: &Value, at: Option<i64>, conversation: &mut Conversation) {
     let output = if state["status"] == "error" {
         text(state["error"].get("message").unwrap_or(&state["error"]))
     } else {
-        match state["content"].as_array() {
-            Some(parts) => parts
-                .iter()
-                .filter_map(|part| part["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            None => text(&state["content"]),
+        match &state["content"] {
+            parts @ Value::Array(_) => super::texts(parts).join("\n"),
+            content => text(content),
         }
     };
     if let Some(call) = call {
@@ -521,41 +518,23 @@ mod tests {
             )
             .unwrap();
         }
-        let mut read: Vec<_> = OpenCode
-            .logins(dir.path(), dir.path())
-            .unwrap()
-            .into_iter()
-            .map(|login| {
-                let credential = login.credential.map(|credential| {
-                    let secret = credential.secret.expose().to_owned();
-                    (
-                        credential.provider,
-                        credential.key,
-                        credential.expires,
-                        secret,
-                    )
-                });
-                (login.provider, credential)
-            })
+        let logins = OpenCode.logins(dir.path(), dir.path()).unwrap();
+        let mut read: Vec<_> = logins
+            .iter()
+            .map(|login| (login.provider.as_str(), crate::agents::credential(login)))
             .collect();
         read.sort();
-        let given = |provider: &'static str, key, expires, secret: &str| {
-            Some((provider, key, expires, secret.to_owned()))
-        };
         assert_eq!(
             read,
             [
                 (
-                    "anthropic".to_owned(),
-                    given("anthropic", true, None, "sk-ant-made-up")
+                    "anthropic",
+                    Some(("anthropic", true, None, "sk-ant-made-up"))
                 ),
+                ("opencode-go", Some(("opencode-go", true, None, "sk-go"))),
                 (
-                    "opencode-go".to_owned(),
-                    given("opencode-go", true, None, "sk-go")
-                ),
-                (
-                    "openrouter".to_owned(),
-                    given("openrouter", true, Some(9), "sk-or-made-up")
+                    "openrouter",
+                    Some(("openrouter", true, Some(9), "sk-or-made-up"))
                 ),
             ]
         );
@@ -612,16 +591,6 @@ mod tests {
         assert_eq!(
             entries[2].tool.as_ref().unwrap().output.as_deref(),
             Some("ok")
-        );
-        let logins = OpenCode.logins(dir.path(), dir.path()).unwrap();
-        let go = logins
-            .iter()
-            .find(|login| login.provider == "opencode-go")
-            .unwrap();
-        assert!(
-            go.credential
-                .as_ref()
-                .is_some_and(|credential| credential.key)
         );
     }
 
