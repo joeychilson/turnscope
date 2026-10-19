@@ -25,6 +25,10 @@
   `edit` or `write`, or Claude Code's `NotebookEdit`, under "What failed",
   and it no longer shows there once a later one of the same file passed,
   as a failed Claude Code `Edit` already didn't.
+- **A Codex script** is named by the tools it calls, in `sessions read`,
+  `read_session` and the handoff, not by every tool its text names. One
+  that ran `rg tools.apply_patch src` was named `exec: exec_command,
+  apply_patch`, as if it changed files.
 
 ## 0.1.4
 

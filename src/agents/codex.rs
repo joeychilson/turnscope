@@ -835,16 +835,34 @@ fn converse(line: &Line, bytes: &[u8], conversation: &mut Conversation) {
             let input = super::text(&item.input.or(item.arguments).unwrap_or_default());
             let name = match (&item.namespace, &item.name) {
                 (Some(namespace), Some(name)) => format!("{namespace}.{name}"),
-                // A script that calls Codex's tools, named by those it calls.
+                // A script that calls Codex's tools, named by those it calls:
+                // each `tools.<name>(` outside its strings, since a command or
+                // patch in a string may name a tool, as `rg tools.apply_patch
+                // src` does. Strings in "" or ``, not '': a ' outside a string
+                // may be an apostrophe in a comment, and taking it for a
+                // string would hide the calls after it.
                 (_, Some(name)) if name == "exec" => {
                     let mut called: Vec<&str> = Vec::new();
-                    for (at, _) in input.match_indices("tools.") {
-                        let rest = &input[at + "tools.".len()..];
-                        let end = rest
-                            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                            .unwrap_or(rest.len());
-                        if end > 0 && !called.contains(&&rest[..end]) {
-                            called.push(&rest[..end]);
+                    let mut quote = None;
+                    let mut escaped = false;
+                    for (at, char) in input.char_indices() {
+                        if let Some(open) = quote {
+                            if char == open && !escaped {
+                                quote = None;
+                            }
+                            escaped = char == '\\' && !escaped;
+                        } else if matches!(char, '"' | '`') {
+                            quote = Some(char);
+                        } else if let Some(rest) = input[at..].strip_prefix("tools.") {
+                            let end = rest
+                                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                                .unwrap_or(rest.len());
+                            if end > 0
+                                && rest[end..].starts_with('(')
+                                && !called.contains(&&rest[..end])
+                            {
+                                called.push(&rest[..end]);
+                            }
                         }
                     }
                     if called.is_empty() {
@@ -1467,6 +1485,40 @@ mod tests {
                     true,
                     patched.as_slice()
                 )
+            ]
+        );
+    }
+
+    #[test]
+    fn a_script_is_named_by_the_tools_it_calls_not_those_its_strings_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts = [
+            r#"await tools.exec_command({cmd: "rg -n tools.apply_patch src"});"#,
+            r#"await tools.apply_patch(`*** Begin Patch\n*** Update File: run.js\n+await tools.view_image({path});\n*** End Patch`);"#,
+            r#"await tools.exec_command({cmd: "rg -F \"tools.view_image(\" src"}); await tools.apply_patch("*** Begin Patch\n*** End Patch");"#,
+        ];
+        let mut lines = vec![line(0, "session_meta", json!({"id": "t1"}))];
+        for (at, script) in (1..).zip(scripts) {
+            lines.push(line(
+                at,
+                "response_item",
+                json!({"type": "custom_tool_call", "name": "exec", "call_id": format!("c{at}"), "input": script}),
+            ));
+        }
+        let file = rollout(dir.path(), "t1", &lines);
+        let names: Vec<String> = Codex
+            .transcript("t1", &[file])
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| entry.tool)
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "exec: exec_command",
+                "exec: apply_patch",
+                "exec: exec_command, apply_patch"
             ]
         );
     }
