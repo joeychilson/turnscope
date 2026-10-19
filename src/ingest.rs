@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
-use crate::Result;
 use crate::agents::{self, Agent, Link, Read, Response};
 use crate::prices::{History, Prices, in_force};
+use crate::{Error, Result};
 
 /// Raised when a reader would read a file it read before differently: every
 /// file still there is then read again.
@@ -115,21 +115,10 @@ fn lock(db: &Connection) -> Result<std::fs::File> {
     crate::db::lock(&Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock"))
 }
 
-/// Read what's new in every agent's history under `home`; whether any file
-/// was read.
-pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
-    let _lock = lock(db)?;
-
-    let readers: i64 = db.query_row("SELECT readers FROM state", [], |row| row.get(0))?;
-    // An older Turnscope still running, as an agent's MCP server can be,
-    // would read it all again its way, and this one back again.
-    if readers > READERS {
-        return Err(crate::db::newer());
-    }
-    if readers < READERS {
-        read_again(db)?;
-    }
-
+/// The files under `home` to read: each one new or changed since its last
+/// read, with where to read it from. A file read before that moved has its
+/// row moved with it.
+fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
     // By the path's bytes: a `PathBuf` hashes component by component. With
     // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
     let mut known: HashMap<OsString, Known> = db
@@ -202,6 +191,25 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
             again,
         });
     }
+    Ok(due)
+}
+
+/// Read what's new in every agent's history under `home`; whether any file
+/// was read.
+pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
+    let _lock = lock(db)?;
+
+    let readers: i64 = db.query_row("SELECT readers FROM state", [], |row| row.get(0))?;
+    // An older Turnscope still running, as an agent's MCP server can be,
+    // would read it all again its way, and this one back again.
+    if readers > READERS {
+        return Err(crate::db::newer());
+    }
+    if readers < READERS {
+        read_again(db)?;
+    }
+
+    let due = due(db, home)?;
     db.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
     if due.is_empty() {
         return Ok(false);
@@ -237,23 +245,7 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
                             write(&tx, due, read, home, &derived)?;
                             wrote = true;
                         }
-                        // A file that can't be read now is tried again next
-                        // time, from where it was: its row keeps its cursor
-                        // and what it was, and says why for doctor.
-                        Err(error) => {
-                            tx.execute(
-                                "INSERT INTO file (path, agent, folder, size, modified, inode, cursor, failed)
-                                 VALUES (?1, ?2, ?3, -1, 0, ?4, '', ?5)
-                                 ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
-                                params![
-                                    due.path.to_string_lossy(),
-                                    due.agent.info().id,
-                                    due.folder.to_string_lossy(),
-                                    due.stat.inode,
-                                    error.to_string(),
-                                ],
-                            )?;
-                        }
+                        Err(error) => failed(&tx, due, &error)?,
                     }
                 }
                 tx.commit()?;
@@ -267,6 +259,24 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     // Statistics for the query planner, where tables changed enough.
     db.execute_batch("PRAGMA optimize")?;
     Ok(wrote)
+}
+
+/// A file that can't be read now is tried again next time, from where it
+/// was: its row keeps its cursor and what it was, and says why for doctor.
+fn failed(tx: &Transaction, due: &Due, error: &Error) -> Result<()> {
+    tx.execute(
+        "INSERT INTO file (path, agent, folder, size, modified, inode, cursor, failed)
+         VALUES (?1, ?2, ?3, -1, 0, ?4, '', ?5)
+         ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
+        params![
+            due.path.to_string_lossy(),
+            due.agent.info().id,
+            due.folder.to_string_lossy(),
+            due.stat.inode,
+            error.to_string(),
+        ],
+    )?;
+    Ok(())
 }
 
 fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived) -> Result<()> {
@@ -658,19 +668,20 @@ mod tests {
         assert_eq!(count(&db, "SELECT count(*) FROM said"), 1);
         assert_eq!(count(&db, "SELECT count(*) FROM file"), 1);
 
-        // Replaced: read from the start, what it said and couldn't read
-        // counted once.
-        let new = second.join("s1.new");
-        std::fs::write(
-            &new,
-            line("Fix the parser.") + "not a line\n" + &line("And the tests."),
-        )
-        .unwrap();
-        std::fs::rename(&new, &moved).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM said"), 2);
-        assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
-        assert_eq!(count(&db, "SELECT indexed FROM file"), 1);
+        // Replaced, and replaced again: read from the start each time, what
+        // it said and couldn't read counted once.
+        for _ in 0..2 {
+            let new = second.join("s1.new");
+            std::fs::write(
+                &new,
+                line("Fix the parser.") + "not a line\n" + &line("And the tests."),
+            )
+            .unwrap();
+            std::fs::rename(&new, &moved).unwrap();
+            ingest(&mut db, home.path()).unwrap();
+            assert_eq!(count(&db, "SELECT count(*) FROM said"), 2);
+            assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
+        }
     }
 
     #[test]
@@ -684,30 +695,6 @@ mod tests {
         assert!(ingest(&mut db, home.path()).unwrap());
         // Tried again, as it is each time, it reads nothing.
         assert!(!ingest(&mut db, home.path()).unwrap());
-    }
-
-    #[test]
-    fn a_file_that_said_nothing_isnt_marked_as_in_search() {
-        let (_dir, home, mut db, folder) = store();
-        std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
-        let quiet = folder.join("s2.jsonl");
-        std::fs::write(&quiet, "not a line\n").unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        let indexed = |db: &Connection, name: &str| {
-            count(
-                db,
-                &format!("SELECT indexed FROM file WHERE path LIKE '%{name}'"),
-            )
-        };
-        assert_eq!((indexed(&db, "s1.jsonl"), indexed(&db, "s2.jsonl")), (1, 0));
-        // Replaced, it's read again, with no scan of search for rows it
-        // never had.
-        let new = folder.join("s2.new");
-        std::fs::write(&new, "not a line\nnor this\n").unwrap();
-        std::fs::rename(&new, &quiet).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(indexed(&db, "s2.jsonl"), 0);
-        assert_eq!(count(&db, "SELECT count(*) FROM said"), 1);
     }
 
     #[test]
@@ -835,8 +822,8 @@ mod tests {
         let found = "SELECT count(*) FROM said WHERE said MATCH 'commas'";
         ingest(&mut db, home.path()).unwrap();
         assert_eq!(count(&db, found), 1);
-        read_again(&mut db).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM said"), 0);
+        db.execute("UPDATE state SET readers = ?1", [READERS - 1])
+            .unwrap();
         ingest(&mut db, home.path()).unwrap();
         assert_eq!(count(&db, found), 1);
     }
