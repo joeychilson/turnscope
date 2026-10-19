@@ -125,11 +125,8 @@ struct Cursor {
     thread: Option<String>,
     review: bool,
     provider: Option<String>,
-    /// Where a spawned subagent's own history starts, after its parent's.
-    copied_until: Option<i64>,
-    legacy_fork: bool,
-    /// Within a legacy fork's copy of its parent's history.
-    copying: bool,
+    #[serde(flatten)]
+    copy: Copy,
     model: Option<String>,
     priority: bool,
     /// The running total as last seen.
@@ -139,6 +136,40 @@ struct Cursor {
     titled: bool,
     /// Responses before any model was named.
     waiting: Vec<Response>,
+}
+
+/// Where a rollout holds a copy of its parent's history.
+#[derive(Default, Serialize, Deserialize)]
+struct Copy {
+    /// Where a spawned subagent's own history starts, after its parent's.
+    copied_until: Option<i64>,
+    legacy_fork: bool,
+    /// Within a legacy fork's copy of its parent's history.
+    copying: bool,
+}
+
+impl Copy {
+    /// The copy in the rollout that the `session_meta` `meta` opens.
+    fn of(meta: &Payload) -> Copy {
+        Copy {
+            copied_until: meta
+                .parent_thread_id
+                .as_ref()
+                .and(meta.subagent_history_start_ordinal),
+            legacy_fork: meta.legacy_fork(),
+            copying: false,
+        }
+    }
+
+    /// Whether `line`, in a rollout of `thread`, is of the copy, keeping
+    /// `copying` up to date.
+    fn holds(&mut self, line: &Line, thread: &str) -> bool {
+        (self.legacy_fork && in_copy(line, thread, &mut self.copying))
+            || line
+                .ordinal
+                .zip(self.copied_until)
+                .is_some_and(|(at, until)| at < until)
+    }
 }
 
 #[derive(Deserialize, Serialize, Default, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +295,11 @@ impl Payload<'_> {
         self.parent_thread_id.is_none()
             && self.forked_from_id.is_some()
             && self.history_mode.as_deref() == Some("legacy")
+    }
+
+    /// Where the history this `session_meta` goes on from ends.
+    fn base(&self) -> Option<i64> {
+        parsed::<Base>(self.history_base).map(|base| base.end_ordinal_exclusive)
     }
 }
 
@@ -409,30 +445,19 @@ impl Agent for Codex {
         let mut conversation = Conversation::default();
         for (index, rollout) in rollouts.into_iter().enumerate() {
             let rewound = kept[index + 1..].iter().flatten().min().copied();
-            let mut copied_until = None;
             let mut opened = false;
-            let mut legacy_fork = false;
-            let mut copying = false;
+            let mut copy = Copy::default();
             super::lines(rollout, 0, |bytes| {
                 let Ok(line) = serde_json::from_slice::<Line>(bytes) else {
                     return;
                 };
                 if line.kind == "session_meta" && !opened {
                     opened = true;
-                    copied_until = line.payload.as_ref().and_then(|meta| {
-                        meta.parent_thread_id
-                            .as_ref()
-                            .and(meta.subagent_history_start_ordinal)
-                    });
-                    legacy_fork = line.payload.as_ref().is_some_and(Payload::legacy_fork);
+                    copy = line.payload.as_ref().map(Copy::of).unwrap_or_default();
                     return;
                 }
-                if (legacy_fork && in_copy(&line, &thread, &mut copying))
+                if copy.holds(&line, &thread)
                     || line.kind != "response_item"
-                    || line
-                        .ordinal
-                        .zip(copied_until)
-                        .is_some_and(|(at, until)| at < until)
                     || line.ordinal.zip(rewound).is_some_and(|(at, end)| at >= end)
                 {
                     return;
@@ -481,11 +506,7 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
         }
         return;
     };
-    let copied = (cursor.legacy_fork && in_copy(line, &thread, &mut cursor.copying))
-        || line
-            .ordinal
-            .zip(cursor.copied_until)
-            .is_some_and(|(at, until)| at < until);
+    let copied = cursor.copy.holds(line, &thread);
     match (&*line.kind, payload.kind.as_deref()) {
         ("session_meta", _) => return,
         // Settings are taken from a copy too: its records were made under them.
@@ -568,7 +589,7 @@ fn rewound_to(rollout: &Path, native: &str) -> Option<i64> {
     if meta.id.as_deref() != Some(native) {
         return None;
     }
-    parsed::<Base>(meta.history_base).map(|base| base.end_ordinal_exclusive)
+    meta.base()
 }
 
 /// Whether `line`, in a legacy fork's rollout of `thread`, is of its copy of
@@ -602,11 +623,7 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
     let Some(native) = &meta.id else { return };
     let thread = INFO.session(native);
     cursor.provider = meta.model_provider.clone();
-    cursor.copied_until = meta
-        .parent_thread_id
-        .as_ref()
-        .and(meta.subagent_history_start_ordinal);
-    cursor.legacy_fork = meta.legacy_fork();
+    cursor.copy = Copy::of(meta);
     let session = read.session(&thread);
     session.parent = match (&meta.parent_thread_id, &meta.forked_from_id) {
         (Some(parent), _) => Some(Parent {
@@ -635,8 +652,8 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
     // does, doesn't hold its first request, and takes what was said past
     // where it goes on from out of search. A fork's own history starts after
     // its parent's.
-    let rewound = parsed::<Base>(meta.history_base)
-        .map(|base| base.end_ordinal_exclusive)
+    let rewound = meta
+        .base()
         .filter(|end| *end > meta.forked_from_ordinal_exclusive.unwrap_or(0));
     if let Some(end) = rewound {
         read.rewound.push((thread.clone(), end));
@@ -977,22 +994,6 @@ mod tests {
             json!({"id": "t1", "history_mode": "paginated",
                 "history_base": {"thread_id": base, "end_ordinal_exclusive": at, "end_byte_offset": 0}}),
         )
-    }
-
-    #[test]
-    fn a_scripts_output_is_its_commands_and_a_failing_one_fails_it() {
-        let output = "Script completed\nWall time 0.4 seconds\nOutput:\n\
-            {\"chunk_id\":\"a1\",\"wall_time_seconds\":0.1,\"exit_code\":0,\"original_token_count\":3,\"output\":\"src/lib.rs\\n\"}\n\
-            {\"i\":1,\"status\":\"fulfilled\",\"value\":{\"chunk_id\":\"b2\",\"exit_code\":101,\"output\":\"test failed\\n\"}}";
-        assert_eq!(
-            script(output),
-            ("src/lib.rs\nexit 101:\ntest failed".to_owned(), true, false)
-        );
-        assert_eq!(script("Edited"), ("Edited".to_owned(), false, false));
-        assert_eq!(
-            script("Script failed: patch rejected"),
-            ("Script failed: patch rejected".to_owned(), true, true)
-        );
     }
 
     #[test]
@@ -1400,6 +1401,9 @@ mod tests {
     fn a_conversation_keeps_the_persons_words_and_names_what_a_script_did() {
         let dir = tempfile::tempdir().unwrap();
         let script = "await tools.apply_patch(\"*** Begin Patch\\n*** Update File: src/lib.rs\\n*** End Patch\"); await tools.exec_command({cmd: \"cargo test\"});";
+        let output = "Script completed\nWall time 0.4 seconds\nOutput:\n\
+            {\"chunk_id\":\"a1\",\"wall_time_seconds\":0.1,\"exit_code\":0,\"original_token_count\":3,\"output\":\"src/lib.rs\\n\"}\n\
+            {\"i\":1,\"status\":\"fulfilled\",\"value\":{\"chunk_id\":\"b2\",\"exit_code\":101,\"output\":\"test failed\\n\"}}";
         let file = rollout(
             dir.path(),
             "t1",
@@ -1431,7 +1435,7 @@ mod tests {
                 line(
                     5,
                     "response_item",
-                    json!({"type": "custom_tool_call_output", "call_id": "c2", "output": "Script completed\nOutput:\n{\"chunk_id\":\"a1\",\"exit_code\":101,\"output\":\"test failed\\n\"}"}),
+                    json!({"type": "custom_tool_call_output", "call_id": "c2", "output": output}),
                 ),
             ],
         );
@@ -1441,13 +1445,15 @@ mod tests {
             (Kind::User, "Fix the parser.")
         );
         // The script that failed may have stopped before its patch; the one
-        // that went on to its end made it, though its tests then failed.
+        // that went on to its end made it, though its tests then failed. A
+        // script's output is what its commands printed.
         let calls: Vec<_> = entries[1..]
             .iter()
             .filter_map(|entry| entry.tool.as_ref())
             .map(|tool| {
                 (
                     tool.name.as_str(),
+                    tool.output.as_deref(),
                     tool.failed,
                     tool.edited,
                     tool.files.as_slice(),
@@ -1460,12 +1466,14 @@ mod tests {
             [
                 (
                     "exec: apply_patch, exec_command",
+                    Some("Script failed: exit 101"),
                     true,
                     false,
                     patched.as_slice()
                 ),
                 (
                     "exec: apply_patch, exec_command",
+                    Some("src/lib.rs\nexit 101:\ntest failed"),
                     true,
                     true,
                     patched.as_slice()
