@@ -12,6 +12,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use jiff::tz::TimeZone;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -795,13 +796,13 @@ fn rank(accounts: &mut [Account]) {
 
 /// What an API-key account cost this month, and the month at that pace.
 fn spend(db: &rusqlite::Connection, account: &str, now: i64) -> Result<Spend> {
-    let month = time::start_of(time::Period::Month, now);
+    let (month, next) = time::window(time::Period::Month, now, &TimeZone::system());
     let (cost, unpriced): (f64, i64) = db.query_row(
         "SELECT total(cost), count(*) - count(cost) FROM response WHERE account = ?1 AND at >= ?2",
         params![account, month],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let whole = (time::next(time::Period::Month, month) - month) as f64;
+    let whole = (next - month) as f64;
     // Too soon to say in the first day: a dollar in the first minutes would
     // forecast thousands.
     let elapsed = now - month;
