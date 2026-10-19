@@ -1,7 +1,6 @@
 // The accounts not used this week, folded into one line, "3 more accounts",
-// that opens into a row for each. They're listed as serve orders them: those
-// with the most left first, then those to sign in again, then keys with no
-// limit, by what they cost this month.
+// that opens into a row for each. They're listed as serve orders them
+// (docs/protocol.md).
 //
 // Hidden accounts gather at the end in a line of their own, "2 hidden",
 // which lists them, each with a Show button.

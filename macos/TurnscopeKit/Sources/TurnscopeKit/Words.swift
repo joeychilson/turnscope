@@ -58,7 +58,7 @@ public struct Words: Sendable {
     /// far as this Mac knows, as serve says.
     public func left(_ limit: LimitStatus) -> String {
         if let money = limit.money { return dollars(money.leftUsd, down: true) }
-        return "\(max(0, min(100, limit.leftPercent)))%"
+        return "\(limit.leftPercent)%"
     }
 
     /// Whether a month's cost is unknown because none of the usage had a
