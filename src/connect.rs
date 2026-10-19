@@ -22,9 +22,7 @@ use crate::{Error, Result, output_within};
 pub fn connect(agent: &dyn Agent, home: &Path) -> Result<()> {
     let info = agent.info();
     // Its real path, so a link to it on `PATH` isn't what agents run.
-    let exe = std::env::current_exe()
-        .and_then(std::fs::canonicalize)
-        .map_err(|error| Error::Failed(error.to_string()))?;
+    let exe = std::env::current_exe().and_then(std::fs::canonicalize)?;
     if temporary(&exe) {
         return Err(Error::Failed(format!(
             "Turnscope's engine runs from {}, which goes away when its disk image is ejected or its drive is removed. Put Turnscope in Applications, quit it, and open it from there a minute later to connect",

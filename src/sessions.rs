@@ -524,6 +524,16 @@ pub fn resolve(db: &Connection, id: &str) -> Result<String> {
     }
 }
 
+/// The account session `id` drew on last, when one is known.
+pub fn account(db: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT account FROM response WHERE session = ?1 AND account IS NOT NULL ORDER BY at DESC LIMIT 1",
+        [id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 /// A session's conversation, read from its agent's files now.
 pub fn transcript(db: &Connection, id: &str) -> Result<Vec<Entry>> {
     let (agent, native) = parse(id)?;
