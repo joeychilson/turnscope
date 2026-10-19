@@ -483,9 +483,13 @@ fn stopped(entries: &[Entry], stop: usize, quoted: &[usize], share: usize, now: 
             })
         },
     );
-    let gap = full.map_or(String::new(), |at| {
-        format!("\n\n{}", left_out(stop + 1, at))
-    });
+    // A system note is left out wherever it falls, not for room.
+    let gap = full
+        .and_then(|at| {
+            let from = (stop + 1..=at).find(|&next| entries[next].kind != Kind::System)?;
+            Some(format!("\n\n{}", left_out(from, at)))
+        })
+        .unwrap_or_default();
     let what = match (last.kind, entries.len() - stop - 1) {
         (Kind::Assistant, 0) => "Its last message, the session's last entry.".to_owned(),
         (Kind::Assistant, count) => format!(
@@ -994,8 +998,8 @@ mod tests {
     }
 
     /// Where it stopped says which entries after the last message it had no
-    /// room for, as the story does: from the first after it to the one that
-    /// didn't fit.
+    /// room for: from the first after it that isn't a system note to the one
+    /// that didn't fit.
     #[test]
     fn where_it_stopped_says_just_what_it_left_out_for_room() {
         let failed = "test quoted_commas ... FAILED\n";
@@ -1026,6 +1030,16 @@ mod tests {
             tests(failed),
         ]);
         assert!(cut.contains("\nEntry #2 is left out for room.\n"), "{cut}");
+        // Nor does the note before it.
+        let noted_first = stop(vec![
+            said(Kind::System, 2, "A reminder."),
+            tests(&failed.repeat(60)),
+            tests(failed),
+        ]);
+        assert!(
+            noted_first.contains("\nEntry #3 is left out for room.\n"),
+            "{noted_first}"
+        );
         // With room for none of the entries after the last message.
         let none = stop(vec![tests(&failed.repeat(60))]);
         assert!(
