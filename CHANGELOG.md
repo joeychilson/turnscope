@@ -20,6 +20,11 @@
   `sessions read` showed one entry with its tool output cut at 2,000
   characters, not at 40,000 as with `--count 1`. `read_session` now takes a
   `count` of 0 as 1.
+- **Handoff:** "Where it stopped" says which entries after the agent's
+  last message it had no room for when none of them fit. It said nothing
+  of them. The entries it says it left out for room no longer start or
+  end with a system note, which a handoff always leaves out, so a note
+  alone is no longer said to be left out for room.
 - **`status`, `check_limits` and `doctor`** say why an account can't be
   read in the same words. `check_limits`' verdict on the first account
   says how to fix it, as the others do, not only that its limits can't be
