@@ -806,9 +806,12 @@ fn read_session(server: &mut Server, arguments: Value) -> Result<String> {
         search: input.search,
         failed: input.failed,
     };
+    let (shown, next) = sessions::page(&entries, &reading);
     Ok(sessions::page_text(
         &session,
         &entries,
+        &shown,
+        next,
         &reading,
         Cite::Tool,
         crate::now(),
