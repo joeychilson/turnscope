@@ -34,7 +34,7 @@ private struct AccountSwitch: View {
             Logo(account: account, size: Row.logo)
             AccountName(account: account)
             Spacer(minLength: 8)
-            Switch(label: "Show \([account.title, account.label].compactMap { $0 }.joined(separator: ", "))",
+            Switch(label: "Show \(store.words().called(account, labelled: true))",
                    on: Binding(get: { !account.hidden },
                                set: { shown in withAnimation(spring) { store.setHidden(!shown, for: account.id) } }))
         }
