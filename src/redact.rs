@@ -60,14 +60,11 @@ pub fn redact(text: &str) -> String {
 /// token alone.
 fn secret_at(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
     let rest = &bytes[at..];
-    let run = |bytes: &[u8], wanted: &dyn Fn(u8) -> bool| {
-        bytes.iter().take_while(|&&byte| wanted(byte)).count()
-    };
     if let Some(after) = rest
         .strip_prefix(b"Bearer ")
         .or_else(|| rest.strip_prefix(b"bearer "))
     {
-        let token = run(after, &|byte| key_byte(byte) || b"./+=".contains(&byte));
+        let token = run(after, |byte| key_byte(byte) || b"./+=".contains(&byte));
         return (token >= 20).then_some((at + 7, at + 7 + token));
     }
     if rest.starts_with(b"-----BEGIN ") {
@@ -97,7 +94,7 @@ fn secret_at(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
         let header = label + 5;
         let close = dashes(header, block.len())
             // A diff's `-` before the END line makes six dashes.
-            .map(|end| end + run(&block[end + 5..], &|byte| byte == b'-'))
+            .map(|end| end + run(&block[end + 5..], |byte| byte == b'-'))
             .filter(|&end| block[end..].starts_with(b"-----END "))
             .and_then(|end| dashes(end + 9, 64));
         let length = match close {
@@ -116,7 +113,7 @@ fn secret_at(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
                 }
                 length += 1;
             }
-            let part = run(&rest[length..], &key_byte);
+            let part = run(&rest[length..], key_byte);
             if part < 10 {
                 return None;
             }
@@ -125,7 +122,7 @@ fn secret_at(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
         return Some((at, at + length));
     }
     PREFIXES.iter().find_map(|(prefix, least)| {
-        let key = run(rest.strip_prefix(prefix.as_bytes())?, &key_byte);
+        let key = run(rest.strip_prefix(prefix.as_bytes())?, key_byte);
         (key >= *least).then_some((at, at + prefix.len() + key))
     })
 }
@@ -155,10 +152,7 @@ fn key_text(bytes: &[u8]) -> usize {
             [b' ' | b'\t', ..] => {
                 // Spaces a paste left at a line's end are part of the key.
                 // Within a line they end it, so prose after a key stays.
-                let spaces = bytes[at..]
-                    .iter()
-                    .take_while(|&&byte| byte == b' ' || byte == b'\t')
-                    .count();
+                let spaces = run(&bytes[at..], |byte| byte == b' ' || byte == b'\t');
                 if !matches!(
                     bytes[at + spaces..],
                     [b'\n' | b'\r', ..] | [b'\\', b'n' | b'r', ..]
@@ -176,6 +170,10 @@ fn key_text(bytes: &[u8]) -> usize {
             _ => return end,
         }
     }
+}
+
+fn run(bytes: &[u8], wanted: impl Fn(u8) -> bool) -> usize {
+    bytes.iter().take_while(|&&byte| wanted(byte)).count()
 }
 
 fn key_byte(byte: u8) -> bool {
