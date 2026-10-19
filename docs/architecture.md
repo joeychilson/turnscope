@@ -71,7 +71,7 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
 | `alert` | Each alert raised, what it says, and whether a client acknowledged it |
 | `price` | models.dev's prices for each model, each from when it was read |
-| `state` | One row: the reader version the history was read with, when history, limits and prices were last read, and the settings |
+| `state` | One row: the reader version the history was read with, when its first read finished, when limits and prices were last read, and the settings |
 
 `db::open` creates or migrates the database. Each revision is one script: a
 shipped script is never edited, and a change is a new script at the end.

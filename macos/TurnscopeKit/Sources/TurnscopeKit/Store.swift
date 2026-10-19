@@ -86,7 +86,7 @@ public final class Store {
     /// The names of every agent Turnscope reads, installed or not.
     public var agentNames: [String] { status?.agents.map(\.name) ?? [] }
     /// Whether the agents' history is still being read for the first time.
-    public var reading: Bool { status != nil && status?.historyReadAt == nil }
+    public var reading: Bool { status?.historyRead == false }
     /// Which notifications are turned on.
     public var notify: Notify? { status?.settings.notify }
 

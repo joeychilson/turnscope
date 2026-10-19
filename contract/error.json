@@ -3,10 +3,10 @@
     "code": -32001,
     "data": {
       "supported": [
-        1
+        2
       ]
     },
-    "message": "this turnscope speaks protocol 1, not 2"
+    "message": "this turnscope speaks protocol 2, not 3"
   },
   "id": 1,
   "jsonrpc": "2.0"

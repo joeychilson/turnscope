@@ -608,9 +608,9 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
     };
     let early = ask(br#"{"jsonrpc":"2.0","id":1,"method":"alerts.ack","params":{"ids":[]}}"#);
     assert_eq!(early["error"]["code"], -32002);
-    let other = ask(br#"{"jsonrpc":"2.0","id":2,"method":"hello","params":{"protocol":2}}"#);
+    let other = ask(br#"{"jsonrpc":"2.0","id":2,"method":"hello","params":{"protocol":1}}"#);
     assert_eq!(other["error"]["code"], -32001);
-    let hello = ask(br#"{"jsonrpc":"2.0","id":3,"method":"hello","params":{"protocol":1}}"#);
+    let hello = ask(br#"{"jsonrpc":"2.0","id":3,"method":"hello","params":{"protocol":2}}"#);
     assert_eq!(
         hello["result"]["server"],
         format!("turnscope {}", env!("CARGO_PKG_VERSION"))

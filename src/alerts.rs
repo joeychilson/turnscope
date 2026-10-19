@@ -294,7 +294,7 @@ mod tests {
         };
         Status {
             at,
-            history_read_at: None,
+            history_read: false,
             accounts: vec![Account {
                 id: "anthropic:a".to_owned(),
                 provider: "anthropic".to_owned(),

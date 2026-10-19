@@ -199,7 +199,10 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
 pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     let _lock = lock(db)?;
 
-    let readers: i64 = db.query_row("SELECT readers FROM state", [], |row| row.get(0))?;
+    let (readers, first): (i64, bool) =
+        db.query_row("SELECT readers, history_at IS NULL FROM state", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
     // An older Turnscope still running, as an agent's MCP server can be,
     // would read it all again its way, and this one back again.
     if readers > READERS {
@@ -210,8 +213,8 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     }
 
     let due = due(db, home)?;
-    db.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
-    if due.is_empty() {
+    // The first read ends by saying so, even with nothing to read.
+    if due.is_empty() && !first {
         return Ok(false);
     }
 
@@ -258,6 +261,12 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     })?;
     // Statistics for the query planner, where tables changed enough.
     db.execute_batch("PRAGMA optimize")?;
+    // `history_at` is when the first read finished. Only whether it has is
+    // shown, so it's written once: a catch-up after it writes nothing to say
+    // it ran.
+    if first {
+        db.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
+    }
     Ok(wrote)
 }
 
@@ -695,6 +704,21 @@ mod tests {
         assert!(ingest(&mut db, home.path()).unwrap());
         // Tried again, as it is each time, it reads nothing.
         assert!(!ingest(&mut db, home.path()).unwrap());
+    }
+
+    #[test]
+    fn a_catch_up_after_the_first_read_that_reads_nothing_writes_nothing() {
+        let (dir, home, mut db, folder) = store();
+        std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
+        let unread = "SELECT history_at IS NULL FROM state";
+        assert_eq!(count(&db, unread), 1);
+        assert!(ingest(&mut db, home.path()).unwrap());
+        assert_eq!(count(&db, unread), 0);
+        // It moves when another connection writes.
+        let other = crate::db::open(dir.path()).unwrap();
+        let before = count(&other, "PRAGMA data_version");
+        assert!(!ingest(&mut db, home.path()).unwrap());
+        assert_eq!(count(&other, "PRAGMA data_version"), before);
     }
 
     #[test]

@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use crate::{Error, Result, agents, alerts, status, usage};
 
 /// The protocol spoken, raised for any change a client can't ignore.
-pub const PROTOCOL: u64 = 1;
+pub const PROTOCOL: u64 = 2;
 
 pub fn socket_path(data: &Path) -> PathBuf {
     let path = data.join("serve.sock");
@@ -298,12 +298,6 @@ impl Server {
         let mut shown = serde_json::to_value(&app).unwrap_or_default();
         if let Some(fields) = shown.as_object_mut() {
             fields.remove("at");
-            // Set at every catch-up; what's shown is only whether the first
-            // read is done.
-            fields.insert(
-                "historyReadAt".to_owned(),
-                json!(app.status.history_read_at.is_some()),
-            );
         }
         if self.sent.as_ref().is_some_and(|(_, sent)| *sent == shown) {
             return;
@@ -590,5 +584,59 @@ mod tests {
         for each in hello["result"]["alerts"].as_array().unwrap() {
             again::<crate::alerts::Alert>(each);
         }
+    }
+
+    /// A status is pushed when what it shows changed, and only then: not
+    /// after a catch-up that read history but changed nothing shown.
+    #[test]
+    fn a_status_is_pushed_only_when_what_it_shows_changed() {
+        use std::io::BufRead as _;
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // Claude Code is installed from the start, with no history yet.
+        let folder = home.path().join(".claude/projects/-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (stream, app) = super::UnixStream::pair().unwrap();
+        app.set_nonblocking(true).unwrap();
+        let mut app = std::io::BufReader::new(app);
+        let mut server = super::Server {
+            db: crate::db::open(data.path()).unwrap(),
+            home: home.path().to_path_buf(),
+            clients: [(
+                1,
+                super::Client {
+                    stream,
+                    greeted: true,
+                },
+            )]
+            .into(),
+            sent: None,
+            sender: std::sync::mpsc::channel().0,
+        };
+        // Push, and say whether the first read had finished in each status
+        // the app was sent.
+        let mut pushed = |server: &mut super::Server| -> Vec<Value> {
+            server.push();
+            (&mut app)
+                .lines()
+                .map_while(Result::ok)
+                .map(|line| serde_json::from_str::<Value>(&line).unwrap())
+                .map(|message| message["params"]["historyRead"].clone())
+                .collect()
+        };
+
+        assert_eq!(pushed(&mut server), [false]);
+        // The first read finishes, though there's nothing to read.
+        crate::ingest::ingest(&mut server.db, home.path()).unwrap();
+        assert_eq!(pushed(&mut server), [true]);
+        // A session that drew on no account: read, and nothing shown changed.
+        let line = serde_json::json!({"type": "user", "sessionId": "s1",
+            "timestamp": "2026-09-30T09:00:00Z", "message": {"role": "user", "content": "Hi."}});
+        std::fs::write(folder.join("s1.jsonl"), format!("{line}\n")).unwrap();
+        assert!(crate::ingest::ingest(&mut server.db, home.path()).unwrap());
+        assert!(pushed(&mut server).is_empty());
+        let mut settings = crate::alerts::Settings::default();
+        settings.notify.reset = false;
+        crate::alerts::save_settings(&server.db, &settings).unwrap();
+        assert_eq!(pushed(&mut server), [true]);
     }
 }
