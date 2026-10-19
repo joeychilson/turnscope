@@ -22,9 +22,10 @@ use crate::status;
 use crate::usage::By;
 use crate::{Error, Result, sessions, time, usage};
 
-const MODERN: &str = "2026-07-28";
-const EARLIER: [&str; 2] = ["2025-11-25", "2025-06-18"];
-const SUPPORTED: [&str; 3] = [MODERN, EARLIER[0], EARLIER[1]];
+/// The current revision first; the rest are the `initialize` handshake's.
+const SUPPORTED: [&str; 3] = ["2026-07-28", "2025-11-25", "2025-06-18"];
+const MODERN: &str = SUPPORTED[0];
+const EARLIER: &[&str] = SUPPORTED.split_at(1).1;
 
 const TTL_MS: u64 = 3_600_000;
 const CACHE_SCOPE: &str = "public";
