@@ -7,6 +7,8 @@
   menu. Two accounts with the same title were both "Hide Claude Max".
 - **`sessions --folder` and `handoff --folder`** take a relative folder,
   such as `.`, from the current folder. They found no sessions.
+- **`sessions`**, run by any agent, ends the agent's own session with
+  `· yours`, as `find_sessions` does. It marked only Claude Code's.
 - **`sessions` and `sessions read`** refuse a `--count` outside 1 to 100,
   with exit code 2, instead of using the nearest count. With `--count 0`,
   `sessions read` showed one entry with its tool output cut at 2,000

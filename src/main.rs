@@ -521,14 +521,14 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 except: None,
             };
             let page = sessions::find(&db, home, &query, now)?;
+            let caller = mcp::Caller::detect();
+            let own = match &caller.folder {
+                Some(folder) => caller.own_session(&db, home, folder)?,
+                None => None,
+            };
             print(
                 json!(page),
-                sessions::text(
-                    &page,
-                    sessions::Cite::Command,
-                    mcp::Caller::detect().session.as_deref(),
-                    now,
-                ),
+                sessions::text(&page, sessions::Cite::Command, own.as_deref(), now),
             )
         }
         Command::Handoff { session, folder } => {
