@@ -225,8 +225,8 @@ pub fn count(number: u64) -> String {
 
 /// What usage cost, with how many responses had no known price, which
 /// aren't free: `$0.47`, `$0.47 (+3 unpriced)`.
-pub fn cost(usd: f64, unpriced: u64) -> String {
-    dollars(usd) + &self::unpriced(unpriced)
+pub fn cost(usd: f64, unpriced_count: u64) -> String {
+    dollars(usd) + &unpriced(unpriced_count)
 }
 
 /// ` (+3 unpriced)`, and with none, nothing.
