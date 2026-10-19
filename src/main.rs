@@ -52,6 +52,12 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Error {
+        Error::Failed(error.to_string())
+    }
+}
+
 /// Now, in UTC milliseconds; `TURNSCOPE_NOW` fixes it, so output can be
 /// reproduced.
 pub fn now() -> i64 {
@@ -260,6 +266,16 @@ enum ConfigAction {
     },
 }
 
+/// The settings `config` sets and shows, by key, in the order it shows them.
+fn notify_keys(notify: &mut alerts::Notify) -> [(&'static str, &mut bool); 4] {
+    [
+        ("notify.runningOut", &mut notify.running_out),
+        ("notify.usedUp", &mut notify.used_up),
+        ("notify.reset", &mut notify.reset),
+        ("notify.signIn", &mut notify.sign_in),
+    ]
+}
+
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -272,7 +288,6 @@ fn main() -> ExitCode {
         Err(error) => error.exit(),
     };
     // Absolute, as paths under them are stored and read from other folders.
-    let absolute = |path: PathBuf| std::path::absolute(&path).unwrap_or(path);
     let home = absolute(
         cli.home
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
@@ -335,6 +350,11 @@ fn main() -> ExitCode {
     }
 }
 
+/// `path` made absolute, or as it is when it can't be.
+fn absolute(path: PathBuf) -> PathBuf {
+    std::path::absolute(&path).unwrap_or(path)
+}
+
 /// A command's answer, as text or JSON. Those that report data catch up
 /// first; those that change a setting don't wait for it.
 fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<String> {
@@ -381,9 +401,10 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 _ => None,
             };
             let text = status::text(&status, &shown, None);
-            let text = fit
-                .as_ref()
-                .map_or(text.clone(), |fit| format!("{fit}\n\n{text}"));
+            let text = match &fit {
+                Some(fit) => format!("{fit}\n\n{text}"),
+                None => text,
+            };
             print(json!({ "accounts": shown, "fit": fit }), text)
         }
         Command::Usage {
@@ -491,7 +512,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         } => {
             let query = sessions::Query {
                 search,
-                folder: folder.map(|folder| std::path::absolute(&folder).unwrap_or(folder)),
+                folder: folder.map(absolute),
                 agent,
                 since: time_of(&from)?,
                 running,
@@ -511,17 +532,16 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             )
         }
         Command::Handoff { session, folder } => {
-            let (session, others) = match session {
-                Some(session) => (sessions::resolve(&db, &session)?, Vec::new()),
-                // Run by an agent, not the session it's run from.
-                None => {
-                    let folder = folder
-                        .map_or_else(std::env::current_dir, std::path::absolute)
-                        .unwrap_or_default();
-                    let own = mcp::Caller::detect().own_session(&db, home, &folder)?;
-                    sessions::latest(&db, home, &folder, own.as_deref())?
-                }
-            };
+            let folder = folder
+                .map_or_else(std::env::current_dir, std::path::absolute)
+                .unwrap_or_default();
+            // Run by an agent, not the session it's run from.
+            let (session, others) = mcp::Caller::detect().session_to_hand_off(
+                &db,
+                home,
+                session.as_deref(),
+                Some(folder),
+            )?;
             let handoff = sessions::handoff(&db, &session, sessions::Cite::Command, now)?;
             print(
                 json!({ "session": session, "others": others, "handoff": handoff }),
@@ -552,31 +572,21 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         Command::Config { action } => {
             let mut settings = alerts::settings(&db)?;
             if let Some(ConfigAction::Set { key, value }) = action {
-                let on = value == "on";
-                let notify = &mut settings.notify;
-                match key.as_str() {
-                    "notify.runningOut" => notify.running_out = on,
-                    "notify.usedUp" => notify.used_up = on,
-                    "notify.reset" => notify.reset = on,
-                    "notify.signIn" => notify.sign_in = on,
-                    other => {
-                        return Err(Error::Usage(format!(
-                            "no setting {other}; there are notify.runningOut, notify.usedUp, notify.reset and notify.signIn"
-                        )));
-                    }
-                }
+                let mut keys = notify_keys(&mut settings.notify);
+                let Some((_, setting)) = keys.iter_mut().find(|(name, _)| *name == key) else {
+                    let [names @ .., last] = keys.map(|(name, _)| name);
+                    return Err(Error::Usage(format!(
+                        "no setting {key}; there are {} and {last}",
+                        names.join(", ")
+                    )));
+                };
+                **setting = value == "on";
                 alerts::save_settings(&db, &settings)?;
             }
-            let notify = settings.notify;
             let word = |on: bool| if on { "on" } else { "off" };
-            let text = format!(
-                "notify.runningOut {}\nnotify.usedUp {}\nnotify.reset {}\nnotify.signIn {}",
-                word(notify.running_out),
-                word(notify.used_up),
-                word(notify.reset),
-                word(notify.sign_in)
-            );
-            print(json!(settings), text)
+            let lines =
+                notify_keys(&mut settings.notify).map(|(name, on)| format!("{name} {}", word(*on)));
+            print(json!(settings), lines.join("\n"))
         }
         Command::Connect { agent: Some(id) } | Command::Disconnect { agent: id } => {
             let agent = agents::find(&id)?;
@@ -862,28 +872,22 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
     });
     let text = receive.recv_timeout(Duration::from_millis(300)).ok()?;
     let given: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let one = |sql: &str, value: &str| -> Option<String> {
-        db.query_row(sql, [value], |row| row.get(0)).ok()
-    };
     // The agent names its session by its own id.
     given["session_id"]
         .as_str()
         .and_then(|session| sessions::resolve(db, session).ok())
-        .and_then(|session| {
-            one(
-                "SELECT account FROM response WHERE session = ?1 AND account IS NOT NULL ORDER BY at DESC LIMIT 1",
-                &session,
-            )
-        })
+        .and_then(|session| sessions::account(db, &session).ok().flatten())
         .or_else(|| {
             let folder = given["workspace"]["current_dir"]
                 .as_str()
                 .or(given["cwd"].as_str())?;
-            one(
+            db.query_row(
                 "SELECT r.account FROM response r JOIN session s ON s.id = r.session
                  WHERE s.cwd = ?1 AND r.account IS NOT NULL ORDER BY r.at DESC LIMIT 1",
-                folder,
+                [folder],
+                |row| row.get(0),
             )
+            .ok()
         })
 }
 
@@ -923,7 +927,9 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
     // doesn't wait on us. A process it leaves running, as a login shell's
     // background job, can hold the pipes open after it ends, so they're
     // read until the deadline at most.
-    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+    fn drain(
+        pipe: Option<impl std::io::Read + Send + 'static>,
+    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
         let (sent, read) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let Some(mut pipe) = pipe else { return };
@@ -935,9 +941,9 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
             }
         });
         read
-    };
-    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
-    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
     let deadline = Instant::now() + wait;
     let status = loop {
         if let Some(status) = child.try_wait()? {

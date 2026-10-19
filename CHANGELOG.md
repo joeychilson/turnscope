@@ -16,6 +16,15 @@
   read in the same words. `check_limits`' verdict on the first account
   says how to fix it, as the others do, not only that its limits can't be
   read. `status` writes $1,000 or more with a comma, as `statusline` does.
+- **The notification that a limit is back** comes for one OpenRouter key's
+  limit while another key's limit is used up. A key's limit stops only that
+  key, as the status line already took it, but the notification was dropped
+  as if the whole account were still stopped.
+- **Handoff:** a read by OpenCode's `read` or Claude Code's `NotebookRead`
+  is named by its file, not by its input as JSON. So is a failed OpenCode
+  `edit` or `write`, or Claude Code's `NotebookEdit`, under "What failed",
+  and it no longer shows there once a later one of the same file passed,
+  as a failed Claude Code `Edit` already didn't.
 - **A Codex script** is named by the tools it calls, in `sessions read`,
   `read_session` and the handoff, not by every tool its text names. One
   that ran `rg tools.apply_patch src` was named `exec: exec_command,

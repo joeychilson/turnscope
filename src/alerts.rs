@@ -4,7 +4,7 @@
 //! |---|---|
 //! | `runningOut` | a limit in use runs out before its reset at its pace, as the panel shows it |
 //! | `usedUp` | a limit in use is used up |
-//! | `reset` | a limit that was used up is back, and no other limit of every model still is |
+//! | `reset` | a limit that was used up is back, and no other limit on the whole account still is |
 //! | `signIn` | an account in use can't be read because its login was refused |
 //!
 //! Each is raised once per account, limit, kind and window, so neither a
@@ -85,8 +85,8 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             Kind::Reset => notify.reset,
             Kind::SignIn => notify.sign_in,
         };
-        // Back while another limit of every model is used up, the account
-        // still can't be used: that limit's own return says so.
+        // Back while another limit on the whole account is used up, the
+        // account still can't be used: that limit's own return says so.
         let blocked = kind == Kind::Reset && limit.is_some_and(|limit| blocked(account, limit));
         let told = on && !account.hidden && !blocked;
         let detail = Detail {
@@ -151,12 +151,10 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
     Ok(raised)
 }
 
-/// Whether a limit of every model other than `limit` is used up.
+/// Whether a limit on the whole account other than `limit` is used up.
 fn blocked(account: &Account, limit: &Limit) -> bool {
     account.limits.iter().any(|other| {
-        other.key != limit.key
-            && other.scope.is_none()
-            && matches!(other.outlook, Outlook::UsedUp { .. })
+        other.key != limit.key && other.whole() && matches!(other.outlook, Outlook::UsedUp { .. })
     })
 }
 
@@ -411,5 +409,41 @@ mod tests {
         // Nine days on, an hour after the window reset.
         let back = status(10 * DAY + 60 * MINUTE, 100, LASTS);
         assert_eq!(kinds(&raise(&mut db, &back).unwrap()), [Kind::Reset]);
+    }
+
+    #[test]
+    fn a_keys_limit_back_is_said_while_another_keys_is_used_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        // Two OpenRouter keys, each with a limit of its own: A's used up.
+        let mut a_used_up = status(DAY, 0, Outlook::UsedUp { back: None });
+        let account = &mut a_used_up.accounts[0];
+        account.id = "openrouter:api".to_owned();
+        account.limits[0].key = "key-a".to_owned();
+        let mut b = account.limits[0].clone();
+        b.key = "key-b".to_owned();
+        b.window = Some(LimitWindow {
+            starts_at: Some(0),
+            resets: Moment {
+                at: 20 * DAY,
+                horizon: Horizon::Later,
+            },
+        });
+        b.left_percent = 50;
+        b.outlook = LASTS;
+        account.limits.push(b);
+        assert_eq!(kinds(&raise(&mut db, &a_used_up).unwrap()), [Kind::UsedUp]);
+        // A's limit reset while B's is used up: A can be used again.
+        let mut a_back = a_used_up.clone();
+        a_back.at = 10 * DAY + MINUTE;
+        let limits = &mut a_back.accounts[0].limits;
+        limits[0].left_percent = 100;
+        limits[0].outlook = LASTS;
+        limits[1].left_percent = 0;
+        limits[1].outlook = Outlook::UsedUp { back: None };
+        assert_eq!(
+            kinds(&raise(&mut db, &a_back).unwrap()),
+            [Kind::Reset, Kind::UsedUp]
+        );
     }
 }
