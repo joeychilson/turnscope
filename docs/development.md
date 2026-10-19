@@ -124,8 +124,9 @@ and what it was compared with.
 
 ## Handoff cases
 
-`sessions::handoff::handoff_cases` writes the handoff of each case in `<dir>/cut/`,
-a real session stopped part way, to `<dir>/cases/<case>/handoff-<label>.md`:
+`sessions::handoff::handoff_cases::hand_off_each_case` writes the handoff
+of each case in `<dir>/cut/`, a real session stopped part way, to
+`<dir>/cases/<case>/handoff-<label>.md`:
 
 ```sh
 TURNSCOPE_HANDOFF_CASES=<dir> TURNSCOPE_HANDOFF_LABEL=new cargo test hand_off_each_case -- --ignored
