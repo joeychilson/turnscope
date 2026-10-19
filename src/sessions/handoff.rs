@@ -721,7 +721,8 @@ fn commands(tool: &Tool) -> Vec<String> {
 /// Whether every command a call ran only reads: lists, prints or searches
 /// files, or asks git what changed. Its output the next agent reads again as
 /// it needs. A script that calls any other of its agent's tools, as Codex's
-/// `apply_patch`, does more.
+/// `apply_patch`, does more: Codex's reader names a script by the tools it
+/// calls, as `exec: apply_patch, exec_command`.
 fn reads_only(tool: &Tool) -> bool {
     const READS: &[&str] = &[
         "cd", "ls", "cat", "head", "tail", "sed", "grep", "rg", "find", "fd", "wc", "nl", "echo",
@@ -731,9 +732,9 @@ fn reads_only(tool: &Tool) -> bool {
         "status", "diff", "log", "show", "branch", "ls-files", "grep", "blame",
     ];
     let other_tools = tool
-        .input
-        .match_indices("tools.")
-        .any(|(at, _)| !tool.input[at + 6..].starts_with("exec_command"));
+        .name
+        .strip_prefix("exec: ")
+        .is_some_and(|called| called.split(", ").any(|name| name != "exec_command"));
     let commands = commands(tool);
     !other_tools
         && !commands.is_empty()
@@ -928,6 +929,8 @@ mod tests {
             "git branch -a",
             "git branch --list",
             "git branch -v",
+            // Naming a Codex tool isn't calling it.
+            "rg -n tools.apply_patch src",
         ] {
             assert_eq!(role(&bash(reads)), Role::Read, "{reads}");
         }

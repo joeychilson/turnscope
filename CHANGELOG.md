@@ -5,6 +5,10 @@
 - **Hide and Show** name the account with its label when its row shows
   one, for VoiceOver, in the Hide button's help and in the right-click
   menu. Two accounts with the same title were both "Hide Claude Max".
+- **Handoff:** a command that only reads is a read though it names one of
+  Codex's tools, as `rg tools.apply_patch src` does. It showed as work,
+  with its input and output under "Where it stopped", and under "What
+  failed" when it found nothing.
 - **`sessions --folder` and `handoff --folder`** take a relative folder,
   such as `.`, from the current folder. They found no sessions.
 - **`sessions` and `sessions read`** refuse a `--count` outside 1 to 100,
