@@ -16,6 +16,12 @@
   read in the same words. `check_limits`' verdict on the first account
   says how to fix it, as the others do, not only that its limits can't be
   read. `status` writes $1,000 or more with a comma, as `statusline` does.
+- **`check_limits`' verdict, `statusline`, and a limit's line in
+  `explain_usage` and `usage --limit`** count time from the minute the
+  status is as of, as `status` does. Late in a minute, `check_limits`
+  could say a limit resets "14:00 (in 1h 59m)" above a line that says
+  "14:00 (in 2h)", and `statusline` could say "out in 59m" while `status`
+  said "13:00 (in 1h)".
 
 ## 0.1.4
 

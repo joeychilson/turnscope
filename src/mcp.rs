@@ -476,8 +476,7 @@ fn check_limits(server: &Server, arguments: Value) -> Result<String> {
         all: bool,
     }
     let input: Input = input(arguments)?;
-    let now = crate::now();
-    let status = status::status(&server.db, now)?;
+    let status = status::status(&server.db, crate::now())?;
     let mine = server.caller.account(&server.db, &server.home, &status)?;
     let yours = mine.map(|mine| mine.id.as_str());
     let shown: Vec<&status::Account> = status
@@ -503,12 +502,12 @@ fn check_limits(server: &Server, arguments: Value) -> Result<String> {
         return Ok("No account's limits have been read yet: no agent here is signed in to one Turnscope reads.".to_owned());
     };
     let fit = match input.hours {
-        Some(hours) => format!("{}\n", status::fit(first, hours, now)?),
+        Some(hours) => format!("{}\n", status::fit(first, hours, status.at)?),
         None => String::new(),
     };
     Ok(format!(
         "{fit}{}\n\n{}",
-        status::verdict(first, now),
+        status::verdict(first, status.at),
         status::text(&status, &shown, yours)
     ))
 }
@@ -608,7 +607,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         },
     );
     if let Some(limit) = limit {
-        out += &format!("{}\n", status::limit_text(limit, now));
+        out += &format!("{}\n", status::limit_text(limit, status.at));
     }
     if !used.rows.is_empty() {
         // Shares are known only over a limit's own window.
