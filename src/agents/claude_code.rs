@@ -453,6 +453,35 @@ struct Meta {
     tool_use_id: Option<String>,
 }
 
+impl Meta {
+    /// The subagent that started this one, or when none is named, its
+    /// session, `session`.
+    fn parent(&self, session: &str) -> String {
+        INFO.session(
+            self.parent_agent_id
+                .as_deref()
+                .filter(|parent| !parent.is_empty())
+                .unwrap_or(session),
+        )
+    }
+
+    /// A fork's copy of `parent`'s history, through the call that started it.
+    fn copy(&self, parent: &str) -> Option<Copy> {
+        self.is_fork.then_some(())?;
+        Some(Copy {
+            parent: parent.to_owned(),
+            through: Some(self.tool_use_id.clone()?),
+        })
+    }
+}
+
+/// The description of the subagent `agent` whose log is `file`, if it's
+/// there and parses.
+fn meta(file: &Path, agent: &str) -> Option<Meta> {
+    let bytes = std::fs::read(file.with_file_name(format!("agent-{agent}.meta.json"))).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 /// The session and subagent a log is named for: `(session, None)` for a
 /// session's own, `(session, Some(agent))` for a subagent's.
 fn named(file: &Path) -> Option<(String, Option<String>)> {
@@ -465,6 +494,13 @@ fn named(file: &Path) -> Option<(String, Option<String>)> {
     } else {
         Some((name.to_owned(), None))
     }
+}
+
+/// The settings file, `.claude.json`, of the folder `folder` in `home`.
+fn settings(folder: &Path, home: &Path) -> PathBuf {
+    // Its own folder's settings are beside it; another's are inside it.
+    let own = folder == home.join(".claude");
+    if own { home } else { folder }.join(".claude.json")
 }
 
 impl Agent for ClaudeCode {
@@ -503,9 +539,7 @@ impl Agent for ClaudeCode {
         if let Some(agent) = &agent
             && !cursor.described
         {
-            let meta = std::fs::read(file.with_file_name(format!("agent-{agent}.meta.json")))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Meta>(&bytes).ok());
+            let meta = meta(file, agent);
             // Read without its description, a fork's copy would read as the
             // fork's own, so a new log waits for it, and for one read while
             // Claude Code was still writing it, which won't parse. An error,
@@ -517,17 +551,9 @@ impl Agent for ClaudeCode {
                 )));
             }
             let meta = meta.unwrap_or_default();
-            let parent = INFO.session(
-                meta.parent_agent_id
-                    .as_deref()
-                    .filter(|parent| !parent.is_empty())
-                    .unwrap_or(&session),
-            );
-            if meta.is_fork && cursor.offset == 0 {
-                cursor.copy = meta.tool_use_id.map(|call| Copy {
-                    parent: parent.clone(),
-                    through: Some(call),
-                });
+            let parent = meta.parent(&session);
+            if cursor.offset == 0 {
+                cursor.copy = meta.copy(&parent);
             }
             // A fork here is a subagent begun with a copy of its parent's
             // context: it's still the parent's subagent.
@@ -563,16 +589,10 @@ impl Agent for ClaudeCode {
             .ok_or_else(|| {
                 Error::NotFound(format!("the log of {} is gone", INFO.session(native)))
             })?;
-        let meta: Option<Meta> = agent.as_ref().and_then(|agent| {
-            let meta = std::fs::read(file.with_file_name(format!("agent-{agent}.meta.json")));
-            serde_json::from_slice(&meta.ok()?).ok()
-        });
-        let mut copy = meta.filter(|meta| meta.is_fork).and_then(|meta| {
-            Some(Copy {
-                parent: meta.parent_agent_id.unwrap_or(session),
-                through: Some(meta.tool_use_id?),
-            })
-        });
+        let mut copy = agent
+            .as_deref()
+            .and_then(|agent| meta(file, agent))
+            .and_then(|meta| meta.copy(&meta.parent(&session)));
         let mut prompted = false;
         let mut conversation = Conversation::default();
         // A log can hold a line twice, rewritten as it was.
@@ -590,7 +610,7 @@ impl Agent for ClaudeCode {
                 return;
             }
             match &*line.kind {
-                "user" | "assistant" => converse(&line, bytes, agent.is_some(), &mut conversation),
+                "user" | "assistant" => converse(&line, agent.is_some(), &mut conversation),
                 "attachment" => {
                     let Some(attachment) = &line.attachment else {
                         return;
@@ -664,8 +684,7 @@ impl Agent for ClaudeCode {
             Some(token) => {
                 // Whose it is: a plan belongs to an organization, and one
                 // account can be in several.
-                let config = if own { home } else { folder }.join(".claude.json");
-                let config = super::json_file(&config)?.unwrap_or_default();
+                let config = super::json_file(&settings(folder, home))?.unwrap_or_default();
                 let part = |pointer: &str| {
                     config
                         .pointer(pointer)
@@ -705,10 +724,7 @@ impl Agent for ClaudeCode {
     }
 
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String> {
-        // Its own folder's settings are beside it; another's are inside it.
-        let own = folder == home.join(".claude");
-        let settings = if own { home } else { folder }.join(".claude.json");
-        super::json_mcp_command(&settings, "/mcpServers/turnscope/command")
+        super::json_mcp_command(&settings(folder, home), "/mcpServers/turnscope/command")
     }
 
     fn role(&self, name: &str) -> Role {
@@ -927,22 +943,14 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
 
 /// Add a user or assistant line to a conversation. In a subagent's, what
 /// arrives as the person's is its task.
-fn converse(line: &Line, bytes: &[u8], subagent: bool, conversation: &mut Conversation) {
-    #[derive(Deserialize)]
-    struct Full {
-        message: Option<FullMessage>,
-    }
-    #[derive(Deserialize)]
-    struct FullMessage {
-        content: Option<Value>,
-    }
+fn converse(line: &Line, subagent: bool, conversation: &mut Conversation) {
     let at = line.at();
     let Some(message) = &line.message else {
         return;
     };
-    let content = serde_json::from_slice::<Full>(bytes)
-        .ok()
-        .and_then(|full| full.message?.content)
+    let content: Value = message
+        .content
+        .and_then(|content| serde_json::from_str(content.get()).ok())
         .unwrap_or_default();
     let blocks = content.as_array().map(Vec::as_slice).unwrap_or_default();
     if &*line.kind == "assistant" {
@@ -990,23 +998,20 @@ fn converse(line: &Line, bytes: &[u8], subagent: bool, conversation: &mut Conver
         }
     }
     for text in message.texts() {
-        let kind = if line.is_compact_summary {
-            conversation.say(Kind::Summary, at, summarized(&text));
-            continue;
+        let (kind, text) = if line.is_compact_summary {
+            (Kind::Summary, summarized(&text).to_owned())
         } else if line.claude_codes() {
-            Kind::System
+            (Kind::System, text)
         } else {
             let said = typed(&text);
             if said.is_empty() {
-                Kind::System
+                (Kind::System, text)
             } else if !asks(&said) {
                 // A command of Claude Code's own, as `/clear`, asks for
                 // nothing.
-                conversation.say(Kind::System, at, &said);
-                continue;
+                (Kind::System, said)
             } else {
-                conversation.say(if subagent { Kind::Task } else { Kind::User }, at, &said);
-                continue;
+                (if subagent { Kind::Task } else { Kind::User }, said)
             }
         };
         conversation.say(kind, at, &text);
