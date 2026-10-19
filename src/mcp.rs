@@ -779,7 +779,7 @@ fn handoff(server: &mut Server, arguments: Value) -> Result<String> {
     };
     let now = crate::now();
     Ok(sessions::also_here(&others, now)
-        + &sessions::handoff(&server.db, &server.home, &session, Cite::Tool, now)?)
+        + &sessions::handoff(&server.db, &session, Cite::Tool, now)?)
 }
 
 fn read_session(server: &mut Server, arguments: Value) -> Result<String> {
