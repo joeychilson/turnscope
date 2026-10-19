@@ -535,14 +535,15 @@ impl Server {
         )?;
         let mut sessions = Vec::new();
         for (row, points) in used.rows.iter().zip(points) {
-            let (title, project, agent, running) = crate::sessions::brief(&self.db, &row.key, now)?;
+            let (project, agent, running) = crate::sessions::brief(&self.db, &row.key, now)?;
             sessions.push(UsedMost {
                 session: row.key.clone(),
                 project: project
                     .as_deref()
                     .and_then(|project| project.rsplit('/').next())
                     .map(str::to_owned),
-                title,
+                // By session, a row's name is its session's title.
+                title: row.name.clone(),
                 agent,
                 share_percent: points,
                 running,

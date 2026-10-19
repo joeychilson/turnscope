@@ -461,14 +461,22 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             let session = sessions::resolve(&db, &session)?;
             let entries = sessions::transcript(&db, &session)?;
             let (shown, next) = sessions::page(&entries, &reading);
-            let shown: Vec<_> = shown
-                .into_iter()
+            let listed: Vec<_> = shown
+                .iter()
                 .map(|(at, entry)| json!({ "index": at, "entry": entry }))
                 .collect();
-            let value = json!({ "session": session, "entries": shown, "total": entries.len(), "next": next });
+            let value = json!({ "session": session, "entries": listed, "total": entries.len(), "next": next });
             print(
                 value,
-                sessions::page_text(&session, &entries, &reading, sessions::Cite::Command, now),
+                sessions::page_text(
+                    &session,
+                    &entries,
+                    &shown,
+                    next,
+                    &reading,
+                    sessions::Cite::Command,
+                    now,
+                ),
             )
         }
         Command::Sessions {
