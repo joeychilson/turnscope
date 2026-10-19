@@ -5,6 +5,8 @@
 - **Hide and Show** name the account with its label when its row shows
   one, for VoiceOver, in the Hide button's help and in the right-click
   menu. Two accounts with the same title were both "Hide Claude Max".
+- **`sessions --folder` and `handoff --folder`** take a relative folder,
+  such as `.`, from the current folder. They found no sessions.
 
 ## 0.1.4
 
