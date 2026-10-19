@@ -10,8 +10,9 @@ use std::fs::File;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Row};
 
+use crate::agents::Tokens;
 use crate::{Error, Result};
 
 /// The schema, one script per revision. A shipped script is never edited: a
@@ -266,6 +267,23 @@ pub fn lock(path: &Path) -> Result<File> {
 /// misread it, or undo what that one did.
 pub fn newer() -> Error {
     Error::Failed("a newer Turnscope has updated this data; update Turnscope".to_owned())
+}
+
+/// Tokens from six columns of `row` starting at `from`, in `response`'s
+/// order: `input` to `reasoning`. A sum of no rows is NULL, which is 0.
+pub fn tokens(row: &Row, from: usize) -> rusqlite::Result<Tokens> {
+    let count = |at: usize| {
+        row.get::<_, Option<i64>>(from + at)
+            .map(|count| count.unwrap_or(0) as u64)
+    };
+    Ok(Tokens {
+        input: count(0)?,
+        cache_read: count(1)?,
+        cache_write_5m: count(2)?,
+        cache_write_1h: count(3)?,
+        output: count(4)?,
+        reasoning: count(5)?,
+    })
 }
 
 #[cfg(test)]

@@ -23,6 +23,18 @@ pub enum By {
     Session,
 }
 
+impl By {
+    /// The period, for a grouping by time.
+    fn period(self) -> Option<Period> {
+        match self {
+            By::Day => Some(Period::Day),
+            By::Week => Some(Period::Week),
+            By::Month => Some(Period::Month),
+            By::Model | By::Project | By::Agent | By::Account | By::Session => None,
+        }
+    }
+}
+
 pub struct Query {
     pub since: i64,
     pub until: i64,
@@ -85,7 +97,7 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
         By::Agent => ("r.agent", "NULL", ""),
         By::Account => (
             "coalesce(r.account, '')",
-            "a.title || coalesce(' (' || a.label || ')', '')",
+            crate::status::Account::FULL_TITLE,
             "LEFT JOIN account a ON a.id = r.account",
         ),
         By::Project => (
@@ -119,7 +131,7 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     }
     let sql = format!(
         "{trees} SELECT {key}, {name}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
-             sum(r.cache_write_1h), sum(r.output), sum(r.reasoning), total(r.cost), sum(r.cost IS NULL)
+             sum(r.cache_write_1h), sum(r.output), sum(r.reasoning), total(r.cost), count(*) - count(r.cost)
          FROM response r {join} WHERE {} GROUP BY 1",
         filters.join(" AND ")
     );
@@ -132,36 +144,22 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
             key: String::new(),
             name: row.get(1)?,
             responses: count(2)?,
-            tokens: Tokens {
-                input: count(3)?,
-                cache_read: count(4)?,
-                cache_write_5m: count(5)?,
-                cache_write_1h: count(6)?,
-                output: count(7)?,
-                reasoning: count(8)?,
-            },
+            tokens: crate::db::tokens(row, 3)?,
             cost_usd: row.get(9)?,
             unpriced: count(10)?,
         };
-        let key = match query.by {
+        let key = if let Some(period) = query.by.period() {
             // The local date its period starts.
-            By::Day | By::Week | By::Month => {
-                let period = match query.by {
-                    By::Day => Period::Day,
-                    By::Week => Period::Week,
-                    _ => Period::Month,
-                };
-                time::local(time::start_of(period, row.get(0)?))
-                    .date()
-                    .to_string()
-            }
+            time::local(time::start_of(period, row.get(0)?))
+                .date()
+                .to_string()
+        } else if query.by == By::Model {
             // One model through several providers: OpenRouter's
             // `google/gemini-3.8-flash` is Google's `gemini-3.8-flash`.
-            By::Model => {
-                let model: String = row.get(0)?;
-                model.rsplit('/').next().unwrap_or(&model).to_owned()
-            }
-            _ => row.get(0)?,
+            let model: String = row.get(0)?;
+            model.rsplit('/').next().unwrap_or(&model).to_owned()
+        } else {
+            row.get(0)?
         };
         let group = groups.entry(key.clone()).or_default();
         if query.by == By::Agent {
@@ -179,7 +177,7 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     for row in &rows {
         total.add(row);
     }
-    let time = matches!(query.by, By::Day | By::Week | By::Month);
+    let time = query.by.period().is_some();
     if !time {
         rows.sort_by(|a, b| {
             b.cost_usd
@@ -228,9 +226,14 @@ pub fn count(number: u64) -> String {
 /// What usage cost, with how many responses had no known price, which
 /// aren't free: `$0.47`, `$0.47 (+3 unpriced)`.
 pub fn cost(usd: f64, unpriced: u64) -> String {
-    match unpriced {
-        0 => dollars(usd),
-        more => format!("{} (+{} unpriced)", dollars(usd), count(more)),
+    dollars(usd) + &self::unpriced(unpriced)
+}
+
+/// ` (+3 unpriced)`, and with none, nothing.
+fn unpriced(n: u64) -> String {
+    match n {
+        0 => String::new(),
+        _ => format!(" (+{} unpriced)", count(n)),
     }
 }
 
@@ -253,10 +256,6 @@ pub fn share(points: f64) -> String {
 /// Usage as a table: its span and total, then a row each. With `shares`, a
 /// limit's name and each row's share of it, a column more.
 pub fn text(usage: &Usage, shares: Option<(&str, &[Option<f64>])>) -> String {
-    let unpriced = |row: &Row| match row.unpriced {
-        0 => String::new(),
-        more => format!(" (+{} unpriced)", count(more)),
-    };
     let date = |at: i64| {
         let minute = (at + time::MINUTE / 2) / time::MINUTE * time::MINUTE;
         time::local(minute).strftime("%a %b %-d %H:%M").to_string()
@@ -270,7 +269,7 @@ pub fn text(usage: &Usage, shares: Option<(&str, &[Option<f64>])>) -> String {
     );
     // Time's earlier rows, added up, come before it; anything else's rest
     // after.
-    let time = matches!(usage.by, By::Day | By::Week | By::Month);
+    let time = usage.by.period().is_some();
     let mut rows: Vec<(&Row, Option<f64>)> = usage
         .rows
         .iter()
@@ -343,7 +342,7 @@ pub fn text(usage: &Usage, shares: Option<(&str, &[Option<f64>])>) -> String {
         out += &format!(
             "  {label:<wide$}  {:>9}  {cost:>cost_wide$}{points}{}\n",
             count(row.responses),
-            unpriced(row)
+            unpriced(row.unpriced)
         );
     }
     out + "\nCosts are at list prices: what the same tokens cost on each provider's API."

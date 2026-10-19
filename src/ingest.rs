@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 use crate::Result;
-use crate::agents::{self, Agent, Link, Read, Response, Tokens};
+use crate::agents::{self, Agent, Link, Read, Response};
 use crate::prices::{History, Prices, in_force};
 
 /// Raised when a reader would read a file it read before differently: every
@@ -402,14 +402,7 @@ fn stored(row: &Row) -> rusqlite::Result<Response> {
         at: row.get(2)?,
         provider: row.get(3)?,
         model: row.get(4)?,
-        tokens: Tokens {
-            input: count(5)?,
-            cache_read: count(6)?,
-            cache_write_5m: count(7)?,
-            cache_write_1h: count(8)?,
-            output: count(9)?,
-            reasoning: count(10)?,
-        },
+        tokens: crate::db::tokens(row, 5)?,
         prompt: count(11)?,
         web_searches: count(12)?,
         priority: row.get(13)?,
