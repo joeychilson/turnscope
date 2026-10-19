@@ -243,8 +243,9 @@ with a file list and a longer story.
   Claude Code fixture sessions (`handoff.txt`, `handoff-working.txt` and
   their `.json`), on the latest other session in `/work/app`, Codex's, taken
   by default (`handoff-folder`), and the MCP tool in `mcp.json`.
-- `sessions::handoff::handoff_cases` hands off copies of real sessions stopped part
-  way, to compare a change with what it was (below).
+- `sessions::handoff::handoff_cases::hand_off_each_case` hands off copies
+  of real sessions stopped part way, to compare a change with what it was
+  (below).
 
 Two earlier formats were chosen by having agents answer questions about
 sessions cut just after a request was finished. That measured how well a
