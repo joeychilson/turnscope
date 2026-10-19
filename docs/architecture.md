@@ -397,9 +397,9 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
   reset, within 5 minutes; for `signIn`, the last read that worked), so
   neither a restart nor a pace near the line repeats one.
 - Some alerts are recorded as already shown: one for a hidden account, one
-  of a kind turned off, and a `reset` while another limit on all models is
-  still used up. Showing the account or turning the kind on later doesn't
-  bring back the past.
+  of a kind turned off, and a `reset` while another limit on the whole
+  account is still used up. Showing the account or turning the kind on
+  later doesn't bring back the past.
 - An alert waits until a client acknowledges it (`alerts.ack`). Until then
   `hello` returns it: a `runningOut` or `usedUp` while its window lasts, a
   `reset` or `signIn` for a day.
