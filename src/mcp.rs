@@ -24,6 +24,10 @@ use crate::{Error, Result, sessions, time, usage};
 
 const MODERN: &str = "2026-07-28";
 const EARLIER: [&str; 2] = ["2025-11-25", "2025-06-18"];
+const SUPPORTED: [&str; 3] = [MODERN, EARLIER[0], EARLIER[1]];
+
+const TTL_MS: u64 = 3_600_000;
+const CACHE_SCOPE: &str = "public";
 
 const INSTRUCTIONS: &str = "It knows which agent you are, the folder you work in, your session where \
 your agent says, and your account, so \"my limit\" needs no ids. It only reads. Before work that takes \
@@ -40,7 +44,7 @@ struct Tool {
     description: &'static str,
     /// Its input's JSON Schema.
     input: &'static str,
-    answer: fn(&mut Server, Value) -> Result<String>,
+    answer: fn(&Server, Value) -> Result<String>,
 }
 
 static TOOLS: &[Tool] = &[
@@ -323,9 +327,8 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
     let params = &message["params"];
     let modern = params["_meta"].get("io.modelcontextprotocol/protocolVersion");
     if let Some(version) = modern.filter(|version| *version != MODERN) {
-        let supported: Vec<&str> = std::iter::once(MODERN).chain(EARLIER).collect();
         let mut reply = failure(id, -32022, "Unsupported protocol version".to_owned());
-        reply["error"]["data"] = json!({ "supported": supported, "requested": version });
+        reply["error"]["data"] = json!({ "supported": SUPPORTED, "requested": version });
         return Some(reply);
     }
     let instructions = format!(
@@ -350,11 +353,11 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
             json!({ "protocolVersion": version, "capabilities": capabilities, "serverInfo": server_info, "instructions": instructions })
         }
         "server/discover" => json!({
-            "supportedVersions": std::iter::once(MODERN).chain(EARLIER).collect::<Vec<_>>(),
+            "supportedVersions": SUPPORTED,
             "capabilities": capabilities,
             "instructions": instructions,
-            "ttlMs": 3_600_000,
-            "cacheScope": "public",
+            "ttlMs": TTL_MS,
+            "cacheScope": CACHE_SCOPE,
         }),
         "ping" => json!({}),
         "tools/list" => {
@@ -418,8 +421,8 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
         && let Some(fields) = result.as_object_mut()
     {
         if matches!(method, "tools/list" | "prompts/list") {
-            fields.insert("ttlMs".to_owned(), json!(3_600_000));
-            fields.insert("cacheScope".to_owned(), json!("public"));
+            fields.insert("ttlMs".to_owned(), json!(TTL_MS));
+            fields.insert("cacheScope".to_owned(), json!(CACHE_SCOPE));
         }
         fields.insert("resultType".to_owned(), json!("complete"));
         fields.insert(
@@ -447,7 +450,7 @@ fn input<T: for<'a> Deserialize<'a>>(arguments: Value) -> Result<T> {
         .map_err(|error| Error::Usage(format!("arguments that don't fit: {error}")))
 }
 
-fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
+fn check_limits(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -494,7 +497,7 @@ fn check_limits(server: &mut Server, arguments: Value) -> Result<String> {
     ))
 }
 
-fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
+fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -695,7 +698,7 @@ fn explain_usage(server: &mut Server, arguments: Value) -> Result<String> {
     Ok(out.trim_end().to_owned())
 }
 
-fn find_sessions(server: &mut Server, arguments: Value) -> Result<String> {
+fn find_sessions(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -751,7 +754,7 @@ fn folder(server: &Server, given: PathBuf) -> PathBuf {
     path.components().collect()
 }
 
-fn handoff(server: &mut Server, arguments: Value) -> Result<String> {
+fn handoff(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -782,7 +785,7 @@ fn handoff(server: &mut Server, arguments: Value) -> Result<String> {
         + &sessions::handoff(&server.db, &session, Cite::Tool, now)?)
 }
 
-fn read_session(server: &mut Server, arguments: Value) -> Result<String> {
+fn read_session(server: &Server, arguments: Value) -> Result<String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {

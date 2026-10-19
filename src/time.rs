@@ -34,11 +34,6 @@ pub fn start_of(period: Period, at: i64) -> i64 {
     window(period, at, &TimeZone::system()).0
 }
 
-/// The start of the period after the one `start` is in.
-pub fn next(period: Period, start: i64) -> i64 {
-    window(period, start, &TimeZone::system()).1
-}
-
 /// When the day, week (from Monday) or month `at` is in starts in `zone`,
 /// and when the next one does.
 pub fn window(period: Period, at: i64, zone: &TimeZone) -> (i64, i64) {
