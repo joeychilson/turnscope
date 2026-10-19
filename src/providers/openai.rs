@@ -92,6 +92,7 @@ fn windows(rate: &Value, scope: Option<&str>, now: i64) -> Option<Vec<Reading>> 
         let seconds = window["limit_window_seconds"]
             .as_i64()
             .filter(|seconds| *seconds > 0)?;
+        let length = seconds * 1000;
         // An unknown reset comes as zero; the countdown beside it still says when.
         let resets = match window["reset_at"].as_i64() {
             Some(at) if at > 0 => Some(at * 1000),
@@ -101,11 +102,11 @@ fn windows(rate: &Value, scope: Option<&str>, now: i64) -> Option<Vec<Reading>> 
         };
         readings.push(Reading {
             key: scope.map_or(key.to_owned(), |scope| format!("{key}:{scope}")),
-            name: super::window_name(seconds),
+            name: super::window_name(length),
             scope: scope.map(str::to_owned),
             used: window["used_percent"].as_f64()?,
             size: None,
-            starts: resets.map(|resets| resets - seconds * 1000),
+            starts: resets.map(|resets| resets - length),
             resets,
         });
     }

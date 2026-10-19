@@ -39,7 +39,10 @@ impl Provider for OpenRouter {
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
         let key = super::ask("https://openrouter.ai/api/v1/key", credential, &[])?;
         let name = format!("key-{}", credential.secret.fingerprint());
-        let mut readings = own_limit(&key, &name, now).ok_or(Problem::Unavailable)?;
+        let mut readings: Vec<Reading> = own_limit(&key, &name, now)
+            .ok_or(Problem::Unavailable)?
+            .into_iter()
+            .collect();
         match super::ask("https://openrouter.ai/api/v1/credits", credential, &[]) {
             Ok(answer) => readings.extend(credits(&answer).ok_or(Problem::Unavailable)?),
             Err(Problem::SignIn) => {}
@@ -66,10 +69,10 @@ fn credits(answer: &Value) -> Option<Option<Reading>> {
     }))
 }
 
-fn own_limit(answer: &Value, key: &str, now: i64) -> Option<Vec<Reading>> {
+fn own_limit(answer: &Value, key: &str, now: i64) -> Option<Option<Reading>> {
     let data = answer.get("data")?;
     let Some(limit) = data["limit"].as_f64().filter(|limit| *limit > 0.0) else {
-        return Some(Vec::new());
+        return Some(None);
     };
     let (name, used_in, period) = match data["limit_reset"].as_str() {
         None => ("Key limit", "usage", None),
@@ -84,7 +87,7 @@ fn own_limit(answer: &Value, key: &str, now: i64) -> Option<Vec<Reading>> {
     };
     // By UTC days, weeks from Monday, and months.
     let window = period.map(|period| time::window(period, now, &TimeZone::UTC));
-    Some(vec![Reading {
+    Some(Some(Reading {
         key: key.to_owned(),
         name: name.to_owned(),
         scope: None,
@@ -92,7 +95,7 @@ fn own_limit(answer: &Value, key: &str, now: i64) -> Option<Vec<Reading>> {
         size: Some(limit),
         starts: window.map(|(starts, _)| starts),
         resets: window.map(|(_, resets)| resets),
-    }])
+    }))
 }
 
 #[cfg(test)]
@@ -105,7 +108,7 @@ mod tests {
         let now = 1_790_856_000_000;
         let answer =
             json!({"data": {"limit": 20.0, "limit_remaining": 11.0, "limit_reset": "weekly"}});
-        let limit = &super::own_limit(&answer, "key-abc", now).unwrap()[0];
+        let limit = super::own_limit(&answer, "key-abc", now).unwrap().unwrap();
         assert_eq!(
             (limit.name.as_str(), limit.used, limit.size),
             ("Weekly key limit", 45.0, Some(20.0))
@@ -119,7 +122,7 @@ mod tests {
             assert!(
                 super::own_limit(&json!({"data": {"limit": none}}), "key-abc", now)
                     .unwrap()
-                    .is_empty()
+                    .is_none()
             );
         }
     }
@@ -129,7 +132,7 @@ mod tests {
         // Thursday 2026-10-01 12:00 UTC.
         let now = 1_790_856_000_000;
         let read = |answer: serde_json::Value| {
-            let limit = super::own_limit(&answer, "key-abc", now).unwrap().remove(0);
+            let limit = super::own_limit(&answer, "key-abc", now).unwrap().unwrap();
             (limit.name, limit.used, limit.starts, limit.resets)
         };
         // Without what remains, the window's own usage is what was spent.
