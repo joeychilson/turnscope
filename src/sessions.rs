@@ -300,14 +300,7 @@ fn used(db: &Connection, session: &mut Summary, now: i64) -> Result<()> {
                 .map(|count| count.unwrap_or(0) as u64)
         };
         session.responses = count(0)?;
-        session.tokens = Tokens {
-            input: count(1)?,
-            cache_read: count(2)?,
-            cache_write_5m: count(3)?,
-            cache_write_1h: count(4)?,
-            output: count(5)?,
-            reasoning: count(6)?,
-        };
+        session.tokens = crate::db::tokens(row, 1)?;
         session.cost_usd = row.get(7)?;
         session.unpriced = count(8)?;
         session.subagents = count(9)?;
@@ -405,9 +398,10 @@ pub fn show(db: &Connection, home: &Path, id: &str, now: i64) -> Result<Detail> 
         .collect::<rusqlite::Result<_>>()?;
     let drawn: Vec<(String, String)> = db
         .prepare(&format!(
-            "{SUBTREE} SELECT r.account, coalesce(a.title || coalesce(' (' || a.label || ')', ''), r.account)
+            "{SUBTREE} SELECT r.account, coalesce({}, r.account)
              FROM response r LEFT JOIN account a ON a.id = r.account
-             WHERE r.session IN tree AND r.account IS NOT NULL GROUP BY r.account ORDER BY count(*) DESC"
+             WHERE r.session IN tree AND r.account IS NOT NULL GROUP BY r.account ORDER BY count(*) DESC",
+            crate::status::Account::FULL_TITLE
         ))?
         .query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;

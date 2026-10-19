@@ -97,6 +97,9 @@ pub struct Account {
 }
 
 impl Account {
+    /// `full_title` in SQL, of an `account` table named `a`.
+    pub const FULL_TITLE: &str = "a.title || coalesce(' (' || a.label || ')', '')";
+
     /// `Claude Max (me@example.com)`.
     pub fn full_title(&self) -> String {
         match &self.label {
