@@ -155,12 +155,7 @@ pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
 /// Whether it was taken in.
 pub fn refresh(db: &mut Connection) -> Result<bool> {
     let now = crate::now();
-    // Claimed in one statement, so two processes never ask at once.
-    let claimed = db.execute(
-        "UPDATE state SET prices_at = ?1 WHERE prices_at IS NULL OR prices_at <= ?1 - ?2 OR prices_at > ?1",
-        params![now, 6 * crate::time::HOUR],
-    )?;
-    if claimed == 0 {
+    if !claim(db, now)? {
         return Ok(false);
     }
     let taken = take_in(db, now);
@@ -173,6 +168,20 @@ pub fn refresh(db: &mut Connection) -> Result<bool> {
         )?;
     }
     taken.map(|()| true)
+}
+
+/// Claim asking models.dev if it's due, in one statement, so no two
+/// processes ask at once.
+fn claim(db: &Connection, now: i64) -> Result<bool> {
+    // Claimed up to `limits::DUE` ahead of now is another process's, which
+    // read the time a moment later; further ahead, as for limits, a clock
+    // set back since.
+    let claimed = db.execute(
+        "UPDATE state SET prices_at = ?1
+         WHERE prices_at IS NULL OR prices_at <= ?1 - ?2 OR prices_at > ?1 + ?3",
+        params![now, 6 * crate::time::HOUR, crate::limits::DUE],
+    )?;
+    Ok(claimed > 0)
 }
 
 /// Take in models.dev's catalog as of `now`.
@@ -381,5 +390,16 @@ mod tests {
         );
         unlisted.cost = Some(0.001);
         assert_eq!(prices.cost("opencode", &unlisted), Some(0.001));
+    }
+
+    #[test]
+    fn one_process_claims_the_refresh_and_a_clock_set_back_can_claim_it_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let now = 1_800_000_000_000;
+        assert!(claim(&db, now).unwrap());
+        // A process that read the time 20 ms earlier, and claims after.
+        assert!(!claim(&db, now - 20).unwrap());
+        assert!(claim(&db, now - crate::time::DAY).unwrap(), "set back");
     }
 }

@@ -90,13 +90,11 @@ struct Server {
 }
 
 pub fn run(home: &Path, data: &Path, linger: Duration) -> Result<()> {
-    let failed = |error: std::io::Error| Error::Failed(error.to_string());
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(data)
-        .map_err(failed)?;
-    let lock = std::fs::File::create(data.join("serve.lock")).map_err(failed)?;
+        .create(data)?;
+    let lock = std::fs::File::create(data.join("serve.lock"))?;
     if lock.try_lock().is_err() {
         eprintln!("turnscope serve: already running for {}", data.display());
         return Ok(());
@@ -106,7 +104,7 @@ pub fn run(home: &Path, data: &Path, linger: Duration) -> Result<()> {
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket)
         .map_err(|error| Error::Failed(format!("can't listen on {}: {error}", socket.display())))?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).map_err(failed)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
 
     let (sender, messages) = mpsc::channel();
     let accepting = sender.clone();
@@ -535,14 +533,15 @@ impl Server {
         )?;
         let mut sessions = Vec::new();
         for (row, points) in used.rows.iter().zip(points) {
-            let (title, project, agent, running) = crate::sessions::brief(&self.db, &row.key, now)?;
+            let (project, agent, running) = crate::sessions::brief(&self.db, &row.key, now)?;
             sessions.push(UsedMost {
                 session: row.key.clone(),
                 project: project
                     .as_deref()
                     .and_then(|project| project.rsplit('/').next())
                     .map(str::to_owned),
-                title,
+                // By session, a row's name is its session's title.
+                title: row.name.clone(),
                 agent,
                 share_percent: points,
                 running,
