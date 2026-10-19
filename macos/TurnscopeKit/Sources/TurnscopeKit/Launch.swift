@@ -10,7 +10,7 @@
 
 import Foundation
 
-public struct Launch: Equatable, Sendable {
+public struct Launch: Sendable {
     /// The status to show instead of an engine's.
     public var fixture: String?
     /// Where to draw the panel before quitting.

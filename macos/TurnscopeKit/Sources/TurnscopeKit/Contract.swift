@@ -85,7 +85,7 @@ public struct AccountStatus: Decodable, Equatable, Identifiable, Sendable {
 /// How an account's limits were last read.
 public enum AccountState: Decodable, Equatable, Sendable {
     /// Read on the last try.
-    case live(readAt: Date)
+    case live
     /// As of an earlier read, and why it hasn't been read since.
     case asOf(readAt: Date, why: Stale)
     /// Never read, and why.
@@ -97,7 +97,7 @@ public enum AccountState: Decodable, Equatable, Sendable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(Kind.self, forKey: .kind) {
-        case .live: self = .live(readAt: try c.decode(Date.self, forKey: .readAt))
+        case .live: self = .live
         case .asOf: self = .asOf(readAt: try c.decode(Date.self, forKey: .readAt),
                                  why: try c.decode(Stale.self, forKey: .why))
         case .unread: self = .unread(why: try c.decode(Stale.self, forKey: .why))

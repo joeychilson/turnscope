@@ -33,8 +33,6 @@ public final class Store {
     @ObservationIgnored public var onChange: () -> Void = {}
 
     @ObservationIgnored private let client: Client?
-    /// The task that takes in what the client hears, when there's a client.
-    @ObservationIgnored private var listening: Task<Void, Never>?
     /// The account the panel has open. The store asks what used its deciding
     /// limit.
     @ObservationIgnored private var watched: String?
@@ -57,7 +55,7 @@ public final class Store {
         frozen = client == nil ? status?.at : nil
         self.status = status
         guard let client else { return }
-        listening = Task { [weak self] in
+        Task { [weak self] in
             for await event in client.events {
                 self?.take(event)
             }

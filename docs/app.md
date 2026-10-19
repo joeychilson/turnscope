@@ -132,8 +132,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   to connect an agent too, since an app moved to Applications can be
   talking to the one still running from the image.
 - **Views** get the store from the SwiftUI environment, with `Navigation`,
-  `Updater` and `PanelActions` (close, and whether notifications are
-  off).
+  `Updater` and `PanelActions` (close).
 - **`Words`** writes every figure and sentence made from the status: what's
   left, times, a limit's line, the headline, the menu bar's figures and
   notifications. Views get one from `store.words(now:)`, which uses the agent
@@ -427,12 +426,13 @@ First decide who owns it.
 
 **An app preference** changes only how the app looks or behaves:
 
-1. Add a key to `Preference` in `Preferences.swift`, with its default in
-   `register()`.
+1. Add a key to `Preference` in `Preferences.swift`.
 2. Add a `SettingRow` for it to a `SettingGroup` in `GeneralTab.swift`, or
-   the tab it belongs to, bound with `@AppStorage(Preference.<key>)`.
-3. Read it where it applies. Code outside SwiftUI reads `UserDefaults`.
-   `AppDelegate` redraws the menu bar item on any change to the defaults.
+   the tab it belongs to, bound with `@AppStorage(Preference.<key>)` and
+   its default.
+3. Read it where it applies. Code outside SwiftUI reads `UserDefaults`, and
+   takes the same default while the key isn't set. `AppDelegate` redraws
+   the menu bar item on any change to the defaults.
 
 **An engine setting** must agree with the command line, or changes what
 `serve` does, like the notification switches. It's a protocol change

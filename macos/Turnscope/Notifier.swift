@@ -42,12 +42,6 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: read.map { "account:\($0)" })
     }
 
-    /// Whether Turnscope's notifications are turned off in System Settings,
-    /// so none can show.
-    func off() async -> Bool {
-        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus == .denied
-    }
-
     /// Post `alert` in `words`, with `accounts` as of the last status.
     /// Returns whether macOS accepted it, which it doesn't while Turnscope's
     /// notifications are off.

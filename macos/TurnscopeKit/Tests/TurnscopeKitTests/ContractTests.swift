@@ -30,7 +30,7 @@ private let answers: [String: @Sendable (Data) throws -> Void] = [
 
 /// The line the app writes for each request example, by file name, given
 /// the example's id.
-private let requests: [String: @Sendable (Int) throws -> Data] = [
+private let requests: [String: @Sendable (Int) -> Data] = [
     "hello.request.json": write("hello", HelloParams(protocol: protocolVersion)),
     "alerts.ack.request.json": write("alerts.ack", AckParams(ids: [1, 2])),
     "limit.breakdown.request.json": write("limit.breakdown",
@@ -47,8 +47,8 @@ private func read<T: Decodable & SendableMetatype>(_: T.Type) -> @Sendable (Data
     { data in _ = try Contract.decoder.decode(T.self, from: data) }
 }
 
-private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil) -> @Sendable (Int) throws -> Data {
-    { id in try Asked(id: id, method: method, params: params).line() }
+private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil) -> @Sendable (Int) -> Data {
+    { id in Asked(id: id, method: method, params: params).line() }
 }
 
 @Test func everyExampleIsWhatTheAppReadsOrWrites() throws {
