@@ -170,6 +170,19 @@ pub struct Reading {
     pub resets: Option<i64>,
 }
 
+/// How far apart two readings of one window may say it resets: providers'
+/// resets drift by seconds from read to read.
+pub const DRIFT: i64 = 5 * MINUTE;
+
+/// Whether readings with resets `a` and `b` are of the same window: both
+/// within [`DRIFT`] of each other, or both with none.
+pub fn same_reset(a: Option<i64>, b: Option<i64>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => (a - b).abs() <= DRIFT,
+        (a, b) => a == b,
+    }
+}
+
 /// Points of a limit an hour of work uses: what it rose by over the hours
 /// worked between its latest `readings` (oldest first, across windows),
 /// back to `enough` hours of work. `worked` holds the start of each slot of
@@ -196,10 +209,7 @@ pub fn work_rate(
             break;
         }
         let before = index.checked_sub(1).map(|before| readings[before]);
-        let same = before.is_some_and(|before| match (reading.resets, before.resets) {
-            (Some(resets), Some(was)) => (resets - was).abs() <= 5 * MINUTE,
-            (resets, was) => resets == was,
-        });
+        let same = before.is_some_and(|before| same_reset(reading.resets, before.resets));
         match (before, reading.starts) {
             // Use given back, as by an early reset, says nothing of work.
             (Some(before), _) if same && reading.used < before.used - 1.0 => {}
@@ -400,13 +410,13 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        // Windows: a limit's readings with one reset, within the seconds it drifts.
+        // Windows: a limit's readings with one reset.
         let mut windows: Vec<(String, Window)> = Vec::new();
         for (account, key, at, used, starts, resets) in rows {
             let limit = format!("{account} {key}");
             match windows.last_mut() {
                 Some((last, window))
-                    if *last == limit && (window.resets - resets).abs() <= 5 * MINUTE =>
+                    if *last == limit && same_reset(Some(window.resets), Some(resets)) =>
                 {
                     window.readings.push((at, used))
                 }

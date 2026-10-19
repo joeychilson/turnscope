@@ -583,16 +583,12 @@ fn limits(
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
-        // Its current window's: those that reset with it, within the drift
-        // of a few seconds providers have.
+        // Its current window's: those that reset with it.
         let readings: Vec<(i64, f64)> = history
             .iter()
             .filter(|reading| {
                 reading.at >= starts.unwrap_or(read_at - DAY)
-                    && match (resets, reading.resets) {
-                        (Some(resets), Some(read)) => (resets - read).abs() <= 5 * MINUTE,
-                        (resets, read) => resets == read,
-                    }
+                    && forecast::same_reset(resets, reading.resets)
             })
             .map(|reading| (reading.at, reading.used))
             .collect();
