@@ -9,6 +9,7 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
@@ -388,6 +389,36 @@ fn a_relative_folder_is_in_the_current_folder() {
             String::from_utf8_lossy(&relative.stderr)
         );
     }
+}
+
+#[test]
+fn sessions_marks_the_session_of_an_agent_that_names_it_nowhere() {
+    let data = store();
+    let sessions = command(data.path(), &["sessions"]);
+    // Run by Codex, as from Claude Code's shell: under a shell named as
+    // Codex's command, which waits on turnscope rather than becoming it. Its
+    // folder is the one it runs in, and `/` holds its session's.
+    let output = Command::new("/bin/sh")
+        .arg0("codex")
+        .args(["-c", r#""$@"; exit $?"#, "sh"])
+        .arg(sessions.get_program())
+        .args(sessions.get_args())
+        .env_clear()
+        .envs(
+            sessions
+                .get_envs()
+                .filter_map(|(name, value)| Some((name, value?))),
+        )
+        .current_dir("/")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    let yours: Vec<&str> = text
+        .lines()
+        .filter(|line| line.ends_with(" · yours"))
+        .collect();
+    assert!(yours.len() == 1 && yours[0].contains(CODEX), "{text}");
 }
 
 #[test]
