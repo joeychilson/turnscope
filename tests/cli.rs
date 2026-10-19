@@ -472,6 +472,35 @@ fn a_status_line_says_the_account_of_the_session_it_is_given() {
 }
 
 #[test]
+fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
+    let data = store();
+    // 40 seconds into the minute; Claude's 5 hours runs out at 13:00 and
+    // resets at 14:00.
+    let late = (NOW + 40_000).to_string();
+    let mut mcp = command(data.path(), &["mcp"])
+        .env("TURNSCOPE_NOW", &late)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_limits","arguments":{"account":"claude"}}}"#;
+    writeln!(mcp.stdin.take().unwrap(), "{request}").unwrap();
+    let reply: serde_json::Value =
+        serde_json::from_slice(&mcp.wait_with_output().unwrap().stdout).unwrap();
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    // In the verdict, and in the 5 hours' own line.
+    assert_eq!(text.matches("resets 14:00 (in 2h)").count(), 2, "{text}");
+    let line = command(data.path(), &["statusline", "--account", "claude"])
+        .env("TURNSCOPE_NOW", &late)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&line.stdout).trim(),
+        "Claude Max · 5h 25%, out in 1h · weekly 56%"
+    );
+}
+
+#[test]
 fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
     let data = store();
     // Claude's last read 35 minutes ago, and nothing written since.

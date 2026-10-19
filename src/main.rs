@@ -400,7 +400,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                     .collect(),
             };
             let fit = match (hours, shown.first()) {
-                (Some(hours), Some(first)) => Some(status::fit(first, hours, now)?),
+                (Some(hours), Some(first)) => Some(status::fit(first, hours, status.at)?),
                 _ => None,
             };
             let text = status::text(&status, &shown, None);
@@ -426,7 +426,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             let heading = format!(
                 "{} · {}\n",
                 account.full_title(),
-                status::limit_text(limit, now)
+                status::limit_text(limit, status.at)
             );
             let named = limit.named();
             let column = shares
@@ -701,7 +701,7 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
     // An account no agent here is signed in to has nothing to fix.
     for account in &status.accounts {
         if account.state.why() != Some(status::Stale::SignedOut)
-            && let Some(stale) = status::stale(account, false, now)
+            && let Some(stale) = status::stale(account, false, status.at)
         {
             notes.push(format!("{}: {stale}.", account.full_title()));
         }
@@ -838,8 +838,7 @@ fn guard(
 /// so it's quick; none when nothing's known.
 fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String> {
     let db = db::open(data).ok()?;
-    let now = now();
-    let status = status::status(&db, now).ok()?;
+    let status = status::status(&db, now()).ok()?;
     let id = match account {
         // A line is better than none: of several named, the first.
         Some(name) => Some(status::named(&status, name).ok()?.first()?.id.clone()),
@@ -855,7 +854,7 @@ fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String>
             .iter()
             .find(|account| account.in_use && !account.hidden)?,
     };
-    Some(status::line(account, now))
+    Some(status::line(account, status.at))
 }
 
 /// The account of the session a harness names in the JSON it writes to a

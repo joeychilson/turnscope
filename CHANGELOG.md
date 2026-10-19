@@ -37,6 +37,11 @@
   `read_session` and the handoff, not by every tool its text names. One
   that ran `rg tools.apply_patch src` was named `exec: exec_command,
   apply_patch`, as if it changed files.
+- **`check_limits`' verdict, `statusline` and `usage --limit`'s first
+  line** count time from the minute the status is as of, as `status`
+  does. Late in a minute, `check_limits` could say a limit resets "14:00
+  (in 1h 59m)" above a line that says "14:00 (in 2h)", and `statusline`
+  could say "out in 59m" while `status` said "13:00 (in 1h)".
 
 ## 0.1.4
 

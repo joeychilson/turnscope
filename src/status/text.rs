@@ -2,7 +2,7 @@
 //! each account and limit as lines, whether more hours of work fit, and the
 //! one sentence that leads an answer. The app says it in its own words.
 
-use super::{Account, Limit, Outlook, Spread, Stale, State, Status, Unknown};
+use super::{Account, Horizon, Limit, Moment, Outlook, Spread, Stale, State, Status, Unknown};
 use crate::agents;
 use crate::time::{self, HOUR, MINUTE, when};
 
@@ -414,14 +414,14 @@ fn short(limit: &Limit, now: i64) -> String {
         None => format!("{}%", limit.left_percent),
     };
     // Soon, as a countdown; later, as the clock says it.
-    let at = |at: i64| match at - now < 3 * HOUR {
-        true => format!("in {}", time::span(at - now)),
-        false => time::clock(at, now),
+    let at = |moment: Moment| match moment.horizon {
+        Horizon::Soon => format!("in {}", time::span(moment.at - now)),
+        _ => time::clock(moment.at, now),
     };
     match limit.outlook {
-        Outlook::UsedUp { back: Some(back) } => format!("{name} used up, back {}", at(back.at)),
+        Outlook::UsedUp { back: Some(back) } => format!("{name} used up, back {}", at(back)),
         Outlook::UsedUp { back: None } => format!("{name} used up"),
-        Outlook::RunsOut { likely, .. } => format!("{name} {left}, out {}", at(likely.at)),
+        Outlook::RunsOut { likely, .. } => format!("{name} {left}, out {}", at(likely)),
         _ => format!("{name} {left}"),
     }
 }
