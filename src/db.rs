@@ -197,6 +197,50 @@ CREATE VIRTUAL TABLE said USING fts5 (
 );
 UPDATE state SET readers = 0;
 "#,
+    r#"
+-- From here on, a price is checked as models.dev's catalog is taken in,
+-- and reading prices skips none. Before, any `cost` that was an object was
+-- kept, and a fast mode's `cost` even where it had none, as `null`, and
+-- reading skipped what didn't read as `prices::Cost` or `prices::Rates`.
+-- That is taken out here, so no price changes. These checks pass less than
+-- serde reads only where it takes an array for an object, which models.dev
+-- never lists. Each part is read through `->`, so one that isn't an object
+-- can't stop this.
+CREATE TEMP VIEW held (provider, model, since, part, rates) AS
+    SELECT provider, model, since, 'fast', fast FROM price WHERE fast IS NOT NULL
+    UNION ALL
+    SELECT provider, model, since, 'cost', cost FROM price
+    UNION ALL
+    SELECT provider, model, since, 'cost', cost -> '$.context_over_200k' FROM price
+    WHERE coalesce(json_type(cost, '$.context_over_200k'), 'null') <> 'null'
+    UNION ALL
+    SELECT provider, model, since, 'cost', cost -> tier.fullkey
+    FROM price, json_each(price.cost, '$.tiers') AS tier
+    WHERE json_type(price.cost, '$.tiers') = 'array';
+CREATE TEMP VIEW unread (provider, model, since, part) AS
+    SELECT provider, model, since, part FROM held WHERE NOT (
+        coalesce(json_type(rates, '$.input'), '') IN ('integer', 'real')
+        AND coalesce(json_type(rates, '$.output'), '') IN ('integer', 'real')
+        AND coalesce(json_type(rates, '$.cache_read'), 'null') IN ('integer', 'real', 'null')
+        AND coalesce(json_type(rates, '$.cache_write'), 'null') IN ('integer', 'real', 'null')
+        AND coalesce(json_type(rates, '$.reasoning'), 'null') IN ('integer', 'real', 'null')
+    )
+    UNION ALL
+    SELECT provider, model, since, 'cost' FROM price
+    WHERE coalesce(json_type(cost, '$.tiers'), 'array') <> 'array'
+    UNION ALL
+    SELECT provider, model, since, 'cost'
+    FROM price, json_each(price.cost, '$.tiers') AS tier
+    WHERE json_type(price.cost, '$.tiers') = 'array' AND NOT (
+        coalesce(json_type(price.cost, tier.fullkey || '.tier.size'), '') = 'integer'
+        AND json_extract(price.cost, tier.fullkey || '.tier.size') >= 0
+    );
+UPDATE price SET fast = NULL
+WHERE (provider, model, since, 'fast') IN (SELECT * FROM unread);
+DELETE FROM price WHERE (provider, model, since, 'cost') IN (SELECT * FROM unread);
+DROP VIEW unread;
+DROP VIEW held;
+"#,
 ];
 
 /// "TRNS", in the header, so a file that isn't Turnscope's is never written.
@@ -256,6 +300,19 @@ pub fn open(dir: &Path) -> Result<Connection> {
     tx.pragma_update(None, "application_id", APPLICATION_ID)?;
     tx.commit()?;
     Ok(db)
+}
+
+/// A database in `dir` as revision `revision` left it, for `open` to bring
+/// up to date.
+#[cfg(test)]
+pub fn open_at(dir: &Path, revision: usize) -> Connection {
+    let db = Connection::open(dir.join("turnscope.sqlite")).unwrap();
+    for script in &REVISIONS[..revision] {
+        db.execute_batch(script).unwrap();
+    }
+    db.pragma_update(None, "user_version", revision as i64)
+        .unwrap();
+    db
 }
 
 #[cfg(test)]

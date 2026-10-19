@@ -34,6 +34,28 @@ struct Rates {
     reasoning: Option<f64>,
 }
 
+/// A model's `cost`, as models.dev lists it.
+#[derive(Deserialize)]
+struct Cost {
+    #[serde(flatten)]
+    base: Rates,
+    #[serde(default)]
+    tiers: Vec<Tiered>,
+    context_over_200k: Option<Rates>,
+}
+
+#[derive(Deserialize)]
+struct Tiered {
+    #[serde(flatten)]
+    rates: Rates,
+    tier: Threshold,
+}
+
+#[derive(Deserialize)]
+struct Threshold {
+    size: u64,
+}
+
 struct Model {
     base: Rates,
     /// Each tier's rates, from the prompt size it starts above, smallest first.
@@ -47,32 +69,12 @@ pub struct Prices(HashMap<(String, String), Vec<(i64, Model)>>);
 
 impl Prices {
     pub fn load(db: &Connection) -> Result<Prices> {
-        #[derive(Deserialize)]
-        struct Cost {
-            #[serde(flatten)]
-            base: Rates,
-            #[serde(default)]
-            tiers: Vec<Tiered>,
-            context_over_200k: Option<Rates>,
-        }
-        #[derive(Deserialize)]
-        struct Tiered {
-            #[serde(flatten)]
-            rates: Rates,
-            tier: Threshold,
-        }
-        #[derive(Deserialize)]
-        struct Threshold {
-            size: u64,
-        }
         let mut models: HashMap<(String, String), Vec<(i64, Model)>> = HashMap::new();
         let mut rows =
             db.prepare("SELECT provider, model, since, cost, fast FROM price ORDER BY since")?;
         let mut rows = rows.query([])?;
         while let Some(row) = rows.next()? {
-            let Ok(cost) = serde_json::from_str::<Cost>(&row.get::<_, String>(3)?) else {
-                continue;
-            };
+            let cost: Cost = stored(&row.get::<_, String>(3)?)?;
             let mut tiers: Vec<(u64, Rates)> = cost
                 .tiers
                 .iter()
@@ -86,7 +88,8 @@ impl Prices {
             tiers.sort_by_key(|(above, _)| *above);
             let priority = row
                 .get::<_, Option<String>>(4)?
-                .and_then(|fast| serde_json::from_str(&fast).ok());
+                .map(|fast| stored(&fast))
+                .transpose()?;
             models.entry((row.get(0)?, row.get(1)?)).or_default().push((
                 row.get(2)?,
                 Model {
@@ -142,6 +145,12 @@ impl Prices {
     }
 }
 
+/// A price as `keep` stored it, which read when it was kept.
+fn stored<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
+    serde_json::from_str(text)
+        .map_err(|error| Error::Failed(format!("the database: a price didn't read: {error}")))
+}
+
 /// Take in models.dev's catalog when it's six hours since any process last
 /// did: a price that changed is kept from now, beside the one before it, and
 /// a model listed for the first time prices what was used of it before.
@@ -176,6 +185,11 @@ fn take_in(db: &mut Connection, now: i64) -> Result<()> {
     }
     let catalog: HashMap<String, Value> = serde_json::from_slice(&json)
         .map_err(|error| Error::Failed(format!("models.dev's catalog didn't read: {error}")))?;
+    keep(db, &catalog, now)
+}
+
+/// Keep the prices `catalog` lists, as of `now`.
+fn keep(db: &mut Connection, catalog: &HashMap<String, Value>, now: i64) -> Result<()> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     // Each model's price now: its latest row.
     let current: HashMap<(String, String), (String, Option<String>)> = tx
@@ -192,23 +206,28 @@ fn take_in(db: &mut Connection, now: i64) -> Result<()> {
     )?;
     let mut first = Vec::new();
     let mut listed = 0;
-    for (provider, listing) in &catalog {
+    for (provider, listing) in catalog {
         let Some(models) = listing["models"].as_object() else {
             continue;
         };
         for (id, model) in models {
-            let Some(cost) = model.get("cost").filter(|cost| cost.is_object()) else {
+            let Some(cost) = model
+                .get("cost")
+                .filter(|cost| Cost::deserialize(*cost).is_ok())
+            else {
                 continue;
             };
             let fast = model["experimental"]["modes"]
                 .as_object()
                 .and_then(|modes| {
-                    modes.values().find_map(|mode| {
+                    modes.values().find(|mode| {
                         let body = &mode["provider"]["body"];
-                        (body["speed"] == "fast" || body["service_tier"] == "priority")
-                            .then(|| mode["cost"].to_string())
+                        body["speed"] == "fast" || body["service_tier"] == "priority"
                     })
-                });
+                })
+                .map(|mode| &mode["cost"])
+                .filter(|cost| Rates::deserialize(*cost).is_ok())
+                .map(Value::to_string);
             listed += 1;
             let price = (cost.to_string(), fast);
             let key = (provider.clone(), id.clone());
@@ -236,8 +255,136 @@ fn take_in(db: &mut Connection, now: i64) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::agents::Tokens;
+
+    /// A catalog of 1,000 OpenAI models, as few as `keep` takes: each priced
+    /// `cost(n)`, with a fast mode priced `fast(n)`.
+    fn catalog(
+        cost: impl Fn(usize) -> Value,
+        fast: impl Fn(usize) -> Value,
+    ) -> HashMap<String, Value> {
+        let models: serde_json::Map<String, Value> = (0..1000)
+            .map(|n| {
+                let mode = json!({ "provider": { "body": { "speed": "fast" } } });
+                let mut model =
+                    json!({ "cost": cost(n), "experimental": { "modes": { "fast": mode } } });
+                model["experimental"]["modes"]["fast"]["cost"] = fast(n);
+                (format!("gpt-{n}"), model)
+            })
+            .collect();
+        HashMap::from([("openai".to_owned(), json!({ "models": models }))])
+    }
+
+    /// What a million input tokens of OpenAI's `model` cost, at priority or
+    /// not.
+    fn million(prices: &Prices, model: &str, priority: bool) -> Option<f64> {
+        let mut used = response(
+            "openai",
+            model,
+            Tokens {
+                input: 1_000_000,
+                ..Tokens::default()
+            },
+        );
+        used.priority = priority;
+        prices.cost("codex", &used)
+    }
+
+    #[test]
+    fn a_catalog_whose_prices_dont_read_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        // An input price, but no output price.
+        let unread = catalog(|_| json!({ "input": 1 }), |_| Value::Null);
+        assert_eq!(
+            keep(&mut db, &unread, 0).unwrap_err().to_string(),
+            "models.dev's catalog listed only 0 priced models"
+        );
+    }
+
+    #[test]
+    fn a_fast_mode_without_its_own_price_costs_the_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let listed = catalog(
+            |_| json!({ "input": 2, "output": 8 }),
+            |n| match n {
+                0 => Value::Null,
+                1 => json!({ "input": 4 }),
+                _ => json!({ "input": 5, "output": 20 }),
+            },
+        );
+        keep(&mut db, &listed, 0).unwrap();
+        let prices = Prices::load(&db).unwrap();
+        assert_eq!(million(&prices, "gpt-0", true), Some(2.0));
+        assert_eq!(million(&prices, "gpt-1", true), Some(2.0));
+        assert_eq!(million(&prices, "gpt-2", true), Some(5.0));
+        assert_eq!(million(&prices, "gpt-2", false), Some(2.0));
+    }
+
+    #[test]
+    fn prices_kept_before_they_were_checked_cost_what_they_did() {
+        // Costs and fast modes as earlier revisions kept them, and what a
+        // million input tokens cost since; each fast mode's at priority.
+        let costs = [
+            (r#"{"input":2,"output":8}"#, Some(2.0)),
+            (
+                r#"{"input":2.5,"output":8,"cache_read":null,"input_audio":7}"#,
+                Some(2.5),
+            ),
+            (
+                r#"{"input":2,"output":8,"tiers":[{"input":3,"output":9,"tier":{"size":0}}]}"#,
+                Some(3.0),
+            ),
+            (
+                r#"{"input":2,"output":8,"context_over_200k":{"input":4,"output":9}}"#,
+                Some(4.0),
+            ),
+            (r#"{"input":2}"#, None),
+            (r#"{"input":"2","output":8}"#, None),
+            (r#"{"input":2,"output":8,"tiers":null}"#, None),
+            (r#"{"input":2,"output":8,"tiers":["x"]}"#, None),
+            (
+                r#"{"input":2,"output":8,"tiers":[{"input":3,"output":9,"tier":{"size":-1}}]}"#,
+                None,
+            ),
+            (
+                r#"{"input":2,"output":8,"context_over_200k":{"input":4}}"#,
+                None,
+            ),
+        ];
+        let fasts = [
+            ("null", Some(2.0)),
+            (r#"{"input":5,"output":20}"#, Some(5.0)),
+            (r#"{"input":5}"#, Some(2.0)),
+            (r#""fast""#, Some(2.0)),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let old = crate::db::open_at(dir.path(), 3);
+        let rows = costs.iter().map(|(cost, _)| (*cost, None));
+        let rows = rows.chain(fasts.iter().map(|(fast, _)| (costs[0].0, Some(*fast))));
+        for (n, (cost, fast)) in rows.enumerate() {
+            old.execute(
+                "INSERT INTO price VALUES ('openai', ?1, 0, ?2, ?3)",
+                params![format!("gpt-{n}"), cost, fast],
+            )
+            .unwrap();
+        }
+        drop(old);
+        let db = crate::db::open(dir.path()).unwrap();
+        let prices = Prices::load(&db).unwrap();
+        for (n, (cost, dollars)) in costs.iter().enumerate() {
+            let model = format!("gpt-{n}");
+            assert_eq!(million(&prices, &model, false), *dollars, "{cost}");
+        }
+        for (n, (fast, dollars)) in fasts.iter().enumerate() {
+            let model = format!("gpt-{}", costs.len() + n);
+            assert_eq!(million(&prices, &model, true), *dollars, "{fast}");
+        }
+    }
 
     /// Prices of `rows`, each in force from `since`.
     fn priced(rows: &[(&str, &str, i64, &str, Option<&str>)]) -> Prices {

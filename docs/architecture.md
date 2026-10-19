@@ -306,7 +306,8 @@ over. A response with none of these has an unknown cost, never zero, and
 
 models.dev's catalog (`https://models.dev/api.json`) is read when six hours
 have passed since any process last did, or ten minutes after a failure. A
-catalog with fewer than 1,000 priced models is refused. A price that
+price that doesn't read is passed over, and a catalog with fewer than
+1,000 prices that read is refused. A price that
 changed is kept from then on beside the one before, so each response keeps
 the price in force when it ran. Usage from before a model was first priced
 takes that first price.
