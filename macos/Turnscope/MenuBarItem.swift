@@ -32,7 +32,7 @@ final class MenuBarItem {
         let figures = shown.map(words.figure)
         let spoken = words.spokenItem(shown, outOfDate: outOfDate)
         let urgent = MenuBarItem.urgent(accounts)
-        let showing = Drawn(accounts: shown.map { [$0.provider, "\($0.standing)"] }, figures: figures,
+        let showing = Drawn(providers: shown.map(\.provider), standings: shown.map(\.standing), figures: figures,
                             spoken: spoken, dark: urgent && dark, outOfDate: outOfDate)
         guard showing != drawn else { return nil }
         drawn = showing
@@ -65,7 +65,8 @@ final class MenuBarItem {
     /// don't, the appearance when it's drawn in color, and whether it's out
     /// of date.
     private struct Drawn: Equatable {
-        var accounts: [[String]]
+        var providers: [String]
+        var standings: [Standing]
         var figures: [String]
         var spoken: String
         var dark: Bool

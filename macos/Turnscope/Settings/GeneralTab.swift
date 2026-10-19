@@ -5,10 +5,10 @@
 import ServiceManagement
 import SwiftUI
 import TurnscopeKit
+import UserNotifications
 
 struct GeneralTab: View {
     @Environment(Store.self) private var store
-    @Environment(\.panelActions) private var actions
     @AppStorage(Preference.menuShows) private var menuShows = MenuShows.all
     @State private var login = SMAppService.mainApp.status
     /// Whether Turnscope's notifications are turned off.
@@ -75,7 +75,7 @@ struct GeneralTab: View {
         // Checked again each time Settings shows, since they may have just
         // been turned on.
         .task {
-            let now = await actions.notificationsOff()
+            let now = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus == .denied
             withAnimation(spring) { off = now }
         }
     }

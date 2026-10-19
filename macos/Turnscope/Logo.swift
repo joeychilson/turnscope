@@ -10,14 +10,14 @@ import TurnscopeKit
 /// A logo, drawn in the text's color.
 struct Logo: View {
     var image: NSImage
-    var size: CGFloat = 16
+    var size: CGFloat
 
-    init(account: AccountStatus, size: CGFloat = 16) {
+    init(account: AccountStatus, size: CGFloat) {
         image = Logo.image("providers/\(account.provider)", else: "key.fill")
         self.size = size
     }
 
-    init(agent: AgentStatus, size: CGFloat = 16) {
+    init(agent: AgentStatus, size: CGFloat) {
         image = Logo.image("agents/\(agent.id)", else: "terminal.fill")
         self.size = size
     }

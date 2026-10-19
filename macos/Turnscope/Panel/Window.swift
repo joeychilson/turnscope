@@ -14,8 +14,6 @@ let panelWidth: CGFloat = 340
 /// What the panel needs the app around it to do.
 struct PanelActions {
     var close: () -> Void = {}
-    /// Whether Turnscope's notifications are turned off in System Settings.
-    var notificationsOff: () async -> Bool = { false }
 }
 
 extension EnvironmentValues {

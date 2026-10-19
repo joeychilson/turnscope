@@ -31,7 +31,7 @@ private func limit(_ outlook: Outlook, key: String = "five_hour", name: String =
 
 private func account(_ limits: [LimitStatus], id: String = "anthropic:a", title: String = "Claude Max",
                      label: String? = nil, inUse: Bool = true, recent: Bool? = nil,
-                     state: AccountState = .live(readAt: noon),
+                     state: AccountState = .live,
                      kind: AccountKind = .subscription, spend: Spend? = nil) -> AccountStatus {
     AccountStatus(id: id, provider: "anthropic", kind: kind, title: title, label: label, agents: ["claude-code"],
                   inUse: inUse, recent: recent ?? inUse, hidden: false, state: state,

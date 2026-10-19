@@ -8,10 +8,6 @@ enum Preference {
     static let menuShows = "menuShows"
     /// Agents in use for which the line asking to connect them was dismissed.
     static let dismissedConnect = "dismissedConnect"
-
-    static func register() {
-        UserDefaults.standard.register(defaults: [menuShows: MenuShows.all.rawValue])
-    }
 }
 
 /// What the menu bar shows: every account in use, or only the most urgent.

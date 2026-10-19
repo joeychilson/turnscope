@@ -63,7 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var preferences: (any NSObjectProtocol)?
 
     init(_ launch: Launch) {
-        Preference.register()
         opening = launch.opening
         if launch.fixture != nil {
             client = nil
@@ -183,10 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: The panel
 
     private func makePanel() -> PanelWindow {
-        let actions = PanelActions(
-            close: { [weak self] in self?.close() },
-            notificationsOff: { [weak self] in await self?.notifier.off() ?? false }
-        )
+        let actions = PanelActions(close: { [weak self] in self?.close() })
         let root = Floating()
             .environment(store)
             .environment(navigation)

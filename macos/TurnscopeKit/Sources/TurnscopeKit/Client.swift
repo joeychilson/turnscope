@@ -121,7 +121,7 @@ public final class Client {
                 // Serve decides the socket's path.
                 if socketPath == nil { socketPath = await engine.said(["serve", "--socket"] + engine.arguments) }
                 guard let path = socketPath else {
-                    throw .unavailable("Turnscope couldn't run its engine, \(engine.binary.path)")
+                    throw .failed("Turnscope couldn't run its engine, \(engine.binary.path)")
                 }
                 if engineName == nil { engineName = await engine.said(["--version"]) }
                 let opened = try await engine.open(path)
@@ -251,24 +251,19 @@ private func decode<T: Decodable>(_: T.Type, from line: Data) throws(ClientError
 /// Why a request has no answer, as a sentence to show.
 public enum ClientError: Error, Equatable, Sendable, CustomStringConvertible {
     case notConnected
-    /// The engine couldn't be run or started, and why.
-    case unavailable(String)
-    case closed(String)
-    /// Serve answered with an error, which says why.
-    case refused(String)
+    /// The engine couldn't be run or started, the connection closed, or
+    /// serve answered with an error, and why.
+    case failed(String)
     /// Serve doesn't speak this app's protocol, and says which it does, or
     /// runs another engine.
     case unsupported(String)
     case unreadable(String)
-    /// A request couldn't be written for serve, and why.
-    case unwritable(String)
 
     public var description: String {
         switch self {
         case .notConnected: "Turnscope's engine isn't running"
-        case .unavailable(let why), .closed(let why), .refused(let why), .unsupported(let why): why
+        case .failed(let why), .unsupported(let why): why
         case .unreadable(let why): "Turnscope couldn't read what its engine sent: \(why)"
-        case .unwritable(let why): "Turnscope couldn't write a request to its engine: \(why)"
         }
     }
 }
@@ -300,11 +295,11 @@ private final class Channel {
     /// Send `method` with `params`, if it takes any, and return the answer's
     /// line.
     func ask(_ method: String, _ params: (any Encodable)? = nil) async throws(ClientError) -> Data {
-        guard !closed else { throw .closed(reason) }
+        guard !closed else { throw .failed(reason) }
         let id = nextID
         nextID += 1
-        let line = try Asked(id: id, method: method, params: params).line()
-        guard Channel.write(line, to: socket) else { throw .closed(reason) }
+        let line = Asked(id: id, method: method, params: params).line()
+        guard Channel.write(line, to: socket) else { throw .failed(reason) }
         return try await withCheckedContinuation { waiting[id] = $0 }.get()
     }
 
@@ -337,7 +332,7 @@ private final class Channel {
             case (nil, let id?):
                 let answer: Result<Data, ClientError> = switch header.error {
                 case let failure? where failure.code == -32001: .failure(.unsupported(failure.message))
-                case let failure?: .failure(.refused(failure.message))
+                case let failure?: .failure(.failed(failure.message))
                 case nil: .success(line)
                 }
                 waiting.removeValue(forKey: id)?.resume(returning: answer)
@@ -348,7 +343,7 @@ private final class Channel {
         Darwin.close(socket)
         let told = waiting
         waiting = [:]
-        for answer in told.values { answer.resume(returning: .failure(.closed(reason))) }
+        for answer in told.values { answer.resume(returning: .failure(.failed(reason))) }
         return unread
     }
 
@@ -434,14 +429,12 @@ struct Asked: Encodable {
     }
 
     /// The line written to serve.
-    func line() throws(ClientError) -> Data {
-        do {
-            var line = try JSONEncoder().encode(self)
-            line.append(0x0A)
-            return line
-        } catch {
-            throw .unwritable(String(describing: error))
-        }
+    func line() -> Data {
+        // It can't fail: the only parameters are the app's own, which hold
+        // whole numbers, strings and booleans.
+        var line = try! JSONEncoder().encode(self)
+        line.append(0x0A)
+        return line
     }
 }
 
@@ -466,7 +459,7 @@ private struct Engine: Sendable {
         do {
             try serve.run()
         } catch {
-            throw .unavailable("Turnscope couldn't start its engine: \(error.localizedDescription)")
+            throw .failed("Turnscope couldn't start its engine: \(error.localizedDescription)")
         }
         // A serve that exits at once, as a second one does when another is
         // already running, is dealt with on the next try.
@@ -474,11 +467,11 @@ private struct Engine: Sendable {
             do {
                 try await Task.sleep(for: .milliseconds(100))
             } catch {
-                throw .closed("Turnscope stopped")
+                throw .failed("Turnscope stopped")
             }
             if let socket = Engine.connect(to: path) { return (socket, serve) }
         }
-        throw .unavailable("Turnscope's engine didn't start")
+        throw .failed("Turnscope's engine didn't start")
     }
 
     /// The line the binary prints when run with `arguments`, if it succeeds:

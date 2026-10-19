@@ -11,7 +11,6 @@ import TurnscopeKit
 @MainActor
 enum Snapshot {
     static func draw(_ launch: Launch, into folder: String) {
-        Preference.register()
         let store = Store(fixture: launch.fixture)
         let navigation = Navigation()
         let tab = launch.opening.flatMap { navigation.apply($0, firstInUse: store.inUse.first?.id) }
