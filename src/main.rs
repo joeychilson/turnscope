@@ -677,26 +677,12 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
         }
     }
     let status = status::status(db, now)?;
+    // An account no agent here is signed in to has nothing to fix.
     for account in &status.accounts {
-        let agents = status::login_agents(account);
-        let title = account.full_title();
-        match (&account.state, account.state.why()) {
-            (_, Some(status::Stale::SignIn)) => notes.push(format!(
-                "{title}: its login was refused; sign in again in {agents}."
-            )),
-            (_, Some(status::Stale::Expired)) => notes.push(format!(
-                "{title}: its login expired; open {agents} to update."
-            )),
-            (status::State::AsOf { read_at, .. }, Some(status::Stale::ReadFailed)) => {
-                notes.push(format!(
-                    "{title}: it couldn't be read since {}; it's tried again every 5 minutes.",
-                    time::clock(*read_at, now)
-                ))
-            }
-            (status::State::Unread { .. }, Some(status::Stale::ReadFailed)) => notes.push(format!(
-                "{title}: it couldn't be read; it's tried again every 5 minutes."
-            )),
-            _ => {}
+        if account.state.why() != Some(status::Stale::SignedOut)
+            && let Some(stale) = status::stale(account, false, now)
+        {
+            notes.push(format!("{}: {stale}.", account.full_title()));
         }
     }
     let mut failed =

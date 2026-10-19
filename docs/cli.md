@@ -142,7 +142,7 @@ OpenRouter API key · via Pi
   This month, across its keys: $0.00.
 
 SuperGrok (me@example.com) · via Grok Build
-  Its login was refused: sign in again in Grok Build.
+  Its login was refused; sign in again in Grok Build.
 ```
 
 "At this pace" uses clock time, breaks included. "Of work" counts only the

@@ -21,7 +21,7 @@ use crate::providers::{self, Kind, Limits, Problem, Provider};
 use crate::{Result, ingest, now};
 
 /// How long limits stand before any process reads them again.
-const DUE: i64 = 5 * crate::time::MINUTE;
+pub const DUE: i64 = 5 * crate::time::MINUTE;
 
 /// An account, and the logins it's read with.
 struct Held {

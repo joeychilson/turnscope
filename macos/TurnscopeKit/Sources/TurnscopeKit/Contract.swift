@@ -116,7 +116,7 @@ public enum AccountState: Decodable, Equatable, Sendable {
 
 /// Why an account's limits aren't read now.
 public enum Stale: String, Decodable, Sendable {
-    /// No agent here is signed into it now.
+    /// No agent here is signed in to it now.
     case signedOut
     /// Its provider refused the login.
     case signIn

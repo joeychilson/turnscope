@@ -12,6 +12,10 @@
   `sessions read` showed one entry with its tool output cut at 2,000
   characters, not at 40,000 as with `--count 1`. `read_session` now takes a
   `count` of 0 as 1.
+- **`status`, `check_limits` and `doctor`** say why an account can't be
+  read in the same words. `check_limits`' verdict on the first account
+  says how to fix it, as the others do, not only that its limits can't be
+  read. `status` writes $1,000 or more with a comma, as `statusline` does.
 
 ## 0.1.4
 
