@@ -799,8 +799,8 @@ fn guard(
         ),
         outlook => {
             let mut said = format!("{called} has {}% left, under {below}%.", found.left_percent);
-            if let Some(window) = found.window.filter(|_| found.reset_since.is_none()) {
-                said += &format!(" It resets {}", when(window.resets.at));
+            if let Some(resets) = found.resets() {
+                said += &format!(" It resets {}", when(resets));
                 if let status::Outlook::RunsOut { likely, .. } = outlook {
                     said += &format!("; at this pace it runs out {}", when(likely.at));
                 }

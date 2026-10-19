@@ -225,7 +225,14 @@ impl Limit {
 
     /// Whether it limits the whole account: not one model's, nor one key's.
     pub fn whole(&self) -> bool {
-        self.scope.is_none() && self.held_by.is_empty() && !self.key.starts_with("key-")
+        self.scope.is_none() && !self.key.starts_with("key-")
+    }
+
+    /// When its window resets, unless it already has since it was read.
+    pub fn resets(&self) -> Option<i64> {
+        self.window
+            .filter(|_| self.reset_since.is_none())
+            .map(|window| window.resets.at)
     }
 
     /// Whether `name` names it: part of its name or key, as `week` names
