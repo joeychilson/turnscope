@@ -16,6 +16,10 @@
   read in the same words. `check_limits`' verdict on the first account
   says how to fix it, as the others do, not only that its limits can't be
   read. `status` writes $1,000 or more with a comma, as `statusline` does.
+- **A Codex script** is named by the tools it calls, in `sessions read`,
+  `read_session` and the handoff, not by every tool its text names. One
+  that ran `rg tools.apply_patch src` was named `exec: exec_command,
+  apply_patch`, as if it changed files.
 
 ## 0.1.4
 
