@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
+use crate::Result;
 use crate::agents::{self, Agent, Link, Read, Response, Tokens};
-use crate::prices::Prices;
-use crate::{Error, Result};
+use crate::prices::{History, Prices, in_force};
 
 /// Raised when a reader would read a file it read before differently: every
 /// file still there is then read again.
@@ -112,10 +112,7 @@ struct Known {
 /// works out costs and accounts, at a time, so a first run isn't read twice
 /// at once and no response is written with prices or sign-ins gone stale.
 fn lock(db: &Connection) -> Result<std::fs::File> {
-    let path = Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock");
-    std::fs::File::create(&path)
-        .and_then(|lock| lock.lock().map(|()| lock))
-        .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
+    crate::db::lock(&Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock"))
 }
 
 /// Read what's new in every agent's history under `home`; whether any file
@@ -127,9 +124,7 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     // An older Turnscope still running, as an agent's MCP server can be,
     // would read it all again its way, and this one back again.
     if readers > READERS {
-        return Err(Error::Failed(
-            "a newer Turnscope has updated this data; update Turnscope".to_owned(),
-        ));
+        return Err(crate::db::newer());
     }
     if readers < READERS {
         read_again(db)?;
@@ -427,17 +422,22 @@ fn stored(row: &Row) -> rusqlite::Result<Response> {
 /// what each agent folder held for each provider from when, oldest first.
 struct Derived {
     prices: Prices,
-    signed: Vec<(String, String, i64, Option<String>)>,
+    /// By folder and provider.
+    signed: HashMap<(String, String), History<Option<String>>>,
 }
 
 impl Derived {
     fn load(db: &Connection) -> Result<Derived> {
-        let signed = db
-            .prepare("SELECT folder, provider, since, account FROM sign_in ORDER BY since")?
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+        let mut signed: HashMap<(String, String), History<Option<String>>> = HashMap::new();
+        let mut rows =
+            db.prepare("SELECT folder, provider, since, account FROM sign_in ORDER BY since")?;
+        let mut rows = rows.query([])?;
+        while let Some(row) = rows.next()? {
+            signed
+                .entry((row.get(0)?, row.get(1)?))
+                .or_default()
+                .push((row.get(2)?, row.get(3)?));
+        }
         Ok(Derived {
             prices: Prices::load(db)?,
             signed,
@@ -448,17 +448,12 @@ impl Derived {
     /// on: the one signed in then, or before the first sign-in recorded, the
     /// first.
     fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<String>) {
-        let mut held = self.signed.iter().filter(|(held_in, provider, _, _)| {
-            held_in == folder && *provider == response.provider
-        });
-        let first = held.clone().next();
-        let then = held
-            .rfind(|(_, _, since, _)| *since <= response.at)
-            .or(first);
-        (
-            self.prices.cost(agent, response),
-            then.and_then(|(_, _, _, account)| account.clone()),
-        )
+        let account = self
+            .signed
+            .get(&(folder.to_owned(), response.provider.clone()))
+            .and_then(|held| in_force(held, response.at))
+            .and_then(|account| account.clone());
+        (self.prices.cost(agent, response), account)
     }
 }
 

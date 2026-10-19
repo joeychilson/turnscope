@@ -43,7 +43,7 @@ struct Model {
 
 /// Each model's prices, by provider and model, from when each was in force,
 /// oldest first.
-pub struct Prices(HashMap<(String, String), Vec<(i64, Model)>>);
+pub struct Prices(HashMap<(String, String), History<Model>>);
 
 impl Prices {
     pub fn load(db: &Connection) -> Result<Prices> {
@@ -65,7 +65,7 @@ impl Prices {
         struct Threshold {
             size: u64,
         }
-        let mut models: HashMap<(String, String), Vec<(i64, Model)>> = HashMap::new();
+        let mut models: HashMap<(String, String), History<Model>> = HashMap::new();
         let mut rows =
             db.prepare("SELECT provider, model, since, cost, fast FROM price ORDER BY since")?;
         let mut rows = rows.query([])?;
@@ -130,16 +130,23 @@ impl Prices {
         Some(dollars / 1e6 + response.web_searches as f64 * 0.01)
     }
 
-    /// `model`'s price in force `at`: the latest set by then, or before the
-    /// first, the first.
+    /// `model`'s price in force `at`.
     fn at(&self, provider: &str, model: &str, at: i64) -> Option<&Model> {
-        let history = self.0.get(&(provider.to_owned(), model.to_owned()))?;
-        history
-            .iter()
-            .rfind(|(since, _)| *since <= at)
-            .or(history.first())
-            .map(|(_, model)| model)
+        in_force(self.0.get(&(provider.to_owned(), model.to_owned()))?, at)
     }
+}
+
+/// Values each set from a time, oldest first.
+pub type History<T> = Vec<(i64, T)>;
+
+/// What was in force `at` in `history`: the latest set by then, or before
+/// the first, the first.
+pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
+    history
+        .iter()
+        .rfind(|(since, _)| *since <= at)
+        .or(history.first())
+        .map(|(_, value)| value)
 }
 
 /// Take in models.dev's catalog when it's six hours since any process last
