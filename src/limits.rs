@@ -203,9 +203,70 @@ fn record(
             signed.account = Some(first.clone());
         }
     }
+    let changed = sign_ins(&tx, &signed_in, now)?;
+    for (read, held) in answers {
+        let account = &held.account;
+        if one.contains_key(&account.id) {
+            continue;
+        }
+        let problem = match &read {
+            Ok(_) => None,
+            Err(Problem::SignIn) => Some("signIn"),
+            Err(Problem::Expired) => Some("expired"),
+            Err(Problem::Unavailable) => Some("unavailable"),
+        };
+        // A read that failed may not know the plan, so the title stays.
+        tx.execute(
+            "INSERT INTO account (id, provider, kind, title, label, read_at, problem)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (id) DO UPDATE SET
+                 title = iif(excluded.read_at IS NULL, title, excluded.title),
+                 label = coalesce(excluded.label, label),
+                 read_at = coalesce(excluded.read_at, read_at), problem = excluded.problem",
+            params![
+                account.id,
+                held.provider.info().id,
+                match account.kind {
+                    Kind::Subscription => "subscription",
+                    Kind::ApiKey => "apiKey",
+                },
+                title(&held, &read),
+                account.label,
+                read.is_ok().then_some(now),
+                problem,
+            ],
+        )?;
+        for reading in read.iter().flat_map(|limits| &limits.readings) {
+            tx.execute(
+                "INSERT OR REPLACE INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    account.id,
+                    reading.key,
+                    now,
+                    reading.name,
+                    reading.scope,
+                    reading.used.max(0.0),
+                    reading.size,
+                    reading.starts,
+                    reading.resets,
+                ],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(changed)
+}
 
+/// Write each folder's sign-in that changed, and give those as `record`
+/// does.
+fn sign_ins(
+    tx: &Transaction,
+    signed_in: &[SignedIn],
+    now: i64,
+) -> Result<Vec<(String, String, i64)>> {
     let mut changed = Vec::new();
-    for signed in &signed_in {
+    for signed in signed_in {
         let held: Option<(Option<String>, Option<String>)> = tx
             .query_row(
                 "SELECT account, key FROM sign_in WHERE folder = ?1 AND provider = ?2
@@ -233,77 +294,30 @@ fn record(
             changed.push((signed.folder.clone(), signed.provider.clone(), from));
         }
     }
-
-    for (read, held) in answers {
-        let account = &held.account;
-        if one.contains_key(&account.id) {
-            continue;
-        }
-        let problem = match &read {
-            Ok(_) => None,
-            Err(Problem::SignIn) => Some("signIn"),
-            Err(Problem::Expired) => Some("expired"),
-            Err(Problem::Unavailable) => Some("unavailable"),
-        };
-        let plan = read
-            .as_ref()
-            .ok()
-            .and_then(|limits| limits.plan.clone())
-            .or_else(|| {
-                held.credentials
-                    .iter()
-                    .find_map(|credential| credential.plan.clone())
-            })
-            .filter(|plan| !plan.is_empty());
-        let info = held.provider.info();
-        let title = match (account.kind, info.subscription) {
-            (Kind::Subscription, Some(subscription)) => match plan {
-                Some(plan) => format!("{subscription} {}", providers::words(&plan)),
-                None => subscription.to_owned(),
-            },
-            _ => format!("{} API key", info.name),
-        };
-        // A read that failed may not know the plan, so the title stays.
-        tx.execute(
-            "INSERT INTO account (id, provider, kind, title, label, read_at, problem)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT (id) DO UPDATE SET
-                 title = iif(excluded.read_at IS NULL, title, excluded.title),
-                 label = coalesce(excluded.label, label),
-                 read_at = coalesce(excluded.read_at, read_at), problem = excluded.problem",
-            params![
-                account.id,
-                info.id,
-                match account.kind {
-                    Kind::Subscription => "subscription",
-                    Kind::ApiKey => "apiKey",
-                },
-                title,
-                account.label,
-                read.is_ok().then_some(now),
-                problem,
-            ],
-        )?;
-        for reading in read.iter().flat_map(|limits| &limits.readings) {
-            tx.execute(
-                "INSERT OR REPLACE INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    account.id,
-                    reading.key,
-                    now,
-                    reading.name,
-                    reading.scope,
-                    reading.used.max(0.0),
-                    reading.size,
-                    reading.starts,
-                    reading.resets,
-                ],
-            )?;
-        }
-    }
-    tx.commit()?;
     Ok(changed)
+}
+
+/// What to call `held`: a subscription by its plan, as `read` or else one
+/// of its logins names it; anything else as its provider's API key.
+fn title(held: &Held, read: &std::result::Result<Limits, Problem>) -> String {
+    let plan = read
+        .as_ref()
+        .ok()
+        .and_then(|limits| limits.plan.clone())
+        .or_else(|| {
+            held.credentials
+                .iter()
+                .find_map(|credential| credential.plan.clone())
+        })
+        .filter(|plan| !plan.is_empty());
+    let info = held.provider.info();
+    match (held.account.kind, info.subscription) {
+        (Kind::Subscription, Some(subscription)) => match plan {
+            Some(plan) => format!("{subscription} {}", providers::words(&plan)),
+            None => subscription.to_owned(),
+        },
+        _ => format!("{} API key", info.name),
+    }
 }
 
 /// Each account read as the same plan as another, by its provider's
@@ -455,25 +469,6 @@ mod tests {
     }
 
     #[test]
-    fn keys_read_as_one_plan_are_the_account_already_known() {
-        // Two keys to one plan, a key to another, and one not read.
-        let answers = vec![
-            (monthly(1_794_088_864_000), held("opencode-go:key-a")),
-            (monthly(1_794_088_864_000), held("opencode-go:key-b")),
-            (monthly(1_794_088_865_000), held("opencode-go:key-c")),
-            (Err(Problem::Unavailable), held("opencode-go:key-d")),
-        ];
-        let known = HashSet::from(["opencode-go:key-b".to_owned()]);
-        assert_eq!(
-            same_plan(&answers, &known),
-            BTreeMap::from([(
-                "opencode-go:key-a".to_owned(),
-                "opencode-go:key-b".to_owned()
-            )])
-        );
-    }
-
-    #[test]
     fn what_is_read_is_recorded_and_one_plan_keeps_its_history() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();
@@ -484,7 +479,8 @@ mod tests {
             account: Some(account.to_owned()),
             key: Some(account.trim_start_matches("opencode-go:key-").to_owned()),
         };
-        // Key b is read alone, then key a, to the same plan, joins it.
+        // Key b is read alone, then key a, to the same plan, joins it; key
+        // c, to another plan, and key d, not read, stay their own.
         record(
             &mut db,
             vec![signed("/f1", "opencode-go:key-b")],
@@ -506,18 +502,27 @@ mod tests {
             vec![
                 (monthly(1), held("opencode-go:key-a")),
                 (monthly(1), held("opencode-go:key-b")),
+                (monthly(2), held("opencode-go:key-c")),
+                (Err(Problem::Unavailable), held("opencode-go:key-d")),
             ],
             2_000,
         )
         .unwrap();
         let accounts: Vec<(String, i64)> = db
-            .prepare("SELECT id, hidden FROM account")
+            .prepare("SELECT id, hidden FROM account ORDER BY id")
             .unwrap()
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(accounts, [("opencode-go:key-b".to_owned(), 1)]);
+        assert_eq!(
+            accounts,
+            [
+                ("opencode-go:key-b".to_owned(), 1),
+                ("opencode-go:key-c".to_owned(), 0),
+                ("opencode-go:key-d".to_owned(), 0),
+            ]
+        );
         let readings: i64 = db
             .query_row(
                 "SELECT count(*) FROM reading WHERE account = 'opencode-go:key-b'",
