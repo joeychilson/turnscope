@@ -40,7 +40,7 @@ use super::{
     Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
     Tokens,
 };
-use crate::{Error, Result};
+use crate::Result;
 
 pub struct Pi;
 
@@ -217,9 +217,7 @@ impl Agent for Pi {
 
     fn transcript(&self, _native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
         // One file; every branch, in the order written.
-        let file = files
-            .first()
-            .ok_or_else(|| Error::NotFound("the session's file is gone".to_owned()))?;
+        let file = &files[0];
         let mut conversation = Conversation::default();
         super::lines(file, 0, |bytes| {
             let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
@@ -388,44 +386,29 @@ mod tests {
             "made-up-provider": {"type": "api_key", "key": "made-up"},
         });
         std::fs::write(dir.path().join("auth.json"), kept.to_string()).unwrap();
-        let mut read: Vec<_> = Pi
-            .logins(dir.path(), dir.path())
-            .unwrap()
-            .into_iter()
-            .map(|login| {
-                let credential = login.credential.map(|credential| {
-                    let secret = credential.secret.expose().to_owned();
-                    (
-                        credential.provider,
-                        credential.key,
-                        credential.expires,
-                        secret,
-                    )
-                });
-                (login.provider, credential)
-            })
+        let logins = Pi.logins(dir.path(), dir.path()).unwrap();
+        let mut read: Vec<_> = logins
+            .iter()
+            .map(|login| (login.provider.as_str(), crate::agents::credential(login)))
             .collect();
         read.sort();
-        let given = |provider: &'static str, key, expires, secret: &str| {
-            Some((provider, key, expires, secret.to_owned()))
-        };
         assert_eq!(
             read,
             [
                 (
-                    "anthropic".to_owned(),
-                    given("anthropic", true, None, "sk-ant-made-up")
+                    "anthropic",
+                    Some(("anthropic", true, None, "sk-ant-made-up"))
                 ),
-                ("made-up-provider".to_owned(), None),
+                ("made-up-provider", None),
                 (
-                    "openai-codex".to_owned(),
-                    given("openai", false, Some(5), "made-up-token")
+                    "openai-codex",
+                    Some(("openai", false, Some(5), "made-up-token"))
                 ),
                 (
-                    "openrouter".to_owned(),
-                    given("openrouter", true, Some(9), "sk-or-made-up")
+                    "openrouter",
+                    Some(("openrouter", true, Some(9), "sk-or-made-up"))
                 ),
-                ("xai".to_owned(), None),
+                ("xai", None),
             ]
         );
     }

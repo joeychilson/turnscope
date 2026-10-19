@@ -9,6 +9,7 @@ mod opencode;
 mod pi;
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -63,7 +64,8 @@ pub trait Agent: Sync {
     fn read(&self, file: &Path, cursor: &str) -> Result<Read>;
 
     /// The conversation of the session `id` (without the agent's prefix), from
-    /// the files that hold it.
+    /// the files that hold it. `files` is never empty: a session whose files
+    /// are all gone isn't read.
     fn transcript(&self, id: &str, files: &[PathBuf]) -> Result<Vec<Entry>>;
 
     /// What `folder` holds for each provider it signs in to. A provider it
@@ -467,11 +469,16 @@ impl Secret {
     }
 }
 
+/// That `path` couldn't be read, and why.
+pub fn reading(path: &Path, error: impl Display) -> Error {
+    Error::Failed(format!("reading {}: {error}", path.display()))
+}
+
 /// Pass each complete line of `path` from byte `from` to `visit`, and say
 /// where the next read starts: past the last line that ended with a newline,
 /// since one without is still being written.
 pub fn lines(path: &Path, from: u64, mut visit: impl FnMut(&[u8])) -> Result<u64> {
-    let failed = |error| Error::Failed(format!("reading {}: {error}", path.display()));
+    let failed = |error| reading(path, error);
     let mut file = File::open(path).map_err(failed)?;
     file.seek(SeekFrom::Start(from)).map_err(failed)?;
     let mut reader = BufReader::with_capacity(1 << 20, file);
@@ -504,12 +511,9 @@ pub fn json_file(path: &Path) -> Result<Option<Value>> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
-            .map_err(|error| Error::Failed(format!("reading {}: {error}", path.display()))),
+            .map_err(|error| reading(path, error)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(Error::Failed(format!(
-            "reading {}: {error}",
-            path.display()
-        ))),
+        Err(error) => Err(reading(path, error)),
     }
 }
 
@@ -522,6 +526,16 @@ pub fn texts(content: &Value) -> Vec<&str> {
             .filter_map(|part| part["text"].as_str())
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// A field as text: a string as it is, one that isn't there as none rather
+/// than "null", anything else as JSON.
+pub fn text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
     }
 }
 
@@ -685,6 +699,19 @@ pub fn jsonl(file: PathBuf, lines: &[Value]) -> PathBuf {
     let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
     std::fs::write(&file, text).unwrap();
     file
+}
+
+/// `login`'s credential as its provider, kind, expiry and secret, to compare
+/// in a test.
+#[cfg(test)]
+pub fn credential(login: &Login) -> Option<(&'static str, bool, Option<i64>, &str)> {
+    let credential = login.credential.as_ref()?;
+    Some((
+        credential.provider,
+        credential.key,
+        credential.expires,
+        credential.secret.expose(),
+    ))
 }
 
 #[cfg(test)]
