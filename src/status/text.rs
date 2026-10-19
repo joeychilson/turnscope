@@ -205,9 +205,8 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
 /// there's time for.
 fn range(limit: &Limit, left: &super::HoursLeft, now: i64) -> String {
     let until = limit
-        .window
-        .filter(|_| limit.reset_since.is_none())
-        .map(|window| (window.resets.at - now) as f64 / HOUR as f64);
+        .resets()
+        .map(|resets| (resets - now) as f64 / HOUR as f64);
     match until.is_some_and(|until| left.high >= until - 0.1) {
         true => format!("{} or more", worked(left.low)),
         false => format!("{}–{}", worked(left.low), worked(left.high)),
@@ -231,7 +230,7 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
     let mut rolls = None;
     for limit in account.limits.iter().filter(|limit| limit.whole()) {
         match (&limit.outlook, &limit.work) {
-            (Outlook::UsedUp { .. }, _) if limit.reset_since.is_none() => {
+            (Outlook::UsedUp { .. }, _) => {
                 return Ok(format!(
                     "{more} of work {dont_fit}: {} is used up.",
                     limit.name
@@ -246,12 +245,9 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
                     ));
                 }
                 // At the pace of work, until the reset at most.
-                let until = limit
-                    .window
-                    .filter(|_| limit.reset_since.is_none())
-                    .map_or(hours, |window| {
-                        ((window.resets.at - now).max(0) as f64 / HOUR as f64).min(hours)
-                    });
+                let until = limit.resets().map_or(hours, |resets| {
+                    ((resets - now).max(0) as f64 / HOUR as f64).min(hours)
+                });
                 let left = f64::from(limit.left_percent) - work.rate_per_hour * until;
                 after.push(format!("about {:.0}% of {}", left.max(0.0), limit.name));
             }
@@ -344,10 +340,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     let Some(limit) = account.deciding_limit() else {
         return format!("{title}: no limit of it was read.");
     };
-    let resets = limit
-        .window
-        .filter(|_| limit.reset_since.is_none())
-        .map(|window| when(window.resets.at, now));
+    let resets = limit.resets().map(|resets| when(resets, now));
     let ahead = match (&limit.outlook, resets) {
         (Outlook::RunsOut { likely, .. }, Some(resets)) => format!(
             " and runs out {} at this pace, before it resets {resets}",
@@ -372,20 +365,17 @@ pub fn line(account: &Account, now: i64) -> String {
     }
     let mut parts = vec![account.title.clone()];
     let used_up = |limit: &&Limit| matches!(limit.outlook, Outlook::UsedUp { .. });
-    let current = |limit: &&Limit| limit.reset_since.is_none();
     let blocking: Vec<&Limit> = account
         .limits
         .iter()
-        .filter(|limit| current(limit) && limit.whole() && used_up(limit))
+        .filter(|limit| limit.whole() && used_up(limit))
         .collect();
     let shown: Vec<&Limit> = if blocking.is_empty() {
         account
             .limits
             .iter()
             .filter(|limit| {
-                limit.whole()
-                    || (current(limit)
-                        && (used_up(limit) || matches!(limit.outlook, Outlook::RunsOut { .. })))
+                limit.whole() || used_up(limit) || matches!(limit.outlook, Outlook::RunsOut { .. })
             })
             .collect()
     } else {
@@ -429,7 +419,6 @@ fn short(limit: &Limit, now: i64) -> String {
         false => time::clock(at, now),
     };
     match limit.outlook {
-        _ if limit.reset_since.is_some() => format!("{name} {left}"),
         Outlook::UsedUp { back: Some(back) } => format!("{name} used up, back {}", at(back.at)),
         Outlook::UsedUp { back: None } => format!("{name} used up"),
         Outlook::RunsOut { likely, .. } => format!("{name} {left}, out {}", at(likely.at)),
@@ -443,8 +432,7 @@ mod tests {
 
     #[test]
     fn hours_on_a_window_that_rolls_say_so_rather_than_too_little_work() {
-        let example: serde_json::Value =
-            serde_json::from_str(include_str!("../../contract/status.notification.json")).unwrap();
+        let example = example();
         let now = example["params"]["at"].as_i64().unwrap();
         // Claude Max's 5 hours made a window that rolls, as OpenCode Go's
         // is; its weekly limit is forecast.
@@ -462,8 +450,7 @@ mod tests {
 
     #[test]
     fn one_hour_of_work_doesnt_fit_in_the_singular() {
-        let example: serde_json::Value =
-            serde_json::from_str(include_str!("../../contract/status.notification.json")).unwrap();
+        let example = example();
         let now = example["params"]["at"].as_i64().unwrap();
         // Claude Max's 5 hours with half an hour of work left.
         let mut account = example["params"]["accounts"][0].clone();
@@ -505,36 +492,41 @@ mod tests {
     #[test]
     fn why_an_account_isnt_read_is_said_the_same_way_everywhere() {
         let status: Status = serde_json::from_value(example()["params"].clone()).unwrap();
-        for (title, why) in [
-            ("ChatGPT Pro", "no agent here is signed in to it now."),
+        // The line under the title, or for one as of an earlier read, what
+        // follows that read's time, which is in the local time zone.
+        for (title, why, line) in [
+            (
+                "ChatGPT Pro",
+                "no agent here is signed in to it now.",
+                " (20m ago): no agent here is signed in to it now.",
+            ),
             (
                 "OpenRouter API key",
                 "it couldn't be read since; it's tried again every 5 minutes.",
+                " (10m ago): it couldn't be read since; it's tried again every 5 minutes.",
             ),
             (
                 "OpenCode Go",
                 "its login was refused; sign in again in Claude Code.",
+                "  Its login was refused; sign in again in Claude Code.",
             ),
             (
                 "SuperGrok",
                 "its login was refused; sign in again in Claude Code.",
+                " (1h 30m ago): its login was refused; sign in again in Claude Code.",
             ),
             (
                 "Anthropic API key",
                 "it couldn't be read yet; it's tried again every 5 minutes.",
+                "  It couldn't be read yet; it's tried again every 5 minutes.",
             ),
         ] {
             let account = status.accounts.iter().find(|a| a.title == title).unwrap();
             let said = text(&status, &[account], None);
             let under_title = said.lines().nth(1).unwrap();
             match account.state {
-                State::Unread { .. } => {
-                    assert_eq!(
-                        under_title,
-                        format!("  {}{}", why[..1].to_uppercase(), &why[1..])
-                    )
-                }
-                _ => assert!(under_title.ends_with(&format!(": {why}")), "{under_title}"),
+                State::Unread { .. } => assert_eq!(under_title, line),
+                _ => assert!(under_title.ends_with(line), "{under_title}"),
             }
             let verdict = verdict(account, status.at);
             assert!(verdict.ends_with(&format!(": {why}")), "{verdict}");
