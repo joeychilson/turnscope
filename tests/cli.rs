@@ -352,6 +352,13 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "notify.runningOut",
         ),
+        (vec!["sessions", "--count", "0"], 2, "0 is not in 1..=100"),
+        (vec!["sessions", "-n", "101"], 2, "101 is not in 1..=100"),
+        (
+            vec!["sessions", "read", "claude-code:0f6e", "--count", "0"],
+            2,
+            "0 is not in 1..=100",
+        ),
     ] {
         let output = turnscope(data.path(), &args, None);
         assert_eq!(output.status.code(), Some(code), "{args:?}");

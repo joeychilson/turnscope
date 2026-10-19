@@ -7,6 +7,11 @@
   menu. Two accounts with the same title were both "Hide Claude Max".
 - **`sessions --folder` and `handoff --folder`** take a relative folder,
   such as `.`, from the current folder. They found no sessions.
+- **`sessions` and `sessions read`** refuse a `--count` outside 1 to 100,
+  with exit code 2, instead of using the nearest count. With `--count 0`,
+  `sessions read` showed one entry with its tool output cut at 2,000
+  characters, not at 40,000 as with `--count 1`. `read_session` now takes a
+  `count` of 0 as 1.
 
 ## 0.1.4
 

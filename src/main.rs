@@ -151,7 +151,12 @@ enum Command {
         #[arg(long)]
         running: bool,
         /// How many, up to 100
-        #[arg(long, short = 'n', default_value_t = 20)]
+        #[arg(
+            long,
+            short = 'n',
+            default_value_t = 20,
+            value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=sessions::MOST as u64)
+        )]
         count: usize,
         /// The cursor the page before gave, for the next page
         #[arg(long)]

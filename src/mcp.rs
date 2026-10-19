@@ -727,7 +727,7 @@ fn find_sessions(server: &mut Server, arguments: Value) -> Result<String> {
             .map(|since| time::parse(since, now))
             .transpose()?,
         running: input.running.unwrap_or(false),
-        count: input.count.unwrap_or(10),
+        count: input.count.unwrap_or(10).clamp(1, sessions::MOST),
         cursor: input.cursor,
     };
     Ok(sessions::text(
@@ -799,7 +799,9 @@ fn read_session(server: &mut Server, arguments: Value) -> Result<String> {
     let entries = sessions::transcript(&server.db, &session)?;
     let reading = sessions::Reading {
         from: input.from.unwrap_or(0),
-        count: input.count.unwrap_or(30),
+        count: input
+            .count
+            .map_or(sessions::ENTRIES, |count| count.clamp(1, sessions::MOST)),
         kinds: input.kinds.unwrap_or_default(),
         search: input.search,
         failed: input.failed,
