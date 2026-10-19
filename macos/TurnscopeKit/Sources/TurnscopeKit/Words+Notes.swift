@@ -51,9 +51,14 @@ extension Words {
     /// counts: an idle account with the same title can't be taken for one in
     /// use.
     func called(_ account: AccountStatus, among accounts: [AccountStatus]) -> String {
-        guard let label = account.label, account.twinned(among: accounts.filter(\.inUse)) else {
-            return account.title
-        }
+        called(account, labelled: account.twinned(among: accounts.filter(\.inUse)))
+    }
+
+    /// What Hide and Show call `account`: its title, and its label too where
+    /// its row shows it (`labelled`), "Claude Max (me@example.com)", so two
+    /// accounts with the same title are told apart as their rows are.
+    public func called(_ account: AccountStatus, labelled: Bool) -> String {
+        guard labelled, let label = account.label else { return account.title }
         return "\(account.title) (\(label))"
     }
 }

@@ -213,7 +213,8 @@ bar, the note, and the sessions that used the deciding limit most, from
 `limit.breakdown`. The store asks for those of every account as the panel
 opens, so a row opens with them in one motion, and again for the open
 account with each status. Hovering shows a Hide button, and right-clicking
-offers Hide too.
+offers Hide too. Hide and Show name the account as its row does
+(`Words.called`), so two with the same title are told apart.
 
 With Reduce Motion on, pages fade instead of sliding, a limit's bar is
 drawn at its level instead of growing to it, and the footer's spinner holds

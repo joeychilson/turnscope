@@ -89,7 +89,7 @@ private struct HiddenRow: View {
             Spacer(minLength: 8)
             Button("Show") { withAnimation(spring) { store.setHidden(false, for: account.id) } }
                 .buttonStyle(PillButton())
-                .accessibilityLabel("Show \(account.title)")
+                .accessibilityLabel("Show \(store.words().called(account, labelled: true))")
         }
         .padding(Row.padding)
     }

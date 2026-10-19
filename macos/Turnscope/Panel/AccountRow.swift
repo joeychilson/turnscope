@@ -35,11 +35,13 @@ struct AccountRow: View {
         let lines = open && !account.limits.isEmpty
         let usedMost = store.usedMost(account)
         let used = open && !usedMost.isEmpty
+        let labelled = account.twinned(among: store.all)
+        let called = words.called(account, labelled: labelled)
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: Row.gap) {
                 Logo(account: account, size: Row.logo)
                 VStack(alignment: .leading, spacing: 1) {
-                    AccountTitle(account: account, labelled: account.twinned(among: store.all))
+                    AccountTitle(account: account, labelled: labelled)
                     if !lines {
                         Text(words.status(account))
                             .font(.small)
@@ -59,8 +61,8 @@ struct AccountRow: View {
                     .opacity(hover ? 1 : 0)
                     .allowsHitTesting(hover)
                     .accessibilityHidden(!hover)
-                    .help("Hide \(account.title) from the menu bar and the panel")
-                    .accessibilityLabel("Hide \(account.title)")
+                    .help("Hide \(called) from the menu bar and the panel")
+                    .accessibilityLabel("Hide \(called)")
                 // Once the limit lines show, they say what the figure does,
                 // so it fades as they open, like the line under the name.
                 if !lines {
@@ -116,7 +118,7 @@ struct AccountRow: View {
             return .handled
         }
         .contextMenu {
-            Button("Hide \(account.title)", action: hide)
+            Button("Hide \(called)", action: hide)
         }
     }
 

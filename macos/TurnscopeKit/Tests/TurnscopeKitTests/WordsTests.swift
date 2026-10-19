@@ -175,6 +175,20 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(mine.twinned(among: [mine, other]))
 }
 
+@Test func aButtonNamesItsAccountAsItsRowShowsIt() {
+    let mine = account([limit(runsOut)], label: "me@example.com")
+    let twin = account([limit(runsOut)], id: "anthropic:b", label: "work@example.com")
+    let other = account([limit(runsOut)], id: "openai:a", title: "ChatGPT Pro", label: "me@example.com")
+    let all = [mine, twin, other]
+    let called = { (account: AccountStatus) in words.called(account, labelled: account.twinned(among: all)) }
+    #expect(called(mine) == "Claude Max (me@example.com)")
+    #expect(called(twin) == "Claude Max (work@example.com)")
+    #expect(called(other) == "ChatGPT Pro")
+    // Where every row shows its label, as in Settings.
+    #expect(words.called(other, labelled: true) == "ChatGPT Pro (me@example.com)")
+    #expect(words.called(account([]), labelled: true) == "Claude Max")
+}
+
 @Test func theMenuBarSaysWhatIsLeftOrHowLongOrWhenItIsBack() {
     #expect(words.figure(account([limit(runsOut)])) == "2h")
     #expect(words.spokenFigure(account([limit(runsOut)])) == "runs out in 2 hours")
