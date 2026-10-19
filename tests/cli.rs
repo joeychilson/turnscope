@@ -68,7 +68,23 @@ fn home() -> &'static Path {
 }
 
 fn turnscope(data: &Path, args: &[&str], input: Option<&str>) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_turnscope"))
+    let mut child = command(data, args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(input.unwrap_or_default().as_bytes())
+        .unwrap();
+    drop(stdin);
+    child.wait_with_output().unwrap()
+}
+
+fn command(data: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_turnscope"));
+    command
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         // As Claude Code sets it in a server it starts: the caller, which
@@ -84,18 +100,8 @@ fn turnscope(data: &Path, args: &[&str], input: Option<&str>) -> Output {
         .arg(data)
         .arg("--home")
         .arg(home())
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    stdin
-        .write_all(input.unwrap_or_default().as_bytes())
-        .unwrap();
-    drop(stdin);
-    child.wait_with_output().unwrap()
+        .args(args);
+    command
 }
 
 /// A store with the fixture's history read, and four accounts:
@@ -353,6 +359,26 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             String::from_utf8_lossy(&output.stderr).contains(says),
             "{args:?}: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_relative_folder_is_in_the_current_folder() {
+    let data = store();
+    for command_name in ["sessions", "handoff"] {
+        let given = turnscope(data.path(), &[command_name, "--folder", "/work/app"], None);
+        let relative = command(data.path(), &[command_name, "--folder", "work/app"])
+            .current_dir("/")
+            .output()
+            .unwrap();
+        assert!(given.status.success(), "{command_name}");
+        assert!(String::from_utf8_lossy(&given.stdout).contains(CODEX));
+        assert_eq!(
+            String::from_utf8_lossy(&relative.stdout),
+            String::from_utf8_lossy(&given.stdout),
+            "{command_name}: {}",
+            String::from_utf8_lossy(&relative.stderr)
         );
     }
 }

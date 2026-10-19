@@ -478,7 +478,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         } => {
             let query = sessions::Query {
                 search,
-                folder,
+                folder: folder.map(|folder| std::path::absolute(&folder).unwrap_or(folder)),
                 agent,
                 since: time_of(&from)?,
                 running,
@@ -503,7 +503,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 // Run by an agent, not the session it's run from.
                 None => {
                     let folder = folder
-                        .or_else(|| std::env::current_dir().ok())
+                        .map_or_else(std::env::current_dir, std::path::absolute)
                         .unwrap_or_default();
                     let own = mcp::Caller::detect().own_session(&db, home, &folder)?;
                     sessions::latest(&db, home, &folder, own.as_deref())?
