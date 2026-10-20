@@ -4,15 +4,30 @@
 
 - **The app** shows OpenCode's logo for OpenCode and OpenCode Go. OpenCode
   had OpenCode Zen's logo, and OpenCode Go had its own.
-- **`status --account`** shows a hidden account it names, as
-  `check_limits` does. It left it out unless `--all` was given too.
 - **Hide and Show** name the account with its label when its row shows
   one, for VoiceOver, in the Hide button's help and in the right-click
   menu. Two accounts with the same title were both "Hide Claude Max".
-- **Handoff:** a command that only reads is a read though it names one of
-  Codex's tools, as `rg tools.apply_patch src` does. It showed as work,
-  with its input and output under "Where it stopped", and under "What
-  failed" when it found nothing.
+- **The app** says it's reading your agents' history until the first read
+  is done, also when it connects while that read runs. It stopped saying so
+  once the read had begun.
+- **`serve`** speaks protocol 2: the status's `historyReadAt` time is now
+  `historyRead`, true once the first read of the agents' history is done.
+  A client of protocol 1 is refused, as the protocol says.
+- **The notification that a limit is back** comes for one OpenRouter key's
+  limit while another key's limit is used up. A key's limit stops only that
+  key, as the status line already took it, but the notification was dropped
+  as if the whole account were still stopped.
+- **`status`, `check_limits` and `doctor`** say why an account can't be
+  read in the same words. `check_limits`' verdict on the first account
+  says how to fix it, as the others do, not only that its limits can't be
+  read. `status` writes $1,000 or more with a comma, as `statusline` does.
+- **`status --account`** shows a hidden account it names, as
+  `check_limits` does. It left it out unless `--all` was given too.
+- **`check_limits`' verdict, `statusline` and `usage --limit`'s first
+  line** count time from the minute the status is as of, as `status`
+  does. Late in a minute, `check_limits` could say a limit resets "14:00
+  (in 1h 59m)" above a line that says "14:00 (in 2h)", and `statusline`
+  could say "out in 59m" while `status` said "13:00 (in 1h)".
 - **`sessions --folder` and `handoff --folder`** take a relative folder,
   such as `.`, from the current folder. They found no sessions.
 - **`sessions`**, run by any agent, ends the agent's own session with
@@ -22,6 +37,19 @@
   `sessions read` showed one entry with its tool output cut at 2,000
   characters, not at 40,000 as with `--count 1`. `read_session` now takes a
   `count` of 0 as 1.
+- **A Codex script** is named by the tools it calls, in `sessions read`,
+  `read_session` and the handoff, not by every tool its text names. One
+  that ran `rg tools.apply_patch src` was named `exec: exec_command,
+  apply_patch`, as if it changed files.
+- **Handoff:** a read by OpenCode's `read` or Claude Code's `NotebookRead`
+  is named by its file, not by its input as JSON. So is a failed OpenCode
+  `edit` or `write`, or Claude Code's `NotebookEdit`, under "What failed",
+  and it no longer shows there once a later one of the same file passed,
+  as a failed Claude Code `Edit` already didn't.
+- **Handoff:** a command that only reads is a read though it names one of
+  Codex's tools, as `rg tools.apply_patch src` does. It showed as work,
+  with its input and output under "Where it stopped", and under "What
+  failed" when it found nothing.
 - **Handoff:** "Where it stopped" says which entries after the agent's
   last message it had no room for when none of them fit. It said nothing
   of them. The entries it says it left out for room no longer start or
@@ -32,31 +60,6 @@
   for room. With a system note at #0 and a tool call at #1, which it
   leaves out wherever they fall, it said "Entries #0 to #2 are left out
   for room." It now says "Entry #2 is left out for room."
-- **`status`, `check_limits` and `doctor`** say why an account can't be
-  read in the same words. `check_limits`' verdict on the first account
-  says how to fix it, as the others do, not only that its limits can't be
-  read. `status` writes $1,000 or more with a comma, as `statusline` does.
-- **The notification that a limit is back** comes for one OpenRouter key's
-  limit while another key's limit is used up. A key's limit stops only that
-  key, as the status line already took it, but the notification was dropped
-  as if the whole account were still stopped.
-- **Handoff:** a read by OpenCode's `read` or Claude Code's `NotebookRead`
-  is named by its file, not by its input as JSON. So is a failed OpenCode
-  `edit` or `write`, or Claude Code's `NotebookEdit`, under "What failed",
-  and it no longer shows there once a later one of the same file passed,
-  as a failed Claude Code `Edit` already didn't.
-- **A Codex script** is named by the tools it calls, in `sessions read`,
-  `read_session` and the handoff, not by every tool its text names. One
-  that ran `rg tools.apply_patch src` was named `exec: exec_command,
-  apply_patch`, as if it changed files.
-- **`check_limits`' verdict, `statusline` and `usage --limit`'s first
-  line** count time from the minute the status is as of, as `status`
-  does. Late in a minute, `check_limits` could say a limit resets "14:00
-  (in 1h 59m)" above a line that says "14:00 (in 2h)", and `statusline`
-  could say "out in 59m" while `status` said "13:00 (in 1h)".
-- **The app** says it's reading your agents' history until the first read
-  is done, also when it connects while that read runs. It stopped saying so
-  once the read had begun.
 
 ## 0.1.4
 
