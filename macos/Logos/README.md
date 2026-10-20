@@ -13,8 +13,9 @@ their owners, used only to name their products.
   color from https://pi.dev/logo-auto.svg.
 
 A mark is drawn at the size of the frame its `viewBox` sets, so a solid
-mark gets a wider `viewBox` to look as large as the others. OpenCode's two
-are padded until their ink covers as much of the frame as Anthropic's, 21%,
-measured on a render.
+mark gets a wider `viewBox` to look as large as the others. OpenCode and
+OpenCode Go share OpenCode's mark, as models.dev gives it for both, padded
+until its ink covers as much of the frame as Anthropic's, 21%, measured on a
+render with its lighter middle counted at its opacity.
 
 An agent or provider without a logo is drawn with a generic mark.

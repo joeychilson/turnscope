@@ -2,6 +2,8 @@
 
 ## 0.1.5
 
+- **The app** shows OpenCode's logo for OpenCode and OpenCode Go. OpenCode
+  had OpenCode Zen's logo, and OpenCode Go had its own.
 - **`status --account`** shows a hidden account it names, as
   `check_limits` does. It left it out unless `--all` was given too.
 - **Hide and Show** name the account with its label when its row shows
