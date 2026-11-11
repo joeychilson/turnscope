@@ -525,10 +525,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             };
             let page = sessions::find(&db, home, &query, now)?;
             let caller = mcp::Caller::detect();
-            let own = match &caller.folder {
-                Some(folder) => caller.own_session(&db, home, folder)?,
-                None => None,
-            };
+            let own = caller.own_session(&db, home, caller.folder.as_deref())?;
             print(
                 json!(page),
                 sessions::text(&page, sessions::Cite::Command, own.as_deref(), now),

@@ -137,7 +137,15 @@ static TOOLS: &[Tool] = &[
 /// `/bin/ps`, and its own variables give the rest: Claude Code's its session
 /// and project folder. A variable alone names the agent only when no
 /// ancestor does, since an agent run from another's shell, as Claude Code
-/// runs Codex or OpenCode, inherits the other's.
+/// runs Codex or OpenCode, inherits the other's. An ancestor is an agent by
+/// its command, or by being the program in its app that starts the server
+/// without its command, as Antigravity's does.
+///
+/// An agent's app starts the server in `/`, as Antigravity's does, which is
+/// no folder to work in: there the folder isn't known. With `/` for a
+/// folder, every session with a folder would be in it, so a handoff would
+/// take the latest of any project, and one with no folder, as a
+/// conversation begun in the app without one, would be in none.
 pub struct Caller {
     pub agent: Option<&'static dyn Agent>,
     pub folder: Option<PathBuf>,
@@ -154,42 +162,8 @@ impl Caller {
                 .args(["-A", "-ww", "-o", "pid=,ppid=,args="])
                 .output()
                 .ok()?;
-            let table = String::from_utf8_lossy(&table.stdout).into_owned();
-            let rows: Vec<(u32, u32, Vec<&str>)> = table
-                .lines()
-                .filter_map(|line| {
-                    let mut words = line.split_whitespace();
-                    let (pid, parent) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
-                    Some((pid, parent, words.collect()))
-                })
-                .collect();
-            // Up to eight ancestors; one a runtime runs is its script.
-            let mut pid = std::os::unix::process::parent_id();
-            for _ in 0..8 {
-                let (_, parent, args) = rows.iter().find(|(id, _, _)| *id == pid)?;
-                let mut words = args
-                    .iter()
-                    .map(|word| word.rsplit('/').next().unwrap_or(word));
-                let first = words.next().unwrap_or_default();
-                let name = match first {
-                    "node" | "bun" | "deno" | "python" | "python3" => {
-                        words.next().unwrap_or_default()
-                    }
-                    _ => first,
-                };
-                // A login shell's name opens with a dash; a versioned build
-                // adds its version, as `grok-1.0.41-macos-aarch64`.
-                let name = name.trim_start_matches('-');
-                let found = agents::ALL.iter().copied().find(|agent| {
-                    let command = agent.info().command;
-                    name == command || name.starts_with(&format!("{command}-"))
-                });
-                if found.is_some() {
-                    return found;
-                }
-                pid = *parent;
-            }
-            None
+            let table = String::from_utf8_lossy(&table.stdout);
+            nearest(&table, std::os::unix::process::parent_id())
         };
         let agent = ancestor().or_else(|| {
             agents::ALL
@@ -204,7 +178,8 @@ impl Caller {
                 .and_then(|info| info.cwd_var)
                 .and_then(variable)
                 .map(PathBuf::from)
-                .or_else(|| std::env::current_dir().ok()),
+                .or_else(|| std::env::current_dir().ok())
+                .filter(|folder| agent.is_none() || folder.parent().is_some()),
             session: info
                 .and_then(|info| Some(format!("{}:{}", info.id, variable(info.session_var?)?))),
             agent_folder: info
@@ -216,12 +191,13 @@ impl Caller {
 
     /// The caller's own session in `folder`. Only Claude Code names it.
     /// Another agent has written its turn by the time it asks, so its own
-    /// session is its agent's latest there.
+    /// session is its agent's latest there, or anywhere when the folder
+    /// isn't known.
     pub fn own_session(
         &self,
         db: &Connection,
         home: &Path,
-        folder: &Path,
+        folder: Option<&Path>,
     ) -> Result<Option<String>> {
         if let Some(session) = &self.session {
             return Ok(Some(session.clone()));
@@ -230,7 +206,7 @@ impl Caller {
             return Ok(None);
         };
         let query = sessions::Query {
-            folder: Some(folder.to_path_buf()),
+            folder: folder.map(Path::to_path_buf),
             agent: Some(agent.info().id.to_owned()),
             count: 1,
             ..sessions::Query::default()
@@ -256,7 +232,7 @@ impl Caller {
         let folder = folder.ok_or_else(|| {
             Error::Usage("which folder you work in isn't known: give folder or session".to_owned())
         })?;
-        let own = self.own_session(db, home, &folder)?;
+        let own = self.own_session(db, home, Some(&folder))?;
         sessions::latest(db, home, &folder, own.as_deref())
     }
 
@@ -293,6 +269,49 @@ impl Caller {
             )
             .optional()?))
     }
+}
+
+/// The agent nearest above the process `pid`, itself included, in `table`:
+/// what `ps` prints of every process, its id, its parent's and its
+/// arguments.
+fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
+    let rows: Vec<(u32, u32, Vec<&str>)> = table
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let (pid, parent) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+            Some((pid, parent, words.collect()))
+        })
+        .collect();
+    // Up to eight ancestors; one a runtime runs is its script.
+    for _ in 0..8 {
+        let (_, parent, args) = rows.iter().find(|(id, _, _)| *id == pid)?;
+        let program = args.first().copied().unwrap_or_default();
+        let mut words = args
+            .iter()
+            .map(|word| word.rsplit('/').next().unwrap_or(word));
+        let first = words.next().unwrap_or_default();
+        let name = match first {
+            "node" | "bun" | "deno" | "python" | "python3" => words.next().unwrap_or_default(),
+            _ => first,
+        };
+        // A login shell's name opens with a dash; a versioned build adds
+        // its version, as `grok-1.0.41-macos-aarch64`.
+        let name = name.trim_start_matches('-');
+        let found = agents::ALL.iter().copied().find(|agent| {
+            let info = agent.info();
+            name == info.command
+                || name.starts_with(&format!("{}-", info.command))
+                || info
+                    .app
+                    .is_some_and(|app| Path::new(program).ends_with(app))
+        });
+        if found.is_some() {
+            return found;
+        }
+        pid = *parent;
+    }
+    None
 }
 
 struct Server {
@@ -672,17 +691,18 @@ fn find_sessions(server: &Server, arguments: Value) -> Result<String> {
     }
     let input: Input = input(arguments)?;
     let now = crate::now();
-    let own = match &server.caller.folder {
-        Some(folder) => server
+    let own =
+        server
             .caller
-            .own_session(&server.db, &server.home, folder)?,
-        None => None,
-    };
+            .own_session(&server.db, &server.home, server.caller.folder.as_deref())?;
     let query = sessions::Query {
         // Its own words would match a search first.
         except: input.search.is_some().then(|| own.clone()).flatten(),
         search: input.search,
-        folder: input.folder.map(|given| folder(server, given)),
+        folder: input
+            .folder
+            .map(|given| folder(server, given))
+            .transpose()?,
         agent: input.agent,
         since: input
             .since
@@ -703,15 +723,21 @@ fn find_sessions(server: &Server, arguments: Value) -> Result<String> {
 
 /// A folder as an agent gives it: `~` is the home folder, and a relative
 /// one is in the folder the caller works in.
-fn folder(server: &Server, given: PathBuf) -> PathBuf {
+fn folder(server: &Server, given: PathBuf) -> Result<PathBuf> {
     let path = match given.strip_prefix("~") {
         Ok(rest) => server.home.join(rest),
-        Err(_) if given.is_relative() => {
-            server.caller.folder.clone().unwrap_or_default().join(given)
-        }
+        Err(_) if given.is_relative() => match &server.caller.folder {
+            Some(folder) => folder.join(given),
+            None => {
+                return Err(Error::Usage(format!(
+                    "which folder you work in isn't known, so {} is in none: give its full path",
+                    given.display()
+                )));
+            }
+        },
         Err(_) => given,
     };
-    path.components().collect()
+    Ok(path.components().collect())
 }
 
 fn handoff(server: &Server, arguments: Value) -> Result<String> {
@@ -725,6 +751,7 @@ fn handoff(server: &Server, arguments: Value) -> Result<String> {
     let folder = input
         .folder
         .map(|given| folder(server, given))
+        .transpose()?
         .or(server.caller.folder.clone());
     let (session, others) = server.caller.session_to_hand_off(
         &server.db,
@@ -771,4 +798,89 @@ fn read_session(server: &Server, arguments: Value) -> Result<String> {
         Cite::Tool,
         crate::now(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Antigravity's app starts the server from its language server, with
+    /// no `agy` above it, as measured 2026-11-11; the ids here are made up.
+    #[test]
+    fn the_caller_is_the_nearest_agent_above_by_its_command_or_its_apps_program() {
+        let table = "
+            1     0 /sbin/launchd
+          800     1 /Applications/Antigravity.app/Contents/MacOS/Antigravity
+          870   800 /Applications/Antigravity.app/Contents/Resources/bin/language_server --port 1
+          900   870 /opt/turnscope mcp
+          880   870 /bin/zsh -c turnscope handoff
+          610   800 /Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper --type=utility
+          640   610 -zsh
+          650   640 claude
+          700   650 /opt/turnscope mcp
+          300     1 /bin/zsh
+          310   300 node /opt/homebrew/bin/codex
+          320   300 /opt/grok/grok-1.0.41-macos-aarch64 --resume
+          330   300 /usr/bin/vim agy.md
+          340   300 /opt/Other.app/Contents/Resources/bin/language_server
+        ";
+        let above = |pid| nearest(table, pid).map(|agent| agent.info().id);
+        assert_eq!(above(870), Some("antigravity"));
+        // What the agent runs in a shell is run by it too.
+        assert_eq!(above(880), Some("antigravity"));
+        // A person's shell in a terminal the app holds isn't the agent, and
+        // an agent they run there is itself.
+        assert_eq!(above(640), None);
+        assert_eq!(above(650), Some("claude-code"));
+        assert_eq!(above(310), Some("codex"));
+        assert_eq!(above(320), Some("grok-build"));
+        // A file's name isn't a command's, nor another app's program this
+        // one's, and a shell is no agent.
+        assert_eq!(above(330), None);
+        assert_eq!(above(340), None);
+        assert_eq!(above(12345), None);
+    }
+
+    /// As in Antigravity's app, which starts the server in `/`.
+    #[test]
+    fn with_no_folder_the_callers_session_is_its_agents_latest_anywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        for (id, agent, cwd, last) in [
+            ("antigravity:a", "antigravity", Some("/work/app"), 1000),
+            // Begun in the app with no folder.
+            ("antigravity:b", "antigravity", None, 2000),
+            ("codex:c", "codex", Some("/work/app"), 3000),
+            ("codex:d", "codex", Some("/work/other"), 4000),
+        ] {
+            db.execute(
+                "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
+                 VALUES (?1, ?2, 'f', ?3, ?3, 'A title', ?4, ?4)",
+                rusqlite::params![id, agent, cwd, last],
+            )
+            .unwrap();
+        }
+        let caller = Caller {
+            agent: agents::ALL
+                .iter()
+                .copied()
+                .find(|agent| agent.info().id == "antigravity"),
+            folder: None,
+            session: None,
+            agent_folder: None,
+        };
+        let home = Path::new("/home");
+        let own = |folder| caller.own_session(&db, home, folder).unwrap();
+        assert_eq!(own(None).as_deref(), Some("antigravity:b"));
+        assert_eq!(
+            own(Some(Path::new("/work/app"))).as_deref(),
+            Some("antigravity:a")
+        );
+        // A handoff needs the folder: with none, it would be any project's.
+        let hand_off = |folder: Option<&str>| {
+            caller.session_to_hand_off(&db, home, None, folder.map(PathBuf::from))
+        };
+        assert!(matches!(hand_off(None), Err(Error::Usage(_))));
+        assert_eq!(hand_off(Some("/work/app")).unwrap().0, "codex:c");
+    }
 }

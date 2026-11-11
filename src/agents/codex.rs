@@ -94,6 +94,7 @@ static INFO: Info = Info {
     id: "codex",
     name: "Codex",
     command: "codex",
+    app: None,
     resume: "codex resume {id}",
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),

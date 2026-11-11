@@ -102,6 +102,10 @@ pub struct Info {
     /// Its command: run to connect it, and how its process is recognised
     /// among an MCP server's ancestors.
     pub command: &'static str,
+    /// The program in its app that starts an MCP server, where the app
+    /// doesn't run `command`: the end of its path, as
+    /// `Antigravity.app/Contents/Resources/bin/language_server`.
+    pub app: Option<&'static str>,
     /// Resumes a session, `{id}` being its id.
     pub resume: &'static str,
     /// The arguments that add Turnscope's MCP server, before its command.

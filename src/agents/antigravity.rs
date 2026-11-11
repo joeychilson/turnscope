@@ -85,6 +85,21 @@
 //! conversation's parent. That is from the column's name: no conversation
 //! here had one.
 //!
+//! **MCP servers.** `agy` starts one itself. The app doesn't run `agy`:
+//! measured 2026-11-11 with Turnscope connected, the app (2.31.0) started
+//! `turnscope mcp` from `Contents/Resources/bin/language_server`, a child of
+//! its own process, `Antigravity`, with nothing named `agy` above it. So
+//! that program names the agent too. Only it, over any process of the app:
+//! a person's shell in a terminal the app holds would be under the app as
+//! well, and what they run there isn't run by the agent. Where such a shell
+//! hangs wasn't measured: none ran, and under the app were the language
+//! server and the two MCP servers it had started.
+//!
+//! The app started the server in the folder `/`, and set no variable that
+//! names the conversation or the folder it works in. So in the app the
+//! folder isn't known, and the caller's own session is Antigravity's latest
+//! anywhere, which a conversation begun with no folder can be.
+//!
 //! **Not read.** The Antigravity IDE's history, which this Mac doesn't have.
 //!
 //! **Logins.** The app and `agy` keep one Google sign-in, in the Keychain
@@ -127,6 +142,7 @@ static INFO: Info = Info {
     id: "antigravity",
     name: "Antigravity",
     command: "agy",
+    app: Some("Antigravity.app/Contents/Resources/bin/language_server"),
     resume: "agy --conversation {id}",
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),
