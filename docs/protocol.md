@@ -211,7 +211,7 @@ Accounts are listed in this order:
 |---|---|---|
 | `id` | string | `claude-code` |
 | `name` | string | `Claude Code` |
-| `installed` | bool | Its folder exists |
+| `installed` | bool | Its folder exists. For Antigravity, one of its own two in `~/.gemini`, which the Gemini command line keeps too |
 | `connection` | string | Whether it runs Turnscope's MCP server |
 | `inUse` | bool | Its responses drew on an account in the last 30 minutes |
 

@@ -16,7 +16,7 @@ The steps use an agent called Acme, with id `acme`. Pi
 | [4. Register it](#4-register-it) | `src/agents/mod.rs` |
 | [5. Test it](#5-test-it) | `src/agents/acme.rs`, `tests/fixtures/home/`, `tests/cli.rs`, `tests/snapshots/` |
 | [6. Add its logo](#6-add-its-logo) | `macos/Logos/agents/acme.svg`, `macos/Logos/README.md` |
-| [7. Update the docs](#7-update-the-docs) | `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`, `CHANGELOG.md` |
+| [7. Update the docs](#7-update-the-docs) | `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`, `docs/handoff.md`, `CHANGELOG.md` |
 
 ## 1. Measure the agent's files
 
@@ -104,7 +104,8 @@ read.
 | Method | Returns |
 |---|---|
 | `info` | `&INFO`. |
-| `folders` | The folders the agent keeps history and logins in under `home`, its own first. The first is taken as its own: the agent is installed when it exists, and `resume` adds `folder_var` for the others. `own_and_found(home, own, prefix, signed)` gives `home/own`, then each folder beside it whose name starts with `prefix` and that holds the file `signed`, such as `~/.acme-work/auth.json`: how a second account's folder is kept. |
+| `folders` | The folders the agent keeps history and logins in under `home`, its own first. The first is taken as its own: `installed` is asked of it, and `resume` adds `folder_var` for the others. `own_and_found(home, own, prefix, signed)` gives `home/own`, then each folder beside it whose name starts with `prefix` and that holds the file `signed`, such as `~/.acme-work/auth.json`: how a second account's folder is kept. |
+| `installed` | Whether the agent is on this Mac, by its own folder. By default, that the folder exists. Say otherwise when another program keeps a folder of that name: the Gemini command line keeps `~/.gemini`, so Antigravity is installed when one of its own two folders is in it. |
 | `files` | Its history files in a folder. It runs at every catch-up, so it lists and doesn't read. A file that doesn't exist is passed over, so one the agent may keep can be listed without looking. `entries(dir)` lists what a folder holds, and nothing when it can't be read. |
 | `read` | What a file holds past `cursor` (empty: from the start), and the cursor to read on from ([below](#reading-history)). An error leaves the cursor as it was, so the file is tried again at the next catch-up. |
 | `transcript` | The conversation of the session `id`, the agent's own id without `acme:`, from the files that hold it, of which there's always at least one ([below](#transcripts)). |
@@ -241,8 +242,14 @@ Handoffs depend on these kinds: every request is a `User` entry, and the
 latest `Summary` stands for everything before it. They also show a tool
 call by what it does: implement `role(name)` to say which of the agent's
 tools read (`Role::Read`), ask the user (`Role::Ask`) or run a subagent
-(`Role::Subagent`); any other is `Role::Work`. `transcript` doesn't
-redact: Turnscope redacts what it returns before showing it.
+(`Role::Subagent`); any other is `Role::Work`. A handoff also reads a
+call's input for the command it ran, the file it named and what it was
+for. Where the agent's tools name one of those under a key no other
+agent's do, as Antigravity's name a command `CommandLine`, add the key to
+`COMMANDS`, `PATHS` or `gist` in `src/sessions/handoff.rs`, and hand off a
+session that stops mid-work to see its calls read as they should.
+`transcript` doesn't redact: Turnscope redacts what it returns before
+showing it.
 
 ### Logins
 
@@ -332,8 +339,9 @@ or two with usage, and a tool call, made up as the unit tests' are. Date it
 on Sep 30, a day before the tests' clock, as the other agents' sessions are,
 in a folder no other fixture session uses, so the handoffs and searches by
 folder stay as they are. An agent whose history is a database, as OpenCode's
-is, gets the SQL that builds it beside where the database goes, built in
-`home()` in `tests/cli.rs` as `opencode.sql` is. In `tests/cli.rs`, add the
+is, gets the SQL that builds it beside where the database goes, named as the
+database with `.sql` for `.db`: `home()` in `tests/cli.rs` builds each, as
+it does `opencode.db` from `opencode.sql`. In `tests/cli.rs`, add the
 session's id as a constant, and a `sessions show` and a `sessions read` case
 for it in `every_command_answers_as_its_snapshot_says`.
 
@@ -365,6 +373,8 @@ Name the agent in:
   asking" looks for and any `session_var`, `cwd_var` or `folder_var`, and
   the agent ids `find_sessions` takes.
 - `docs/architecture.md`: the agent list, the glossary and the code map.
+- `docs/handoff.md`: the agents' table, with its summary, its task list
+  and what else differs.
 - `CHANGELOG.md`.
 
 ## Done when
@@ -376,8 +386,8 @@ Name the agent in:
 - [ ] The rewritten snapshots differ only by the new agent and its session.
 - [ ] `macos/Logos/agents/acme.svg` exists, and `macos/Logos/README.md`
   says where it came from.
-- [ ] `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md` and
-  `CHANGELOG.md` name the agent.
+- [ ] `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`,
+  `docs/handoff.md` and `CHANGELOG.md` name the agent.
 - [ ] On a Mac with the agent, `turnscope sessions --agent acme` lists its
   sessions, `turnscope sessions read` reads one, and `turnscope doctor`
   reports nothing about it.

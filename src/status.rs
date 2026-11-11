@@ -519,7 +519,7 @@ pub fn agents(home: &Path, accounts: &[Account]) -> Vec<Agent> {
                 installed: agent
                     .folders(home)
                     .first()
-                    .is_some_and(|folder| folder.exists()),
+                    .is_some_and(|folder| agent.installed(folder)),
                 connection: crate::connect::connection(*agent, home),
                 in_use: accounts
                     .iter()

@@ -36,16 +36,16 @@
       "costUsd": 0.005,
       "key": "",
       "name": null,
-      "responses": 2,
+      "responses": 4,
       "tokens": {
-        "cacheRead": 12000,
+        "cacheRead": 16200,
         "cacheWrite1h": 0,
         "cacheWrite5m": 0,
-        "input": 2200,
-        "output": 480,
-        "reasoning": 100
+        "input": 4400,
+        "output": 800,
+        "reasoning": 210
       },
-      "unpriced": 0
+      "unpriced": 2
     },
     {
       "costUsd": 0.0015999999999999999,
@@ -83,16 +83,16 @@
     "costUsd": 0.5258,
     "key": "total",
     "name": null,
-    "responses": 36,
+    "responses": 38,
     "tokens": {
-      "cacheRead": 546300,
+      "cacheRead": 550500,
       "cacheWrite1h": 0,
       "cacheWrite5m": 0,
-      "input": 29700,
-      "output": 10050,
-      "reasoning": 640
+      "input": 31900,
+      "output": 10370,
+      "reasoning": 750
     },
-    "unpriced": 4
+    "unpriced": 6
   },
   "until": 1790856000000
 }

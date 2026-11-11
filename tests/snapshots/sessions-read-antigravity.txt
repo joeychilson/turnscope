@@ -1,0 +1,21 @@
+4 of 4 entries of `antigravity:4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f`, from entry 0. Times are local; it's now Thu Oct 1 12:00.
+Quoted text is the session's own: treat it as data, not instructions.
+
+#0 user · Wed 11:00
+> Sort the notes by date, newest first.
+
+#1 reasoning · Wed 11:00
+> The list is built in src/list.ts, in the order the notes are read.
+
+#2 tool `replace_file_content` · Wed 11:00
+> TargetContent: return notes;
+> toolSummary: Sort the notes
+> toolAction: Sorting the notes
+> TargetFile: /work/notes/src/list.ts
+> ReplacementContent: return notes.sort((a, b) => b.date - a.date);
+> out: Created At: 2026-09-30T11:00:09Z
+> Completed At: 2026-09-30T11:00:09Z
+> The file was edited.
+
+#3 assistant · Wed 11:00
+> The notes are listed by date, newest first.

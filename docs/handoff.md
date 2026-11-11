@@ -149,6 +149,7 @@ What a handoff holds depends on what each agent writes.
 | OpenCode | Its compaction summary | `todowrite` | |
 | Pi | Its compaction and branch summaries | None | |
 | Grok Build | None | None | Its conversation has no times, so entries show none. A command failed when its result starts with a nonzero exit code. |
+| Antigravity | Its checkpoint summary, without the text Antigravity wraps around it | None | A tool's output is what Antigravity wrote when the model went on. A command left running in the background shows what it had printed by then. |
 
 ## Secrets
 

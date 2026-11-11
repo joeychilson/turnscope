@@ -55,7 +55,7 @@ from what's known and say why on standard error.
 - **Limits** are named by part of a name or key, in any case: `week` names
   Weekly (`seven_day`), and `"5 hours"` names 5 hours.
 - **Agents** are named by id: `claude-code`, `codex`, `opencode`, `pi`,
-  `grok-build`.
+  `grok-build`, `antigravity`.
 - **Sessions** are named by id, as `sessions` lists them:
   `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60`. A unique start of the
   id, or of the agent's own part of it, works too when it's 4 characters
@@ -182,14 +182,15 @@ counted as unpriced, not free.
 
 ```console
 $ turnscope usage --since 2026-09-29 --by model
-Tue Sep 29 00:00 to Thu Oct 1 12:00: 36 responses, $0.53 (+4 unpriced)
+Tue Sep 29 00:00 to Thu Oct 1 12:00: 38 responses, $0.53 (+6 unpriced)
 
-  Model           Responses   Cost
-  claude-opus-5          27  $0.50
-  grok-4.6-build          1  $0.02
-  glm-5.3                 2  $0.01
-  deepseek-v4             2  $0.00
-  gpt-5.5                 4  $0.00 (+4 unpriced)
+  Model             Responses   Cost
+  claude-opus-5            27  $0.50
+  grok-4.6-build            1  $0.02
+  glm-5.3                   2  $0.01
+  deepseek-v4               2  $0.00
+  gpt-5.5                   4  $0.00 (+4 unpriced)
+  gemini-3.8-flash          2  $0.00 (+2 unpriced)
 
 Costs are at list prices: what the same tokens cost on each provider's API.
 ```
@@ -246,9 +247,10 @@ session ends with `· yours`. Usage with no known price shows as
 
 ```console
 $ turnscope sessions
-6 found, most recently active first.
+7 found, most recently active first.
 
 - `claude-code:7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f` "Add retries with backoff to the HTTP client." · /work/api (retries) · running · 24 responses · $0.47
+- `antigravity:4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f` "Sorting the notes by date" · /work/notes · active 1d 1h ago · 2 responses · $0.00 (+2 unpriced)
 - `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60` "Fix the CSV parser so quoted commas work. Don't change the public API." · /work/app (main) · active 1d 2h ago · 3 responses · $0.03 · yours
 - `codex:019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b` "Skip blank lines in the importer" · /work/app (main) · active 1d 3h ago · 4 responses · $0.00 (+4 unpriced)
 - `pi:5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9` "Add a --quiet flag that hides the progress bar." · /work/app · active 1d 4h ago · 2 responses · $0.00
@@ -405,6 +407,7 @@ Codex        not connected: `turnscope connect codex`
 OpenCode     not connected: `turnscope connect opencode`
 Pi           not connected: `turnscope connect pi`
 Grok Build   not connected: `turnscope connect grok-build`
+Antigravity  not connected: `turnscope connect antigravity`
 ```
 
 An agent that runs another copy of Turnscope says so, and `connect` points

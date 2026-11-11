@@ -76,6 +76,21 @@
         "reasoning": 240
       },
       "unpriced": 4
+    },
+    {
+      "costUsd": 0.0,
+      "key": "gemini-3.8-flash",
+      "name": null,
+      "responses": 2,
+      "tokens": {
+        "cacheRead": 4200,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 2200,
+        "output": 320,
+        "reasoning": 110
+      },
+      "unpriced": 2
     }
   ],
   "since": 1790640000000,
@@ -83,16 +98,16 @@
     "costUsd": 0.5257999999999999,
     "key": "total",
     "name": null,
-    "responses": 36,
+    "responses": 38,
     "tokens": {
-      "cacheRead": 546300,
+      "cacheRead": 550500,
       "cacheWrite1h": 0,
       "cacheWrite5m": 0,
-      "input": 29700,
-      "output": 10050,
-      "reasoning": 640
+      "input": 31900,
+      "output": 10370,
+      "reasoning": 750
     },
-    "unpriced": 4
+    "unpriced": 6
   },
   "until": 1790856000000
 }

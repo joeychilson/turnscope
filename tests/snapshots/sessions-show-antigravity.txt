@@ -1,0 +1,7 @@
+antigravity:4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f  "Sorting the notes by date"
+  active 1d 1h ago · 2 responses · $0.00 (+2 unpriced)
+  folder: /work/notes
+  project: /work/notes
+  started: Wed 10:59
+  models: gemini-3.8-flash
+  resume: cd /work/notes && agy --conversation 4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f

@@ -3,3 +3,4 @@ Codex        not connected: `turnscope connect codex`
 OpenCode     not connected: `turnscope connect opencode`
 Pi           not connected: `turnscope connect pi`
 Grok Build   not connected: `turnscope connect grok-build`
+Antigravity  not connected: `turnscope connect antigravity`

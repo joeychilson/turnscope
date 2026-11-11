@@ -95,7 +95,7 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
     #expect(status.accounts.map(\.recent) == [true, true, true, false, false, false])
     #expect(status.accounts[3].state == .unread(why: .signIn))
     #expect(status.accounts[5].state == .unread(why: .readFailed))
-    #expect(status.agents.map(\.connection) == [.connected, .outdated, .available, .available, .available])
+    #expect(status.agents.map(\.connection) == [.connected, .outdated, .available, .available, .available, .available])
     #expect(hello.alerts.map(\.kind) == [.runningOut, .usedUp, .reset, .signIn])
     #expect(status.settings.notify == Notify(runningOut: true, usedUp: true, reset: true, signIn: true))
 }

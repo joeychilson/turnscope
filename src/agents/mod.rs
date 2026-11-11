@@ -2,6 +2,7 @@
 //! [`Agent`], listed in [`ALL`]; nothing outside this folder knows any
 //! agent's files.
 
+mod antigravity;
 mod claude_code;
 mod codex;
 mod grok_build;
@@ -26,6 +27,7 @@ pub static ALL: &[&dyn Agent] = &[
     &opencode::OpenCode,
     &pi::Pi,
     &grok_build::GrokBuild,
+    &antigravity::Antigravity,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static dyn Agent> {
@@ -52,6 +54,12 @@ pub trait Agent: Sync {
     /// The folders it keeps history and logins in under `home`: its own
     /// first, then any it was pointed at for a second account.
     fn folders(&self, home: &Path) -> Vec<PathBuf>;
+
+    /// Whether the agent is on this Mac, by `folder`, its own: the folder is
+    /// there, unless another program keeps a folder of that name too.
+    fn installed(&self, folder: &Path) -> bool {
+        folder.exists()
+    }
 
     /// Its history files in `folder`, in the order they're read: one that
     /// rewinds a session, as `Read::rewound` says, after those it rewinds.
