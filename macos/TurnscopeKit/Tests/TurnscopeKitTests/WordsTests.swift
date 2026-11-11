@@ -7,10 +7,13 @@ import Testing
 
 private let noon = ISO8601DateFormatter().date(from: "2026-09-30T12:00:00Z")!
 
-private var words: Words {
+private var words: Words { asOf(noon) }
+
+/// Words as of `now`, in UTC.
+private func asOf(_ now: Date) -> Words {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "UTC")!
-    return Words(now: noon, calendar: calendar,
+    return Words(now: now, calendar: calendar,
                  names: ["claude-code": "Claude Code", "codex": "Codex", "pi": "Pi"])
 }
 
@@ -197,8 +200,7 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(words.figure(used) == "Back 3 PM")
     // Back soon, but after midnight, so the day is given, in the spoken
     // figure too.
-    var late = words
-    late.now = at("2026-09-30T22:30:00Z")
+    let late = asOf(at("2026-09-30T22:30:00Z"))
     let overnight = account([limit(.usedUp(back: moment("2026-10-01T01:00:00Z", .soon)), left: 0)])
     #expect(late.figure(overnight) == "Back tomorrow 1 AM")
     #expect(late.spokenFigure(overnight) == "back tomorrow 1 AM")
@@ -219,6 +221,20 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     // Early in the month there's no forecast, so none is mentioned.
     #expect(words.pace(Spend(monthUsd: 1, forecastUsd: nil, partial: false)) == nil)
     #expect(words.spent(unknown) == "Cost unknown")
+}
+
+/// The minute's tick lands a little after the minute, and the panel opens at
+/// any second of it.
+@Test func aCountdownCountsFromTheMinuteItIs() {
+    let claude = account([limit(runsOut)])
+    for seconds in [0.05, 40, 59.9] {
+        let late = asOf(noon.addingTimeInterval(seconds))
+        #expect(late.at(moment("2026-09-30T14:00:00Z", .soon)) == "in 2h")
+        #expect(late.figure(claude) == "2h")
+        #expect(late.spokenFigure(claude) == "runs out in 2 hours")
+    }
+    // Its last minute is a minute, not none.
+    #expect(asOf(at("2026-09-30T13:59:30Z")).figure(claude) == "1m")
 }
 
 @Test func voiceOverReadsTheMenuBarAsEachAccountThenItsFigure() {

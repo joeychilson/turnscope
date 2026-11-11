@@ -153,7 +153,9 @@ its own.
 Countdowns move with the clock. The panel's words are as of
 `Navigation.now`, which is set when the panel opens and each minute while
 it's open. The menu bar item is redrawn each minute only while the panel
-is open or the item shows an account running out or used up.
+is open or the item shows an account running out or used up. `Words`
+counts from the minute it is, as `serve` does, so at 12:00:40 a reset at
+14:00 is in 2h.
 
 ## The menu bar item
 
