@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.7
+
+- **Clicking a notification** while the app is quit opens the panel under
+  the menu bar item with the notification's account open, once the first
+  status arrives. The panel opened at once in the bottom-left corner of the
+  screen, with no account open, since the item had no place in the menu
+  bar yet and no account was known.
+- **A notification asking to sign in again** that is left from before the
+  app started is removed when the account can be read, also when the first
+  status arrives before the app has found the notification. It stayed until
+  the status next changed.
+
 ## 0.1.6
 
 - **Antigravity** is a supported agent. Turnscope reads the conversations
