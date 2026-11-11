@@ -102,8 +102,9 @@ pub struct Info {
     /// Its command: run to connect it, and how its process is recognised
     /// among an MCP server's ancestors.
     pub command: &'static str,
-    /// The name its app's own process runs under, where the app starts an
-    /// MCP server itself, with no `command` above it: `Antigravity`.
+    /// The program in its app that starts an MCP server, where the app
+    /// doesn't run `command`: the end of its path, as
+    /// `Antigravity.app/Contents/Resources/bin/language_server`.
     pub app: Option<&'static str>,
     /// Resumes a session, `{id}` being its id.
     pub resume: &'static str,
