@@ -236,8 +236,9 @@ impl Limit {
     }
 
     /// Whether `name` names it: part of its name as shown, with its models,
-    /// or of its key, as `week` names Weekly and `seven_day`, and `gpt`
-    /// Weekly (Claude and GPT).
+    /// or of its key, as `week` names Weekly and `seven_day`, and
+    /// `weekly (claude` Weekly (Claude and GPT). Of the limits a name fits,
+    /// the first by key is taken: `gpt` alone is 5 hours (Claude and GPT).
     pub fn answers_to(&self, name: &str) -> bool {
         let name = name.to_lowercase();
         self.named().to_lowercase().contains(&name) || self.key.to_lowercase().contains(&name)

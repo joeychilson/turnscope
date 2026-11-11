@@ -390,7 +390,13 @@ fn read(held: &mut Held, now: i64) -> std::result::Result<Limits, Problem> {
     for credential in held
         .credentials
         .iter()
-        .filter(|credential| credential.expires.is_none_or(|at| at > now))
+        // One about to expire would be refused on the way, which reads as
+        // a login to sign in to again, where it only needs renewing.
+        .filter(|credential| {
+            credential
+                .expires
+                .is_none_or(|at| at > now + crate::time::MINUTE)
+        })
     {
         match held.provider.limits(credential, now) {
             Ok(limits) => {
@@ -466,6 +472,20 @@ mod tests {
             });
         }
         assert_eq!(held.credentials.len(), 2);
+    }
+
+    #[test]
+    fn a_login_with_under_a_minute_left_isnt_sent() {
+        let mut held = held("opencode-go:key-a");
+        held.hold(Credential {
+            provider: "opencode-go",
+            secret: agents::Secret::new("sk-go-a"),
+            key: true,
+            expires: Some(1_000_000 + 30_000),
+            identity: None,
+            plan: None,
+        });
+        assert_eq!(read(&mut held, 1_000_000).err(), Some(Problem::Expired));
     }
 
     #[test]

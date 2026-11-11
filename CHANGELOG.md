@@ -3,15 +3,52 @@
 ## 0.1.6
 
 - **Antigravity** is a supported agent. Turnscope reads the conversations
-  of its app and of its command line, `agy`, with their usage, and
-  `turnscope connect antigravity` adds the MCP server to both.
+  of its app and of its command line, `agy`, with their usage.
+  `turnscope connect antigravity` adds the MCP server to both. It runs
+  `agy` to do it, so the command line has to be installed. In the app,
+  Turnscope knows that Antigravity is asking but not which folder it works
+  in, since the app starts the server outside any: there `handoff` with no
+  `session` asks for `folder`, and the `continue` prompt tells the agent to
+  give its own.
 - **Google AI plans** are read, with the sign-in Antigravity keeps in the
   Keychain: a Google AI Pro or Ultra plan's 5-hour and weekly limits on
   Gemini models, and its limits on Claude and GPT models. Antigravity's
   sign-in lasts an hour and Turnscope never renews it, so an hour after
-  Antigravity was last used the account says to open it to update. A
-  Gemini API key that OpenCode or Pi holds is an account too, titled Gemini
-  API key.
+  Antigravity was last used the account says to open it to update. Claude
+  and GPT models used through Antigravity have no price yet: their usage
+  shows as unpriced, with no share of a limit.
+- **A Gemini API key** that OpenCode or Pi holds is an account too, titled
+  Gemini API key. Its spend counts from the update on: what the key spent
+  before stays under no account.
+- **`usage --limit` and `explain_usage`** list, for a limit on several
+  models, such as Weekly (Claude and GPT), the responses of any of them.
+- **A limit** is named by part of its name as shown, with its models:
+  `"weekly (claude"` names Weekly (Claude and GPT). A name that matches no
+  limit lists the limits as shown, so two aren't both "Weekly".
+- **`handoff` and `find_sessions`**, from an MCP server that an agent
+  started in `/`, as an app does, no longer take `/` for the folder the
+  agent works in. `handoff` with no `session` asks for `folder`, where it
+  took the latest session of any project. A relative `folder` asks for its
+  full path, where it was read under `/`. The caller's own session is its
+  agent's latest anywhere.
+- **`handoff`** leaves out the caller's own session, the one in the folder
+  it works in, also when it's asked for another folder. It left out its
+  agent's latest session in the folder asked for, which could be the one
+  wanted.
+- **Handoffs** read a tool's `AbsolutePath`, `Path` and `TargetFile` as a
+  file, its `CommandLine` as a command and its `toolSummary` as what the
+  call was for, as Antigravity's tools name them, in any agent's session.
+- **The notification that a limit is back** waits while another limit on
+  the same models is used up, as it does for one on the whole account. A
+  plan's 5-hour limit on a model was said to be back while its weekly limit
+  on that model was used up.
+- **A login with under a minute left** isn't sent to its provider. One that
+  expired on the way was refused, and the account said to sign in again
+  where the login only needed renewing.
+- **`serve`** starts no catch-up when only a SQLite database's `-shm` file
+  was written, which Turnscope writes itself by opening the database. A
+  database it couldn't read, with a log left beside it, had it read
+  history again every 5 seconds.
 
 ## 0.1.5
 

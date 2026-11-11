@@ -217,7 +217,9 @@ impl Caller {
 
     /// The session a handoff takes: the one `session` names, or else the
     /// latest in `folder` other than the caller's own, with the two before
-    /// it.
+    /// it. The caller's own is the one in the folder it works in, which
+    /// `folder` needn't be: its agent's latest session in the folder asked
+    /// for may be the very one to hand off.
     pub fn session_to_hand_off(
         &self,
         db: &Connection,
@@ -232,7 +234,7 @@ impl Caller {
         let folder = folder.ok_or_else(|| {
             Error::Usage("which folder you work in isn't known: give folder or session".to_owned())
         })?;
-        let own = self.own_session(db, home, Some(&folder))?;
+        let own = self.own_session(db, home, self.folder.as_deref())?;
         sessions::latest(db, home, &folder, own.as_deref())
     }
 
@@ -440,6 +442,10 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
                     "You're continuing another agent's session; its handoff follows. Work out the next step from where it stopped and what the person asked, and don't redo finished work. If the next step isn't clear, ask the person.\n\n{}",
                     behind(handoff, caught)
                 ),
+                // With no folder to look in, the agent gives its own.
+                Err(Error::Usage(_)) if server.caller.folder.is_none() => {
+                    "You're continuing another agent's session. Call the handoff tool with `folder` set to the folder you work in, then work out the next step from where its handoff stopped and what the person asked, and don't redo finished work. If the next step isn't clear, ask the person.".to_owned()
+                }
                 Err(error) => error.to_string(),
             };
             json!({ "messages": [{ "role": "user", "content": { "type": "text", "text": text } }] })
@@ -664,7 +670,10 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
                 .map(|row| {
                     format!(
                         "{} ({})",
-                        row.name.as_deref().unwrap_or(&row.key),
+                        row.name
+                            .as_deref()
+                            .or(Some(row.key.as_str()).filter(|key| !key.is_empty()))
+                            .unwrap_or("(none)"),
                         usage::dollars(row.cost_usd)
                     )
                 })
@@ -748,11 +757,15 @@ fn handoff(server: &Server, arguments: Value) -> Result<String> {
         folder: Option<PathBuf>,
     }
     let input: Input = input(arguments)?;
-    let folder = input
-        .folder
-        .map(|given| folder(server, given))
-        .transpose()?
-        .or(server.caller.folder.clone());
+    // A session named needs no folder.
+    let folder = match input.session {
+        Some(_) => None,
+        None => input
+            .folder
+            .map(|given| folder(server, given))
+            .transpose()?
+            .or(server.caller.folder.clone()),
+    };
     let (session, others) = server.caller.session_to_hand_off(
         &server.db,
         &server.home,
@@ -847,11 +860,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::open(dir.path()).unwrap();
         for (id, agent, cwd, last) in [
-            ("antigravity:a", "antigravity", Some("/work/app"), 1000),
+            ("codex:c", "codex", Some("/work/app"), 1000),
+            ("antigravity:a", "antigravity", Some("/work/app"), 2000),
+            ("codex:d", "codex", Some("/work/other"), 3000),
             // Begun in the app with no folder.
-            ("antigravity:b", "antigravity", None, 2000),
-            ("codex:c", "codex", Some("/work/app"), 3000),
-            ("codex:d", "codex", Some("/work/other"), 4000),
+            ("antigravity:b", "antigravity", None, 4000),
         ] {
             db.execute(
                 "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
@@ -881,6 +894,15 @@ mod tests {
             caller.session_to_hand_off(&db, home, None, folder.map(PathBuf::from))
         };
         assert!(matches!(hand_off(None), Err(Error::Usage(_))));
-        assert_eq!(hand_off(Some("/work/app")).unwrap().0, "codex:c");
+        // The caller's own session is `b`, so its agent's latest in the
+        // folder asked for is one to hand off.
+        assert_eq!(hand_off(Some("/work/app")).unwrap().0, "antigravity:a");
+        // One that works in the folder leaves its own out.
+        let there = Caller {
+            folder: Some(PathBuf::from("/work/app")),
+            ..caller
+        };
+        let taken = there.session_to_hand_off(&db, home, None, there.folder.clone());
+        assert_eq!(taken.unwrap().0, "codex:c");
     }
 }

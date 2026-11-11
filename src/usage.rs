@@ -387,6 +387,7 @@ pub fn markdown(
                 }
             ),
             (Some(name), _) => name.clone(),
+            (None, _) if row.key.is_empty() => "(none)".to_owned(),
             (None, _) => row.key.clone(),
         };
         let points = shares.map_or(String::new(), |(_, points)| {
