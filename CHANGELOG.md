@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6
+
+- **Antigravity** is a supported agent. Turnscope reads the conversations
+  of its app and of its command line, `agy`, with their usage, and
+  `turnscope connect antigravity` adds the MCP server to both. Its Google
+  sign-in isn't read yet, so its usage counts toward no account.
+
 ## 0.1.5
 
 - **The app** shows OpenCode's logo for OpenCode and OpenCode Go. OpenCode

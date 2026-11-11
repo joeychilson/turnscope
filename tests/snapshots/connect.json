@@ -33,5 +33,12 @@
     "inUse": false,
     "installed": true,
     "name": "Grok Build"
+  },
+  {
+    "connection": "available",
+    "id": "antigravity",
+    "inUse": false,
+    "installed": true,
+    "name": "Antigravity"
   }
 ]

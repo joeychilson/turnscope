@@ -238,9 +238,15 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
     })
     .map_err(|error| Error::Failed(error.to_string()))?;
     for agent in agents::ALL {
-        for folder in agent.folders(home) {
-            // A folder not there yet is looked through each minute.
-            let _ = watcher.watch(&folder, notify::RecursiveMode::Recursive);
+        for (n, folder) in agent.folders(home).iter().enumerate() {
+            // The agent's own folder may be another program's, as `~/.gemini`
+            // is the Gemini command line's too: every write there would
+            // start a catch-up. Until the agent is installed it's looked
+            // through each minute, as a folder not there yet is.
+            if n == 0 && !agent.installed(folder) {
+                continue;
+            }
+            let _ = watcher.watch(folder, notify::RecursiveMode::Recursive);
         }
     }
     // When the status was last pushed: the minute, and SQLite's

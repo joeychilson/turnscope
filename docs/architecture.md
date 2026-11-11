@@ -8,7 +8,7 @@ run, and how it decides what to show. The menu bar app is in
 ## What it does
 
 The user runs several coding agents (Claude Code, Codex, OpenCode, Pi, Grok
-Build) on several accounts: subscriptions whose limits reset, and API keys
+Build, Antigravity) on several accounts: subscriptions whose limits reset, and API keys
 that cost money. Turnscope does four things:
 
 1. **Limits.** How much of each limit is left, when it resets, whether it
@@ -28,7 +28,7 @@ formats correctly, and the forecast.
 
 | Term | Meaning |
 |---|---|
-| Agent | A coding tool whose history and logins Turnscope reads, named by id: `claude-code`, `codex`, `opencode`, `pi`, `grok-build`. |
+| Agent | A coding tool whose history and logins Turnscope reads, named by id: `claude-code`, `codex`, `opencode`, `pi`, `grok-build`, `antigravity`. |
 | Agent folder | Where an agent keeps its history and logins, such as `~/.claude`. A second account's folder is another, such as `~/.claude-work`. |
 | Provider | A company that sells model usage and reports limits: Anthropic, OpenAI, xAI, OpenCode Go, OpenRouter. Its id is the one models.dev uses. |
 | Account | What usage draws on at a provider: a subscription, or API keys. Its id is `<provider>:<the provider's id for it>`. |
@@ -142,6 +142,7 @@ src/
     opencode.rs       OpenCode
     pi.rs             Pi
     grok_build.rs     Grok Build
+    antigravity.rs    Antigravity
   providers/
     mod.rs            the Provider trait, providers::ALL, what providers return, curl, shared helpers
     anthropic.rs      Anthropic: Claude plans, and API keys

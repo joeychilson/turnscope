@@ -9,8 +9,10 @@ their owners, used only to name their products.
   an embedded picture, and not models.dev's placeholder for a provider it
   has no logo for.
 - `agents/<id>.svg`: one per agent, named by its id. Claude Code, Codex,
-  OpenCode and Grok Build use their makers' marks; Pi's is redrawn in one
-  color from https://pi.dev/logo-auto.svg.
+  OpenCode, Grok Build and Antigravity use their makers' marks. Antigravity's
+  is Google's, `https://models.dev/logos/google.svg`, as models.dev has no
+  mark for Antigravity itself. Pi's is redrawn in one color from
+  https://pi.dev/logo-auto.svg.
 
 A mark is drawn at the size of the frame its `viewBox` sets, so a solid
 mark gets a wider `viewBox` to look as large as the others. OpenCode and

@@ -31,6 +31,7 @@ where agents' installers add their folders, so it also works from the app.
 | OpenCode | `opencode` | `opencode mcp add --global turnscope -- <turnscope> mcp` | none |
 | Pi | `pi` | `pi mcp add turnscope -- <turnscope> mcp` | `pi mcp remove turnscope` |
 | Grok Build | `grok-build` | `grok mcp add --scope user turnscope <turnscope> mcp` | `grok mcp remove --scope user turnscope` |
+| Antigravity | `antigravity` | `agy mcp add turnscope -- <turnscope> mcp` | `agy mcp remove turnscope` |
 
 `<turnscope>` is the binary's real path, such as
 `/Applications/Turnscope.app/Contents/Helpers/turnscope`, even when you run
@@ -55,6 +56,7 @@ Codex        not connected: `turnscope connect codex`
 OpenCode     not connected: `turnscope connect opencode`
 Pi           not connected: `turnscope connect pi`
 Grok Build   not connected: `turnscope connect grok-build`
+Antigravity  not connected: `turnscope connect antigravity`
 ```
 
 | State | Means |
@@ -62,7 +64,7 @@ Grok Build   not connected: `turnscope connect grok-build`
 | `connected` | The agent runs this copy of Turnscope, in every folder it has. A link to it counts. |
 | `runs another copy of Turnscope` | The agent runs another binary, such as an older install. `turnscope connect <id>` points it at this one. |
 | `not connected` | The agent has no `turnscope` server. |
-| `not installed` | The agent's folder doesn't exist: `~/.claude`, `~/.codex`, `~/.local/share/opencode`, `~/.pi/agent` or `~/.grok`. |
+| `not installed` | The agent's folder doesn't exist: `~/.claude`, `~/.codex`, `~/.local/share/opencode`, `~/.pi/agent` or `~/.grok`. For Antigravity, neither `~/.gemini/antigravity` nor `~/.gemini/antigravity-cli` does: the Gemini command line keeps `~/.gemini` too. |
 
 The state comes from the agent's configuration file:
 
@@ -73,6 +75,12 @@ The state comes from the agent's configuration file:
 | OpenCode | `~/.config/opencode/opencode.json` | `mcp.servers.turnscope` |
 | Pi | `~/.pi/agent/mcp.json` | `mcpServers.turnscope` |
 | Grok Build | `~/.grok/config.toml` | `[mcp_servers.turnscope]` |
+| Antigravity | `~/.gemini/config/mcp_config.json` | `mcpServers.turnscope` |
+
+Antigravity's app and `agy` share that file, so `agy` connects both. A
+server switched off there, as `agy mcp disable turnscope` does, counts as
+not connected, and `turnscope disconnect antigravity` leaves it where it
+is: `agy mcp remove turnscope` removes it.
 
 A second account's folder, such as `~/.claude-work` or `~/.codex-work`,
 keeps its own configuration: `.claude.json` or `config.toml` inside it.
@@ -89,7 +97,7 @@ mark the caller's own session.
 
 | What | How it's found |
 |---|---|
-| Agent | Claude Code sets `CLAUDE_CODE_SESSION_ID` in a server it starts. Otherwise the server looks for an agent's command (`claude`, `codex`, `opencode`, `pi` or `grok`) among its parent processes, up to eight levels up, with `/bin/ps`. A script run by `node`, `bun`, `deno`, `python` or `python3` counts by the script's name. A versioned build such as `grok-1.0.41-macos-aarch64` counts as `grok`. |
+| Agent | Claude Code sets `CLAUDE_CODE_SESSION_ID` in a server it starts. Otherwise the server looks for an agent's command (`claude`, `codex`, `opencode`, `pi`, `grok` or `agy`) among its parent processes, up to eight levels up, with `/bin/ps`. A script run by `node`, `bun`, `deno`, `python` or `python3` counts by the script's name. A versioned build such as `grok-1.0.41-macos-aarch64` counts as `grok`. |
 | Folder | `CLAUDE_PROJECT_DIR` for Claude Code. For the other agents, the folder the server was started in. |
 | Session | `CLAUDE_CODE_SESSION_ID` for Claude Code. The other agents don't say. By the time one calls a tool it has written its turn, so its session is taken to be its latest in the folder. |
 | Account | The account of the session's latest response. Otherwise the account of the agent's latest response from its agent folder: the one `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` points to, or else its default folder. |
@@ -268,7 +276,7 @@ were active, or whether they run now.
 |---|---|---|---|
 | `search` | string | none | Words said in the session or its subagents. All of them must appear. |
 | `folder` | string | none | Sessions in this folder's repository, worktrees included, or run in or under the folder. |
-| `agent` | string | none | An agent id, the start of its session ids: `claude-code`, `codex`, `opencode`, `pi` or `grok-build`. |
+| `agent` | string | none | An agent id, the start of its session ids: `claude-code`, `codex`, `opencode`, `pi`, `grok-build` or `antigravity`. |
 | `since` | string | none | Active since a [time form](cli.md#time-forms). |
 | `running` | boolean | `false` | Only sessions active in the last 5 minutes. |
 | `count` | integer, 1 to 100 | 10 | Sessions per page. The default keeps answers short. |

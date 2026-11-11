@@ -1,0 +1,51 @@
+{
+  "entries": [
+    {
+      "entry": {
+        "at": 1790766000000,
+        "kind": "user",
+        "text": "Sort the notes by date, newest first.",
+        "tool": null
+      },
+      "index": 0
+    },
+    {
+      "entry": {
+        "at": 1790766004000,
+        "kind": "reasoning",
+        "text": "The list is built in src/list.ts, in the order the notes are read.",
+        "tool": null
+      },
+      "index": 1
+    },
+    {
+      "entry": {
+        "at": 1790766004000,
+        "kind": "tool",
+        "text": "",
+        "tool": {
+          "failed": false,
+          "files": [
+            "/work/notes/src/list.ts"
+          ],
+          "input": "{\"ReplacementContent\":\"return notes.sort((a, b) => b.date - a.date);\",\"TargetContent\":\"return notes;\",\"TargetFile\":\"/work/notes/src/list.ts\",\"toolAction\":\"Sorting the notes\",\"toolSummary\":\"Sort the notes\"}",
+          "name": "replace_file_content",
+          "output": "Created At: 2026-09-30T11:00:09Z\nCompleted At: 2026-09-30T11:00:09Z\nThe file was edited."
+        }
+      },
+      "index": 2
+    },
+    {
+      "entry": {
+        "at": 1790766015000,
+        "kind": "assistant",
+        "text": "The notes are listed by date, newest first.",
+        "tool": null
+      },
+      "index": 3
+    }
+  ],
+  "next": null,
+  "session": "antigravity:4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f",
+  "total": 4
+}
