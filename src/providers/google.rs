@@ -170,8 +170,10 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
     for group in answer.get("groups")?.as_array()? {
         for bucket in group["buckets"].as_array().into_iter().flatten() {
             // One the plan doesn't have, or with nothing said of what's left.
-            let (Some(left), false) = (bucket.get("remainingFraction"), bucket["disabled"] == true)
-            else {
+            let (Some(left), false) = (
+                bucket["remainingFraction"].as_f64(),
+                bucket["disabled"] == true,
+            ) else {
                 continue;
             };
             let id = bucket["bucketId"].as_str().filter(|id| !id.is_empty())?;
@@ -197,7 +199,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
                     (false, Some(group)) if !group.is_empty() => Some(group.to_owned()),
                     (false, _) => Some(super::words(id)),
                 },
-                used: ((1.0 - left.as_f64()?) * 100.0).clamp(0.0, 100.0),
+                used: ((1.0 - left) * 100.0).clamp(0.0, 100.0),
                 size: None,
                 starts: resets.map(|resets| resets - length),
                 resets,
@@ -327,6 +329,11 @@ mod tests {
         assert!(super::parse(&one("monthly", "2026-10-05T00:00:00Z")).is_none());
         assert!(super::parse(&one("weekly", "next Monday")).is_none());
         assert!(super::parse(&json!({"error": {"code": 403}})).is_none());
+        // A bucket that says nothing of what's left is passed over alone.
+        let mut unsaid = one("weekly", "2026-10-05T00:00:00Z");
+        let buckets = unsaid["groups"][0]["buckets"].as_array_mut().unwrap();
+        buckets.push(json!({"bucketId": "gemini-5h", "window": "5h", "remainingFraction": null}));
+        assert_eq!(super::parse(&unsaid).map(|read| read.len()), Some(1));
     }
 
     #[test]

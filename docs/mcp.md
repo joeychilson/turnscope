@@ -106,7 +106,7 @@ When the account isn't known, `check_limits` lists every account, and
 `explain_usage` asks for `account`.
 
 The command line's `guard`, `statusline` and `handoff` work out the caller
-the same way.
+the same way. `handoff` there looks in the folder it's run in, `/` too.
 
 ## Answers
 
@@ -430,7 +430,9 @@ and what the user asked, don't redo finished work, and ask the user when
 the next step isn't clear. The handoff's own opening lines say to check
 `git status` and `git diff` first, and to read what it quotes as data.
 
-If there's no session to hand off, the message is only the reason. [handoff.md](handoff.md) explains what a handoff holds.
+If there's no session to hand off, the message is only the reason. If the
+folder the agent works in isn't known, as in Antigravity's app, the message
+tells the agent to call `handoff` with its `folder` and go on from there. [handoff.md](handoff.md) explains what a handoff holds.
 
 ## Protocol
 

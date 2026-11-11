@@ -239,8 +239,11 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
 
 - The main thread answers requests one at a time and pushes the status. One
   thread accepts connections, and one per client reads its lines.
-- One thread keeps the data current: it watches every agent folder and
-  catches up as above. After a catch-up that read anything new, ran in a
+- One thread keeps the data current: it watches every agent folder that
+  was there when it started, an agent's own only if the agent was installed
+  then, and catches up as above. A write to a SQLite database's `-shm` file
+  alone starts no catch-up: Turnscope writes it itself by opening the
+  database. After a catch-up that read anything new, ran in a
   new minute, or followed another process's write to the database, the main
   thread works out the status. If anything it shows changed, it raises
   alerts and sends `status`, then each new `alert`, to every client that
@@ -399,7 +402,7 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
   reset, within 5 minutes; for `signIn`, the last read that worked), so
   neither a restart nor a pace near the line repeats one.
 - Some alerts are recorded as already shown: one for a hidden account, one
-  of a kind turned off, and a `reset` while another limit on the whole
+  of a kind turned off, and a `reset` while another limit on the same models or on the whole
   account is still used up. Showing the account or turning the kind on
   later doesn't bring back the past.
 - An alert waits until a client acknowledges it (`alerts.ack`). Until then

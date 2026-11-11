@@ -85,8 +85,9 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             Kind::Reset => notify.reset,
             Kind::SignIn => notify.sign_in,
         };
-        // Back while another limit on the whole account is used up, the
-        // account still can't be used: that limit's own return says so.
+        // Back while another limit on the whole account, or on the same
+        // models, is used up, it still can't be used: that limit's own
+        // return says so.
         let blocked = kind == Kind::Reset && limit.is_some_and(|limit| blocked(account, limit));
         let told = on && !account.hidden && !blocked;
         let detail = Detail {
@@ -151,10 +152,14 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
     Ok(raised)
 }
 
-/// Whether a limit on the whole account other than `limit` is used up.
+/// Whether a limit other than `limit` that stops what it covers is used up:
+/// one on the whole account, or one on the same models, as a plan's 5-hour
+/// and weekly limits on them are.
 fn blocked(account: &Account, limit: &Limit) -> bool {
     account.limits.iter().any(|other| {
-        other.key != limit.key && other.whole() && matches!(other.outlook, Outlook::UsedUp { .. })
+        other.key != limit.key
+            && (other.whole() || (other.scope.is_some() && other.scope == limit.scope))
+            && matches!(other.outlook, Outlook::UsedUp { .. })
     })
 }
 
@@ -445,5 +450,40 @@ mod tests {
             kinds(&raise(&mut db, &a_back).unwrap()),
             [Kind::Reset, Kind::UsedUp]
         );
+    }
+
+    #[test]
+    fn a_limit_on_some_models_is_blocked_by_another_on_the_same() {
+        let account = &status(DAY, 100, LASTS).accounts[0];
+        let limit = |key: &str, scope: Option<&str>, used_up: bool| {
+            let mut limit = account.limits[0].clone();
+            limit.key = key.to_owned();
+            limit.scope = scope.map(str::to_owned);
+            if used_up {
+                limit.outlook = Outlook::UsedUp { back: None };
+            }
+            limit
+        };
+        let with = |others: Vec<Limit>| {
+            let mut account = account.clone();
+            account.limits = vec![limit("5h:3p-5h", Some("Claude and GPT"), false)];
+            account.limits.extend(others);
+            blocked(&account, &account.limits[0])
+        };
+        // Its own week used up stops it; a week on other models doesn't.
+        assert!(with(vec![limit(
+            "weekly:3p-weekly",
+            Some("Claude and GPT"),
+            true
+        )]));
+        assert!(!with(vec![limit("weekly:opus", Some("Opus"), true)]));
+        assert!(!with(vec![limit(
+            "weekly:3p-weekly",
+            Some("Claude and GPT"),
+            false
+        )]));
+        assert!(with(vec![limit("weekly", None, true)]));
+        // One key's limit doesn't stop another's.
+        assert!(!with(vec![limit("key-b", None, true)]));
     }
 }
