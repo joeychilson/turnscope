@@ -4,8 +4,14 @@
 
 - **Antigravity** is a supported agent. Turnscope reads the conversations
   of its app and of its command line, `agy`, with their usage, and
-  `turnscope connect antigravity` adds the MCP server to both. Its Google
-  sign-in isn't read yet, so its usage counts toward no account.
+  `turnscope connect antigravity` adds the MCP server to both.
+- **Google AI plans** are read, with the sign-in Antigravity keeps in the
+  Keychain: a Google AI Pro or Ultra plan's 5-hour and weekly limits on
+  Gemini models, and its limits on Claude and GPT models. Antigravity's
+  sign-in lasts an hour and Turnscope never renews it, so an hour after
+  Antigravity was last used the account says to open it to update. A
+  Gemini API key that OpenCode or Pi holds is an account too, titled Gemini
+  API key.
 
 ## 0.1.5
 

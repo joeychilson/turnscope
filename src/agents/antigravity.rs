@@ -87,20 +87,39 @@
 //!
 //! **Not read.** The Antigravity IDE's history, which this Mac doesn't have.
 //!
-//! **Logins.** Antigravity keeps its Google sign-in in the Keychain. It
-//! isn't read, so its usage is no account's.
+//! **Logins.** The app and `agy` keep one Google sign-in, in the Keychain
+//! item with service `gemini` and account `antigravity`. `agy` keeps it
+//! with go-keyring, which writes through `/usr/bin/security`, so reading it
+//! with that raises no prompt, and marks a value it wrote as base64 with
+//! `go-keyring-base64:`. Read on this Mac 2026-11-10, the value was so
+//! marked, and inside it JSON: the `token`, with its `access_token`, its
+//! `expiry` as a written time with the zone's offset, and `expires_in`; the
+//! `auth_method`, `consumer`; the account's email, `id_token_email`; and a
+//! `writer_id`. Only the email names the account, so it is the account's id
+//! as well as its label.
+//!
+//! The token had 22 minutes left, hours after Antigravity was signed in: it
+//! writes each token it renews back to the item. Turnscope never renews one,
+//! so once the last has expired the account waits for Antigravity to be
+//! used again.
+//!
+//! Only a sign-in whose `auth_method` is `consumer`, a Google account's, is
+//! read. Google answers a token of Antigravity's other client with limits
+//! nothing has touched, CodexBar found (its code, read 2026-11-10), which
+//! would pass for the plan's.
 
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
-    Tokens,
+    Agent, Conversation, Credential, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role,
+    Secret, Title, Tokens,
 };
-use crate::Result;
+use crate::{Error, Result};
 
 pub struct Antigravity;
 
@@ -123,6 +142,11 @@ const KEPT: [&str; 2] = ["antigravity", "antigravity-cli"];
 /// A folder's titles, and a conversation's transcript.
 const TITLES: &str = "conversation_summaries.db";
 const TRANSCRIPT: &str = "transcript_full.jsonl";
+
+/// The Keychain item that holds the sign-in: its service, and its account.
+const SIGN_IN: (&str, &str) = ("gemini", "antigravity");
+/// What go-keyring puts before a value it wrote as base64.
+const WRAPPED: &str = "go-keyring-base64:";
 
 /// Where a conversation's database was read to: the steps and the model
 /// calls numbered below these were read.
@@ -295,8 +319,22 @@ impl Agent for Antigravity {
         Ok(conversation.entries)
     }
 
-    fn logins(&self, _folder: &Path, _home: &Path) -> Result<Vec<Login>> {
-        Ok(Vec::new())
+    fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
+        // Where it isn't installed, the Keychain isn't asked.
+        if !self.installed(folder) {
+            return Ok(Vec::new());
+        }
+        let (service, account) = SIGN_IN;
+        let credential = match super::keychain(home, service, Some(account))? {
+            Some(kept) => signed_in(&kept).map_err(|why| {
+                Error::Failed(format!("reading the Keychain item {service}: {why}"))
+            })?,
+            None => None,
+        };
+        Ok(vec![Login {
+            provider: "google".to_owned(),
+            credential,
+        }])
     }
 
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
@@ -316,6 +354,40 @@ impl Agent for Antigravity {
             _ => Role::Work,
         }
     }
+}
+
+/// The sign-in the Keychain item's value `kept` holds, when it's one to a
+/// Google account. Why not, for a value that doesn't read: taking that for
+/// signed out would sign its account out.
+fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
+    let kept = std::str::from_utf8(kept).map_err(|error| error.to_string())?;
+    let kept = kept
+        .trim()
+        .strip_prefix(WRAPPED)
+        .ok_or("go-keyring didn't write it as base64")?;
+    let kept = base64::engine::general_purpose::STANDARD
+        .decode(kept)
+        .map_err(|error| error.to_string())?;
+    let kept: Value = serde_json::from_slice(&kept).map_err(|error| error.to_string())?;
+    let token = kept["token"]["access_token"]
+        .as_str()
+        .filter(|token| !token.is_empty());
+    let (Some(token), Some("consumer")) = (token, kept["auth_method"].as_str()) else {
+        return Ok(None);
+    };
+    let email = kept["id_token_email"]
+        .as_str()
+        .filter(|email| !email.is_empty());
+    Ok(Some(Credential {
+        provider: "google",
+        secret: Secret::new(token),
+        key: false,
+        expires: kept["token"]["expiry"]
+            .as_str()
+            .and_then(crate::time::millis),
+        identity: email.map(|email| (email.to_owned(), Some(email.to_owned()))),
+        plan: None,
+    }))
 }
 
 /// What the person typed, of a `USER_INPUT` line's `content`.
@@ -1183,6 +1255,7 @@ mod tests {
         std::fs::create_dir_all(folder.join("tmp")).unwrap();
         std::fs::write(folder.join("settings.json"), "{}").unwrap();
         assert!(!Antigravity.installed(&folder));
+        assert!(Antigravity.logins(&folder, home.path()).unwrap().is_empty());
         std::fs::create_dir(folder.join("antigravity")).unwrap();
         assert!(Antigravity.installed(&folder));
     }
@@ -1231,7 +1304,6 @@ mod tests {
         );
         std::fs::write(&config, server(true)).unwrap();
         assert_eq!(Antigravity.mcp_command(&folder, home.path()), None);
-        assert!(Antigravity.logins(&folder, home.path()).unwrap().is_empty());
     }
 
     #[test]
@@ -1276,5 +1348,56 @@ mod tests {
         );
         assert_eq!(folder(b"https://example.com/a"), None);
         assert_eq!(folder(b"file:///work/%4"), None);
+    }
+
+    #[test]
+    fn a_sign_in_is_read_from_what_go_keyring_wrote() {
+        use base64::engine::general_purpose::STANDARD;
+        let wrapped = |kept: &Value| format!("{WRAPPED}{}\n", STANDARD.encode(kept.to_string()));
+        let kept = json!({
+            "token": {
+                "access_token": "made-up-token",
+                "token_type": "Bearer",
+                "refresh_token": "made-up-refresh",
+                "expiry": "2026-10-01T12:00:00.123456-05:00",
+                "expires_in": 3599,
+            },
+            "auth_method": "consumer",
+            "id_token_email": "me@example.com",
+            "writer_id": "made-up-writer",
+        });
+        let credential = signed_in(wrapped(&kept).as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            (
+                credential.provider,
+                credential.secret.expose(),
+                credential.key
+            ),
+            ("google", "made-up-token", false)
+        );
+        assert_eq!(
+            credential.expires,
+            crate::time::millis("2026-10-01T17:00:00.123456Z")
+        );
+        assert_eq!(
+            credential.identity,
+            Some((
+                "me@example.com".to_owned(),
+                Some("me@example.com".to_owned())
+            ))
+        );
+
+        // Another way of signing in isn't read, nor a sign-in with no token.
+        let mut other = kept.clone();
+        other["auth_method"] = json!("enterprise");
+        assert!(signed_in(wrapped(&other).as_bytes()).unwrap().is_none());
+        let mut out = kept.clone();
+        out["token"]["access_token"] = json!("");
+        assert!(signed_in(wrapped(&out).as_bytes()).unwrap().is_none());
+
+        // A value that doesn't read isn't taken for signed out.
+        assert!(signed_in(kept.to_string().as_bytes()).is_err());
+        assert!(signed_in(format!("{WRAPPED}not base64").as_bytes()).is_err());
+        assert!(signed_in(format!("{WRAPPED}{}", STANDARD.encode("not JSON")).as_bytes()).is_err());
     }
 }

@@ -30,7 +30,7 @@ formats correctly, and the forecast.
 |---|---|
 | Agent | A coding tool whose history and logins Turnscope reads, named by id: `claude-code`, `codex`, `opencode`, `pi`, `grok-build`, `antigravity`. |
 | Agent folder | Where an agent keeps its history and logins, such as `~/.claude`. A second account's folder is another, such as `~/.claude-work`. |
-| Provider | A company that sells model usage and reports limits: Anthropic, OpenAI, xAI, OpenCode Go, OpenRouter. Its id is the one models.dev uses. |
+| Provider | A company that sells model usage and reports limits: Anthropic, OpenAI, xAI, Google, OpenCode Go, OpenRouter. Its id is the one models.dev uses. |
 | Account | What usage draws on at a provider: a subscription, or API keys. Its id is `<provider>:<the provider's id for it>`. |
 | Limit | One cap on an account, in percent used, as the provider reports it: a 5-hour or weekly limit, credits, a key's spending limit. |
 | Window | The time a limit counts, from its start to its reset. A rolling window has no start. |
@@ -148,6 +148,7 @@ src/
     anthropic.rs      Anthropic: Claude plans, and API keys
     openai.rs         OpenAI: ChatGPT plans, and API keys
     xai.rs            xAI: SuperGrok plans, and API keys
+    google.rs         Google: Google AI plans, and Gemini API keys
     opencode_go.rs    OpenCode Go plans
     openrouter.rs     OpenRouter: a key's spending limit, and credits
 ```
@@ -421,7 +422,9 @@ covers what it holds, the budget, and how to test a change.
 - **One way to the network.** Every request goes through `/usr/bin/curl`
   (`providers::get`), HTTPS only, ignoring `~/.curlrc`. Headers, with any
   credential, go to curl on standard input, never in its arguments or
-  environment. A header with a line break isn't sent.
+  environment. A header with a line break isn't sent. A request is a GET,
+  but for Google's limits, which answer only a POST: its body is an
+  argument, and holds no secret.
 - **Logins are only read.** Each is sent only to its own provider, and
   never once it has expired. Turnscope never refreshes a token or writes an
   agent's files. `connect` and `disconnect` run the agent's own command.

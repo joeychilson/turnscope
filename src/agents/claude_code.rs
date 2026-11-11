@@ -661,23 +661,11 @@ impl Agent for ClaudeCode {
             let hex = crate::sha256_hex(folder.as_os_str().as_encoded_bytes(), 4);
             format!("Claude Code-credentials-{hex}")
         };
-        // Read with `/usr/bin/security`, the tool Claude Code writes it with,
-        // so no permission prompt appears; it finds the Keychain under `HOME`.
-        let failed =
-            |why: String| Error::Failed(format!("reading the Keychain item {item}: {why}"));
-        let mut security = std::process::Command::new("/usr/bin/security");
-        security
-            .args(["find-generic-password", "-s", &item, "-w"])
-            .env("HOME", home);
-        let output = crate::output_within(&mut security, Duration::from_secs(20))
-            .map_err(|error| failed(error.to_string()))?;
-        // 44: no such item.
-        let kept: Value = match output.status.code() {
-            Some(0) => {
-                serde_json::from_slice(&output.stdout).map_err(|error| failed(error.to_string()))?
-            }
-            Some(44) => Value::Null,
-            code => return Err(failed(format!("security exited with {code:?}"))),
+        let kept: Value = match super::keychain(home, &item, None)? {
+            Some(kept) => serde_json::from_slice(&kept).map_err(|error| {
+                Error::Failed(format!("reading the Keychain item {item}: {error}"))
+            })?,
+            None => Value::Null,
         };
         let token = kept.pointer("/claudeAiOauth/accessToken");
         let credential = match token.and_then(Value::as_str) {
