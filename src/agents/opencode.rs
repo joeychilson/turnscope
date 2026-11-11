@@ -57,6 +57,7 @@ static INFO: Info = Info {
     id: "opencode",
     name: "OpenCode",
     command: "opencode",
+    app: None,
     resume: "opencode --session {id}",
     mcp_add: &["mcp", "add", "--global", "turnscope", "--"],
     mcp_remove: None,

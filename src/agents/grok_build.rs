@@ -46,6 +46,7 @@ static INFO: Info = Info {
     id: "grok-build",
     name: "Grok Build",
     command: "grok",
+    app: None,
     resume: "grok --resume {id}",
     mcp_add: &["mcp", "add", "--scope", "user", "turnscope"],
     mcp_remove: Some(&["mcp", "remove", "--scope", "user", "turnscope"]),

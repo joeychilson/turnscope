@@ -102,6 +102,9 @@ pub struct Info {
     /// Its command: run to connect it, and how its process is recognised
     /// among an MCP server's ancestors.
     pub command: &'static str,
+    /// The name its app's own process runs under, where the app starts an
+    /// MCP server itself, with no `command` above it: `Antigravity`.
+    pub app: Option<&'static str>,
     /// Resumes a session, `{id}` being its id.
     pub resume: &'static str,
     /// The arguments that add Turnscope's MCP server, before its command.

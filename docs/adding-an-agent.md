@@ -62,6 +62,7 @@ static INFO: Info = Info {
 | `id` | `&'static str` | The agent's id: as stored, as `--agent` takes it, as the logo's file name, and at the start of its session ids, `acme:<its own id>`. |
 | `name` | `&'static str` | The agent's name as people know it. |
 | `command` | `&'static str` | The program `connect` runs. The MCP server also finds the agent calling it by this name among its parent processes: `acme`, `acme-<anything>` for a versioned build, or a script of that name run by `node`, `bun`, `deno`, `python` or `python3`. |
+| `app` | `Option<&'static str>` | The name its app's own process runs under, when the app starts an MCP server itself and no `command` is among the server's parent processes, as Antigravity's does: `Antigravity`. Check with the agent connected: start a session in its app and look at the server's parents with `ps`. `None` for an agent whose app runs `command`, or that has no app. |
 | `resume` | `&'static str` | The command that resumes a session, `{id}` being the agent's own id. `sessions show` puts `cd <folder> &&` before it, and `folder_var` for a session in a second account's folder. |
 | `mcp_add` | `&'static [&'static str]` | The arguments to `command` that add an MCP server. `connect` runs `<command> <mcp_add> <path to turnscope> mcp`. |
 | `mcp_remove` | `Option<&'static [&'static str]>` | The arguments that remove it, if the agent has a command for that. `connect` runs them first, so a refused add can put back the server that was there. With `None`, `disconnect` tells the user to remove it by hand. |

@@ -137,7 +137,9 @@ static TOOLS: &[Tool] = &[
 /// `/bin/ps`, and its own variables give the rest: Claude Code's its session
 /// and project folder. A variable alone names the agent only when no
 /// ancestor does, since an agent run from another's shell, as Claude Code
-/// runs Codex or OpenCode, inherits the other's.
+/// runs Codex or OpenCode, inherits the other's. An ancestor is an agent by
+/// its command, or by its app's own process where the app starts the server
+/// without its command, as Antigravity's does.
 pub struct Caller {
     pub agent: Option<&'static dyn Agent>,
     pub folder: Option<PathBuf>,
@@ -154,42 +156,8 @@ impl Caller {
                 .args(["-A", "-ww", "-o", "pid=,ppid=,args="])
                 .output()
                 .ok()?;
-            let table = String::from_utf8_lossy(&table.stdout).into_owned();
-            let rows: Vec<(u32, u32, Vec<&str>)> = table
-                .lines()
-                .filter_map(|line| {
-                    let mut words = line.split_whitespace();
-                    let (pid, parent) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
-                    Some((pid, parent, words.collect()))
-                })
-                .collect();
-            // Up to eight ancestors; one a runtime runs is its script.
-            let mut pid = std::os::unix::process::parent_id();
-            for _ in 0..8 {
-                let (_, parent, args) = rows.iter().find(|(id, _, _)| *id == pid)?;
-                let mut words = args
-                    .iter()
-                    .map(|word| word.rsplit('/').next().unwrap_or(word));
-                let first = words.next().unwrap_or_default();
-                let name = match first {
-                    "node" | "bun" | "deno" | "python" | "python3" => {
-                        words.next().unwrap_or_default()
-                    }
-                    _ => first,
-                };
-                // A login shell's name opens with a dash; a versioned build
-                // adds its version, as `grok-1.0.41-macos-aarch64`.
-                let name = name.trim_start_matches('-');
-                let found = agents::ALL.iter().copied().find(|agent| {
-                    let command = agent.info().command;
-                    name == command || name.starts_with(&format!("{command}-"))
-                });
-                if found.is_some() {
-                    return found;
-                }
-                pid = *parent;
-            }
-            None
+            let table = String::from_utf8_lossy(&table.stdout);
+            nearest(&table, std::os::unix::process::parent_id())
         };
         let agent = ancestor().or_else(|| {
             agents::ALL
@@ -293,6 +261,46 @@ impl Caller {
             )
             .optional()?))
     }
+}
+
+/// The agent nearest above the process `pid`, itself included, in `table`:
+/// what `ps` prints of every process, its id, its parent's and its
+/// arguments.
+fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
+    let rows: Vec<(u32, u32, Vec<&str>)> = table
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let (pid, parent) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+            Some((pid, parent, words.collect()))
+        })
+        .collect();
+    // Up to eight ancestors; one a runtime runs is its script.
+    for _ in 0..8 {
+        let (_, parent, args) = rows.iter().find(|(id, _, _)| *id == pid)?;
+        let mut words = args
+            .iter()
+            .map(|word| word.rsplit('/').next().unwrap_or(word));
+        let first = words.next().unwrap_or_default();
+        let name = match first {
+            "node" | "bun" | "deno" | "python" | "python3" => words.next().unwrap_or_default(),
+            _ => first,
+        };
+        // A login shell's name opens with a dash; a versioned build adds
+        // its version, as `grok-1.0.41-macos-aarch64`.
+        let name = name.trim_start_matches('-');
+        let found = agents::ALL.iter().copied().find(|agent| {
+            let info = agent.info();
+            name == info.command
+                || name.starts_with(&format!("{}-", info.command))
+                || info.app == Some(name)
+        });
+        if found.is_some() {
+            return found;
+        }
+        pid = *parent;
+    }
+    None
 }
 
 struct Server {
@@ -771,4 +779,39 @@ fn read_session(server: &Server, arguments: Value) -> Result<String> {
         Cite::Tool,
         crate::now(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nearest;
+
+    /// Antigravity's app starts the server from its language server, with
+    /// no `agy` above it, as measured 2026-11-11; the ids here are made up.
+    #[test]
+    fn the_caller_is_the_nearest_agent_above_by_its_command_or_its_app() {
+        let table = "
+            1     0 /sbin/launchd
+          800     1 /Applications/Antigravity.app/Contents/MacOS/Antigravity
+          870   800 /Applications/Antigravity.app/Contents/Resources/bin/language_server --port 1
+          900   870 /opt/turnscope mcp
+          610   800 /Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper --type=utility
+          640   610 -zsh
+          650   640 claude
+          700   650 /opt/turnscope mcp
+          300     1 /bin/zsh
+          310   300 node /opt/homebrew/bin/codex
+          320   300 /opt/grok/grok-1.0.41-macos-aarch64 --resume
+          330   300 /usr/bin/vim agy.md
+        ";
+        let above = |pid| nearest(table, pid).map(|agent| agent.info().id);
+        assert_eq!(above(870), Some("antigravity"));
+        // An agent run in a terminal the app holds is the nearer.
+        assert_eq!(above(650), Some("claude-code"));
+        assert_eq!(above(640), Some("antigravity"));
+        assert_eq!(above(310), Some("codex"));
+        assert_eq!(above(320), Some("grok-build"));
+        // A file's name isn't a command's, and a shell is no agent.
+        assert_eq!(above(330), None);
+        assert_eq!(above(12345), None);
+    }
 }

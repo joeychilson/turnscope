@@ -97,8 +97,8 @@ mark the caller's own session.
 
 | What | How it's found |
 |---|---|
-| Agent | Claude Code sets `CLAUDE_CODE_SESSION_ID` in a server it starts. Otherwise the server looks for an agent's command (`claude`, `codex`, `opencode`, `pi`, `grok` or `agy`) among its parent processes, up to eight levels up, with `/bin/ps`. A script run by `node`, `bun`, `deno`, `python` or `python3` counts by the script's name. A versioned build such as `grok-1.0.41-macos-aarch64` counts as `grok`. |
-| Folder | `CLAUDE_PROJECT_DIR` for Claude Code. For the other agents, the folder the server was started in. |
+| Agent | Claude Code sets `CLAUDE_CODE_SESSION_ID` in a server it starts. Otherwise the server looks for an agent's command (`claude`, `codex`, `opencode`, `pi`, `grok` or `agy`) among its parent processes, up to eight levels up, with `/bin/ps`. A script run by `node`, `bun`, `deno`, `python` or `python3` counts by the script's name. A versioned build such as `grok-1.0.41-macos-aarch64` counts as `grok`. Antigravity's app starts the server itself, without `agy`, so its own process, `Antigravity`, counts as well. |
+| Folder | `CLAUDE_PROJECT_DIR` for Claude Code. For the other agents, the folder the server was started in. Antigravity's app starts it in `/`, which every folder is under, so there its session is Antigravity's latest anywhere, and a handoff with no `session` or `folder` takes the latest other session anywhere. |
 | Session | `CLAUDE_CODE_SESSION_ID` for Claude Code. The other agents don't say. By the time one calls a tool it has written its turn, so its session is taken to be its latest in the folder. |
 | Account | The account of the session's latest response. Otherwise the account of the agent's latest response from its agent folder: the one `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` points to, or else its default folder. |
 

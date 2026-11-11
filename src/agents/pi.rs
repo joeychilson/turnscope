@@ -48,6 +48,7 @@ static INFO: Info = Info {
     id: "pi",
     name: "Pi",
     command: "pi",
+    app: None,
     resume: "pi --session {id}",
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),

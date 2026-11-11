@@ -80,6 +80,7 @@ static INFO: Info = Info {
     id: "claude-code",
     name: "Claude Code",
     command: "claude",
+    app: None,
     resume: "claude --resume {id}",
     mcp_add: &["mcp", "add", "--scope", "user", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "--scope", "user", "turnscope"]),
