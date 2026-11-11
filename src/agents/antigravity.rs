@@ -222,7 +222,11 @@ fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> Result<T>) -> Result
         }
         None => Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY),
     }
-    .map_err(failed)?;
+    // SQLite ends its message with the address it was given, the path again.
+    .map_err(|error| {
+        let error = error.to_string();
+        super::reading(file, error.split(": file:").next().unwrap_or_default())
+    })?;
     db.busy_timeout(std::time::Duration::from_secs(2))
         .map_err(failed)?;
     let read = read(&db)?;
@@ -611,6 +615,10 @@ fn titles(file: &Path, cursor: &str) -> Result<Read> {
     opened(file, |db| titles_in(db, file, cursor))
 }
 
+/// How long before the latest change seen a read of the titles starts, in
+/// days, as SQLite counts time: 10 seconds, as OpenCode's reader takes.
+const LATE: f64 = 10.0 / 86_400.0;
+
 fn titles_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
     let failed = |error| super::reading(file, error);
     let mut cursor: Titles = serde_json::from_str(cursor).unwrap_or_default();
@@ -630,15 +638,21 @@ fn titles_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
         })
     };
     // A time is written as `2026-09-30 09:00:00.5+00:00`, always in UTC, so
-    // a later one is the greater text.
+    // a later one is the greater text. A read starts `LATE` before the
+    // latest seen, as a row can be committed after one stamped later; a
+    // time SQLite can't read is read every time.
     let mut changed = db
         .prepare(
             "SELECT conversation_id, title, parent_conversation_id, last_modified_time
              FROM conversation_summaries
-             WHERE last_modified_time >= ?1 AND step_count > 0 AND conversation_id IS NOT NULL",
+             WHERE step_count > 0 AND conversation_id IS NOT NULL
+               AND (julianday(?1) IS NULL OR julianday(last_modified_time) IS NULL
+                    OR julianday(last_modified_time) >= julianday(?1) - ?2)",
         )
         .map_err(failed)?;
-    let mut rows = changed.query([&cursor.modified]).map_err(failed)?;
+    let mut rows = changed
+        .query(rusqlite::params![cursor.modified, LATE])
+        .map_err(failed)?;
     while let Some(row) = rows.next().map_err(failed)? {
         let (native, title, parent, modified): (String, String, String, String) = (
             row.get(0).map_err(failed)?,
@@ -1326,8 +1340,20 @@ mod tests {
         // `c1`, the latest read before, is read again, and nothing older.
         assert_eq!(later.sessions.len(), 2);
         assert!(!later.sessions.contains_key("antigravity:c4"));
+        // A row committed late, stamped a little before the latest read.
+        std::fs::copy(&database, apps.join("c5.db")).unwrap();
+        Connection::open(&titles)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO conversation_summaries VALUES
+                     ('c5', 'Committed late', 2, '1970-01-01 00:17:00+00:00', '');",
+            )
+            .unwrap();
         let last = Antigravity.read(&titles, &later.cursor).unwrap();
-        assert_eq!(last.sessions.keys().collect::<Vec<_>>(), ["antigravity:c3"]);
+        assert_eq!(
+            last.sessions.keys().collect::<Vec<_>>(),
+            ["antigravity:c3", "antigravity:c5"]
+        );
     }
 
     #[test]

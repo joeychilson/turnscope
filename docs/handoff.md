@@ -22,7 +22,10 @@ The code is `src/sessions/handoff.rs`.
 Without a session, each takes the latest session in the folder other than
 the caller's own. Only Claude Code says which session is calling. Another
 agent has written its turn by the time it asks, so its own session is taken
-to be its latest in the folder. Before the handoff, each then lists the two
+to be its latest in the folder it works in. An agent's app can start the
+MCP server in no folder, as Antigravity's does: its own session is then its
+latest anywhere, the tool asks for `folder`, and the prompt tells the agent
+to call the tool with its own. Before the handoff, each then lists the two
 sessions before it in the folder, as `find_sessions` lists them, since the
 latest can be a quick question beside the work meant.
 

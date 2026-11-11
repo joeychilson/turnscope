@@ -233,8 +233,23 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
     // Any write, not only to history: macOS reports a write when its file
     // is closed, and Codex keeps a session's file open, and OpenCode its
     // database, while they work. Their other writes are what show it.
-    let mut watcher = notify::recommended_watcher(move |_: notify::Result<notify::Event>| {
-        let _ = changed.send(());
+    // But for a SQLite database's `-shm` file, which whoever opens the
+    // database writes, Turnscope too: counted, a database that fails every
+    // read, with a log left beside it, started a catch-up every 5 seconds
+    // for good, each opening it again (21 in 100 s on a made-up one,
+    // measured 2026-11-11). What an agent writes to its database is in the
+    // `-wal` file.
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let ours = event.is_ok_and(|event| {
+            !event.paths.is_empty()
+                && event
+                    .paths
+                    .iter()
+                    .all(|path| path.to_string_lossy().ends_with("-shm"))
+        });
+        if !ours {
+            let _ = changed.send(());
+        }
     })
     .map_err(|error| Error::Failed(error.to_string()))?;
     for agent in agents::ALL {

@@ -47,6 +47,7 @@ static INFO: Info = Info {
     id: "acme",
     name: "Acme",
     command: "acme",
+    app: None,
     resume: "acme --resume {id}",
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),
