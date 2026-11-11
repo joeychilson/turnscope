@@ -52,8 +52,9 @@ from what's known and say why on standard error.
   case: `claude`, `openrouter`, `me@example.com`. Commands that act on one
   account need the name to match exactly one. When it matches several, the
   message lists them.
-- **Limits** are named by part of a name or key, in any case: `week` names
-  Weekly (`seven_day`), and `"5 hours"` names 5 hours.
+- **Limits** are named by part of a name as shown or of a key, in any
+  case: `week` names Weekly (`seven_day`), `"5 hours"` names 5 hours, and
+  `opus` names Weekly (Opus).
 - **Agents** are named by id: `claude-code`, `codex`, `opencode`, `pi`,
   `grok-build`, `antigravity`.
 - **Sessions** are named by id, as `sessions` lists them:
@@ -218,7 +219,8 @@ Costs are at list prices: what the same tokens cost on each provider's API.
 Shares are approximate. Providers say how much of a limit is used, not by
 what, so each row's share is its part of the cost. A limit on one model,
 such as `Weekly (Opus)`, counts only the responses of models whose id
-names it, such as `claude-opus-5`.
+names it, such as `claude-opus-5`. One on several, such as `Weekly (Claude
+and GPT)`, counts those of any of them.
 
 ## Sessions
 
@@ -455,7 +457,7 @@ turnscope guard --limit <name> --below <percent> [--account <name>] [--say <text
 
 | Flag | Default | |
 |---|---|---|
-| `--limit <name>` | required | The limit, by part of its name, such as `week` or `"5 hours"`. |
+| `--limit <name>` | required | The limit, by part of its name, such as `week`, `"5 hours"` or `opus`. |
 | `--below <percent>` | required | Block when the limit has less than this percent left, 0 to 100. |
 | `--account <name>` | The calling agent's | The account. The name must match one account. |
 | `--say <text>` | The reason | What to print on standard error when it blocks. |

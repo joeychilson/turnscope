@@ -42,7 +42,7 @@ each provider for your limits, and forecasts when each one runs out.
 | | Supported |
 |---|---|
 | Agents | Claude Code, Codex, OpenCode, Pi, Grok Build, Antigravity |
-| Providers | Anthropic (Claude), OpenAI (ChatGPT), xAI (SuperGrok), OpenCode Go, OpenRouter |
+| Providers | Anthropic (Claude), OpenAI (ChatGPT), xAI (SuperGrok), Google (Google AI), OpenCode Go, OpenRouter |
 
 ## Install
 

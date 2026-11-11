@@ -287,9 +287,11 @@ fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
   expired token is never sent. `identity` is the account's id and label
   (such as an email), and `plan` the plan, where the agent's files say.
 - `json_file(path)` reads a JSON file: `Ok(None)` when there's none, an
-  error when it doesn't parse. `crate::output_within(command, wait)` runs a
-  command with nothing on its standard input and stops it after `wait`, as
-  Claude Code's reader does for the Keychain. `claims(token)` reads a JSON
+  error when it doesn't parse. `keychain(home, service, account)` reads a
+  Keychain item with `/usr/bin/security`, as Claude Code's and
+  Antigravity's readers do: `Ok(None)` when there's no such item.
+  `crate::output_within(command, wait)` runs a command with nothing on its
+  standard input and stops it after `wait`. `claims(token)` reads a JSON
   Web Token's claims, such as its expiry. `kept_login(provider, reads,
   kept, key_type)` reads a login kept as Pi and OpenCode keep theirs:
   `{type: "oauth", access, expires}` for a sign-in, or `{type, key}` for a

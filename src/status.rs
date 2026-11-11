@@ -115,11 +115,7 @@ impl Account {
             .iter()
             .find(|limit| limit.answers_to(name))
             .ok_or_else(|| {
-                let names: Vec<&str> = self
-                    .limits
-                    .iter()
-                    .map(|limit| limit.name.as_str())
-                    .collect();
+                let names: Vec<String> = self.limits.iter().map(Limit::named).collect();
                 crate::Error::NotFound(match names.is_empty() {
                     true => format!("{} has no limits read", self.full_title()),
                     false => format!(
@@ -187,7 +183,7 @@ pub struct Limit {
     pub key: String,
     /// `5 hours`, `Weekly`.
     pub name: String,
-    /// The one model it applies to, when not all.
+    /// The model or models it applies to, when not all.
     pub scope: Option<String>,
     pub window: Option<LimitWindow>,
     pub read_at: i64,
@@ -239,11 +235,12 @@ impl Limit {
             .map(|window| window.resets.at)
     }
 
-    /// Whether `name` names it: part of its name or key, as `week` names
-    /// Weekly and `seven_day`.
+    /// Whether `name` names it: part of its name as shown, with its models,
+    /// or of its key, as `week` names Weekly and `seven_day`, and `gpt`
+    /// Weekly (Claude and GPT).
     pub fn answers_to(&self, name: &str) -> bool {
         let name = name.to_lowercase();
-        self.name.to_lowercase().contains(&name) || self.key.to_lowercase().contains(&name)
+        self.named().to_lowercase().contains(&name) || self.key.to_lowercase().contains(&name)
     }
 
     fn urgency(&self) -> u8 {
@@ -854,6 +851,24 @@ pub fn named<'a>(status: &'a Status, name: &str) -> crate::Result<Vec<&'a Accoun
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_limit_answers_to_its_name_as_shown_and_its_key() {
+        let example: serde_json::Value =
+            serde_json::from_str(include_str!("../contract/status.notification.json")).unwrap();
+        let mut account: Account =
+            serde_json::from_value(example["params"]["accounts"][0].clone()).unwrap();
+        // As Google's limit on Claude and GPT is: its key doesn't name them.
+        account.limits[2].key = "weekly:3p-weekly".to_owned();
+        account.limits[2].scope = Some("Claude and GPT".to_owned());
+        assert_eq!(account.limit("week").unwrap().key, "seven_day");
+        for name in ["gpt", "Weekly (Claude", "3p"] {
+            assert_eq!(account.limit(name).unwrap().key, "weekly:3p-weekly");
+        }
+        let none = account.limit("month").unwrap_err().to_string();
+        let names = "has no limit named month; it has 5 hours, Weekly, Weekly (Claude and GPT)";
+        assert!(none.ends_with(names), "{none}");
+    }
 
     #[test]
     fn a_key_held_by_one_agent_in_two_folders_names_it_once() {

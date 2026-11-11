@@ -3,6 +3,7 @@
 //! to the network: `/usr/bin/curl`.
 
 mod anthropic;
+mod google;
 mod openai;
 mod opencode_go;
 mod openrouter;
@@ -22,6 +23,7 @@ pub static ALL: &[&dyn Provider] = &[
     &anthropic::Anthropic,
     &openai::OpenAi,
     &xai::Xai,
+    &google::Google,
     &opencode_go::OpenCodeGo,
     &openrouter::OpenRouter,
 ];
@@ -86,7 +88,8 @@ pub struct Limits {
 pub struct Reading {
     pub key: String,
     pub name: String,
-    /// What it covers, when not everything: a model, such as `Opus`.
+    /// What it covers, when not everything: a model, such as `Opus`, or
+    /// several joined with "and", as `Claude and GPT`.
     pub scope: Option<String>,
     /// Percent used.
     pub used: f64,
@@ -138,14 +141,47 @@ fn ask_refused_by(
     headers: &[&str],
     refused: &[u16],
 ) -> Result<Value, Problem> {
+    asked(url, credential, headers, None, refused, WAIT)
+}
+
+/// How long an account's limits are waited for, in seconds. Where models.dev's
+/// catalog gets 60: `guard` reads limits inside an agent's hook, which holds
+/// the agent until it's done, and an answer of limits is one small JSON
+/// object, not a download.
+const WAIT: u32 = 15;
+
+/// As [`ask_refused_by`], sending `body` as JSON, for a provider that tells
+/// its limits only in answer to a POST, and giving up after `seconds`: a
+/// provider that asks twice shares [`WAIT`] between the two.
+fn ask_sending(
+    url: &str,
+    credential: &Credential,
+    headers: &[&str],
+    body: &Value,
+    refused: &[u16],
+    seconds: u32,
+) -> Result<Value, Problem> {
+    asked(url, credential, headers, Some(body), refused, seconds)
+}
+
+fn asked(
+    url: &str,
+    credential: &Credential,
+    headers: &[&str],
+    body: Option<&Value>,
+    refused: &[u16],
+    seconds: u32,
+) -> Result<Value, Problem> {
     let authorization = format!("Authorization: Bearer {}", credential.secret.expose());
     let mut lines = vec![authorization.as_str()];
+    if body.is_some() {
+        lines.push("Content-Type: application/json");
+    }
     lines.extend(headers);
-    // 15 seconds, where models.dev's catalog gets 60: `guard` reads limits
-    // inside an agent's hook, which holds the agent until it's done, and an
-    // answer of limits is one small JSON object, not a download.
-    let (status, body) = get(url, &lines, 15).map_err(|_| Problem::Unavailable)?;
-    answer(status, &body, refused)
+    let body = body.map(Value::to_string);
+    let (status, answered) =
+        request(url, &lines, body.as_deref(), seconds).map_err(|_| Problem::Unavailable)?;
+    answer(status, &answered, refused)
 }
 
 /// The JSON a provider answered with `status` and `body`, or why there's
@@ -169,6 +205,12 @@ fn answer(status: u16, body: &[u8], refused: &[u16]) -> Result<Value, Problem> {
 
 /// GET `url` over HTTPS with `headers`, giving the status and body, or
 /// giving up after `seconds`.
+pub fn get(url: &str, headers: &[&str], seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
+    request(url, headers, None, seconds)
+}
+
+/// Ask `url` over HTTPS with `headers`, giving the status and body, or
+/// giving up after `seconds`: a GET, or a POST of `body`.
 ///
 /// Headers go to curl on standard input, so a credential among them is in
 /// no process listing; `-q` keeps a `~/.curlrc` from adding a trace. A
@@ -177,7 +219,16 @@ fn answer(status: u16, body: &[u8], refused: &[u16]) -> Result<Value, Problem> {
 /// what's sent, curl otherwise waits out all of `seconds` (measured
 /// 2026-10-12 at an address that drops everything: 5.0 seconds with
 /// `--connect-timeout 5`, all of `--max-time` without).
-pub fn get(url: &str, headers: &[&str], seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
+///
+/// A body is an argument, over a second pipe beside the headers', so it is
+/// in a process listing: it must hold no secret. Google's, the one sent,
+/// names the kind of client asking, or the account's project.
+fn request(
+    url: &str,
+    headers: &[&str],
+    body: Option<&str>,
+    seconds: u32,
+) -> crate::Result<(u16, Vec<u8>)> {
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err(Error::Failed(
             "a header holds a line break, so nothing was sent".to_owned(),
@@ -196,6 +247,7 @@ pub fn get(url: &str, headers: &[&str], seconds: u32) -> crate::Result<(u16, Vec
         .args(["--connect-timeout", "5", "--max-time", &seconds.to_string()])
         .args(["--max-filesize", "67108864", "--user-agent", "Turnscope"])
         .args(["--header", "@-", "--write-out", "%{stderr}%{http_code}"])
+        .args(body.into_iter().flat_map(|body| ["--data-raw", body]))
         .arg(url)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

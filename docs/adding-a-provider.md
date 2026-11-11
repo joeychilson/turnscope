@@ -133,7 +133,7 @@ limit:
 |---|---|
 | `key` | The same at every read: it names the limit in readings, alerts and `limit.breakdown`. A limit that belongs to one API key is keyed `key-<fingerprint>`, from `credential.secret.fingerprint()`: the status then shows the agents holding that key, and the limit never decides how the account stands. |
 | `name` | As the user knows it: `5 hours`, `Weekly`, `Credits`. |
-| `scope` | The one model it covers, when not all: `Opus`. |
+| `scope` | The model it covers, when not all: `Opus`. Join several with "and", as `Claude and GPT`: a breakdown counts the responses of models whose id names any of them. |
 | `used` | Percent used. For a limit of money, what was spent divided by the limit, times 100. |
 | `size` | Dollars, for a limit of money. |
 | `starts` | When its window started, in Unix milliseconds. `None` for a window that rolls, which then has no outlook or work left. |
@@ -159,6 +159,7 @@ Helpers in `src/providers/mod.rs`:
 |---|---|
 | `ask(url, credential, headers)` | GETs `url` with `Authorization: Bearer <secret>` and `headers`, for JSON, giving up after 15 seconds. A 2xx status gives the JSON, and a 401 or 403 `Problem::SignIn`, unless its body is an HTML page, such as a bot check's, which signing in again wouldn't get past. Anything else is `Problem::Unavailable`. |
 | `ask_refused_by(url, credential, headers, refused)` | As `ask`, with `refused` the statuses that mean a refused login, where a 403 can mean something else, as at xAI. |
+| `ask_sending(url, credential, headers, body, refused, seconds)` | As `ask_refused_by`, as a POST of `body` as JSON, for a provider that tells its limits only in answer to one, as Google does. The body is in curl's arguments, so it must hold no secret. It gives up after `seconds`: a provider that asks twice shares the 15 between the two, as `guard` waits on a read. |
 | `get(url, headers, seconds)` | The request itself, giving the status and body, for a provider whose token goes in another header. It gives up after `seconds`, or after 5 without a connection. A limit read passes 15, as `ask` does. |
 | `absent(window)` | Whether a window is null or all nulls, as providers send one a plan doesn't have. |
 | `window_name(seconds)` | A window's name by its length: `Hourly`, `5 hours`, `Daily`, `Weekly`, `Monthly`, or `<n> days`. |
@@ -179,8 +180,9 @@ Rules:
 
 - **Never refresh a token** or write a login. Turnscope waits for the agent
   to refresh it.
-- **Requests** go only through `ask`, `ask_refused_by` or `get`: curl with
-  the credential on standard input, Turnscope's only way to the network.
+- **Requests** go only through `ask`, `ask_refused_by`, `ask_sending` or
+  `get`: curl with the credential on standard input, Turnscope's only way
+  to the network. A request changes nothing at the provider.
 - **An answer that isn't understood** is `Problem::Unavailable`, not an
   empty list of readings, which would read as a plan without limits. A
   window whose time won't parse fails the whole answer, as the rest would
@@ -214,8 +216,9 @@ account through it.
   `logins`.
 - Where Pi names the provider its own way, add the pair to `ALIASES` in
   `src/agents/pi.rs`, as `("openai-codex", "openai")`.
-- Claude Code, Codex and Grok Build read only their own provider's login,
-  so holding another there takes code in that agent's `logins`
+- Claude Code, Codex, Grok Build and Antigravity read only their own
+  provider's login, so holding another there takes code in that agent's
+  `logins`
   ([adding-an-agent.md](adding-an-agent.md#logins)).
 
 ## 6. Redact its keys

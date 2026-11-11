@@ -243,7 +243,8 @@ The answer:
 Shares are approximate. Providers say how much of a limit is used, not by
 what, so each row's share is the points used times its part of the cost.
 A limit on one model, such as `Weekly (Opus)`, counts only the responses of
-models whose id names it. Shares are known only over the limit's current
+models whose id names it; one on several, such as `Weekly (Claude and GPT)`,
+those of any of them. Shares are known only over the limit's current
 window, so with any other `since` the column is left out, and a line says
 from when the window runs and to leave `since` out for them.
 

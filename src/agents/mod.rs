@@ -576,6 +576,30 @@ pub fn kept_login(
     }
 }
 
+/// What the Keychain item with `service`, and with `account` where its agent
+/// keeps several under one service, holds. `None` when there's no such item.
+///
+/// Read with `/usr/bin/security`, the tool Claude Code and Antigravity write
+/// theirs with, so no permission prompt appears; it finds the Keychain under
+/// `home`.
+pub fn keychain(home: &Path, service: &str, account: Option<&str>) -> Result<Option<Vec<u8>>> {
+    let failed = |why: String| Error::Failed(format!("reading the Keychain item {service}: {why}"));
+    let mut security = std::process::Command::new("/usr/bin/security");
+    security.args(["find-generic-password", "-s", service]);
+    if let Some(account) = account {
+        security.args(["-a", account]);
+    }
+    security.arg("-w").env("HOME", home);
+    let output = crate::output_within(&mut security, std::time::Duration::from_secs(20))
+        .map_err(|error| failed(error.to_string()))?;
+    // 44: no such item.
+    match output.status.code() {
+        Some(0) => Ok(Some(output.stdout)),
+        Some(44) => Ok(None),
+        code => Err(failed(format!("security exited with {code:?}"))),
+    }
+}
+
 /// The claims of a JWT, read without checking its signature: they only tell
 /// accounts apart and when a token expires. Null when it isn't one.
 pub fn claims(token: &str) -> Value {
