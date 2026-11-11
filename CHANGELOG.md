@@ -4,7 +4,10 @@
 
 - **Antigravity** is a supported agent. Turnscope reads the conversations
   of its app and of its command line, `agy`, with their usage, and
-  `turnscope connect antigravity` adds the MCP server to both.
+  `turnscope connect antigravity` adds the MCP server to both. In the app,
+  Turnscope knows that Antigravity is asking but not which folder it works
+  in, since the app starts the server outside any: there `handoff` with no
+  `session` asks for `folder`.
 - **Google AI plans** are read, with the sign-in Antigravity keeps in the
   Keychain: a Google AI Pro or Ultra plan's 5-hour and weekly limits on
   Gemini models, and its limits on Claude and GPT models. Antigravity's
@@ -12,6 +15,17 @@
   Antigravity was last used the account says to open it to update. A
   Gemini API key that OpenCode or Pi holds is an account too, titled Gemini
   API key.
+- **`usage --limit` and `explain_usage`** break down a limit on several
+  models, such as Weekly (Claude and GPT), by the responses of any of
+  them.
+- **A limit** is named by part of its name as shown, with its models:
+  `gpt` names Weekly (Claude and GPT). A name that matches no limit lists
+  the limits as shown, so two aren't both "Weekly".
+- **`handoff` and `find_sessions`**, from an MCP server that an agent
+  started in `/`, as an app does, no longer take `/` for the folder the
+  agent works in. `handoff` with no `session` asks for `folder`, where it
+  took the latest session of any project, and a relative `folder` asks for
+  its full path, where it was read under `/`.
 
 ## 0.1.5
 
