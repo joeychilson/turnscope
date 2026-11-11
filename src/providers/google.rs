@@ -60,7 +60,11 @@
 //! doesn't serve, which signing in again wouldn't change. An account that
 //! pays for no plan, which is named by its tier's id, `free`. A group for
 //! one model, which OpenUsage reads as `Gemini 4 Argon`. A bucket marked
-//! `disabled`, which is passed over as OpenUsage's reader does.
+//! `disabled`, which is passed over as OpenUsage's reader does. A response
+//! of a Claude or GPT model through Antigravity: a breakdown of the limit on
+//! them counts models whose id holds `claude` or `gpt`, as their scope
+//! names them, and a breakdown of the Gemini limits counts every model's,
+//! theirs too.
 //!
 //! A used-up bucket hasn't been seen either. It should still come with
 //! `remainingFraction: 0`: CodexBar reads `agy`'s own form of this answer,

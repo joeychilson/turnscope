@@ -55,8 +55,9 @@ pub struct Query {
     pub by: By,
     pub agent: Option<String>,
     pub account: Option<String>,
-    /// Only responses of a model whose id holds this, in lowercase.
-    pub model: Option<String>,
+    /// Only responses of a model whose id holds one of these, in lowercase.
+    /// Every model's, when empty.
+    pub models: Vec<String>,
     pub top: usize,
 }
 
@@ -131,17 +132,21 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
         By::Session => crate::sessions::TREES,
         _ => "",
     };
-    let mut filters = vec!["r.at >= ?", "r.at < ?"];
+    let mut filters = vec!["r.at >= ?".to_owned(), "r.at < ?".to_owned()];
     let mut values: Vec<Value> = vec![query.since.into(), query.until.into()];
     for (filter, value) in [
         ("r.agent = ?", &query.agent),
         ("r.account = ?", &query.account),
-        ("instr(lower(r.model), ?) > 0", &query.model),
     ] {
         if let Some(value) = value {
-            filters.push(filter);
+            filters.push(filter.to_owned());
             values.push(value.clone().into());
         }
+    }
+    if !query.models.is_empty() {
+        let any = vec!["instr(lower(r.model), ?) > 0"; query.models.len()];
+        filters.push(format!("({})", any.join(" OR ")));
+        values.extend(query.models.iter().map(|model| model.clone().into()));
     }
     let sql = format!(
         "{trees} SELECT {key}, {name}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
@@ -441,12 +446,16 @@ pub fn breakdown(
             by,
             agent: None,
             account: Some(account.id.clone()),
-            // A limit on one model is used by that model's responses alone,
-            // whose ids name it as its scope does: "Opus" in
-            // `claude-opus-5`.
-            model: limit
+            // A limit on some models is used by their responses alone, whose
+            // ids name a model as its scope does: "Opus" in `claude-opus-5`.
+            // A scope that names several joins them with "and", as Google's
+            // "Claude and GPT" does, and any of them counts.
+            models: limit
                 .and_then(|limit| limit.scope.as_ref())
-                .map(|scope| scope.to_lowercase().replace(' ', "-")),
+                .into_iter()
+                .flat_map(|scope| scope.split(" and "))
+                .map(|model| model.trim().to_lowercase().replace(' ', "-"))
+                .collect(),
             top,
         },
     )?;
@@ -495,5 +504,15 @@ mod tests {
         let rows: Vec<&str> = usage.rows.iter().map(|row| row.key.as_str()).collect();
         assert_eq!(rows, ["claude-opus-5"]);
         assert_eq!(points, [Some(f64::from(100 - opus.left_percent))]);
+
+        // A limit on several counts any of them.
+        let mut either = opus.clone();
+        either.scope = Some("Sonnet and Opus".to_owned());
+        let (usage, _) = breakdown(&db, &account, Some(&either), None, By::Model, 10, now).unwrap();
+        let rows: Vec<&str> = usage.rows.iter().map(|row| row.key.as_str()).collect();
+        assert_eq!(rows, ["claude-opus-5", "claude-sonnet-5"]);
+        either.scope = Some("Haiku and GPT".to_owned());
+        let (usage, _) = breakdown(&db, &account, Some(&either), None, By::Model, 10, now).unwrap();
+        assert!(usage.rows.is_empty());
     }
 }

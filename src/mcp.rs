@@ -582,7 +582,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
                 until: now,
                 by,
                 agent: None,
-                model: None,
+                models: Vec::new(),
                 account: None,
                 top,
             },

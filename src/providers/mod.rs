@@ -88,7 +88,8 @@ pub struct Limits {
 pub struct Reading {
     pub key: String,
     pub name: String,
-    /// What it covers, when not everything: a model, such as `Opus`.
+    /// What it covers, when not everything: a model, such as `Opus`, or
+    /// several joined with "and", as `Claude and GPT`.
     pub scope: Option<String>,
     /// Percent used.
     pub used: f64,

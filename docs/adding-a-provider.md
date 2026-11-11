@@ -133,7 +133,7 @@ limit:
 |---|---|
 | `key` | The same at every read: it names the limit in readings, alerts and `limit.breakdown`. A limit that belongs to one API key is keyed `key-<fingerprint>`, from `credential.secret.fingerprint()`: the status then shows the agents holding that key, and the limit never decides how the account stands. |
 | `name` | As the user knows it: `5 hours`, `Weekly`, `Credits`. |
-| `scope` | The one model it covers, when not all: `Opus`. |
+| `scope` | The model it covers, when not all: `Opus`. Join several with "and", as `Claude and GPT`: a breakdown counts the responses of models whose id names any of them. |
 | `used` | Percent used. For a limit of money, what was spent divided by the limit, times 100. |
 | `size` | Dollars, for a limit of money. |
 | `starts` | When its window started, in Unix milliseconds. `None` for a window that rolls, which then has no outlook or work left. |

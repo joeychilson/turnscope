@@ -268,7 +268,7 @@ to reset decides.
 |---|---|---|
 | `key` | string | The provider's key: `five_hour`, `seven_day`. An API key's own limit is `key-<fingerprint>` |
 | `name` | string | The provider's name: `5 hours`, `Weekly`, `Credits` |
-| `scope` | string or null | The one model it applies to, such as `Opus`. Null for every model |
+| `scope` | string or null | The model it applies to, such as `Opus`, or several joined with "and", such as `Claude and GPT`. Null for every model |
 | `window` | Window or null | Null for a limit that never resets, such as credits |
 | `readAt` | ms | When it was read |
 | `leftPercent` | integer | Percent left, 0 to 100, rounded down. It's 100 once its window reset since it was read |

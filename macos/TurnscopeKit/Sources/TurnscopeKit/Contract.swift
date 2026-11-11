@@ -133,7 +133,7 @@ public struct LimitStatus: Decodable, Equatable, Identifiable, Sendable {
     public var key: String
     /// Its provider's name for it: "5 hours", "Weekly".
     public var name: String
-    /// The one model it applies to, if it doesn't apply to all.
+    /// The model or models it applies to, if it doesn't apply to all.
     public var scope: String?
     public var window: LimitWindow?
     /// Percent left, rounded down so it's never overstated. It's 100 if its

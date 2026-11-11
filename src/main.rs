@@ -464,7 +464,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 by: by.unwrap_or(usage::By::Day),
                 agent,
                 account,
-                model: None,
+                models: Vec::new(),
                 top,
             };
             let usage = usage::usage(&db, &query)?;
