@@ -494,13 +494,34 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_limits","arguments":{"account":"claude"}}}"#;
-    writeln!(mcp.stdin.take().unwrap(), "{request}").unwrap();
-    let reply: serde_json::Value =
-        serde_json::from_slice(&mcp.wait_with_output().unwrap().stdout).unwrap();
-    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    let requests = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_limits","arguments":{"account":"claude"}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude"}}}"#,
+    ];
+    writeln!(mcp.stdin.take().unwrap(), "{}", requests.join("\n")).unwrap();
+    let output = mcp.wait_with_output().unwrap();
+    let texts: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| {
+            let reply: serde_json::Value = serde_json::from_str(line).unwrap();
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    let (limits, usage) = (&texts[0], &texts[1]);
     // In the verdict, and in the 5 hours' own line.
-    assert_eq!(text.matches("resets 14:00 (in 2h)").count(), 2, "{text}");
+    assert_eq!(
+        limits.matches("resets 14:00 (in 2h)").count(),
+        2,
+        "{limits}"
+    );
+    // And in what used it, over its window from 09:00.
+    assert!(
+        usage.contains("since 09:00 (3h ago)") && usage.contains("resets 14:00 (in 2h)"),
+        "{usage}"
+    );
     let line = command(data.path(), &["statusline", "--account", "claude"])
         .env("TURNSCOPE_NOW", &late)
         .output()
