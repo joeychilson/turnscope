@@ -242,8 +242,14 @@ Handoffs depend on these kinds: every request is a `User` entry, and the
 latest `Summary` stands for everything before it. They also show a tool
 call by what it does: implement `role(name)` to say which of the agent's
 tools read (`Role::Read`), ask the user (`Role::Ask`) or run a subagent
-(`Role::Subagent`); any other is `Role::Work`. `transcript` doesn't
-redact: Turnscope redacts what it returns before showing it.
+(`Role::Subagent`); any other is `Role::Work`. A handoff also reads a
+call's input for the command it ran, the file it named and what it was
+for. Where the agent's tools name one of those under a key no other
+agent's do, as Antigravity's name a command `CommandLine`, add the key to
+`COMMANDS`, `PATHS` or `gist` in `src/sessions/handoff.rs`, and hand off a
+session that stops mid-work to see its calls read as they should.
+`transcript` doesn't redact: Turnscope redacts what it returns before
+showing it.
 
 ### Logins
 

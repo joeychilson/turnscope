@@ -100,7 +100,7 @@ use super::{
     Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
     Tokens,
 };
-use crate::Result;
+use crate::{Error, Result};
 
 pub struct Antigravity;
 
@@ -240,15 +240,15 @@ impl Agent for Antigravity {
         }
     }
 
-    fn transcript(&self, _native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
+    fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
         let mut conversation = Conversation::default();
         // Its database and its folder's titles hold nothing that was said.
-        let Some(file) = files
+        let file = files
             .iter()
             .find(|file| file.file_name().is_some_and(|name| name == TRANSCRIPT))
-        else {
-            return Ok(conversation.entries);
-        };
+            .ok_or_else(|| {
+                Error::NotFound(format!("the log of {} is gone", INFO.session(native)))
+            })?;
         super::lines(file, 0, |bytes| {
             let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
                 return;
@@ -527,6 +527,20 @@ fn titles_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
     let failed = |error| super::reading(file, error);
     let mut cursor: Titles = serde_json::from_str(cursor).unwrap_or_default();
     let mut read = Read::default();
+    // The app's titles list `agy`'s conversations too, so a conversation's
+    // database is in either folder. A row whose conversation has none in
+    // either gives no session: a title alone would make one with no times,
+    // shown as last active in 1970. Whether Antigravity leaves such a row
+    // behind when it deletes a conversation wasn't measured.
+    let has_database = |native: &str| {
+        let folder = file.parent().and_then(Path::parent);
+        folder.is_some_and(|folder| {
+            KEPT.iter().any(|kept| {
+                let database = format!("conversations/{native}.db");
+                folder.join(kept).join(database).is_file()
+            })
+        })
+    };
     // A time is written as `2026-09-30 09:00:00.5+00:00`, always in UTC, so
     // a later one is the greater text.
     let mut changed = db
@@ -547,7 +561,7 @@ fn titles_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
         if modified > cursor.modified {
             cursor.modified = modified;
         }
-        if title.trim().is_empty() && parent.is_empty() {
+        if (title.trim().is_empty() && parent.is_empty()) || !has_database(&native) {
             continue;
         }
         let facts = read.session(&INFO.session(&native));
@@ -1177,6 +1191,18 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_whose_transcript_is_gone_cant_be_read() {
+        let home = tempfile::tempdir().unwrap();
+        let (database, _, titles) = kept(home.path());
+        let gone = Antigravity.transcript("c1", &[database, titles]);
+        assert!(
+            matches!(&gone, Err(Error::NotFound(why)) if why == "the log of antigravity:c1 is gone"),
+            "{:?}",
+            gone.map(|entries| entries.len())
+        );
+    }
+
+    #[test]
     fn a_folder_the_gemini_command_line_made_isnt_antigravity() {
         let home = tempfile::tempdir().unwrap();
         let folder = Antigravity.folders(home.path()).remove(0);
@@ -1190,13 +1216,18 @@ mod tests {
     #[test]
     fn titles_are_read_on_from_the_latest_change_and_name_a_parent() {
         let home = tempfile::tempdir().unwrap();
-        let (.., titles) = kept(home.path());
+        let (database, _, titles) = kept(home.path());
         let first = Antigravity.read(&titles, "").unwrap();
+        // `c3` has a database, in the app's folder; `c4` has none.
+        let apps = home.path().join(".gemini/antigravity/conversations");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::copy(&database, apps.join("c3.db")).unwrap();
         Connection::open(&titles)
             .unwrap()
             .execute_batch(
                 "INSERT INTO conversation_summaries VALUES
-                     ('c3', '', 2, '1970-01-01 00:17:05+00:00', 'c1');",
+                     ('c3', '', 2, '1970-01-01 00:17:05+00:00', 'c1'),
+                     ('c4', 'Since deleted', 2, '1970-01-01 00:17:05+00:00', '');",
             )
             .unwrap();
         let later = Antigravity.read(&titles, &first.cursor).unwrap();
@@ -1205,6 +1236,7 @@ mod tests {
         assert!(later.sessions["antigravity:c3"].title.is_none());
         // `c1`, the latest read before, is read again, and nothing older.
         assert_eq!(later.sessions.len(), 2);
+        assert!(!later.sessions.contains_key("antigravity:c4"));
         let last = Antigravity.read(&titles, &later.cursor).unwrap();
         assert_eq!(last.sessions.keys().collect::<Vec<_>>(), ["antigravity:c3"]);
     }

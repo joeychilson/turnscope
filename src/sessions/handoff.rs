@@ -313,7 +313,15 @@ fn tasks(entries: &[Entry], share: usize) -> String {
 }
 
 /// The keys a tool's input names a file under, as each agent's tools do.
-const PATHS: [&str; 4] = ["file_path", "filePath", "notebook_path", "path"];
+const PATHS: [&str; 7] = [
+    "file_path",
+    "filePath",
+    "notebook_path",
+    "path",
+    "AbsolutePath",
+    "Path",
+    "TargetFile",
+];
 
 /// The files the work was in from `since` on, as a handoff's section: those
 /// its tools read or changed, and those its commands named that are in its
@@ -645,13 +653,15 @@ fn asked_above(at: usize, entry: &Entry, now: i64) -> String {
 }
 
 /// What a tool call was for, in a few words and in quotes: its input's
-/// description or command or path, or the input itself.
+/// description, which Antigravity's tools call a `toolSummary`, or command
+/// or path, or the input itself.
 fn gist(tool: &Tool) -> String {
     let said = serde_json::from_str::<serde_json::Value>(&tool.input)
         .ok()
         .and_then(|input| {
-            ["description", "command", "cmd"]
+            ["description", "toolSummary"]
                 .iter()
+                .chain(&COMMANDS)
                 .chain(&PATHS)
                 .chain(&["pattern", "query", "url", "prompt"])
                 .find_map(|key| match input.get(key)? {
@@ -692,11 +702,15 @@ fn role(tool: &Tool) -> Role {
     }
 }
 
-/// The shell commands a call ran: its input's `command` or `cmd`, or each
-/// `cmd` of a script calling an agent's tools, as Codex's `exec` does.
+/// The keys a tool's input names a shell command under, as each agent's
+/// tools do.
+const COMMANDS: [&str; 3] = ["command", "cmd", "CommandLine"];
+
+/// The shell commands a call ran: its input's command, or each `cmd` of a
+/// script calling an agent's tools, as Codex's `exec` does.
 fn commands(tool: &Tool) -> Vec<String> {
     if let Ok(input) = serde_json::from_str::<serde_json::Value>(&tool.input) {
-        return ["command", "cmd"]
+        return COMMANDS
             .iter()
             .filter_map(|key| input[key].as_str().map(str::to_owned))
             .take(1)
@@ -1225,6 +1239,62 @@ mod tests {
                 handoff.lines().any(|shown| shown == line),
                 "{line} is missing:\n{handoff}"
             );
+        }
+    }
+
+    /// Antigravity's tools name a command `CommandLine`, a file
+    /// `AbsolutePath`, `Path` or `TargetFile`, and what a call is for
+    /// `toolSummary`.
+    #[test]
+    fn a_calls_command_file_and_purpose_are_read_under_antigravitys_names() {
+        let run = |summary: &str, command: &str, failed: bool| {
+            let input = serde_json::json!({
+                "CommandLine": command, "Cwd": "/work/app", "toolSummary": summary,
+            });
+            call("run_command", input, "error", failed, Role::Work)
+        };
+        let tool = |entry: Entry| entry.tool.unwrap();
+        assert_eq!(role(&tool(run("List them", "ls src", false))), Role::Read);
+        let tests = tool(run("Run the tests", "cargo test", false));
+        assert_eq!(role(&tests), Role::Work);
+        assert_eq!(gist(&tests), "\"Run the tests\"");
+        // Run again under a reworded summary, it passed.
+        let rerun = [
+            run("Run the tests", "cargo test", true),
+            run("Run the tests again after the fix", "cargo test", false),
+        ];
+        assert_eq!(failing(&rerun, 0, rerun.len(), 2000, 10 * MINUTE), "");
+
+        let read = |name: &str, key: &str, file: &str| {
+            call(
+                name,
+                serde_json::json!({ key: file }),
+                "",
+                false,
+                Role::Read,
+            )
+        };
+        let mut changed = call(
+            "replace_file_content",
+            serde_json::json!({ "TargetFile": "/work/app/src/row.rs" }),
+            "",
+            false,
+            Role::Work,
+        );
+        changed.tool.as_mut().unwrap().files = vec!["/work/app/src/row.rs".to_owned()];
+        let entries = [
+            read("view_file", "AbsolutePath", "/work/app/src/csv.rs"),
+            read("read_file", "Path", "/work/app/src/csv.rs"),
+            changed,
+            run("Search it", "rg -n quoted src/lexer.rs", false),
+        ];
+        assert_eq!(
+            gist(entries[0].tool.as_ref().unwrap()),
+            "\"/work/app/src/csv.rs\""
+        );
+        let files = files(&entries, 0, Some("/work/app"), 2000);
+        for line in ["- `src/csv.rs` (read 2×)", "- `src/row.rs` (changed 1×)"] {
+            assert!(files.lines().any(|shown| shown == line), "{line}:\n{files}");
         }
     }
 
