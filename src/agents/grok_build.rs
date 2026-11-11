@@ -373,6 +373,10 @@ impl Used {
 /// their own updates in `sessions`.
 fn subagents(sessions: Option<&Path>, finished: &[String]) -> Vec<(String, Used)> {
     let mut used = Vec::new();
+    // Most turns finish none, and then the folders aren't listed.
+    if finished.is_empty() {
+        return used;
+    }
     let dirs: Vec<PathBuf> = sessions.into_iter().flat_map(super::entries).collect();
     for child in finished {
         let Some(updates) = dirs
