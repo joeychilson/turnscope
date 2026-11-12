@@ -17,16 +17,28 @@
 // the menu bar keep them short: a row has no room for them, and the line
 // under the headline says a time as the rows do. Durations read "1h 30m", or
 // "2d 4h" past a day.
+//
+// Times are told as of the minute it is, as serve tells them. At 12:00:40, a
+// reset at 14:00 is in 2h, as the menu bar's clock and the command line have
+// it. Counted from 12:00:40, it was in 1h 59m, and a limit's last minute
+// before it ran out read 0m.
 
 import Foundation
 
-/// Words as of `now`, in `calendar`'s time zone, with agents named as in
-/// their status (`Store.words`).
+/// Words as of the minute `now` is in, in `calendar`'s time zone, with
+/// agents named as in their status (`Store.words`).
 public struct Words: Sendable {
-    var now = Date.now
-    var calendar = Calendar.autoupdatingCurrent
+    /// The minute it is.
+    let now: Date
+    var calendar: Calendar
     /// Every agent's name, by id.
-    var names: [String: String] = [:]
+    var names: [String: String]
+
+    init(now: Date = .now, calendar: Calendar = .autoupdatingCurrent, names: [String: String] = [:]) {
+        self.now = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60)
+        self.calendar = calendar
+        self.names = names
+    }
 
     /// The name of the agent `id`, such as "Claude Code", or its id if the
     /// status doesn't name it.

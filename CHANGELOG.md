@@ -2,6 +2,10 @@
 
 ## 0.1.7
 
+- **The app's countdowns** count from the minute it is, as the command
+  line's do. They read a minute short: with the clock at 12:00, a reset at
+  14:00 was in 1h 59m, and a limit's last minute before it ran out read
+  0m.
 - **Clicking a notification** while the app is quit opens the panel under
   the menu bar item with the notification's account open, once the first
   status arrives. The panel opened at once in the bottom-left corner of the

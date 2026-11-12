@@ -86,13 +86,30 @@ fn turnscope(data: &Path, args: &[&str], input: Option<&str>) -> Output {
     child.wait_with_output().unwrap()
 }
 
+/// `turnscope` with `args` over the store `data`, as Claude Code runs it in
+/// its session `SESSION`.
 fn command(data: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_turnscope"));
+    command_as("claude", data, args)
+}
+
+/// `turnscope` with `args` over the store `data`, as the agent whose command
+/// is `agent` runs it: under a shell named as that command, which waits on
+/// turnscope rather than becoming it. The caller is the nearest agent above
+/// turnscope, so without the shell it would be the agent these tests run in.
+fn command_as(agent: &str, data: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("/bin/sh");
     command
+        .arg0(agent)
+        .args([
+            "-c",
+            r#""$@"; exit $?"#,
+            "sh",
+            env!("CARGO_BIN_EXE_turnscope"),
+        ])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        // As Claude Code sets it in a server it starts: the caller, which
-        // otherwise the processes this test runs under would decide.
+        // As Claude Code sets it in what it starts, and so in what another
+        // agent run from its shell starts.
         .env(
             "CLAUDE_CODE_SESSION_ID",
             "0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60",
@@ -405,21 +422,10 @@ fn a_relative_folder_is_in_the_current_folder() {
 #[test]
 fn sessions_marks_the_session_of_an_agent_that_names_it_nowhere() {
     let data = store();
-    let sessions = command(data.path(), &["sessions"]);
-    // Run by Codex, as from Claude Code's shell: under a shell named as
-    // Codex's command, which waits on turnscope rather than becoming it. Its
-    // folder is the one it runs in, and `/` holds its session's.
-    let output = Command::new("/bin/sh")
-        .arg0("codex")
-        .args(["-c", r#""$@"; exit $?"#, "sh"])
-        .arg(sessions.get_program())
-        .args(sessions.get_args())
-        .env_clear()
-        .envs(
-            sessions
-                .get_envs()
-                .filter_map(|(name, value)| Some((name, value?))),
-        )
+    // Run by Codex, as from Claude Code's shell, whose session is named in
+    // the environment. Its folder is the one it runs in, and `/` holds its
+    // session's.
+    let output = command_as("codex", data.path(), &["sessions"])
         .current_dir("/")
         .output()
         .unwrap();
