@@ -1,6 +1,8 @@
 //! Time as people read and write it, in the local time zone (`TZ`). Inside
 //! Turnscope a time is UTC milliseconds.
 
+use std::cmp::Ordering;
+
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
@@ -110,22 +112,33 @@ pub fn clock(at: i64, now: i64) -> String {
     at.strftime(format).to_string()
 }
 
-/// A time as people read it: `15:00 (in 3h)`, or gone by, `09:00 (3h ago)`.
-/// It's as far off as the clocks say: from the minute `now` is in to the
+/// A time to come, as people read it: `15:00 (in 3h)`.
+pub fn ahead(at: i64, now: i64) -> String {
+    told(at, now, Ordering::Greater)
+}
+
+/// A time gone by, as people read it: `09:00 (3h ago)`.
+pub fn ago(at: i64, now: i64) -> String {
+    told(at, now, Ordering::Less)
+}
+
+/// `at` as far off as the clocks say: from the minute `now` is in to the
 /// minute `at` is in, which its clock shows. At 12:00:40, 11:00:40 is
 /// 11:00, 1h ago. Counted from the second, it was 59m, and an answer that
 /// also said since 11:00 (1h ago) told the same time two ways.
 ///
-/// It's ahead only in a later minute. An answer is as of the minute's
-/// start, its status's `at`, so a time later in that minute, such as a
-/// read at 12:00:10 asked about at 12:00:40, has gone by: 0m ago, not in
-/// 0m.
-pub fn when(at: i64, now: i64) -> String {
+/// In now's own minute, which way it reads is the caller's, as `in_minute`
+/// says. An answer is as of the minute's start, its status's `at`, so a
+/// read at 12:00:10 asked about at 12:00:40 has gone by, while a reset at
+/// 12:00:20, rounded to 12:00, or a time a limit runs out, rounded to now,
+/// is still to come. Decided from the two times alone, one of them read
+/// wrong: the read in 0m, or the reset 0m ago.
+fn told(at: i64, now: i64, in_minute: Ordering) -> String {
     let minute = |at: i64| at.div_euclid(MINUTE) * MINUTE;
     let span = span(minute(at) - minute(now));
-    match minute(at) > minute(now) {
-        true => format!("{} (in {span})", clock(at, now)),
-        false => format!("{} ({span} ago)", clock(at, now)),
+    match minute(at).cmp(&minute(now)).then(in_minute) {
+        Ordering::Greater => format!("{} (in {span})", clock(at, now)),
+        _ => format!("{} ({span} ago)", clock(at, now)),
     }
 }
 
@@ -174,18 +187,20 @@ mod tests {
         // By the minutes the clocks show. At 15:00:40, 14:00:40 is an hour
         // back, and 16:00:05 an hour ahead.
         let later = now + 40_000;
-        let (back, ahead) = (later - HOUR, later + HOUR - 35_000);
+        let (back, coming) = (later - HOUR, later + HOUR - 35_000);
+        assert_eq!(ago(back, later), format!("{} (1h ago)", clock(back, later)));
         assert_eq!(
-            when(back, later),
-            format!("{} (1h ago)", clock(back, later))
+            ahead(coming, later),
+            format!("{} (in 1h)", clock(coming, later))
         );
-        assert_eq!(
-            when(ahead, later),
-            format!("{} (in 1h)", clock(ahead, later))
-        );
-        // As of 15:00, a read at 15:00:10 has gone by, as has 15:00 itself.
-        for read in [now + 10_000, now] {
-            assert_eq!(when(read, now), format!("{} (0m ago)", clock(read, now)));
+        // In another minute, a time says which way it is itself.
+        assert_eq!(ahead(back, later), ago(back, later));
+        assert_eq!(ago(coming, later), ahead(coming, later));
+        // In now's own minute, the caller says. As of 15:00, a read at
+        // 15:00:10 has gone by, and a reset rounded to 15:00 is to come.
+        for at in [now + 10_000, now] {
+            assert_eq!(ago(at, now), format!("{} (0m ago)", clock(at, now)));
+            assert_eq!(ahead(at, now), format!("{} (in 0m)", clock(at, now)));
         }
         assert_eq!(span(2 * DAY + 4 * HOUR + 10 * MINUTE), "2d 4h");
     }

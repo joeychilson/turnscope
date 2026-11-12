@@ -4,7 +4,7 @@
 
 use super::{Account, Horizon, Limit, Moment, Outlook, Spread, Stale, State, Status, Unknown};
 use crate::agents;
-use crate::time::{self, HOUR, MINUTE, when};
+use crate::time::{self, HOUR, MINUTE};
 
 /// Hours of work as people say them: to ten minutes, `1h 50m`, and from
 /// ten hours, to the hour, `26h`.
@@ -82,7 +82,7 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
         if let Some(stale) = stale(account, true, now) {
             out += &match account.state {
                 State::AsOf { read_at, .. } => {
-                    format!("  As of {}: {stale}.\n", when(read_at, now))
+                    format!("  As of {}: {stale}.\n", time::ago(read_at, now))
                 }
                 _ => format!("  {}{}.\n", stale[..1].to_uppercase(), &stale[1..]),
             };
@@ -126,9 +126,9 @@ fn left(limit: &Limit) -> String {
 pub fn limit_text(limit: &Limit, now: i64) -> String {
     let mut out = format!("{}: {} left", limit.named(), left(limit));
     match (&limit.window, limit.reset_since) {
-        (Some(_), Some(reset)) => out += &format!(", reset {}", when(reset, now)),
+        (Some(_), Some(reset)) => out += &format!(", reset {}", time::ago(reset, now)),
         (Some(window), None) if !matches!(limit.outlook, Outlook::UsedUp { .. }) => {
-            out += &format!(", resets {}", when(window.resets.at, now))
+            out += &format!(", resets {}", time::ahead(window.resets.at, now))
         }
         _ => {}
     }
@@ -159,7 +159,7 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             };
             format!(
                 "At this pace it runs out {}, {}.",
-                when(likely.at, now),
+                time::ahead(likely.at, now),
                 match latest {
                     Some(latest) => format!("between {} and {}", near(soonest.at), near(latest.at)),
                     None => format!("as soon as {}", near(soonest.at)),
@@ -167,7 +167,7 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             )
         }
         Outlook::UsedUp { back: Some(back) } => {
-            format!("Used up; back {}.", when(back.at, now))
+            format!("Used up; back {}.", time::ahead(back.at, now))
         }
         Outlook::UsedUp { back: None } => "Used up.".to_owned(),
         Outlook::Unknown { reason } => match reason {
@@ -309,7 +309,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     for limit in &whole {
         if let Outlook::UsedUp { back } = limit.outlook {
             let back = back.map_or(String::new(), |back| {
-                format!(", back {}", when(back.at, now))
+                format!(", back {}", time::ahead(back.at, now))
             });
             return format!("{title}: {} is used up{back}.", limit.name);
         }
@@ -320,7 +320,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
         .min_by(|(_, a), (_, b)| a.likely.total_cmp(&b.likely));
     if let Some((limit, left)) = first {
         let resets = limit.window.map_or(String::new(), |window| {
-            format!("; it resets {}", when(window.resets.at, now))
+            format!("; it resets {}", time::ahead(window.resets.at, now))
         });
         return format!(
             "{title}: about {} of work left ({}) before {} runs out{resets}.",
@@ -338,11 +338,11 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     let Some(limit) = account.deciding_limit() else {
         return format!("{title}: no limit of it was read.");
     };
-    let resets = limit.resets().map(|resets| when(resets, now));
+    let resets = limit.resets().map(|resets| time::ahead(resets, now));
     let ahead = match (&limit.outlook, resets) {
         (Outlook::RunsOut { likely, .. }, Some(resets)) => format!(
             " and runs out {} at this pace, before it resets {resets}",
-            when(likely.at, now)
+            time::ahead(likely.at, now)
         ),
         (Outlook::Lasts { .. }, Some(resets)) => {
             format!(" and lasts at this pace until it resets {resets}")
@@ -462,6 +462,30 @@ mod tests {
             fit(&account, 2.0, now).unwrap(),
             "2 more hours of work don't fit: 5 hours runs out after about 30m of work."
         );
+    }
+
+    #[test]
+    fn a_time_in_the_minute_of_the_status_reads_as_its_words_say() {
+        // The status is as of its minute's start: a limit that runs out or
+        // resets in that minute is still to come, and a read in it has gone
+        // by.
+        let mut example = example();
+        let now = example["params"]["at"].as_i64().unwrap();
+        let accounts = &mut example["params"]["accounts"];
+        let five = &mut accounts[0]["limits"][0];
+        five["window"]["resets"]["at"] = now.into();
+        five["outlook"]["likely"]["at"] = now.into();
+        accounts[1]["state"]["readAt"] = (now + 10_000).into();
+        let status: Status = serde_json::from_value(example["params"].clone()).unwrap();
+        let said = text(&status, &[&status.accounts[0], &status.accounts[1]], None);
+        let clock = time::clock(now, now);
+        for part in [
+            format!("resets {clock} (in 0m)"),
+            format!("runs out {clock} (in 0m)"),
+            format!("As of {clock} (0m ago)"),
+        ] {
+            assert!(said.contains(&part), "{part} in {said}");
+        }
     }
 
     fn example() -> serde_json::Value {

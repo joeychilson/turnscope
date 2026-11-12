@@ -54,7 +54,7 @@ fn brief(session: &Summary, entries: &[Entry], budget: usize, cite: Cite, now: i
     let whole = budget * 4;
     let state = match session.running {
         true => "running now".to_owned(),
-        false => format!("last active {}", time::when(session.active, now)),
+        false => format!("last active {}", time::ago(session.active, now)),
     };
     // One begun with no folder has none to check.
     let check = match session.cwd {

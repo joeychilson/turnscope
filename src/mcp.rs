@@ -629,7 +629,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
     let mut out = format!(
         "Usage of {} since {}: {} at list prices over {} responses{}.\n",
         account.map_or("every account".to_owned(), |account| account.full_title()),
-        time::when(used.since, minute),
+        time::ago(used.since, minute),
         usage::dollars(used.total.cost_usd),
         usage::count(used.total.responses),
         if used.total.unpriced > 0 {
@@ -665,7 +665,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         out += &format!(
             "\nShares of {} are known only over its window, since {}: leave since out for them.\n",
             limit.named(),
-            time::when(start, minute),
+            time::ago(start, minute),
         );
     }
     // The same usage by model and project, and by account when it's every
