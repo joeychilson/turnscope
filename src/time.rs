@@ -115,10 +115,15 @@ pub fn clock(at: i64, now: i64) -> String {
 /// minute `at` is in, which its clock shows. At 12:00:40, 11:00:40 is
 /// 11:00, 1h ago. Counted from the second, it was 59m, and an answer that
 /// also said since 11:00 (1h ago) told the same time two ways.
+///
+/// It's ahead only in a later minute. An answer is as of the minute's
+/// start, its status's `at`, so a time later in that minute, such as a
+/// read at 12:00:10 asked about at 12:00:40, has gone by: 0m ago, not in
+/// 0m.
 pub fn when(at: i64, now: i64) -> String {
     let minute = |at: i64| at.div_euclid(MINUTE) * MINUTE;
     let span = span(minute(at) - minute(now));
-    match at >= now {
+    match minute(at) > minute(now) {
         true => format!("{} (in {span})", clock(at, now)),
         false => format!("{} ({span} ago)", clock(at, now)),
     }
@@ -178,6 +183,10 @@ mod tests {
             when(ahead, later),
             format!("{} (in 1h)", clock(ahead, later))
         );
+        // As of 15:00, a read at 15:00:10 has gone by, as has 15:00 itself.
+        for read in [now + 10_000, now] {
+            assert_eq!(when(read, now), format!("{} (0m ago)", clock(read, now)));
+        }
         assert_eq!(span(2 * DAY + 4 * HOUR + 10 * MINUTE), "2d 4h");
     }
 }

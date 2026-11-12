@@ -506,6 +506,7 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
         r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","since":"1h"}}}"#,
         r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","since":"now"}}}"#,
         r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true}}}"#,
+        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","since":"2026-10-01T12:00:10Z"}}}"#,
     ];
     writeln!(mcp.stdin.take().unwrap(), "{}", requests.join("\n")).unwrap();
     let output = mcp.wait_with_output().unwrap();
@@ -533,11 +534,12 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     );
     // A time counted back from now is told by its minute too: an hour back
     // was 11:00:40, which its clock shows as 11:00. Since now, there's
-    // nothing to tell.
+    // nothing to tell. Earlier in this minute is gone by, not ahead.
     for (text, since) in [
         (&texts[2], "since 11:00 (1h ago)"),
         (&texts[3], "since is now or later"),
         (&texts[4], "(30d ago)"),
+        (&texts[5], "since 12:00 (0m ago)"),
     ] {
         assert!(text.contains(since), "{since} in {text}");
     }
