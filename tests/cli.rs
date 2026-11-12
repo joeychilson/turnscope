@@ -423,8 +423,9 @@ fn a_relative_folder_is_in_the_current_folder() {
 fn sessions_marks_the_session_of_an_agent_that_names_it_nowhere() {
     let data = store();
     // Run by Codex, as from Claude Code's shell, whose session is named in
-    // the environment. Its folder is the one it runs in, and `/` holds its
-    // session's.
+    // the environment. Run from `/`, which is no folder to work in, its own
+    // session is its latest anywhere. Its latest in a folder is marked in
+    // `explain_usage_marks_the_callers_session_whichever_agent_asks`.
     let output = command_as("codex", data.path(), &["sessions"])
         .current_dir("/")
         .output()

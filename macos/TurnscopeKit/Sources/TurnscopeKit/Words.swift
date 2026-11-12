@@ -30,9 +30,9 @@ import Foundation
 public struct Words: Sendable {
     /// The minute it is.
     let now: Date
-    var calendar: Calendar
+    let calendar: Calendar
     /// Every agent's name, by id.
-    var names: [String: String]
+    let names: [String: String]
 
     init(now: Date = .now, calendar: Calendar = .autoupdatingCurrent, names: [String: String] = [:]) {
         self.now = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60)

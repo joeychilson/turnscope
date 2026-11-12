@@ -7,10 +7,10 @@
   14:00 was in 1h 59m, and a limit's last minute before it ran out read
   0m.
 - **Clicking a notification** while the app is quit opens the panel under
-  the menu bar item with the notification's account open, once the first
-  status arrives. The panel opened at once in the bottom-left corner of the
-  screen, with no account open, since the item had no place in the menu
-  bar yet and no account was known.
+  the menu bar item, and the notification's account once the first status
+  arrives. The panel opened in the bottom-left corner of the screen, with
+  no account open, since the item had no place in the menu bar yet and no
+  account was known.
 - **A notification asking to sign in again** is removed as soon as the
   account can be read, also one left from before the app started. It could
   stay until the status next changed. One the app couldn't post at first,
@@ -23,6 +23,10 @@
 - **`explain_usage`** tells time as of the minute, as `check_limits` does.
   40 seconds into a minute, a reset at 14:00 was in 1h 59m, where
   `check_limits` said in 2h.
+- **A time with an offset**, such as `2026-10-01T09:00:00-05:00`, is read
+  at that time by `--since`, `--until` and the MCP tools' `since`. It was
+  read as midnight of its date, as was a time with no offset, which is now
+  refused, since it could be any time zone's.
 
 ## 0.1.6
 
