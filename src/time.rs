@@ -80,8 +80,10 @@ pub fn parse(text: &str, now: i64) -> Result<i64> {
         _ => back('h', 1)
             .or_else(|| back('d', 24))
             .or_else(|| back('w', 24 * 7))
+            // A date alone. Parsed as a `Date`, an RFC 3339 time with an
+            // offset such as `+02:00` would be its date, at midnight.
             .or_else(|| {
-                text.parse::<Date>()
+                Date::strptime("%Y-%m-%d", text)
                     .ok()
                     .map(|day| start_of_day(day, &TimeZone::system()))
             })
@@ -90,7 +92,7 @@ pub fn parse(text: &str, now: i64) -> Result<i64> {
     found.ok_or_else(|| {
         Error::Usage(format!(
             "{text} isn't a time Turnscope reads: use today, yesterday, week, month, a count back such as 24h, 7d \
-             or 4w, a date such as 2026-10-01, or an RFC 3339 time"
+             or 4w, a date such as 2026-10-01, or an RFC 3339 time such as 2026-10-01T09:00:00Z"
         ))
     })
 }
@@ -176,10 +178,15 @@ mod tests {
             local(at("week")).date().weekday(),
             jiff::civil::Weekday::Monday
         );
-        assert_eq!(
-            at("2026-10-01T09:00:00Z"),
-            millis("2026-10-01T09:00:00Z").unwrap()
-        );
+        let nine = millis("2026-10-01T09:00:00Z").unwrap();
+        assert_eq!(at("2026-10-01T09:00:00Z"), nine);
+        assert_eq!(at("2026-10-01T09:00:00+00:00"), nine);
+        assert_eq!(at("2026-10-01T04:00:00-05:00"), nine);
+        // With no offset, it could be any time zone's.
+        assert!(matches!(
+            parse("2026-10-01T09:00", now),
+            Err(Error::Usage(_))
+        ));
         assert!(matches!(parse("last tuesday", now), Err(Error::Usage(_))));
         // A count back is never ahead.
         assert!(matches!(parse("-2d", now), Err(Error::Usage(_))));

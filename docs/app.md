@@ -295,9 +295,12 @@ kinds turned off and alerts for hidden accounts, so the app doesn't filter.
 - **Acknowledging.** The app acknowledges an alert (`alerts.ack`) only once
   macOS accepts the notification. One that macOS refused, such as when
   notifications are off, comes again with the next `hello`.
-- **Clicking** a notification opens the panel with its account open. A
-  click before the first status, such as the click that launches the app,
-  opens it once the status arrives, as `--open` does.
+- **Clicking** a notification opens the panel with its account open.
+  Clicked before the first status, such as by the click that launches the
+  app, the panel opens on what it shows until then, such as why `serve`
+  can't start, and the account opens once the status arrives, unless the
+  panel was closed or went to Settings by then. In the first second after
+  launch, the panel waits for the item to have a place in the menu bar.
 
 ## Updates
 

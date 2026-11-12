@@ -47,10 +47,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let menuBar = MenuBarItem()
     private var item: NSStatusItem?
     private var panel: PanelWindow?
-    /// What to open once the first status arrives: what `--open` says, or
-    /// what a notification clicked before then asks, such as the click that
-    /// launched the app. Nil once it's open.
-    private var waiting: Waiting?
+    /// What to open once the first status arrives, as `--open` says. Nil
+    /// once it has.
+    private var opening: Opening?
+    /// The account of a notification clicked before the first status, as
+    /// when the click launched the app, to open in place once the status
+    /// arrives. Nil once it has, or once the panel closes.
+    private var clicked: String?
+    /// When the item has a place in the menu bar to hang the panel from: a
+    /// second after launch. For 0.1 to 0.2 s after launch its window is below
+    /// the screen, as measured 2026-11-11, and a panel opened then hangs from
+    /// the bottom-left corner of the screen.
+    private var placed = ContinuousClock.now
     /// Whether the panel is open or opening. A closing panel may still be
     /// visible, but isn't open.
     private var open = false
@@ -63,16 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Watches the preferences, since what the menu bar shows is one.
     private var preferences: (any NSObjectProtocol)?
 
-    /// What the panel opens to once the first status arrives.
-    private enum Waiting {
-        /// What `--open` names.
-        case launch(Opening)
-        /// A clicked notification, with the account it's about.
-        case notification(String?)
-    }
-
     init(_ launch: Launch) {
-        waiting = launch.opening.map(Waiting.launch)
+        opening = launch.opening
         if launch.fixture != nil {
             client = nil
             store = Store(fixture: launch.fixture)
@@ -89,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item.button?.target = self
         item.button?.action = #selector(toggle)
         self.item = item
+        placed = .now + .seconds(1)
         drawItem()
         panel = makePanel()
         notifier.onOpen = { [weak self] account in self?.show(account) }
@@ -107,9 +108,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else { return }
             drawItem()
             notifier.renewed(store.all)
-            if let waiting, store.status != nil {
-                self.waiting = nil
-                openOnce(waiting)
+            guard store.status != nil else { return }
+            if let opening {
+                self.opening = nil
+                openOnce(opening)
+            }
+            // Unless the panel was closed or went to Settings while it
+            // waited.
+            if let clicked {
+                self.clicked = nil
+                if open && navigation.page == .main { openInPlace(clicked) }
             }
         }
         if let client {
@@ -136,21 +144,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         client?.stop()
     }
 
-    /// Open the panel as `waiting` asks, once the item has a place in the
-    /// menu bar to hang it from. For 0.1 to 0.2 s after launch its window is
-    /// below the screen, as measured 2026-11-11, so this waits a second.
-    private func openOnce(_ waiting: Waiting) {
-        Task {
-            try? await Task.sleep(for: .seconds(1))
-            switch waiting {
-            case .launch(let opening):
-                show()
-                if let tab = navigation.apply(opening, firstInUse: store.inUse.first?.id) {
-                    navigation.go(.settings, tab: tab)
-                }
-            case .notification(let account):
-                show(account)
+    /// Open the panel as `--open` asked.
+    private func openOnce(_ opening: Opening) {
+        whenPlaced { [self] in
+            show()
+            if let tab = navigation.apply(opening, firstInUse: store.inUse.first?.id) {
+                navigation.go(.settings, tab: tab)
             }
+        }
+    }
+
+    /// Run `opens` once the item has a place in the menu bar to hang the
+    /// panel from: at once, or a second after launch.
+    private func whenPlaced(_ opens: @escaping @MainActor () -> Void) {
+        guard ContinuousClock.now < placed else { return opens() }
+        let placed = placed
+        Task {
+            try? await Task.sleep(until: placed)
+            opens()
         }
     }
 
@@ -228,17 +239,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Open the panel on its first page with `account` open in place, as a
-    /// notification about it asks. If it's among the accounts not used this
-    /// week, those are unfolded. Clicked before the first status, as when
-    /// the click launched the app, it waits for the status: until then no
-    /// account is known, and the item may have no place to hang the panel
-    /// from.
+    /// notification about it asks. Clicked before the first status, as when
+    /// the click launched the app, the panel shows what it shows until then,
+    /// such as why serve can't start, and the account opens once the status
+    /// arrives, since no account is known before.
     private func show(_ account: String?) {
-        guard store.status != nil else {
-            waiting = .notification(account)
-            return
+        whenPlaced { [self] in
+            show()
+            guard store.status != nil else {
+                clicked = account
+                return
+            }
+            clicked = nil
+            openInPlace(account)
         }
-        show()
+    }
+
+    /// Open the first page with `account` open in place, if it's shown
+    /// there. If it's among the accounts not used this week, those are
+    /// unfolded.
+    private func openInPlace(_ account: String?) {
         guard let account, store.all.contains(where: { $0.id == account && !$0.hidden }) else { return }
         navigation.go(.main)
         navigation.open = account
@@ -276,6 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func close() {
         guard let panel, open else { return }
         open = false
+        clicked = nil
         if let outside { NSEvent.removeMonitor(outside) }
         outside = nil
         item?.button?.highlight(false)
