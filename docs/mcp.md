@@ -224,7 +224,7 @@ together, as for "what did I spend across my agents".
 | `account` | string | the caller's | One account: its id, or text in its title, label or id. If the text matches several, the error lists them. |
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
 | `limit` | string | the limit that decides how the account stands | Text in a limit's name or key, any case, such as `week` or `5 hours`. |
-| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit. The description says that "this week" of a weekly limit is its window, as `week` is the calendar week from Monday: an agent asked what used a weekly limit this week passed `week` and lost the shares. |
+| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit. The description says that "this week" of a weekly limit is its window, as `week` is the calendar week from Monday: an agent asked what used a weekly limit this week passed `week` and lost the shares. A `since` at or after now is an error, as it is for the command line's `usage`. |
 | `by` | `session`, `project`, `model` or `agent` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
 

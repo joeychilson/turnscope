@@ -806,21 +806,21 @@ fn guard(
         true => format!("{}'s {called}", account.title),
         false => format!("{}'s {called} limit", account.title),
     };
-    let when = |at: i64| time::when(at, now);
+    let ahead = |at: i64| time::ahead(at, now);
     Ok(Some(match &found.outlook {
         status::Outlook::UsedUp { back } => format!(
             "{called} is used up{}.",
             back.map_or(String::new(), |back| format!(
                 "; it's back {}",
-                when(back.at)
+                ahead(back.at)
             ))
         ),
         outlook => {
             let mut said = format!("{called} has {}% left, under {below}%.", found.left_percent);
             if let Some(resets) = found.resets() {
-                said += &format!(" It resets {}", when(resets));
+                said += &format!(" It resets {}", ahead(resets));
                 if let status::Outlook::RunsOut { likely, .. } = outlook {
-                    said += &format!("; at this pace it runs out {}", when(likely.at));
+                    said += &format!("; at this pace it runs out {}", ahead(likely.at));
                 }
                 said += ".";
             }

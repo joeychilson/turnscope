@@ -3,7 +3,7 @@
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command
-  line's do. They read a minute short: with the clock at 12:00, a reset at
+  line's do. They read a minute short: 40 seconds into 12:00, a reset at
   14:00 was in 1h 59m, and a limit's last minute before it ran out read
   0m.
 - **Clicking a notification** while the app is quit opens the panel under
@@ -20,9 +20,14 @@
   agent, as `find_sessions` does. It marked it only for Claude Code, the
   one agent that names its session. A session with no title yet shows as
   its id and `(untitled)`, where it showed its id alone.
-- **`explain_usage`** tells time as of the minute, as `check_limits` does.
-  40 seconds into a minute, a reset at 14:00 was in 1h 59m, where
-  `check_limits` said in 2h.
+- **Times** are told as of the minute in every answer. `explain_usage`
+  told them from the second: 40 seconds into 12:00, a reset at 14:00 was in
+  1h 59m, where `check_limits` said in 2h. And a time gone by was counted
+  from its second everywhere: at 12:00:40, a reset at 11:00:40 read 11:00
+  (59m ago), an hour by the clock.
+- **`explain_usage`** refuses a `since` at or after now, as the command
+  line's `usage` does. It said there was no usage since then, and a time
+  ahead read as gone by: `since Fri 00:00 (12h ago)` on Thursday at noon.
 - **A time with an offset**, such as `2026-10-01T09:00:00-05:00`, is read
   at that time by `--since`, `--until` and the MCP tools' `since`. It was
   read as midnight of its date, as was a time with no offset, which is now
