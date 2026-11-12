@@ -32,6 +32,12 @@
   at that time by `--since`, `--until` and the MCP tools' `since`. It was
   read as midnight of its date, as was a time with no offset, which is now
   refused, since it could be any time zone's.
+- **An agent's own session**, for an agent other than Claude Code, is its
+  latest run in the folder it works in, then its latest in the folder's
+  project. With two of its sessions in one project, as in two worktrees, it
+  took the later for its own, wherever it ran: `find_sessions`,
+  `explain_usage` and `sessions` marked that one, and `handoff` with no
+  session left it out and handed the caller its own.
 - **Finding sessions** in one folder or of one agent is faster: among
   3,000 sessions, `sessions --folder` took 0.5 s and takes 0.06 s. So are
   `find_sessions` and `handoff` given a folder, and `explain_usage` by

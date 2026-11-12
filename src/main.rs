@@ -521,7 +521,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 running,
                 count,
                 cursor,
-                except: None,
+                ..sessions::Query::default()
             };
             let page = sessions::find(&db, home, &query, now)?;
             let caller = mcp::Caller::detect();

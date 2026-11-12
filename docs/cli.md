@@ -340,8 +340,9 @@ holds and how it's built, with an example.
 | `--folder <dir>` | The current folder | The folder to take the latest session of: its project's sessions, or those run in it or under it. |
 
 Only Claude Code says which session is calling. From another agent, its
-own session is taken to be that agent's latest in the folder it runs in,
-whichever folder `--folder` names.
+own session is taken to be that agent's latest run in the folder it runs
+in, or with none, its latest in that folder's project, whichever folder
+`--folder` names.
 
 ## Accounts
 
