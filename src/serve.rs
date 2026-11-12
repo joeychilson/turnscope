@@ -428,7 +428,7 @@ impl Server {
                         return Err(json!({ "code": -32001, "message": message, "data": data }));
                     }
                     let status = AppStatus::of(&self.db, &self.home, now).map_err(failed)?;
-                    let alerts = alerts::pending(&self.db, now).map_err(failed)?;
+                    let alerts = alerts::pending(&self.db, &status.status, now).map_err(failed)?;
                     if let Some(client) = self.clients.get_mut(&client) {
                         client.greeted = true;
                     }

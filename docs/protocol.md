@@ -427,7 +427,8 @@ sent.
 An alert is sent right after the status that raised it. Until a client
 acknowledges it with `alerts.ack`, it's sent again in every `hello` result
 while it still applies: a `runningOut` or `usedUp` alert until its window
-resets, and a `reset` or `signIn` alert for a day.
+resets, a `reset` alert for a day, and a `signIn` alert for a day while its
+account still can't be read.
 
 | Field | Type | Holds |
 |---|---|---|

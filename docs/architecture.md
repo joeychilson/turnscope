@@ -407,7 +407,8 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
   later doesn't bring back the past.
 - An alert waits until a client acknowledges it (`alerts.ack`). Until then
   `hello` returns it: a `runningOut` or `usedUp` while its window lasts, a
-  `reset` or `signIn` for a day.
+  `reset` for a day, and a `signIn` for a day while its account still can't
+  be read.
 
 ## Handoff
 

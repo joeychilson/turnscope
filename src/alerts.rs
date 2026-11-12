@@ -164,8 +164,10 @@ fn blocked(account: &Account, limit: &Limit) -> bool {
 }
 
 /// Every alert not yet acknowledged that still stands: a warning while its
-/// window lasts, a reset or sign-in for a day.
-pub fn pending(db: &Connection, now: i64) -> Result<Vec<Alert>> {
+/// window lasts, a reset for a day, and a sign-in for a day while its
+/// account still can't be read, as `status` says. One for an account that
+/// can be read again would be posted with its sound, then removed at once.
+pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>> {
     let mut statement = db.prepare(
         "SELECT id, kind, at, account, limit_key, detail FROM alert WHERE acknowledged = 0 ORDER BY id",
     )?;
@@ -177,14 +179,20 @@ pub fn pending(db: &Connection, now: i64) -> Result<Vec<Alert>> {
         let (Some(kind), Ok(detail)) = (kind, detail) else {
             continue;
         };
-        let at = row.get(2)?;
+        let (id, at, account, limit): (i64, i64, String, String) =
+            (row.get(0)?, row.get(2)?, row.get(3)?, row.get(4)?);
         let stands = match kind {
             Kind::RunningOut | Kind::UsedUp => detail.resets.is_none_or(|resets| resets > now),
-            Kind::Reset | Kind::SignIn => now - at <= DAY,
+            Kind::Reset => now - at <= DAY,
+            Kind::SignIn => {
+                now - at <= DAY
+                    && status
+                        .accounts
+                        .iter()
+                        .any(|known| known.id == account && known.refused())
+            }
         };
         if stands {
-            let (id, account, limit): (i64, String, String) =
-                (row.get(0)?, row.get(3)?, row.get(4)?);
             pending.push(alert(id, kind, at, &account, &limit, detail, now));
         }
     }
@@ -352,12 +360,38 @@ mod tests {
         assert_eq!(kinds(&raised), [Kind::UsedUp]);
         assert_eq!(raised[0].replaces, "limit:anthropic:a:five_hour");
         assert!(raise(&mut db, &used_up).unwrap().is_empty(), "told once");
-        assert_eq!(pending(&db, DAY).unwrap().len(), 1);
+        assert_eq!(pending(&db, &used_up, DAY).unwrap().len(), 1);
         assert_eq!(acknowledge(&db, &[raised[0].id]).unwrap(), 1);
-        assert!(pending(&db, DAY).unwrap().is_empty());
+        assert!(pending(&db, &used_up, DAY).unwrap().is_empty());
         // Use given back within the window: it's back.
         let back = status(DAY + MINUTE, 60, LASTS);
         assert_eq!(kinds(&raise(&mut db, &back).unwrap()), [Kind::Reset]);
+    }
+
+    #[test]
+    fn a_sign_in_is_sent_again_only_while_its_account_cant_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let mut refused = status(DAY, 60, LASTS);
+        refused.accounts[0].state = State::AsOf {
+            read_at: DAY - MINUTE,
+            why: crate::status::Stale::SignIn,
+        };
+        assert_eq!(kinds(&raise(&mut db, &refused).unwrap()), [Kind::SignIn]);
+        // Not acknowledged, as when notifications were off.
+        assert_eq!(kinds(&pending(&db, &refused, DAY).unwrap()), [Kind::SignIn]);
+        let read = status(DAY + MINUTE, 60, LASTS);
+        assert!(raise(&mut db, &read).unwrap().is_empty());
+        assert!(pending(&db, &read, DAY + MINUTE).unwrap().is_empty());
+        // Refused again before the next read worked: it's the same alert.
+        assert_eq!(
+            kinds(&pending(&db, &refused, DAY + 2 * MINUTE).unwrap()),
+            [Kind::SignIn]
+        );
+        assert!(
+            pending(&db, &refused, 2 * DAY + MINUTE).unwrap().is_empty(),
+            "for a day"
+        );
     }
 
     #[test]
