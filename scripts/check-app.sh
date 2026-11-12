@@ -15,7 +15,9 @@ set -euo pipefail
 
 root="$(dirname "$0")/.."
 app=${1:-"$root/target/dist/Turnscope.app"}
-protocol=$(jq -e '.params.protocol' "$root/contract/hello.request.json")
+# The app's hello, as the contract has it.
+hello=$(jq -c . "$root/contract/hello.request.json")
+protocol=$(jq -e '.params.protocol' <<<"$hello")
 executable="$app/Contents/Helpers/turnscope"
 for needed in "$executable" "$app/Contents/MacOS/Turnscope"; do
   if [ ! -x "$needed" ]; then
@@ -64,7 +66,7 @@ for slice in $slices; do
     exit 1
   fi
 
-  # A client's hello, in the contract's protocol, is answered with a status.
+  # The app's hello is answered with a status.
   socket=$(turnscope serve --socket)
   turnscope serve 2>/dev/null &
   serve=$!
@@ -72,7 +74,6 @@ for slice in $slices; do
     [ -S "$socket" ] && break
     sleep 0.1
   done
-  hello='{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":'"$protocol"',"client":"check-app"}}'
   if ! answer=$(printf '%s\n' "$hello" | nc -U -w 2 "$socket" | head -n 1) ||
     ! jq -e '.result.status.accounts | type == "array"' <<<"$answer" >/dev/null; then
     printf 'check-app.sh: serve (%s) answered no hello:\n%s\n' "$slice" "$(cut -c 1-300 <<<"${answer:-}")" >&2

@@ -87,6 +87,11 @@ TURNSCOPE_BLESS=1 cargo test --test cli
 Each line of output in [cli.md](cli.md)'s `console` examples must be a line
 of some snapshot, so update an example that shows output you changed.
 
+**The caller.** Turnscope takes the nearest agent above it for the caller,
+so each end-to-end test runs `turnscope` under a shell named as an agent's
+command: `claude`, or another agent's in a test about that agent. The tests
+answer the same in a terminal, in CI and in any agent.
+
 **The real engine from Swift.** One Swift test runs the app's client
 against a real `turnscope serve`. It runs only when `TURNSCOPE_BINARY` is
 set, as it is in CI. The path must be absolute, because `swift test` runs

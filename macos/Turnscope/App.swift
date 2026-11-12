@@ -47,9 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let menuBar = MenuBarItem()
     private var item: NSStatusItem?
     private var panel: PanelWindow?
-    /// What to open once the first status arrives, as `--open` says. Nil
-    /// once it has.
-    private var opening: Opening?
+    /// What to open once the first status arrives: what `--open` says, or
+    /// what a notification clicked before then asks, such as the click that
+    /// launched the app. Nil once it's open.
+    private var waiting: Waiting?
     /// Whether the panel is open or opening. A closing panel may still be
     /// visible, but isn't open.
     private var open = false
@@ -62,8 +63,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Watches the preferences, since what the menu bar shows is one.
     private var preferences: (any NSObjectProtocol)?
 
+    /// What the panel opens to once the first status arrives.
+    private enum Waiting {
+        /// What `--open` names.
+        case launch(Opening)
+        /// A clicked notification, with the account it's about.
+        case notification(String?)
+    }
+
     init(_ launch: Launch) {
-        opening = launch.opening
+        waiting = launch.opening.map(Waiting.launch)
         if launch.fixture != nil {
             client = nil
             store = Store(fixture: launch.fixture)
@@ -98,9 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else { return }
             drawItem()
             notifier.renewed(store.all)
-            if let opening, store.status != nil {
-                self.opening = nil
-                openOnce(opening)
+            if let waiting, store.status != nil {
+                self.waiting = nil
+                openOnce(waiting)
             }
         }
         if let client {
@@ -127,14 +136,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         client?.stop()
     }
 
-    /// Open the panel as `--open` asked, once the item has a place in the
-    /// menu bar to hang it from.
-    private func openOnce(_ opening: Opening) {
+    /// Open the panel as `waiting` asks, once the item has a place in the
+    /// menu bar to hang it from. For 0.1 to 0.2 s after launch its window is
+    /// below the screen, as measured 2026-11-11, so this waits a second.
+    private func openOnce(_ waiting: Waiting) {
         Task {
             try? await Task.sleep(for: .seconds(1))
-            show()
-            if let tab = navigation.apply(opening, firstInUse: store.inUse.first?.id) {
-                navigation.go(.settings, tab: tab)
+            switch waiting {
+            case .launch(let opening):
+                show()
+                if let tab = navigation.apply(opening, firstInUse: store.inUse.first?.id) {
+                    navigation.go(.settings, tab: tab)
+                }
+            case .notification(let account):
+                show(account)
             }
         }
     }
@@ -214,8 +229,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Open the panel on its first page with `account` open in place, as a
     /// notification about it asks. If it's among the accounts not used this
-    /// week, those are unfolded.
+    /// week, those are unfolded. Clicked before the first status, as when
+    /// the click launched the app, it waits for the status: until then no
+    /// account is known, and the item may have no place to hang the panel
+    /// from.
     private func show(_ account: String?) {
+        guard store.status != nil else {
+            waiting = .notification(account)
+            return
+        }
         show()
         guard let account, store.all.contains(where: { $0.id == account && !$0.hidden }) else { return }
         navigation.go(.main)
