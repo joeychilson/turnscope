@@ -288,14 +288,16 @@ kinds turned off and alerts for hidden accounts, so the app doesn't filter.
 - **Replacing.** Each is posted under the alert's `replaces`, so a newer one
   for the same limit or account replaces the older: "back" replaces "used
   up". A sign-in notification is removed once the account can be read
-  again.
+  again, also one left from before the app started.
 - **Urgency.** Every notification is at the normal level: none breaks
   through Focus. Time-sensitive delivery needs an entitlement the app
   doesn't have, and a limit running out can wait until Focus ends.
 - **Acknowledging.** The app acknowledges an alert (`alerts.ack`) only once
   macOS accepts the notification. One that macOS refused, such as when
   notifications are off, comes again with the next `hello`.
-- **Clicking** a notification opens the panel with its account open.
+- **Clicking** a notification opens the panel with its account open. A
+  click before the first status, such as the click that launches the app,
+  opens it once the status arrives, as `--open` does.
 
 ## Updates
 

@@ -5,7 +5,8 @@
 // Each is posted under the id serve gives it: one per limit, or one per
 // account for signing in. A newer one replaces the older, so "back" replaces
 // "used up". A sign-in notification is removed once the account can be read
-// again. Clicking a notification opens the panel with its account open.
+// again, also one left from before the app started. Clicking a notification
+// opens the panel with its account open.
 //
 // macOS asks for permission the first time.
 
@@ -19,6 +20,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var onOpen: (String?) -> Void = { _ in }
     /// Accounts that may still have a notification asking to sign in again.
     private var signingIn: Set<String> = []
+    /// The accounts as of the last status. A notification asking to sign in
+    /// again can become known after the status that says its account can be
+    /// read, so each is checked against them when it does.
+    private var latest: [AccountStatus] = []
 
     func start() {
         let center = UNUserNotificationCenter.current()
@@ -27,15 +32,18 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             // If permission is refused, nothing shows, and Settings says so.
             _ = try? await center.requestAuthorization(options: [.alert, .sound])
             // Notifications from before this run that ask to sign in again,
-            // to remove once the account can be read.
+            // to remove once the account can be read. The first status may
+            // have come while they were asked for.
             let shown = await center.deliveredNotifications().map(\.request.identifier)
             signingIn.formUnion(shown.compactMap { $0.hasPrefix("account:") ? String($0.dropFirst(8)) : nil })
+            renewed(latest)
         }
     }
 
     /// Remove the notifications asking to sign in again for each of
     /// `accounts` that can be read again.
     func renewed(_ accounts: [AccountStatus]) {
+        latest = accounts
         let read = signingIn.filter { id in accounts.contains { $0.id == id && !$0.refused } }
         guard !read.isEmpty else { return }
         signingIn.subtract(read)
@@ -46,7 +54,6 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// Returns whether macOS accepted it, which it doesn't while Turnscope's
     /// notifications are off.
     func tell(_ alert: Alert, accounts: [AccountStatus], words: Words) async -> Bool {
-        if alert.kind == .signIn { signingIn.insert(alert.account) }
         let note = words.note(alert, accounts: accounts)
         let content = UNMutableNotificationContent()
         content.title = note.title
@@ -58,10 +65,16 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         do {
             try await UNUserNotificationCenter.current()
                 .add(UNNotificationRequest(identifier: alert.replaces, content: content, trigger: nil))
-            return true
         } catch {
             return false
         }
+        // Noted once it shows, and checked against the last status, which
+        // may have come while it was posted.
+        if alert.kind == .signIn {
+            signingIn.insert(alert.account)
+            renewed(latest)
+        }
+        return true
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
