@@ -191,8 +191,13 @@ impl Caller {
 
     /// The caller's own session in `folder`. Only Claude Code names it.
     /// Another agent has written its turn by the time it asks, so its own
-    /// session is its agent's latest there, or anywhere when the folder
-    /// isn't known.
+    /// session is its agent's latest run in the folder itself, or else in
+    /// the folder's project, or anywhere when the folder isn't known.
+    ///
+    /// The folder itself first: in a project, another session of the same
+    /// agent, as in another worktree, can be the latest. Taken for the
+    /// caller's, it was marked as the caller's, and `handoff` left it out
+    /// and gave the caller its own.
     pub fn own_session(
         &self,
         db: &Connection,
@@ -205,14 +210,23 @@ impl Caller {
         let Some(agent) = self.agent else {
             return Ok(None);
         };
-        let query = sessions::Query {
-            folder: folder.map(Path::to_path_buf),
-            agent: Some(agent.info().id.to_owned()),
-            count: 1,
-            ..sessions::Query::default()
+        let latest = |run_in: Option<&Path>| -> Result<Option<String>> {
+            let query = sessions::Query {
+                folder: folder.map(Path::to_path_buf),
+                run_in: run_in.map(Path::to_path_buf),
+                agent: Some(agent.info().id.to_owned()),
+                count: 1,
+                ..sessions::Query::default()
+            };
+            let page = sessions::find(db, home, &query, crate::now())?;
+            Ok(page.sessions.into_iter().next().map(|found| found.id))
         };
-        let page = sessions::find(db, home, &query, crate::now())?;
-        Ok(page.sessions.into_iter().next().map(|found| found.id))
+        if let Some(folder) = folder
+            && let Some(own) = latest(Some(folder))?
+        {
+            return Ok(Some(own));
+        }
+        latest(None)
     }
 
     /// The session a handoff takes: the one `session` names, or else the
@@ -735,6 +749,7 @@ fn find_sessions(server: &Server, arguments: Value) -> Result<String> {
         running: input.running.unwrap_or(false),
         count: input.count.unwrap_or(10).clamp(1, sessions::MOST),
         cursor: input.cursor,
+        ..sessions::Query::default()
     };
     Ok(sessions::text(
         &sessions::find(&server.db, &server.home, &query, now)?,
@@ -866,6 +881,51 @@ mod tests {
         assert_eq!(above(330), None);
         assert_eq!(above(340), None);
         assert_eq!(above(12345), None);
+    }
+
+    /// Codex in one of two worktrees of a project, with a later session of
+    /// its own in the other.
+    #[test]
+    fn the_callers_session_is_its_latest_in_its_folder_before_its_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let (one, two) = (
+            "/work/app/.claude/worktrees/one",
+            "/work/app/.claude/worktrees/two",
+        );
+        for (id, agent, cwd, last) in [
+            ("claude-code:c", "claude-code", one, 1000),
+            ("codex:mine", "codex", one, 2000),
+            ("codex:other", "codex", two, 3000),
+        ] {
+            db.execute(
+                "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
+                 VALUES (?1, ?2, 'f', ?3, '/work/app', 'A title', ?4, ?4)",
+                rusqlite::params![id, agent, cwd, last],
+            )
+            .unwrap();
+        }
+        let caller = Caller {
+            agent: agents::ALL
+                .iter()
+                .copied()
+                .find(|agent| agent.info().id == "codex"),
+            folder: Some(PathBuf::from(one)),
+            session: None,
+            agent_folder: None,
+        };
+        let home = Path::new("/home");
+        let own = |folder: &str| {
+            caller
+                .own_session(&db, home, Some(Path::new(folder)))
+                .unwrap()
+        };
+        assert_eq!(own(one).as_deref(), Some("codex:mine"));
+        // So a handoff leaves its own out, and takes the latest other.
+        let taken = caller.session_to_hand_off(&db, home, None, caller.folder.clone());
+        assert_eq!(taken.unwrap().0, "codex:other");
+        // Where none of its sessions ran, its latest in the project.
+        assert_eq!(own("/work/app").as_deref(), Some("codex:other"));
     }
 
     /// As in Antigravity's app, which starts the server in `/`.

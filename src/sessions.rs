@@ -81,6 +81,8 @@ pub struct Query {
     pub search: Option<String>,
     /// Of this folder's project, or run in or under it.
     pub folder: Option<PathBuf>,
+    /// Run in this very folder.
+    pub run_in: Option<PathBuf>,
     pub agent: Option<String>,
     /// Active since.
     pub since: Option<i64>,
@@ -176,7 +178,8 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         .collect();
     let search = search(db, &words)?;
     let tops = "(?1 IS NULL OR s.agent = ?1)
-        AND (?2 IS NULL OR s.project = ?2 OR s.cwd = ?3 OR substr(s.cwd, 1, length(?3) + 1) = ?3 || '/')";
+        AND (?2 IS NULL OR s.project = ?2 OR s.cwd = ?3 OR substr(s.cwd, 1, length(?3) + 1) = ?3 || '/')
+        AND (?5 IS NULL OR s.cwd = ?5)";
     let mut statement = db.prepare(&format!(
         "{}
          SELECT r.id, r.agent, r.title, r.cwd, r.project, r.branch, r.started, group_concat(s.id, char(31))
@@ -191,7 +194,11 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         true => query.since.unwrap_or(0).max(now - RUNNING),
         false => query.since.unwrap_or(0),
     };
-    let mut rows = statement.query(params![query.agent, project, folder, since])?;
+    let run_in = query
+        .run_in
+        .as_ref()
+        .map(|folder| folder.to_string_lossy().trim_end_matches('/').to_owned());
+    let mut rows = statement.query(params![query.agent, project, folder, since, run_in])?;
     // Each with the ids of the sessions in its tree, until the page is cut.
     let mut found: Vec<(Summary, String)> = Vec::new();
     while let Some(row) = rows.next()? {
