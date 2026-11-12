@@ -497,6 +497,9 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     let requests = [
         r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_limits","arguments":{"account":"claude"}}}"#,
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude"}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","since":"1h"}}}"#,
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","since":"now"}}}"#,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true}}}"#,
     ];
     writeln!(mcp.stdin.take().unwrap(), "{}", requests.join("\n")).unwrap();
     let output = mcp.wait_with_output().unwrap();
@@ -521,6 +524,20 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     assert!(
         usage.contains("since 09:00 (3h ago)") && usage.contains("resets 14:00 (in 2h)"),
         "{usage}"
+    );
+    // A time counted back from now is told by its minute too: an hour back
+    // was 11:00:40, which its clock shows as 11:00.
+    for (text, since) in [
+        (&texts[2], "since 11:00 (1h ago)"),
+        (&texts[3], "since 12:00 (0m ago)"),
+        (&texts[4], "(30d ago)"),
+    ] {
+        assert!(text.contains(since), "{since} in {text}");
+    }
+    assert!(
+        texts[2].contains("its window, since 09:00 (3h ago)"),
+        "{}",
+        texts[2]
     );
     let line = command(data.path(), &["statusline", "--account", "claude"])
         .env("TURNSCOPE_NOW", &late)

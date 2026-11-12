@@ -615,14 +615,18 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         .map(|used| (used, None)),
     };
     let (used, points) = breakdown(by, top)?;
-    // Times are told as of the minute the status is, as `check_limits`
-    // tells them: at 12:00:40, a reset at 14:00 is in 2h.
+    // Times are told by the minute, as `check_limits` tells them: from the
+    // minute the status is, to the minute a time falls in, which is the one
+    // its clock shows. At 12:00:40, a reset at 14:00 is in 2h, and an hour
+    // back, 11:00:40, is 11:00, 1h ago. Told from 12:00 to 11:00:40, it was
+    // 59m ago.
     let minute = status.at;
+    let ago = |at: i64| time::span(minute - at.div_euclid(time::MINUTE) * time::MINUTE);
     let mut out = format!(
         "Usage of {} since {} ({} ago): {} at list prices over {} responses{}.\n",
         account.map_or("every account".to_owned(), |account| account.full_title()),
         time::clock(used.since, minute),
-        time::span(minute - used.since),
+        ago(used.since),
         usage::dollars(used.total.cost_usd),
         usage::count(used.total.responses),
         if used.total.unpriced > 0 {
@@ -659,7 +663,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
             "\nShares of {} are known only over its window, since {} ({} ago): leave since out for them.\n",
             limit.named(),
             time::clock(start, minute),
-            time::span(minute - start)
+            ago(start)
         );
     }
     // The same usage by model and project, and by account when it's every
