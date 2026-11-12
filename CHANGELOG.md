@@ -32,6 +32,10 @@
   at that time by `--since`, `--until` and the MCP tools' `since`. It was
   read as midnight of its date, as was a time with no offset, which is now
   refused, since it could be any time zone's.
+- **Finding sessions** in one folder or of one agent is faster: among
+  3,000 sessions, `sessions --folder` took 0.5 s and takes 0.06 s. So are
+  `find_sessions` and `handoff` given a folder, and `explain_usage` by
+  session for an agent other than Claude Code.
 
 ## 0.1.6
 

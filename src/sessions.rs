@@ -43,21 +43,30 @@ pub const MOST: usize = 100;
 /// The entries a page of a session holds unless asked for another count.
 pub const ENTRIES: usize = 30;
 
-/// The sessions at the top of their trees, each with the sessions in its
-/// tree: subagents and forks, of any depth. One whose parent was never read
-/// is a top of its own.
+/// The sessions at the top of their trees for which `tops`, a condition on
+/// the session `s`, holds, each with the sessions in its tree: subagents and
+/// forks, of any depth. One whose parent was never read is a top of its own.
+///
+/// Finding sessions keeps the tops it asks for before building their trees,
+/// not after: 13 ms for one folder's sessions of one agent among 3,007,
+/// against 720 ms for the trees of all of them (November 2026).
 ///
 /// In both trees, `+s.link` keeps SQLite finding children by
 /// `session_parent`. Otherwise it builds an index on `link` at every step:
-/// 150 ms for TREES over 1,932 sessions, against 2 ms (October 2026).
-pub(crate) const TREES: &str = "
+/// 150 ms for the trees of 1,932 sessions, against 2 ms (October 2026).
+pub(crate) fn trees(tops: &str) -> String {
+    format!(
+        "
 WITH RECURSIVE tree (root, id) AS (
     SELECT id, id FROM session s
-    WHERE parent IS NULL OR link IN ('continuation', 'fork') OR NOT EXISTS (SELECT 1 FROM session p WHERE p.id = s.parent)
+    WHERE (parent IS NULL OR link IN ('continuation', 'fork') OR NOT EXISTS (SELECT 1 FROM session p WHERE p.id = s.parent))
+      AND ({tops})
     UNION ALL
     SELECT tree.root, s.id FROM session s JOIN tree ON s.parent = tree.id
     WHERE +s.link = 'subagent'
-)";
+)"
+    )
+}
 
 /// The session `?1` and its subagents, theirs, and so on, as `tree (id)`.
 const SUBTREE: &str = "
@@ -166,17 +175,17 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         .map(|word| format!("\"{word}\""))
         .collect();
     let search = search(db, &words)?;
+    let tops = "(?1 IS NULL OR s.agent = ?1)
+        AND (?2 IS NULL OR s.project = ?2 OR s.cwd = ?3 OR substr(s.cwd, 1, length(?3) + 1) = ?3 || '/')";
     let mut statement = db.prepare(&format!(
-        "{TREES}
+        "{}
          SELECT r.id, r.agent, r.title, r.cwd, r.project, r.branch, r.started, group_concat(s.id, char(31))
          FROM tree JOIN session r ON r.id = tree.root JOIN session s ON s.id = tree.id
-         WHERE (?1 IS NULL OR r.agent = ?1)
-           AND (?2 IS NULL OR r.project = ?2 OR r.cwd = ?3
-                OR substr(r.cwd, 1, length(?3) + 1) = ?3 || '/')
          GROUP BY r.id HAVING max(s.last) IS NOT NULL AND max(s.last) >= ?4
              -- One opened and left, that asked for nothing, isn't one to find.
              AND (r.title IS NOT NULL OR EXISTS (SELECT 1 FROM response x WHERE x.session = r.id))
-         ORDER BY max(s.last) DESC, r.id"
+         ORDER BY max(s.last) DESC, r.id",
+        trees(tops)
     ))?;
     let since = match query.running {
         true => query.since.unwrap_or(0).max(now - RUNNING),

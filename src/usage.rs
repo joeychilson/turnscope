@@ -129,8 +129,8 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
         ),
     };
     let trees = match query.by {
-        By::Session => crate::sessions::TREES,
-        _ => "",
+        By::Session => crate::sessions::trees("1"),
+        _ => String::new(),
     };
     let mut filters = vec!["r.at >= ?".to_owned(), "r.at < ?".to_owned()];
     let mut values: Vec<Value> = vec![query.since.into(), query.until.into()];
