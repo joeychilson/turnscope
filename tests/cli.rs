@@ -532,10 +532,11 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
         "{usage}"
     );
     // A time counted back from now is told by its minute too: an hour back
-    // was 11:00:40, which its clock shows as 11:00.
+    // was 11:00:40, which its clock shows as 11:00. Since now, there's
+    // nothing to tell.
     for (text, since) in [
         (&texts[2], "since 11:00 (1h ago)"),
-        (&texts[3], "since 12:00 (0m ago)"),
+        (&texts[3], "since is now or later"),
         (&texts[4], "(30d ago)"),
     ] {
         assert!(text.contains(since), "{since} in {text}");

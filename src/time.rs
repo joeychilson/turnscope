@@ -111,8 +111,13 @@ pub fn clock(at: i64, now: i64) -> String {
 }
 
 /// A time as people read it: `15:00 (in 3h)`, or gone by, `09:00 (3h ago)`.
+/// It's as far off as the clocks say: from the minute `now` is in to the
+/// minute `at` is in, which its clock shows. At 12:00:40, 11:00:40 is
+/// 11:00, 1h ago. Counted from the second, it was 59m, and an answer that
+/// also said since 11:00 (1h ago) told the same time two ways.
 pub fn when(at: i64, now: i64) -> String {
-    let span = span(at - now);
+    let minute = |at: i64| at.div_euclid(MINUTE) * MINUTE;
+    let span = span(minute(at) - minute(now));
     match at >= now {
         true => format!("{} (in {span})", clock(at, now)),
         false => format!("{} ({span} ago)", clock(at, now)),
@@ -161,6 +166,18 @@ mod tests {
         // A count back is never ahead.
         assert!(matches!(parse("-2d", now), Err(Error::Usage(_))));
         assert_eq!(span(110 * MINUTE), "1h 50m");
+        // By the minutes the clocks show. At 15:00:40, 14:00:40 is an hour
+        // back, and 16:00:05 an hour ahead.
+        let later = now + 40_000;
+        let (back, ahead) = (later - HOUR, later + HOUR - 35_000);
+        assert_eq!(
+            when(back, later),
+            format!("{} (1h ago)", clock(back, later))
+        );
+        assert_eq!(
+            when(ahead, later),
+            format!("{} (in 1h)", clock(ahead, later))
+        );
         assert_eq!(span(2 * DAY + 4 * HOUR + 10 * MINUTE), "2d 4h");
     }
 }

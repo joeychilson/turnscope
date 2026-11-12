@@ -81,11 +81,9 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
         out += "\n";
         if let Some(stale) = stale(account, true, now) {
             out += &match account.state {
-                State::AsOf { read_at, .. } => format!(
-                    "  As of {} ({} ago): {stale}.\n",
-                    time::clock(read_at, now),
-                    time::span(now - read_at)
-                ),
+                State::AsOf { read_at, .. } => {
+                    format!("  As of {}: {stale}.\n", when(read_at, now))
+                }
                 _ => format!("  {}{}.\n", stale[..1].to_uppercase(), &stale[1..]),
             };
         }
