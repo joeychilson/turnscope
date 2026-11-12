@@ -235,8 +235,9 @@ The answer:
 2. The limit's line, as `check_limits` gives it.
 3. A table of the top rows, each with its cost, responses and share of the
    limit in percentage points, then a row adding up the rest. A session
-   shows as its id and its title in quotes, and the caller's own is marked
-   `(yours)`.
+   shows as its id and its title in quotes, or `(untitled)`. The caller's
+   own is marked `(yours)`: the one Claude Code names, or another agent's
+   latest in its folder.
 4. The top three models and projects of the same usage, except the one
    grouped by, and with `all` the top three accounts.
 

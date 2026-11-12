@@ -615,11 +615,18 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         .map(|used| (used, None)),
     };
     let (used, points) = breakdown(by, top)?;
+    // Times are told by the minute, as `check_limits` tells them: from the
+    // minute the status is, to the minute a time falls in, which is the one
+    // its clock shows. At 12:00:40, a reset at 14:00 is in 2h, and an hour
+    // back, 11:00:40, is 11:00, 1h ago. Told from 12:00 to 11:00:40, it was
+    // 59m ago.
+    let minute = status.at;
+    let ago = |at: i64| time::span(minute - at.div_euclid(time::MINUTE) * time::MINUTE);
     let mut out = format!(
         "Usage of {} since {} ({} ago): {} at list prices over {} responses{}.\n",
         account.map_or("every account".to_owned(), |account| account.full_title()),
-        time::clock(used.since, now),
-        time::span(now - used.since),
+        time::clock(used.since, minute),
+        ago(used.since),
         usage::dollars(used.total.cost_usd),
         usage::count(used.total.responses),
         if used.total.unpriced > 0 {
@@ -632,15 +639,20 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         },
     );
     if let Some(limit) = limit {
-        out += &format!("{}\n", status::limit_text(limit, now));
+        out += &format!("{}\n", status::limit_text(limit, minute));
     }
     if !used.rows.is_empty() {
         // Shares are known only over a limit's own window.
         let shares = limit.zip(points.as_deref());
-        out += &format!(
-            "\n{}",
-            usage::markdown(&used, shares, server.caller.session.as_deref())
-        );
+        let yours = match by {
+            By::Session => server.caller.own_session(
+                &server.db,
+                &server.home,
+                server.caller.folder.as_deref(),
+            )?,
+            _ => None,
+        };
+        out += &format!("\n{}", usage::markdown(&used, shares, yours.as_deref()));
     }
     // Asked since a time, as the calendar week for "this week" of a weekly
     // limit, the shares are left out: say how to get them.
@@ -650,8 +662,8 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         out += &format!(
             "\nShares of {} are known only over its window, since {} ({} ago): leave since out for them.\n",
             limit.named(),
-            time::clock(start, now),
-            time::span(now - start)
+            time::clock(start, minute),
+            ago(start)
         );
     }
     // The same usage by model and project, and by account when it's every
@@ -904,5 +916,62 @@ mod tests {
         };
         let taken = there.session_to_hand_off(&db, home, None, there.folder.clone());
         assert_eq!(taken.unwrap().0, "codex:c");
+    }
+
+    /// Codex names its session nowhere, so its own is its latest in its
+    /// folder, and that one has no title yet.
+    #[test]
+    fn explain_usage_marks_the_callers_session_whichever_agent_asks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let now = crate::now();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+             VALUES ('openai:a', 'openai', 'subscription', 'ChatGPT Plus', ?1)",
+            [now],
+        )
+        .unwrap();
+        for (id, title, ago) in [
+            ("codex:old", Some("Fix the parser"), 2),
+            ("codex:new", None, 1),
+        ] {
+            let at = now - ago * time::HOUR;
+            db.execute(
+                "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
+                 VALUES (?1, 'codex', 'f', '/work/app', '/work/app', ?2, ?3, ?3)",
+                rusqlite::params![id, title, at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model, input,
+                     cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches,
+                     priority, cost, account)
+                 VALUES ('codex', ?1, ?1, 0, 1, 'f', ?2, 'openai', 'gpt-5', 1, 0, 0, 0, 1, 0, 1, 0, 0, 1.0, 'openai:a')",
+                rusqlite::params![id, at],
+            )
+            .unwrap();
+        }
+        let server = Server {
+            db,
+            home: PathBuf::from("/home"),
+            caller: Caller {
+                agent: agents::ALL
+                    .iter()
+                    .copied()
+                    .find(|agent| agent.info().id == "codex"),
+                folder: Some(PathBuf::from("/work/app")),
+                session: None,
+                agent_folder: None,
+            },
+        };
+        let answer = explain_usage(&server, json!({ "account": "chatgpt" })).unwrap();
+        assert!(
+            answer.contains("| `codex:new` (untitled) (yours) |"),
+            "{answer}"
+        );
+        assert!(
+            answer.contains("| `codex:old` \"Fix the parser\" |"),
+            "{answer}"
+        );
     }
 }

@@ -376,10 +376,11 @@ pub fn markdown(
     };
     for (at, row) in usage.rows.iter().enumerate() {
         let name = match (&row.name, usage.by) {
-            (Some(name), By::Session) => format!(
+            // Its name is its title, which a session may not have yet.
+            (name, By::Session) => format!(
                 "`{}` {}{}",
                 row.key,
-                crate::sessions::title(Some(name.as_str())),
+                crate::sessions::title(name.as_deref()),
                 if Some(row.key.as_str()) == yours {
                     " (yours)"
                 } else {

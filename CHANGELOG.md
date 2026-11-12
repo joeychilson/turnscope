@@ -15,6 +15,13 @@
   app started is removed when the account can be read, also when the first
   status arrives before the app has found the notification. It stayed until
   the status next changed.
+- **`explain_usage`** marks the caller's own session `(yours)` for every
+  agent, as `find_sessions` does. It marked it only for Claude Code, the
+  one agent that names its session. A session with no title yet shows as
+  its id and `(untitled)`, where it showed its id alone.
+- **`explain_usage`** tells time as of the minute, as `check_limits` does.
+  40 seconds into a minute, a reset at 14:00 was in 1h 59m, where
+  `check_limits` said in 2h.
 
 ## 0.1.6
 
