@@ -11,10 +11,11 @@
   arrives. The panel opened in the bottom-left corner of the screen, with
   no account open, since the item had no place in the menu bar yet and no
   account was known.
-- **A notification asking to sign in again** that is left from before the
-  app started is removed when the account can be read, also when the first
-  status arrives before the app has found the notification. It stayed until
-  the status next changed.
+- **A notification asking to sign in again** is removed as soon as the
+  account can be read, also one left from before the app started. It could
+  stay until the status next changed. One the app couldn't post at first,
+  as while notifications were off, is no longer posted later for an
+  account that can be read by then.
 - **`explain_usage`** marks the caller's own session `(yours)` for every
   agent, as `find_sessions` does. It marked it only for Claude Code, the
   one agent that names its session. A session with no title yet shows as
