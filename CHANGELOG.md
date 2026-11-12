@@ -22,6 +22,10 @@
 - **`explain_usage`** tells time as of the minute, as `check_limits` does.
   40 seconds into a minute, a reset at 14:00 was in 1h 59m, where
   `check_limits` said in 2h.
+- **A time with an offset**, such as `2026-10-01T09:00:00-05:00`, is read
+  at that time by `--since`, `--until` and the MCP tools' `since`. It was
+  read as midnight of its date, as was a time with no offset, which is now
+  refused, since it could be any time zone's.
 
 ## 0.1.6
 
