@@ -7,10 +7,10 @@
   14:00 was in 1h 59m, and a limit's last minute before it ran out read
   0m.
 - **Clicking a notification** while the app is quit opens the panel under
-  the menu bar item with the notification's account open, once the first
-  status arrives. The panel opened at once in the bottom-left corner of the
-  screen, with no account open, since the item had no place in the menu
-  bar yet and no account was known.
+  the menu bar item, and the notification's account once the first status
+  arrives. The panel opened in the bottom-left corner of the screen, with
+  no account open, since the item had no place in the menu bar yet and no
+  account was known.
 - **A notification asking to sign in again** that is left from before the
   app started is removed when the account can be read, also when the first
   status arrives before the app has found the notification. It stayed until
