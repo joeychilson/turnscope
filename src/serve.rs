@@ -12,7 +12,9 @@
 //! after it last did, and each minute reads history, limits when due and
 //! prices when due. After each that read anything new, ran in a new minute
 //! or followed another process's write, serve pushes the status, if what it
-//! shows changed, with the alerts it raised. Should that thread stop, serve
+//! shows changed, with the alerts it raised. At start it reads the limits
+//! before anything else and pushes the status then too, so a first launch
+//! shows them while all of history is read. Should that thread stop, serve
 //! stops too, so the app starts one that keeps it.
 
 use std::borrow::Cow;
@@ -47,7 +49,8 @@ enum Message {
     Connected(UnixStream),
     Line(u64, Vec<u8>),
     Gone(u64),
-    /// The data was brought up to date, and may show something new.
+    /// The limits were read at start, or the data was brought up to date:
+    /// it may show something new.
     Kept,
     /// Keeping the data current stopped, and why: serve stops with it, so
     /// the app starts one that can.
@@ -226,9 +229,10 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
 /// up to 5 s late.
 const GAP: Duration = Duration::from_secs(5);
 
-/// Keep the data current: 250 ms after the agents' folders change, no
-/// sooner than `GAP` after the last catch-up, and each minute, as horizons
-/// and outlooks move with the clock.
+/// Keep the data current: the limits at start, then a catch-up, and one
+/// 250 ms after the agents' folders change, no sooner than `GAP` after the
+/// last catch-up, and each minute, as horizons and outlooks move with the
+/// clock.
 fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
     let mut db = crate::db::open(data)?;
     let (changed, changes) = mpsc::channel();
@@ -276,6 +280,23 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
     // and 0.4G with this. The cost: an agent's MCP settings changed outside
     // the app show at the next minute.
     let mut pushed = None;
+    // The limits first, and the main thread told, before the first
+    // catch-up: over telling it only once a catch-up is done, as every
+    // later one does. On a first launch that catch-up reads all of history
+    // (12 s for a made-up one of 5,000 files, 176 MB), and until it ended
+    // the app showed no account, though the limits were read before it
+    // began. The catch-up then finds the limits read, and reads prices and
+    // history. Offline, or with limits read in the last five minutes,
+    // nothing is told here.
+    if crate::online() {
+        let read = crate::limits::refresh(&mut db, home).unwrap_or_else(|error| {
+            eprintln!("turnscope serve: {error}");
+            true
+        });
+        if read && kept.send(Message::Kept).is_err() {
+            return Ok(());
+        }
+    }
     loop {
         // One that failed may have read some.
         let read = crate::catch_up(&mut db, home).unwrap_or_else(|error| {
@@ -539,7 +560,7 @@ impl Server {
                 ))
             })
             .ok_or_else(|| Error::NotFound(format!("no limit {limit} of {account}")))?;
-        let (used, points) = usage::breakdown(
+        let (used, shares) = usage::breakdown(
             &self.db,
             found.0,
             Some(found.1),
@@ -549,7 +570,7 @@ impl Server {
             now,
         )?;
         let mut sessions = Vec::new();
-        for (row, points) in used.rows.iter().zip(points) {
+        for (at, row) in used.rows.iter().enumerate() {
             let (project, agent, running) = crate::sessions::brief(&self.db, &row.key, now)?;
             sessions.push(UsedMost {
                 session: row.key.clone(),
@@ -560,7 +581,7 @@ impl Server {
                 // By session, a row's name is its session's title.
                 title: row.name.clone(),
                 agent,
-                share_percent: points,
+                share_percent: shares.as_ref().map(|shares| shares.rows[at]),
                 running,
             });
         }
@@ -578,7 +599,8 @@ struct UsedMost {
     project: Option<String>,
     agent: String,
     /// Points of the limit it took; `None` where the window's start isn't
-    /// known, as of credits or a window that rolls.
+    /// known, as of credits or a window that rolls, where the window reset
+    /// since the limit was read, or where nothing used had a price.
     share_percent: Option<f64>,
     running: bool,
 }
@@ -607,6 +629,111 @@ mod tests {
         for each in hello["result"]["alerts"].as_array().unwrap() {
             again::<crate::alerts::Alert>(each);
         }
+    }
+
+    /// An account read two hours ago, an hour before its week ended: its one
+    /// limit reset since, so it decides the account and the app asks what
+    /// used it.
+    #[test]
+    fn what_used_a_limit_that_reset_since_its_read_is_the_sessions_since_with_no_share() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = crate::db::open(data.path()).unwrap();
+        let (now, hour) = (crate::now(), crate::time::HOUR);
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+             VALUES ('openai:a', 'openai', 'subscription', 'ChatGPT Plus', ?1)",
+            [now - 2 * hour],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+             VALUES ('openai:a', 'weekly', ?1, 'Weekly', 40, ?2, ?3)",
+            [now - 2 * hour, now - 169 * hour, now - hour],
+        )
+        .unwrap();
+        for (id, title, at) in [
+            ("codex:before", "Fix the parser", now - 3 * hour),
+            ("codex:after", "Add a flag", now - hour / 2),
+        ] {
+            db.execute(
+                "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
+                 VALUES (?1, 'codex', 'f', '/work/app', '/work/app', ?2, ?3, ?3)",
+                rusqlite::params![id, title, at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model, input,
+                     cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches,
+                     priority, cost, account)
+                 VALUES ('codex', ?1, ?1, 0, 1, 'f', ?2, 'openai', 'gpt-5', 1, 0, 0, 0, 1, 0, 1, 0, 0, 1.0, 'openai:a')",
+                rusqlite::params![id, at],
+            )
+            .unwrap();
+        }
+        let server = super::Server {
+            db,
+            home: home.path().to_path_buf(),
+            clients: super::HashMap::new(),
+            sent: None,
+            sender: std::sync::mpsc::channel().0,
+        };
+        let sessions = server.breakdown("openai:a", "weekly", now).unwrap();
+        // The one before used the week that ended, and no points of this
+        // one are known to be used.
+        assert_eq!(
+            serde_json::to_value(sessions).unwrap(),
+            serde_json::json!([{
+                "session": "codex:after",
+                "title": "Add a flag",
+                "project": "app",
+                "agent": "codex",
+                "sharePercent": null,
+                "running": false,
+            }])
+        );
+    }
+
+    /// The main thread is told once the limits are read, before the first
+    /// read of history. That read can't begin here: its lock is held, as
+    /// another Turnscope reading history holds it.
+    #[test]
+    fn the_main_thread_is_told_of_the_limits_before_history_is_read() {
+        // Offline, no limits are read, so nothing is told before history.
+        if !crate::online() {
+            return;
+        }
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut db = crate::db::open(data.path()).unwrap();
+        // Nothing is asked over the network: the home holds no login to
+        // read a limit with, and the prices count as read just now.
+        db.execute("UPDATE state SET prices_at = ?1", [crate::now()])
+            .unwrap();
+        // What each agent folder holds is known by now, and the limits are
+        // due again: a folder's first sign-in takes the lock too, to work
+        // out whose its usage is (`ingest::derive`).
+        crate::limits::refresh(&mut db, home.path()).unwrap();
+        db.execute("UPDATE state SET limits_at = NULL", []).unwrap();
+        let reading = crate::db::lock(&data.path().join("ingest.lock")).unwrap();
+        let (sender, messages) = std::sync::mpsc::channel();
+        let (home_kept, data_kept) = (home.path().to_path_buf(), data.path().to_path_buf());
+        std::thread::spawn(move || super::keep(&home_kept, &data_kept, &sender));
+        // Wait to be told, and say when the limits were read, and whether
+        // the history was, by then.
+        let told = || -> (Option<i64>, bool) {
+            let told = messages.recv_timeout(super::Duration::from_secs(10));
+            assert!(matches!(told, Ok(super::Message::Kept)));
+            db.query_row(
+                "SELECT limits_at, history_at IS NOT NULL FROM state",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        let (limits, history) = told();
+        assert!(limits.is_some() && !history);
+        drop(reading);
+        // The catch-up finds the limits read, and reads the history.
+        assert_eq!(told(), (limits, true));
     }
 
     /// A status is pushed when what it shows changed, and only then: not
