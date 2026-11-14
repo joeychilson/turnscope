@@ -275,7 +275,6 @@ fn every_command_answers_as_its_snapshot_says() {
         // own, Codex's, with Pi's before it.
         ("handoff-folder", vec!["handoff", "--folder", "/work/app"]),
         ("accounts", vec!["accounts"]),
-        ("config", vec!["config"]),
         ("connect", vec!["connect"]),
         ("doctor", vec!["doctor"]),
     ] {
@@ -375,11 +374,6 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             vec!["usage", "--since", "99999999999999d"],
             2,
             "24h, 7d or 4w",
-        ),
-        (
-            vec!["config", "set", "notify.everything", "on"],
-            2,
-            "notify.runningOut",
         ),
         (vec!["sessions", "--count", "0"], 2, "0 is not in 1..=100"),
         (vec!["sessions", "-n", "101"], 2, "101 is not in 1..=100"),

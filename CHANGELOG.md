@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+- **`turnscope config`** is removed. It showed the four notification
+  settings and turned one on or off. Only the app sends notifications, and
+  its Settings → General has a switch for each.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command

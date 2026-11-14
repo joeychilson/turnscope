@@ -267,7 +267,7 @@ Where each setting is kept:
 | Show (menu bar) | The app's defaults, `menuShows`: `all` or `one` | |
 | Offers to connect put away | The app's defaults, `dismissedConnect`: agent ids joined by commas | |
 | Open at login | macOS's login items (`SMAppService.mainApp`) | System Settings |
-| Notify me when | The engine's settings, through `settings.set` | `turnscope config set notify.<kind> on\|off` |
+| Notify me when | The engine's settings, through `settings.set` | |
 | Hidden accounts | The engine, through `account.hide` | `turnscope accounts hide\|show` |
 | Connected agents | Each agent's own configuration, through `agent.connect` and `agent.disconnect` | `turnscope connect`, `turnscope disconnect` |
 | Check automatically | Sparkle's defaults | |
@@ -441,13 +441,12 @@ First decide who owns it.
    takes the same default while the key isn't set. `AppDelegate` redraws
    the menu bar item on any change to the defaults.
 
-**An engine setting** must agree with the command line, or changes what
-`serve` does, like the notification switches. It's a protocol change
+**An engine setting** changes what `serve` does, like the notification
+switches. It's a protocol change
 ([protocol.md](protocol.md#change-the-protocol)):
 
 1. Add the field to `Settings` or `Notify` in `src/alerts.rs`, with its
-   default, and to `turnscope config` in `src/main.rs` and
-   [cli.md](cli.md).
+   default.
 2. Add it to the examples in `contract/` that carry settings.
 3. Add it to `Settings` or `Notify` in `Contract.swift`. The app sends the
    whole `Settings` back, so a field it leaves out is reset to its default

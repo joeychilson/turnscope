@@ -117,9 +117,9 @@ A protocol the server doesn't speak gets `-32001` (`error.json`):
   meanwhile. On success it pushes the status. An unknown agent gets
   `-32602`. A command that fails gets `-32000` with its reason.
 
-`turnscope config set` and `turnscope accounts hide|show` change the same
-settings from the command line. A running `serve` pushes the status that
-carries them within a minute.
+`turnscope accounts hide|show` hides or shows an account from the command
+line. A running `serve` pushes the status that carries the change within a
+minute.
 
 ```json
 {"id":3,"jsonrpc":"2.0","method":"limit.breakdown","params":{"account":"anthropic:acct-1:org-1","limit":"five_hour"}}
