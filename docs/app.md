@@ -105,7 +105,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
 - **`Client`** connects to `serve` and keeps connected. It runs
   `turnscope serve --socket` once for the socket's path, starts `serve` when
   nothing listens, and says `hello` on each connection. It hands the store
-  events in order: its phase (connecting, connected, or failed and why),
+  events in order: its phase (connected, or failed and why),
   each `hello` result, each status and each alert. A status or alert it
   can't read drops the connection, so the store hears that it failed.
   `request` sends a request and waits for its result.
@@ -119,7 +119,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   setting show at once, and go back if `serve` refuses. Connecting or
   disconnecting an agent shows as soon as `serve` has done it. It also
   holds which agents are being connected, why connecting failed, and the
-  sessions that used the open account's deciding limit (`usedMost`), shown
+  sessions that used an account's deciding limit (`usedMost`), shown
   only while that limit still decides it. It calls `onChange` after each
   status and each time `serve` connects or fails, and `onAlert` with each
   alert. `AppDelegate` sets these to redraw the menu bar item and post
@@ -203,7 +203,8 @@ The panel is 340 points wide. From the top:
    Settings (⌘,) and Quit (⌘Q).
 
 Before the first status, the panel shows "Reading your agents' history…",
-or "Turnscope can't read its data" with the reason.
+or "Turnscope can't read its data" with the reason. Settings → Agents and
+Accounts show the same.
 
 On a first launch, the headline says "Getting your limits" until `serve`
 has read them. It pushes a status then, before it reads the history, so
@@ -216,14 +217,14 @@ can't say (`Words.opened`), opens in place on a click, Space or Return,
 closing any other. Open, it shows each limit on a line of its own with a
 bar, the note, and the sessions that used the deciding limit most, from
 `limit.breakdown`. The store asks for those of every account as the panel
-opens, so a row opens with them in one motion, and again for the open
-account with each status. Hovering shows a Hide button, and right-clicking
-offers Hide too. Hide and Show name the account as its row does
-(`Words.called`), so two with the same title are told apart.
+opens, so a row opens with them in one motion. `AppDelegate` has it ask
+again for the open account with each status. Hovering shows a Hide button,
+and right-clicking offers Hide too. Hide and Show name the account as its
+row does (`Words.called`), so two with the same title are told apart.
+VoiceOver reads a limit's figure as what's left: "87% left".
 
 With Reduce Motion on, pages fade instead of sliding, a limit's bar is
-drawn at its level instead of growing to it, and the footer's spinner holds
-still.
+drawn at its level instead of growing to it, and a spinner holds still.
 
 The window is a borderless, transparent panel hung under the item, as tall
 as the screen allows. The SwiftUI view draws its own glass, edge and shadow
@@ -263,6 +264,10 @@ are in cards. Changes take effect at once.
 | General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert, grayed out until the first status arrives. **Updates**: the version, Check now and Check automatically |
 | Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed. Run from its disk image, the switches are off and the heading says to move Turnscope to Applications |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
+
+While `serve` is away, the switches that change something through it are
+grayed out: the notification switches, and those of Agents and Accounts. A
+change made then would be lost.
 
 Where each setting is kept:
 
@@ -399,8 +404,9 @@ TURNSCOPE_BINARY=$PWD/target/debug/turnscope "$app" --data /tmp/ts --open accoun
 ```
 
 The app logs to the unified log, under the subsystem
-`com.joeychilson.turnscope`. A `serve` it starts writes nowhere. To watch
-the connection:
+`com.joeychilson.turnscope`. What a `serve` it starts prints on standard
+error is kept only to say why it couldn't start
+([protocol.md](protocol.md#lifecycle)). To watch the connection:
 
 ```sh
 log stream --predicate 'subsystem == "com.joeychilson.turnscope"'

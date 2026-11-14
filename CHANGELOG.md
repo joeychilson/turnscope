@@ -28,6 +28,24 @@
   while the footer says it's reading your agents' history. It said
   "Getting your limits" and showed no account until all of the history was
   read, which can take minutes.
+- **Settings → Agents and Accounts** say what the panel says before the
+  first status arrives: "Reading your agents' history…", or why Turnscope
+  can't read its data. Agents said no agent Turnscope serves is installed,
+  and Accounts was empty.
+- **Why the app's engine couldn't start** is said in the panel, as when a
+  newer Turnscope has updated the data: "turnscope: a newer Turnscope has
+  updated this data; update Turnscope". The panel said only that the engine
+  didn't start.
+- **Switches in Settings** that change something through the app's engine
+  are grayed out while it's away: the notification switches, and those
+  that connect an agent or show an account. A change made then moved the
+  switch and moved it back, and for an agent said the engine isn't
+  running.
+- **Reduce Motion:** with it on, no spinner turns. The ones shown before
+  the first status and while the panel connects an agent kept turning.
+  They're now the footer's small arc.
+- **VoiceOver** reads the figure on an account's row and on a limit's line
+  as what's left: "87% left". It read the figure alone.
 - **A command that reads all of your agents' history** says so first, on
   standard error: `Reading your agents' history…`. That's the first
   command you run, and the first after an update that changes how history
