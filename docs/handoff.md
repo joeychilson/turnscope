@@ -165,14 +165,17 @@ keep conversations. Before any text is shown, secrets are replaced with
 
 - keys that start with a known prefix and go on for enough key characters:
   `sk-`, `xai-`, GitHub's `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` and
-  `github_pat_`, GitLab's `glpat-`, AWS's `AKIA` and Google's `AIza`;
+  `github_pat_`, GitLab's `glpat-`, AWS's `AKIA`, Google's `AIza` and
+  `ya29.`, Stripe's `sk_live_`, `sk_test_` and `rk_live_`, Slack's `xoxb-`
+  and `xoxp-`, and Hugging Face's `hf_`;
 - JSON Web Tokens;
 - whatever follows `Bearer `;
 - private keys' PEM blocks, also in a JSON string, indented, with line
   numbers, in a diff, encrypted, or cut short with no END line.
 
 Each is also found right after a JSON string's `\n`, `\t` or `\r`, as in
-a tool call's input. Terminal color codes are taken out too.
+a tool call's input, and after the `-` that starts a line a diff removes.
+Terminal color codes are taken out too.
 
 A session holds text from files, web pages and tool output that the agent
 read, and requests other people made. So a handoff quotes what the session

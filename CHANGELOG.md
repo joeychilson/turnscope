@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.8
+
+- **A key that starts a line a diff removes,** as after deleting a file
+  that holds a token, is redacted. The `-` before the key counted as part
+  of a word, so reading a session, search and handoffs showed the key. A
+  private key on such a line was already redacted.
+- **More keys are redacted:** Stripe's (`sk_live_`, `sk_test_` and
+  `rk_live_`), Slack's (`xoxb-` and `xoxp-`), Hugging Face's (`hf_`) and
+  Google's access tokens (`ya29.`). Reading a session, search and handoffs
+  showed one unless it followed `Bearer `.
+- Your agents' history is read again once after updating, so these fixes
+  apply to what was read before.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command
