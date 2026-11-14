@@ -146,6 +146,8 @@
   another once more were bought and used up too. When more are bought,
   "Credits are back" says how much is left. So does a key's own limit that
   never resets. A limit that never resets raised no notification.
+  `check_limits` and `status --hours` say "Credits are used up" and
+  "Credits have $45.00 of $50.00 left" too, where they said "is" and "has".
 - **A second account's folder that's gone**, such as `~/.codex-work` once
   deleted, is signed out of, and so is one without the file its agent
   writes once signed in. Its account stayed signed in through that agent,

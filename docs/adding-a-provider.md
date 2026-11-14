@@ -132,7 +132,7 @@ limit:
 | Field | What it is |
 |---|---|
 | `key` | The same at every read: it names the limit in readings, alerts and `limit.breakdown`. A limit that belongs to one API key is keyed `key-<fingerprint>`, from `credential.secret.fingerprint()`: the status then shows the agents holding that key, and the limit never decides how the account stands. |
-| `name` | As the user knows it: `5 hours`, `Weekly`, `Credits`. |
+| `name` | As the user knows it: `5 hours`, `Weekly`, `Credits`. A limit of money whose name ends in `s` is said as plural, "Credits are used up", by the engine and the app alike. |
 | `scope` | The model it covers, when not all: `Opus`. Join several with "and", as `Claude and GPT`: a breakdown counts the responses of models whose id names any of them. |
 | `used` | Percent used. For a limit of money, what was spent divided by the limit, times 100. |
 | `size` | Dollars, for a limit of money. For one that never resets, all that was ever bought, as OpenRouter's credits are, so it grows when more is: a `usedUp` alert is raised once per size. |
