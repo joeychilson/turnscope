@@ -449,7 +449,7 @@ fn a_command_says_when_it_reads_all_of_history() {
     };
     let reading = "Reading your agents' history…\n";
     // One that reports no data reads no history.
-    assert_eq!(said(&["config"]), "");
+    assert_eq!(said(&["connect"]), "");
     assert_eq!(said(&["sessions"]), reading);
     assert_eq!(said(&["sessions"]), "");
     // As after an update that raised `ingest::READERS`.
