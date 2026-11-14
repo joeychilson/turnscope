@@ -44,8 +44,9 @@ pub const MOST: usize = 100;
 pub const ENTRIES: usize = 30;
 
 /// The sessions at the top of their trees for which `tops`, a condition on
-/// the session `s`, holds, each with the sessions in its tree: subagents and
-/// forks, of any depth. One whose parent was never read is a top of its own.
+/// the session `s`, holds, each with the sessions in its tree: its
+/// subagents, theirs, and so on. A fork or a continuation is a top of its
+/// own, as is a session whose parent was never read.
 ///
 /// Finding sessions keeps the tops it asks for before building their trees,
 /// not after: 13 ms for one folder's sessions of one agent among 3,007,

@@ -245,7 +245,9 @@ The answer:
    own is marked `(yours)`: the one Claude Code names, or another agent's
    latest in its folder.
 4. The top three models and projects of the same usage, except the one
-   grouped by, and with `all` the top three accounts.
+   grouped by, and with `all` the top three accounts, each with its cost.
+   Usage with no known price shows as `(+N unpriced)` after the cost, as
+   in the table.
 
 Shares are approximate. Providers say how much of a limit is used, not by
 what, so each row's share is the points used times its part of the cost.
@@ -254,6 +256,10 @@ models whose id names it; one on several, such as `Weekly (Claude and GPT)`,
 those of any of them. Shares are known only over the limit's current
 window, so with any other `since` the column is left out, and a line says
 from when the window runs and to leave `since` out for them.
+
+For a limit whose window reset since it was read, the usage runs from the
+reset, and no row has a share: how much of the new window is used isn't
+known. With another `since`, no line then says how to get shares.
 
 An account with no limit read, such as one whose login expired, still has
 its usage broken down, without the limit's line or shares: unless `since`

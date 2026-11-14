@@ -235,6 +235,14 @@ impl Limit {
             .map(|window| window.resets.at)
     }
 
+    /// When its window started, unless it has reset since it was read: the
+    /// start read is then the window before's.
+    pub fn started(&self) -> Option<i64> {
+        self.window
+            .filter(|_| self.reset_since.is_none())?
+            .starts_at
+    }
+
     /// Whether `name` names it: part of its name as shown, with its models
     /// after it as the command line shows them or before it as the app
     /// does, or part of its key. So `week` names Weekly and `seven_day`, and

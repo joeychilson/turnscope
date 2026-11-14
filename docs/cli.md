@@ -210,10 +210,14 @@ Costs are at list prices: what the same tokens cost on each provider's API.
 **What used a limit.** With `--limit`, the usage runs from the start of the
 limit's current window (for a limit with no window, this month for an API
 key and the last 7 days otherwise), by
-session, and each row gets its share of the limit. Without `--account`, the
-account is the calling agent's if it has the limit, or else the first
-account shown that has it. `--since` moves the start, and then rows get no
-share.
+session, and each row gets its share of the limit, as does the row that
+adds up the rest. Without `--account`, the account is the calling agent's
+if it has the limit, or else the first account shown that has it. `--since`
+moves the start, and then rows get no share. A limit whose window reset
+since it was read counts from the reset, and its rows get no share either:
+how much of the new window is used isn't known. With `--json`,
+`sharePercents` holds each row's share in the rows' order, or `null` when
+rows get none.
 
 A limit is named by part of its name or of its key, in any case: `week`,
 `"5 hours"`. A model's limit takes its model after its name, as `status`
