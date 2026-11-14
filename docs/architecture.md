@@ -161,7 +161,7 @@ Each kind of extension lives in one place.
 |---|---|---|
 | An agent | `src/agents/<agent>.rs`, implementing `Agent` | A line in `agents::ALL` ([adding-an-agent.md](adding-an-agent.md)) |
 | A provider | `src/providers/<provider>.rs`, implementing `Provider` | A line in `providers::ALL` ([adding-a-provider.md](adding-a-provider.md)) |
-| An MCP tool | A function `fn(&mut Server, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
+| An MCP tool | A function `fn(&Server, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
 | A CLI command | A variant of `main::Command` | Its arm in `main::answer`, and whether it catches up first |
 | A `serve` method | Its arm in `serve::Server::answer` | Its example in `contract/` ([protocol.md](protocol.md)) |
 | A database change | A new script at the end of `db::REVISIONS` | |

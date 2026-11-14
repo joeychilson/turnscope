@@ -355,6 +355,37 @@ fn absolute(path: PathBuf) -> PathBuf {
     std::path::absolute(&path).unwrap_or(path)
 }
 
+/// `given`, a folder as a person, an agent or a variable gives it, in the
+/// form sessions and responses hold theirs: absolute, with `.` and `..`
+/// folded and no slash at its end. A relative one is in the current folder.
+/// As it is when it can't be made absolute.
+///
+/// A session is found by its folder, and the caller's account by its agent
+/// folder, as text. `std::path::absolute` alone, which `--folder` took,
+/// drops `.` and keeps `..` and a slash at the end, so `--folder ..` looked
+/// for `/work/app/..` and found nothing.
+///
+/// Folded by the path's text, over asking the disk as `canonicalize` does.
+/// A folder that's gone, as a worktree deleted since, still names its
+/// sessions, where the disk has nothing to resolve. A link isn't followed
+/// either: a session's folder is kept as its agent wrote it, link or not.
+pub fn folded(given: &Path) -> PathBuf {
+    let Ok(absolute) = std::path::absolute(given) else {
+        return given.to_path_buf();
+    };
+    let mut folded = PathBuf::new();
+    for part in absolute.components() {
+        match part {
+            // Above the root is the root, where there's nothing to drop.
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            part => folded.push(part),
+        }
+    }
+    folded
+}
+
 /// A command's answer, as text or JSON. Those that report data catch up
 /// first; those that change a setting don't wait for it.
 fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<String> {
@@ -515,7 +546,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         } => {
             let query = sessions::Query {
                 search,
-                folder: folder.map(absolute),
+                folder: folder.as_deref().map(folded),
                 agent,
                 since: time_of(&from)?,
                 running,
@@ -525,16 +556,17 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             };
             let page = sessions::find(&db, home, &query, now)?;
             let caller = mcp::Caller::detect();
-            let own = caller.own_session(&db, home, caller.folder.as_deref())?;
+            let own = caller.own_session(&db, home)?;
             print(
                 json!(page),
                 sessions::text(&page, sessions::Cite::Command, own.as_deref(), now),
             )
         }
         Command::Handoff { session, folder } => {
-            let folder = folder
-                .map_or_else(std::env::current_dir, std::path::absolute)
-                .unwrap_or_default();
+            let folder = match folder {
+                Some(given) => folded(&given),
+                None => std::env::current_dir().unwrap_or_default(),
+            };
             // Run by an agent, not the session it's run from.
             let (session, others) = mcp::Caller::detect().session_to_hand_off(
                 &db,
@@ -855,8 +887,14 @@ fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String>
 }
 
 /// The account of the session a harness names in the JSON it writes to a
-/// status line's standard input, as Claude Code does: its `session_id`, or
-/// else its folder's latest.
+/// status line's standard input, as Claude Code does, by its `session_id`.
+/// None for a session not read yet, as a new one, since a status line never
+/// catches up, or one with no response on an account yet.
+///
+/// The calling agent's own account answers then, over the account of the
+/// latest response in the session's folder, which answered before. That one
+/// could be another agent's: after Codex ran last in a folder, a new Claude
+/// Code session's status line showed the Codex account's limits.
 fn harness(db: &rusqlite::Connection) -> Option<String> {
     use std::io::IsTerminal as _;
     if std::io::stdin().is_terminal() {
@@ -876,18 +914,6 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
         .as_str()
         .and_then(|session| sessions::resolve(db, session).ok())
         .and_then(|session| sessions::account(db, &session).ok().flatten())
-        .or_else(|| {
-            let folder = given["workspace"]["current_dir"]
-                .as_str()
-                .or(given["cwd"].as_str())?;
-            db.query_row(
-                "SELECT r.account FROM response r JOIN session s ON s.id = r.session
-                 WHERE s.cwd = ?1 AND r.account IS NOT NULL ORDER BY r.at DESC LIMIT 1",
-                [folder],
-                |row| row.get(0),
-            )
-            .ok()
-        })
 }
 
 /// Bring the database up to date: prices and limits when due, then what's
@@ -976,6 +1002,35 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// None of these folders is on the disk.
+    #[test]
+    fn a_folder_is_folded_by_its_text() {
+        for (given, kept) in [
+            ("/work/app", "/work/app"),
+            ("/work/app/", "/work/app"),
+            ("/work/app/.", "/work/app"),
+            ("/work/./app", "/work/app"),
+            ("/work//app", "/work/app"),
+            ("/work/app/..", "/work"),
+            ("/work/app/../api/", "/work/api"),
+            ("/work/app/src/../../api", "/work/api"),
+            ("/..", "/"),
+            ("/", "/"),
+        ] {
+            // As text, which is how it's compared: two paths are equal with
+            // or without a slash at the end.
+            assert_eq!(folded(Path::new(given)).to_str(), Some(kept), "{given}");
+        }
+        // A relative one is in the current folder.
+        let here = std::env::current_dir().unwrap();
+        for (given, kept) in [
+            ("gone/../app/", here.join("app")),
+            ("..", here.parent().unwrap().to_path_buf()),
+        ] {
+            assert_eq!(folded(Path::new(given)).to_str(), kept.to_str(), "{given}");
+        }
+    }
 
     #[test]
     fn doctor_names_a_file_that_cant_be_read_until_its_deleted() {

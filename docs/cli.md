@@ -240,7 +240,7 @@ session ends with `· yours`. Usage with no known price shows as
 | Flag | Default | |
 |---|---|---|
 | `--search <words>` | | Sessions where all these words were said, by you or the model, in any of its messages. Whole words, in any case. Those with all of them in the most messages come first, and the first three show the latest such message. |
-| `--folder <dir>` | every folder | Sessions of this folder's project (its git repository), or run in it or under it. |
+| `--folder <dir>` | every folder | Sessions of this folder's project (its git repository), or run in it or under it. A relative one is in the current folder. `.` and `..` are folded as written, without asking the disk: a folder that's gone still names its sessions, and a link isn't followed. |
 | `--agent <id>` | every agent | Only this agent's sessions. |
 | `--since <when>` | | Active since this [time](#time-forms). |
 | `--running` | | Only sessions active in the last 5 minutes. |
@@ -337,7 +337,7 @@ holds and how it's built, with an example.
 | Argument | Default | |
 |---|---|---|
 | `<session>` | The latest session in the folder, other than the caller's own | The session to hand off. Taken by default, the handoff first lists the two sessions before it in the folder; `--json` gives them as `others`. |
-| `--folder <dir>` | The current folder | The folder to take the latest session of: its project's sessions, or those run in it or under it. |
+| `--folder <dir>` | The current folder | The folder to take the latest session of: its project's sessions, or those run in it or under it. Written as for [`sessions --folder`](#sessions). |
 
 Only Claude Code says which session is calling. From another agent, its
 own session is taken to be that agent's latest run in the folder it runs
@@ -532,7 +532,8 @@ In Claude Code's `settings.json`:
 ```
 
 Without `--account`, it takes the account of the session Claude Code names
-on standard input (`session_id`, or else the latest session in
-`workspace.current_dir` or `cwd`), then the calling agent's, then the first
-account in use. It answers from the database alone, so it never waits on
-the network. It always exits 0: when nothing is known, it prints nothing.
+on standard input (`session_id`), then the calling agent's, then the first
+account in use. A new session isn't read yet, so the calling agent's
+account shows for it. It answers from the database alone, so it never
+waits on the network. It always exits 0: when nothing is known, it prints
+nothing.

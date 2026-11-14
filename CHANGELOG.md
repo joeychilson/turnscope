@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.8
+
+- **A folder** names its sessions with `..`, `.` or a slash at its end:
+  for `sessions --folder`, `handoff --folder`, and the `folder` of
+  `find_sessions` and `handoff`. `..` was kept as written, so `sessions
+  --folder ..` looked for `/work/app/..` and found no session. With a
+  slash at its end, `--folder` left out the sessions of the folder's
+  project run outside it, as in a worktree kept beside it. The folder is
+  folded as it's written, without asking the disk, so a folder that's gone
+  still names its sessions, and a link isn't followed.
+- **The calling agent's account** is found when `CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME` or `GROK_HOME` is written with a slash at its end or with
+  `..`. None was found: `check_limits` listed every account, `guard`
+  blocked nothing, and `statusline` showed the first account in use.
+- **`statusline`** shows the calling agent's own account for a session
+  Turnscope hasn't read yet, as a new one, and the first account in use
+  with no calling agent. It showed the account of the latest session in
+  the folder, of any agent: after Codex ran last in a folder, a new Claude
+  Code session's status line showed the Codex account's limits until the
+  session was read.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command

@@ -75,6 +75,8 @@ WITH RECURSIVE tree (id) AS (
     SELECT s.id FROM session s JOIN tree ON s.parent = tree.id WHERE +s.link = 'subagent'
 )";
 
+/// Its folders are as `crate::folded` makes them: a session's is compared
+/// with them as text.
 #[derive(Default)]
 pub struct Query {
     /// All these words said in it.
@@ -161,6 +163,8 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         .folder
         .as_ref()
         .map(|folder| crate::ingest::project(&folder.to_string_lossy(), home));
+    // Only the root still ends with a slash. Without it, `?3 || '/'` below
+    // starts every folder, as every folder is under the root.
     let folder = query
         .folder
         .as_ref()
@@ -194,10 +198,7 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         true => query.since.unwrap_or(0).max(now - RUNNING),
         false => query.since.unwrap_or(0),
     };
-    let run_in = query
-        .run_in
-        .as_ref()
-        .map(|folder| folder.to_string_lossy().trim_end_matches('/').to_owned());
+    let run_in = query.run_in.as_ref().map(|folder| folder.to_string_lossy());
     let mut rows = statement.query(params![query.agent, project, folder, since, run_in])?;
     // Each with the ids of the sessions in its tree, until the page is cut.
     let mut found: Vec<(Summary, String)> = Vec::new();

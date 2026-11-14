@@ -419,6 +419,116 @@ fn a_relative_folder_is_in_the_current_folder() {
     }
 }
 
+/// A folder names its sessions however it's written: with `..`, `.` or a
+/// slash at its end.
+#[test]
+fn a_folder_names_its_sessions_however_its_written() {
+    let data = store();
+    // Once the history is read, a session of `/work/app`'s project run
+    // beside it, as in a worktree kept outside its repository.
+    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    Connection::open(data.path().join("turnscope.sqlite"))
+        .unwrap()
+        .execute(
+            "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
+             VALUES ('codex:beside', 'codex', 'f', '/work/app-beside', '/work/app', 'Try a faster importer', ?1, ?1)",
+            [NOW - 30 * HOUR],
+        )
+        .unwrap();
+    for command_name in ["sessions", "handoff"] {
+        let answer = |folder: &str, from: &str| {
+            let output = command(data.path(), &[command_name, "--folder", folder])
+                .current_dir(from)
+                .output()
+                .unwrap();
+            (
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+        let (plain, _) = answer("/work/app", "/");
+        assert!(
+            plain.contains(CODEX) && plain.contains("codex:beside"),
+            "{command_name}: {plain}"
+        );
+        for (folder, from) in [
+            ("/work/app/", "/"),
+            ("/work/app/.", "/"),
+            ("/work/api/../app", "/"),
+            ("work/./app/", "/"),
+            ("../work/app", "/usr"),
+        ] {
+            let (given, error) = answer(folder, from);
+            assert_eq!(
+                given, plain,
+                "{command_name} --folder {folder} in {from}: {error}"
+            );
+        }
+    }
+}
+
+/// Codex pointed at its agent folder by `CODEX_HOME`, written with a slash
+/// at its end or with `..`: the account is still the caller's.
+#[test]
+fn the_callers_account_is_its_agent_folders_however_its_written() {
+    let data = store();
+    // Read the history first: neither command below does.
+    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    for written in ["/.codex", "/.codex/", "/.claude/../.codex"] {
+        let folder = format!("{}{written}", home().display());
+        let run = |args: &[&str]| {
+            command_as("codex", data.path(), args)
+                .env("CODEX_HOME", &folder)
+                .output()
+                .unwrap()
+        };
+        assert_eq!(
+            String::from_utf8_lossy(&run(&["statusline"]).stdout).trim(),
+            "ChatGPT Plus · weekly 80%",
+            "{written}"
+        );
+        // Its weekly limit has 80% left, so a guard under 90% blocks.
+        let guard = run(&["guard", "--limit", "week", "--below", "90"]);
+        assert_eq!(guard.status.code(), Some(2), "{written}");
+    }
+}
+
+/// Claude Code's folder as its variable gives it, and a tool's `folder`
+/// within it, both with `..` and a slash at the end.
+#[test]
+fn the_tools_fold_the_callers_folder_and_the_folder_they_are_given() {
+    let data = store();
+    let requests = [
+        // No folder: the caller's, `/work/api`.
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_sessions","arguments":{"folder":"../docs/"}}}"#,
+    ];
+    let mut mcp = command(data.path(), &["mcp"])
+        .env("CLAUDE_PROJECT_DIR", "/work/app/../api/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(mcp.stdin.take().unwrap(), "{}", requests.join("\n")).unwrap();
+    let output = mcp.wait_with_output().unwrap();
+    let texts: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| {
+            let reply: serde_json::Value = serde_json::from_str(line).unwrap();
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        texts[0].starts_with("# Handoff: \"Add retries with backoff to the HTTP client.\""),
+        "{}",
+        texts[0]
+    );
+    assert!(texts[1].contains(GROK_BUILD), "{}", texts[1]);
+}
+
 #[test]
 fn sessions_marks_the_session_of_an_agent_that_names_it_nowhere() {
     let data = store();
@@ -487,6 +597,45 @@ fn a_status_line_says_the_account_of_the_session_it_is_given() {
         line(&["statusline", "--account", "supergrok"], None),
         "SuperGrok · sign in again"
     );
+}
+
+/// A new session isn't read yet, as a status line never catches up: its
+/// agent's own account shows, not that of whichever agent ran last in its
+/// folder.
+#[test]
+fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
+    let data = store();
+    // Read the history, as the app's daemon has.
+    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    let new = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+    let line = |agent: &str, session: &str, folder: &str| {
+        let mut line = command_as(agent, data.path(), &["statusline"])
+            .env("CLAUDE_CODE_SESSION_ID", new)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let given = format!(r#"{{"session_id": "{session}", "cwd": "{folder}"}}"#);
+        line.stdin
+            .take()
+            .unwrap()
+            .write_all(given.as_bytes())
+            .unwrap();
+        let output = line.wait_with_output().unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let (claude, chatgpt) = (
+        "Claude Max · 5h 25%, out in 1h · weekly 56%",
+        "ChatGPT Plus · weekly 80%",
+    );
+    // A session that's read says its own account, whoever asks.
+    let (_, codex) = CODEX.split_once(':').unwrap();
+    assert_eq!(line("claude", codex, "/work/app"), chatgpt);
+    // Claude Code's new session, where Grok Build ran last, on SuperGrok.
+    assert_eq!(line("claude", new, "/work/docs"), claude);
+    // Codex's, where Claude Code ran last: not the first account in use,
+    // which is Claude Code's too.
+    assert_eq!(line("codex", new, "/work/api"), chatgpt);
 }
 
 #[test]
