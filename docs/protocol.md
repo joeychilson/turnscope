@@ -10,8 +10,9 @@ socket. The server is `src/serve.rs`. The app's side is `Client.swift` and
 one file per message, covering every enum value. A file is named for its
 method and what it is: `hello.request.json`, `hello.result.json`,
 `status.notification.json`. `done.result.json` is the empty result, and
-`error.json` is an error. The examples are pretty-printed. On the socket,
-each message is one line.
+`error.json` is an error. The whole status is in the notification:
+`hello.result.json` has only the account that shows `expired`. The examples
+are pretty-printed. On the socket, each message is one line.
 
 Both sides test against the examples, so they can't drift apart:
 
@@ -57,11 +58,11 @@ nc -U "$(turnscope serve --socket)"
   30 s counts as a failed attempt. That's long because `hello` works out the
   whole status, which is slow on a long history. A `status` or `alert` the
   app can't read drops the connection.
-- **Exiting.** `serve` exits `--linger` seconds (default 60) after its last
-  client leaves, or after it starts if no client connects. An app restart or
-  update reconnects in that time without reading anything again. `shutdown`
-  makes it exit now. If the thread that keeps the data current fails, `serve`
-  exits with an error, and the app starts a new one.
+- **Exiting.** `serve` exits 60 seconds after its last client leaves, or
+  after it starts if no client connects. An app restart or update reconnects
+  in that time without reading anything again. `shutdown` makes it exit now.
+  If the thread that keeps the data current fails, `serve` exits with an
+  error, and the app starts a new one.
 - **Another engine.** The app only talks to the engine it ships with. The
   `hello` result names the server, as `turnscope --version` prints it
   (`turnscope 0.1.0`), and the app checks that before reading the rest. If

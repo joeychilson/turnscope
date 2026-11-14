@@ -198,9 +198,6 @@ enum Command {
         /// Print the socket's path and exit
         #[arg(long)]
         socket: bool,
-        /// How long to stay after the last client leaves
-        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
-        linger: u64,
     },
     /// The MCP server on standard input and output, for a coding agent
     Mcp,
@@ -275,10 +272,8 @@ fn main() -> ExitCode {
     let outcome = match cli.command {
         // Servers answer at once, and catch up as they're asked.
         Command::Mcp => mcp::run(&home, &data).map(|()| String::new()),
-        Command::Serve { socket: true, .. } => Ok(serve::socket_path(&data).display().to_string()),
-        Command::Serve { linger, .. } => {
-            serve::run(&home, &data, Duration::from_secs(linger)).map(|()| String::new())
-        }
+        Command::Serve { socket: true } => Ok(serve::socket_path(&data).display().to_string()),
+        Command::Serve { socket: false } => serve::run(&home, &data).map(|()| String::new()),
         // A hook reads its exit code, so a guard that can't tell blocks nothing.
         Command::Guard {
             limit,

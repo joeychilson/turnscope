@@ -35,6 +35,8 @@
   such as the app's, says so after a second:
   `Waiting while another Turnscope reads your agents' history…`. Both
   waited in a blank terminal.
+- **`serve`** no longer takes `--linger`. It exits 60 seconds after its
+  last client leaves, as it did without the flag. The app never passed it.
 - **A request that names a tag** its agent uses is read whole, such as
   `<skill>` or `<image>` with Codex and `<system-reminder>` with Claude
   Code. It was cut at the tag: `Add a <skill> element to the manifest
