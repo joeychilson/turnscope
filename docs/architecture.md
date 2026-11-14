@@ -208,9 +208,16 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, and before the `continue` prompt. |
-| `serve` | On a thread of its own: at start, 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up, and at least every minute. |
+| `serve` | On a thread of its own: at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. |
 
 While `serve` runs, the other processes rarely find anything new to read.
+
+A catch-up reads all of history the first time, and again after
+`ingest::READERS` is raised. That can take minutes. A CLI command says so
+on standard error before it starts one, and says that it waits once it has
+waited a second for another process that reads history
+(`ingest::waits`). `mcp` and `serve` say nothing, since no one reads their
+standard error: a tool call waits the read out.
 
 ### Locks
 
@@ -248,6 +255,11 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
   thread works out the status. If anything it shows changed, it raises
   alerts and sends `status`, then each new `alert`, to every client that
   said `hello`.
+- At start, that thread reads the limits, when they're due, before its
+  first catch-up, and the main thread works out the status then too. On a
+  first launch the catch-up reads all of history, so the app shows the
+  accounts while it does, and the status says the history isn't read yet
+  (`historyRead`).
 - `settings.set`, `account.hide`, and an `agent.connect` or
   `agent.disconnect` that worked push the status too. Connecting runs the
   agent's own command on a thread of its own, as it can take a minute.
