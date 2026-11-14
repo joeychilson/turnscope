@@ -169,7 +169,8 @@ What a read returns, in `Read`:
 
 A session's `parent` is a `Parent { id, link }`, `link` being
 `Link::Subagent` (counted in its parent's usage and listed under it),
-`Link::Fork` (the conversation branched off by the user) or
+`Link::Fork` (the conversation branched off by the user: its handoff names
+the parent as holding what came before) or
 `Link::Continuation` (the same conversation carried on in a new session). A better kind of
 title replaces a worse one, and a later one of the same kind an earlier
 one. From worst to best, a `Title` is `Prompt` (the user's first real
