@@ -50,3 +50,48 @@ import Testing
     // Run from its disk image, the app offers none.
     #expect(Store(client: nil, status: status, fromDiskImage: true).toConnect(dismissed: []) == nil)
 }
+
+/// The contract's example as on a first launch, once the limits are read
+/// and before any history is: no account is known to be in use, or used
+/// this week.
+@MainActor
+private func firstLaunch() throws -> Status {
+    var status = try #require(Store(fixture: example("status.notification.json")).status)
+    status.historyRead = false
+    for index in status.accounts.indices {
+        status.accounts[index].inUse = false
+        status.accounts[index].recent = false
+    }
+    return status
+}
+
+@MainActor
+@Test func untilHistoryIsReadEveryAccountShownCountsAsInUse() throws {
+    var status = try firstLaunch()
+    let shown = status.accounts.filter { !$0.hidden }.map(\.id)
+    let reading = Store(client: nil, status: status)
+    // None is folded away, and the headline is about the first, the most
+    // urgent, as serve lists them until then.
+    #expect(reading.inUse.map(\.id) == shown)
+    #expect(reading.recent.isEmpty && reading.unused.isEmpty)
+    let verdict = reading.verdict(in: reading.words())
+    #expect(verdict.headline != "Nothing in use")
+    #expect(verdict == reading.words().verdict(Array(reading.inUse.prefix(1))))
+    // Once it's read, serve's word holds: nothing in use, the rest folded.
+    status.historyRead = true
+    let read = Store(client: nil, status: status)
+    #expect(read.inUse.isEmpty && read.unused.map(\.id) == shown)
+    #expect(read.verdict(in: read.words()).headline == "Nothing in use")
+}
+
+@MainActor
+@Test func withNoAccountTheHeadlineSaysWhyAsSettingsDoes() throws {
+    // As `hello` answers on a first launch, before the limits are read.
+    var status = try firstLaunch()
+    status.accounts = []
+    let reading = Store(client: nil, status: status)
+    #expect(reading.verdict(in: reading.words()).headline == "Getting your limits")
+    status.historyRead = true
+    let read = Store(client: nil, status: status)
+    #expect(read.verdict(in: read.words()).headline == "No accounts found yet")
+}

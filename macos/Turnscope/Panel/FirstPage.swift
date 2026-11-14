@@ -153,11 +153,7 @@ private struct Verdict: View {
     @Environment(Navigation.self) private var navigation
 
     var body: some View {
-        let words = store.words(now: navigation.now)
-        let hiddenInUse = store.hidden.contains(where: \.inUse)
-        let verdict = store.all.isEmpty
-            ? words.welcome(store.agents, reads: store.agentNames, reading: store.reading)
-            : words.verdict(store.inUse, hiddenInUse: hiddenInUse)
+        let verdict = store.verdict(in: store.words(now: navigation.now))
         VStack(alignment: .leading, spacing: 4) {
             Text(verdict.headline)
                 .font(.system(size: 20, weight: .semibold))

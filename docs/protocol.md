@@ -217,6 +217,11 @@ Accounts are listed in this order:
 3. Accounts with a refused login.
 4. Accounts with nothing to show.
 
+Until the first read of the agents' history ends (`historyRead` false),
+every account is listed as one in use is, though its `inUse` is false: on a
+first launch the limits come before any history, and which accounts are in
+use isn't known yet.
+
 ### Agent
 
 | Field | Type | Holds |

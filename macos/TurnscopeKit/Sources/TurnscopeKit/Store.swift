@@ -68,14 +68,42 @@ public final class Store {
         self.init(client: nil, status: status)
     }
 
-    /// The accounts in use, most urgent first, as serve orders them.
-    public var inUse: [AccountStatus] { all.filter { !$0.hidden && $0.inUse } }
+    /// The accounts in use, most urgent first, as serve orders them. Until
+    /// the agents' history is first read, every account shown (`counts`).
+    public var inUse: [AccountStatus] { all.filter { !$0.hidden && counts($0) } }
     /// The accounts not in use but used this week, most left first.
-    public var recent: [AccountStatus] { all.filter { !$0.hidden && !$0.inUse && $0.recent } }
+    public var recent: [AccountStatus] { all.filter { !$0.hidden && !counts($0) && $0.recent } }
     /// The accounts not used this week, most left first.
-    public var unused: [AccountStatus] { all.filter { !$0.hidden && !$0.inUse && !$0.recent } }
+    public var unused: [AccountStatus] { all.filter { !$0.hidden && !counts($0) && !$0.recent } }
     /// The accounts hidden from the menu bar and the panel.
     public var hidden: [AccountStatus] { all.filter(\.hidden) }
+    /// Whether an account hidden from the panel counts as in use.
+    public var hiddenInUse: Bool { hidden.contains(where: counts) }
+
+    /// Whether `account` counts as in use, for every list and headline the
+    /// app shows: as serve measured, or, until the first read of the
+    /// agents' history ends, always. Until then, which accounts are in use
+    /// isn't known: on a first launch serve sends the limits before it reads
+    /// any history, so every account read as not in use. Counting none, the
+    /// panel said "Nothing in use" over a fold of the accounts while the
+    /// read took minutes, and the menu bar showed no figure. Counting every
+    /// one shows each limit read and says nothing that isn't known. serve
+    /// lists them as accounts in use until then (`status::rank`), so the
+    /// headline is about the most urgent, not the one with the most left.
+    /// serve's own `inUse` stays as measured, since alerts are raised by it.
+    private func counts(_ account: AccountStatus) -> Bool {
+        reading || account.inUse
+    }
+
+    /// What the panel's headline says, in `words`: before any account is
+    /// found, why none is; otherwise whether you can keep going, from the
+    /// most urgent account in use. Settings → Accounts says the same while
+    /// it has no account to list.
+    public func verdict(in words: Words) -> (headline: String, detail: String, standing: Standing) {
+        all.isEmpty
+            ? words.welcome(agents, reads: agentNames, reading: reading)
+            : words.verdict(inUse, hiddenInUse: hiddenInUse)
+    }
     /// Every account, hidden ones too, as Settings lists them.
     public var all: [AccountStatus] { status?.accounts ?? [] }
     /// The agents installed here, each with whether it runs Turnscope.

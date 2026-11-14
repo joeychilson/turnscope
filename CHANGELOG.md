@@ -30,11 +30,14 @@
 - **On a first launch** the app shows your limits as soon as they're read,
   while the footer says it's reading your agents' history. It said
   "Getting your limits" and showed no account until all of the history was
-  read, which can take minutes.
+  read, which can take minutes. Until then it can't tell which accounts
+  are in use, so it shows every account as one in use, the most urgent
+  first: in the headline, the menu bar and the panel's rows.
 - **Settings → Agents and Accounts** say what the panel says before the
   first status arrives: "Reading your agents' history…", or why Turnscope
-  can't read its data. Agents said no agent Turnscope serves is installed,
-  and Accounts was empty.
+  can't read its data. With no account yet, Accounts says what the panel's
+  headline does, such as "Getting your limits". Agents said no agent
+  Turnscope serves is installed, and Accounts was empty.
 - **Why the app's engine couldn't start** is said in the panel, as when a
   newer Turnscope has updated the data: "turnscope: a newer Turnscope has
   updated this data; update Turnscope". The panel said only that the engine
