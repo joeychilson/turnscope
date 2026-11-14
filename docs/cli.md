@@ -239,7 +239,7 @@ session ends with `· yours`. Usage with no known price shows as
 
 | Flag | Default | |
 |---|---|---|
-| `--search <words>` | | Sessions where all these words were said, by you or the model, in any of its messages. Whole words, in any case. Those with all of them in the most messages come first, and the first three show the latest such message. |
+| `--search <words>` | | Sessions where all these words were said, by you or the model, in any of its messages. Whole words, in any case, with or without their accents. A word with punctuation in it, as `csv::quoted`, is its parts in a row. Those with all of them in the most messages come first, and the first three show the latest such message. |
 | `--folder <dir>` | every folder | Sessions of this folder's project (its git repository), or run in it or under it. |
 | `--agent <id>` | every agent | Only this agent's sessions. |
 | `--since <when>` | | Active since this [time](#time-forms). |

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.8
+
+- **Search** quotes the message that holds a word with punctuation in it,
+  such as `csv::quoted`, or a word said with accents and searched for
+  without, as `cafe` finds `café`. The message quoted is found by the same
+  rules as the session. A session found by such a word was listed with no
+  message under it.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command
