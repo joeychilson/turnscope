@@ -21,10 +21,12 @@ func example(_ name: String) -> String {
     root.appending(path: "contract/\(name)").path
 }
 
-/// The `result` of the contract's `hello` answer, as JSON.
+/// The `result` of the contract's `hello` answer, as JSON, with the whole
+/// status of the contract's `status` notification.
 func helloResult() throws -> [String: Any] {
     let hello = try JSONSerialization.jsonObject(with: contract("hello.result.json")) as? [String: Any]
-    return hello?["result"] as? [String: Any] ?? [:]
+    let pushed = try JSONSerialization.jsonObject(with: contract("status.notification.json")) as? [String: Any]
+    return (hello?["result"] as? [String: Any] ?? [:]).merging(["status": pushed?["params"] ?? [String: Any]()]) { $1 }
 }
 
 /// The engine named in the contract's `hello`. The stand-ins treat it as

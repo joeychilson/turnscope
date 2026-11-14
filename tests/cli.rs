@@ -644,9 +644,7 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
     assert!(turnscope(data.path(), &["sessions"], None).status.success());
     let socket =
         String::from_utf8(turnscope(data.path(), &["serve", "--socket"], None).stdout).unwrap();
-    let mut serve = command(data.path(), &["serve", "--linger", "5"])
-        .spawn()
-        .unwrap();
+    let mut serve = command(data.path(), &["serve"]).spawn().unwrap();
     let stream = (0..100)
         .find_map(|_| {
             std::thread::sleep(std::time::Duration::from_millis(50));

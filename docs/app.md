@@ -366,10 +366,10 @@ says where each one comes from.
 An unknown name opens nothing. A value that starts with `--` is never read
 as an option's value, so `--open --data <dir>` opens nothing in the panel.
 
-- **`--fixture`** reads a status on its own, a `status` notification or a
-  `hello` result, such as `contract/status.notification.json`. Its words are
-  as of the status's `at`, so it reads the same whenever it's drawn.
-  Changes made in it show on screen and go nowhere.
+- **`--fixture`** reads a `status` notification, such as
+  `contract/status.notification.json`. Its words are as of the status's
+  `at`, so it reads the same whenever it's drawn. Changes made in it show on
+  screen and go nowhere.
 - **`--snapshot`** needs `--fixture`. With `--open`, it opens a row or the
   fold first, or draws Settings at the tab named. It draws the window
   background where the panel has glass, the panel at its full height with

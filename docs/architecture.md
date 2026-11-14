@@ -253,7 +253,7 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
   agent's own command on a thread of its own, as it can take a minute.
 - If the thread that keeps the data current stops, `serve` exits with an
   error, so the app starts one that works.
-- It exits `--linger` seconds (default 60) after its last client leaves.
+- It exits 60 seconds after its last client leaves.
 
 ## Status
 
@@ -367,8 +367,7 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
 
   | Share of the window left | Day or less | Longer |
   |---|---|---|
-  | Under 10% | 0.05–2.5 | 0–3.4 |
-  | 10% to 25% | 0.05–2.5 | 0–3.4 |
+  | Under 25% | 0.05–2.5 | 0–3.4 |
   | 25% to 50% | 0.25–1.8 | 0–3.4 |
   | 50% or more | 0.35–1.6 | 0.7–3.4 |
 

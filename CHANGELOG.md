@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8
+
+- **`serve`** no longer takes `--linger`. It exits 60 seconds after its
+  last client leaves, as it did without the flag. The app never passed it.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command

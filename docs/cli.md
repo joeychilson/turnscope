@@ -433,18 +433,18 @@ and `serve` not running. When all is well it prints `Nothing to fix.`
 ## Serve and MCP
 
 ```text
-turnscope serve [--socket] [--linger <seconds>]
+turnscope serve [--socket]
 turnscope mcp
 ```
 
 `serve` is the daemon the menu bar app talks to, over a Unix socket
 ([protocol.md](protocol.md)). The app starts it. Only one runs per data
-directory; a second one exits at once.
+directory; a second one exits at once. It exits 60 seconds after its last
+client leaves.
 
-| Flag | Default | |
-|---|---|---|
-| `--socket` | | Print the socket's path and exit. |
-| `--linger <seconds>` | 60 | How long to keep running with no client connected. |
+| Flag | |
+|---|---|
+| `--socket` | Print the socket's path and exit. |
 
 `mcp` is the MCP server on standard input and output, which agents start
 ([mcp.md](mcp.md)).
