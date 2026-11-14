@@ -52,7 +52,9 @@ pub trait Agent: Sync {
     fn info(&self) -> &'static Info;
 
     /// The folders it keeps history and logins in under `home`: its own
-    /// first, then any it was pointed at for a second account.
+    /// first, then any it was pointed at for a second account. A folder it
+    /// held a login in and no longer lists is taken as signed out of, so one
+    /// is listed for as long as the agent may be signed in there.
     fn folders(&self, home: &Path) -> Vec<PathBuf>;
 
     /// Whether the agent is on this Mac, by `folder`, its own: the folder is

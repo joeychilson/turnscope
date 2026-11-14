@@ -93,7 +93,9 @@ pub struct Reading {
     pub scope: Option<String>,
     /// Percent used.
     pub used: f64,
-    /// Dollars, for a limit of money.
+    /// Dollars, for a limit of money. For one that never resets, all that
+    /// was ever bought, so it grows when more is: an alert tells it used up
+    /// once per size.
     pub size: Option<f64>,
     pub starts: Option<i64>,
     pub resets: Option<i64>,
@@ -149,6 +151,25 @@ fn ask_refused_by(
 /// the agent until it's done, and an answer of limits is one small JSON
 /// object, not a download.
 const WAIT: u32 = 15;
+
+/// What's left of [`WAIT`] with `spent` of it gone, a second at least. A
+/// provider that asks twice shares the wait between the two, as `guard`
+/// waits on a read: its second request gets what the first left.
+fn wait_left(spent: std::time::Duration) -> u32 {
+    let spent = u32::try_from(spent.as_secs()).unwrap_or(WAIT);
+    WAIT.saturating_sub(spent).max(1)
+}
+
+/// As [`ask`], giving up after `seconds`, for a provider's second request
+/// ([`wait_left`]).
+fn ask_within(
+    url: &str,
+    credential: &Credential,
+    headers: &[&str],
+    seconds: u32,
+) -> Result<Value, Problem> {
+    asked(url, credential, headers, None, &[401, 403], seconds)
+}
 
 /// As [`ask_refused_by`], sending `body` as JSON, for a provider that tells
 /// its limits only in answer to a POST, and giving up after `seconds`: a
@@ -348,6 +369,16 @@ mod tests {
             assert_eq!(super::answer(status, body, &[401, 403]), Err(problem));
         }
         assert_eq!(super::answer(403, json, &[401]), Err(Problem::Unavailable));
+    }
+
+    #[test]
+    fn a_second_request_gets_what_the_first_left_of_the_wait() {
+        let left = |millis| super::wait_left(std::time::Duration::from_millis(millis));
+        assert_eq!(left(0), super::WAIT);
+        assert_eq!(left(4_200), super::WAIT - 4);
+        // A second at least.
+        assert_eq!(left(14_900), 1);
+        assert_eq!(left(60_000), 1);
     }
 
     #[test]

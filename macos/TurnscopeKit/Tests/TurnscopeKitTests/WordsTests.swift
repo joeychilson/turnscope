@@ -319,6 +319,28 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(words.note(days, accounts: accounts).body == "Back Saturday 12 AM.")
 }
 
+@Test func aNoteForCreditsSaysTheyAreUsedUpThenBackWithWhatIsLeft() {
+    // Money that never resets: its alert has no reset, so no time it's back.
+    var credits = LimitStatus(key: "credits", name: "Credits", scope: nil, window: nil,
+                              leftPercent: 0, money: Money(sizeUsd: 10, leftUsd: 0),
+                              resetSince: nil, heldBy: [], outlook: .usedUp(back: nil))
+    var key = account([credits], id: "openrouter:api", title: "OpenRouter API key", kind: .apiKey)
+    let alert = { (kind: AlertKind) in
+        Alert(id: 1, kind: kind, account: "openrouter:api", accountTitle: "OpenRouter API key",
+              limit: "credits", limitName: "Credits", replaces: "limit:openrouter:api:credits",
+              resets: nil, runsOut: nil)
+    }
+    #expect(words.note(alert(.usedUp), accounts: [key])
+        == Words.Note(title: "OpenRouter API key", subtitle: "Credits are used up", body: ""))
+    // $10 more bought.
+    credits.leftPercent = 50
+    credits.money = Money(sizeUsd: 20, leftUsd: 10)
+    credits.outlook = .unknown(reason: .noReset)
+    key.limits = [credits]
+    #expect(words.note(alert(.reset), accounts: [key])
+        == Words.Note(title: "OpenRouter API key", subtitle: "Credits are back", body: "$10 of $20 left."))
+}
+
 @Test func theFoldsAndAgentsSayWhatTheyHold() {
     #expect(words.hidden(2) == "2 hidden")
     var codex = AgentStatus(id: "codex", name: "Codex", installed: true, connection: .available, inUse: true)

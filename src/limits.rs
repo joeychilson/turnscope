@@ -105,15 +105,18 @@ fn gather(db: &Connection, home: &Path) -> Result<(Vec<SignedIn>, BTreeMap<Strin
     let mut accounts: BTreeMap<String, Held> = BTreeMap::new();
     let mut signed_in = Vec::new();
     // A key is to one account for good: the one it was last signed in to,
-    // which may be another key's it was made one with.
+    // which may be another key's it was made one with. Only at the same
+    // provider: the same key kept under another is that provider's.
     let mut kept = db.prepare(
-        "SELECT account FROM sign_in WHERE key = ?1 AND account IS NOT NULL
+        "SELECT account FROM sign_in WHERE key = ?1 AND provider = ?2 AND account IS NOT NULL
          ORDER BY since DESC LIMIT 1",
     )?;
+    let listable = std::fs::read_dir(home).is_ok();
     for &agent in agents::ALL {
-        for folder in agent.folders(home) {
+        let folders = agent.folders(home);
+        for folder in &folders {
             // A folder whose logins can't be read keeps what it held.
-            let Ok(logins) = agent.logins(&folder, home) else {
+            let Ok(logins) = agent.logins(folder, home) else {
                 continue;
             };
             let folder = folder.to_string_lossy().into_owned();
@@ -130,7 +133,7 @@ fn gather(db: &Connection, home: &Path) -> Result<(Vec<SignedIn>, BTreeMap<Strin
                     .map(|(_, _, credential)| credential.secret.fingerprint());
                 if let (Some((_, account, _)), Some(key)) = (held.as_mut(), &key)
                     && let Some(id) = kept
-                        .query_row([key], |row| row.get::<_, String>(0))
+                        .query_row([key, &login.provider], |row| row.get::<_, String>(0))
                         .optional()?
                     && id != account.id
                 {
@@ -173,6 +176,37 @@ fn gather(db: &Connection, home: &Path) -> Result<(Vec<SignedIn>, BTreeMap<Strin
                         key: None,
                     });
                 }
+            }
+        }
+        // So is every login of a folder no longer listed: one deleted, or a
+        // second account's without the file its agent writes once signed
+        // in. A folder is listed by what's under `home` alone, so none
+        // drops off the list while its agent is signed in there. A home
+        // that can't be listed, as one on a volume that's away, lists no
+        // second account's folder: each then keeps what it held.
+        if !listable {
+            continue;
+        }
+        let mut held = db.prepare_cached(
+            "SELECT folder, provider FROM sign_in s WHERE agent = ?1 AND account IS NOT NULL
+             AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
+        )?;
+        let held = held.query_map([agent.info().id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for held in held {
+            let (folder, provider) = held?;
+            if !folders
+                .iter()
+                .any(|listed| listed.to_string_lossy() == folder)
+            {
+                signed_in.push(SignedIn {
+                    agent: agent.info().id,
+                    folder,
+                    provider,
+                    account: None,
+                    key: None,
+                });
             }
         }
     }
@@ -486,6 +520,101 @@ mod tests {
             plan: None,
         });
         assert_eq!(read(&mut held, 1_000_000).err(), Some(Problem::Expired));
+    }
+
+    #[test]
+    fn a_folder_no_longer_listed_is_signed_out_of() {
+        // `gather` asks every agent for its logins, Claude Code's of the
+        // Keychain under this made-up home, as `doctor` does in the
+        // end-to-end tests.
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = crate::db::open(data.path()).unwrap();
+        let folder = |name: &str| home.path().join(name).to_string_lossy().into_owned();
+        // Two second accounts of Codex's, signed in when last read. One's
+        // folder was deleted since; the other's sign-in is half written.
+        for name in [".codex-gone", ".codex-written"] {
+            db.execute(
+                "INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('codex', ?1, 'openai', 1000, 'openai:made-up')",
+                [folder(name)],
+            )
+            .unwrap();
+        }
+        std::fs::create_dir(folder(".codex-written")).unwrap();
+        std::fs::write(home.path().join(".codex-written/auth.json"), "{").unwrap();
+        // What each of the two is now recorded as signed in to.
+        let signed = |home: &Path| -> Vec<(String, Option<String>)> {
+            let (signed_in, _) = gather(&db, home).unwrap();
+            signed_in
+                .into_iter()
+                .filter(|signed| signed.folder.contains(".codex-"))
+                .map(|signed| (signed.folder, signed.account))
+                .collect()
+        };
+        // The one that can't be read keeps what it held.
+        assert_eq!(signed(home.path()), [(folder(".codex-gone"), None)]);
+        // A home that can't be listed, as one on a volume that's away, says
+        // nothing of its folders.
+        assert!(signed(&home.path().join("away")).is_empty());
+    }
+
+    #[test]
+    fn a_key_keeps_only_an_account_of_the_same_provider() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = crate::db::open(data.path()).unwrap();
+        // One key kept under two providers, as one pasted in the wrong place.
+        let key = ["sk", "made", "up"].join("-");
+        let pi = home.path().join(".pi/agent");
+        std::fs::create_dir_all(&pi).unwrap();
+        let kept = serde_json::json!({
+            "opencode-go": {"type": "api_key", "key": key},
+            "openrouter": {"type": "api_key", "key": key},
+        });
+        std::fs::write(pi.join("auth.json"), kept.to_string()).unwrap();
+        // Its OpenCode Go account was made one with another key's. Its
+        // OpenRouter sign-in is the later.
+        for (provider, since, account) in [
+            ("opencode-go", 1000, "opencode-go:key-another"),
+            ("openrouter", 2000, "openrouter:api"),
+        ] {
+            db.execute(
+                "INSERT INTO sign_in (agent, folder, provider, since, account, key)
+                 VALUES ('pi', ?1, ?2, ?3, ?4, ?5)",
+                params![
+                    pi.to_string_lossy(),
+                    provider,
+                    since,
+                    account,
+                    agents::Secret::new(&key).fingerprint()
+                ],
+            )
+            .unwrap();
+        }
+        let (signed_in, accounts) = gather(&db, home.path()).unwrap();
+        let signed: Vec<_> = signed_in
+            .iter()
+            .filter(|signed| signed.agent == "pi")
+            .map(|signed| (signed.provider.as_str(), signed.account.as_deref()))
+            .collect();
+        assert_eq!(
+            signed,
+            [
+                ("opencode-go", Some("opencode-go:key-another")),
+                ("openrouter", Some("openrouter:api")),
+            ]
+        );
+        // Each is read by its own provider.
+        let read: Vec<_> = accounts
+            .iter()
+            .map(|(id, held)| (id.as_str(), held.provider.info().id))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("opencode-go:key-another", "opencode-go"),
+                ("openrouter:api", "openrouter"),
+            ]
+        );
     }
 
     #[test]

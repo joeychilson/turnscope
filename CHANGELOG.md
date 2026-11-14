@@ -139,6 +139,20 @@
   used since, says it lasts with what it has now: `Lasts, with about 60%
   left at the reset.` It said `No use shows in its reading yet.` beside 60%
   left. Only a limit with nothing used says that.
+- **Credits used up** raise a notification, "Credits are used up", and
+  another once more were bought and used up too. When more are bought,
+  "Credits are back" says how much is left. So does a key's own limit that
+  never resets. A limit that never resets raised no notification.
+- **A second account's folder that's gone**, such as `~/.codex-work` once
+  deleted, is signed out of, and so is one without the file its agent
+  writes once signed in. Its account stayed signed in through that agent,
+  and read as one that couldn't be read.
+- **A key kept under two providers** is read as each provider's own
+  account. It took the account it was last signed in to under either, so
+  one provider's plan could be read as the other's account.
+- **OpenRouter's two requests** share the 15 seconds a provider's limits
+  are waited for, as Google's do. Each got 15, so `guard` could hold an
+  agent's hook for 30.
 - **`status` and `accounts`** say why when there's no account to show, as
   `check_limits` does: no account's limits have been read yet, or every
   account is hidden, with how to see them. They printed nothing, and
