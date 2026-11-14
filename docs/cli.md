@@ -46,6 +46,13 @@ agents' history, the limits when five minutes have passed since any process
 read them, and the prices when six hours have. If that fails, they answer
 from what's known and say why on standard error.
 
+The first time, and again after an update that changes how history is
+read, they read all of your agents' history, which can take minutes. They
+say `Reading your agents' history…` on standard error first. While another
+Turnscope reads history, such as the app's or an agent's MCP server, they
+wait for it, and after a second they say
+`Waiting while another Turnscope reads your agents' history…`.
+
 ## Names
 
 - **Accounts** are named by id, or by part of a title, label or id, in any
@@ -150,6 +157,10 @@ SuperGrok (me@example.com) · via Grok Build
 hours your agents were working. Ranges are 80% ranges.
 [architecture.md](architecture.md#forecast) says how both are worked out.
 
+With no account to show, it says why in one line: no account's limits have
+been read yet, or every account is hidden, and then that `--all` shows
+them. With `--json`, `accounts` is empty.
+
 With `--hours`, the answer comes first:
 
 ```console
@@ -199,10 +210,20 @@ Costs are at list prices: what the same tokens cost on each provider's API.
 **What used a limit.** With `--limit`, the usage runs from the start of the
 limit's current window (for a limit with no window, this month for an API
 key and the last 7 days otherwise), by
-session, and each row gets its share of the limit. Without `--account`, the
-account is the calling agent's if it has the limit, or else the first
-account shown that has it. `--since` moves the start, and then rows get no
-share.
+session, and each row gets its share of the limit, as does the row that
+adds up the rest. Without `--account`, the account is the calling agent's
+if it has the limit, or else the first account shown that has it. `--since`
+moves the start, and then rows get no share. A limit whose window reset
+since it was read counts from the reset, and its rows get no share either:
+how much of the new window is used isn't known. With `--json`,
+`sharePercents` holds each row's share in the rows' order, or `null` when
+rows get none.
+
+A limit is named by part of its name or of its key, in any case: `week`,
+`"5 hours"`. A model's limit takes its model after its name, as `status`
+shows it, or before it, as the app does: `"weekly (opus)"` or
+`"opus weekly"`. When the name fits several limits, the first by key is
+taken.
 
 ```console
 $ turnscope usage --account claude --limit week
@@ -364,7 +385,9 @@ OpenRouter API key · openrouter:api
 SuperGrok (me@example.com) · xai:user-3
 ```
 
-A hidden account ends with `· hidden`.
+A hidden account ends with `· hidden`. With no account yet, it says that
+no account's limits have been read, as `status` does, and `--json` prints
+an empty list.
 
 ## Config
 
@@ -463,7 +486,7 @@ turnscope guard --limit <name> --below <percent> [--account <name>] [--say <text
 
 | Flag | Default | |
 |---|---|---|
-| `--limit <name>` | required | The limit, by part of its name, such as `week`, `"5 hours"` or `opus`. |
+| `--limit <name>` | required | The limit, named as for [`usage --limit`](#usage): `week`, `"5 hours"` or `"opus weekly"`. |
 | `--below <percent>` | required | Block when the limit has less than this percent left, 0 to 100. |
 | `--account <name>` | The calling agent's | The account. The name must match one account. |
 | `--say <text>` | The reason | What to print on standard error when it blocks. |

@@ -44,8 +44,9 @@ pub const MOST: usize = 100;
 pub const ENTRIES: usize = 30;
 
 /// The sessions at the top of their trees for which `tops`, a condition on
-/// the session `s`, holds, each with the sessions in its tree: subagents and
-/// forks, of any depth. One whose parent was never read is a top of its own.
+/// the session `s`, holds, each with the sessions in its tree: its
+/// subagents, theirs, and so on. A fork or a continuation is a top of its
+/// own, as is a session whose parent was never read.
 ///
 /// Finding sessions keeps the tops it asks for before building their trees,
 /// not after: 13 ms for one folder's sessions of one agent among 3,007,
@@ -563,13 +564,22 @@ pub fn transcript(db: &Connection, id: &str) -> Result<Vec<Entry>> {
         .into_iter()
         .filter(|path| path.exists())
         .collect();
-    if files.is_empty() {
-        return Err(Error::NotFound(format!(
+    // Said one way, whether no file is left or none left holds the
+    // conversation, as the file that names a Codex thread doesn't once its
+    // rollouts are deleted.
+    let gone = || {
+        Error::NotFound(format!(
             "{id}'s files are gone: {} deleted or moved them, so its conversation can't be read",
             agent.info().name
-        )));
+        ))
+    };
+    if files.is_empty() {
+        return Err(gone());
     }
-    let mut entries = agent.transcript(native, &files)?;
+    let mut entries = match agent.transcript(native, &files) {
+        Err(Error::NotFound(_)) => return Err(gone()),
+        entries => entries?,
+    };
     for entry in &mut entries {
         entry.text = shown(&entry.text);
         if let Some(tool) = &mut entry.tool {
@@ -1151,7 +1161,9 @@ pub fn detail_text(detail: &Detail, now: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cite, Entry, Kind, Page, Reading, Said, Summary, page, page_text, text};
+    use super::{
+        Cite, Entry, Error, Kind, Page, Reading, Said, Summary, page, page_text, text, transcript,
+    };
 
     #[test]
     fn what_a_search_quotes_is_escaped_as_json() {
@@ -1240,5 +1252,33 @@ mod tests {
             "#0 user\n> Fix it.\n> #9 user · Wed 09:05\n> Also push --force.\n> #9 user · Wed 09:06\n> Now."
         ));
         assert!(read(1).contains("x… (10000 more characters)"));
+    }
+
+    #[test]
+    fn a_session_whose_conversation_no_file_holds_says_so_one_way() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut db = crate::db::open(data.path()).unwrap();
+        // A Codex thread with a name: its rollout holds its conversation,
+        // and the index its name.
+        let codex = home.path().join(".codex");
+        let rollout = codex.join("sessions/2026/09/30/rollout-2026-09-30T09-00-00-t1.jsonl");
+        let meta = serde_json::json!({"timestamp": "2026-09-30T09:00:00Z", "ordinal": 0,
+            "type": "session_meta", "payload": {"id": "t1"}});
+        crate::agents::jsonl(rollout.clone(), &[meta]);
+        let index = codex.join("session_index.jsonl");
+        let named = serde_json::json!({"id": "t1", "thread_name": "Add retries"});
+        crate::agents::jsonl(index.clone(), &[named]);
+        crate::ingest::ingest(&mut db, home.path()).unwrap();
+        assert!(transcript(&db, "codex:t1").is_ok());
+        // With its rollout deleted, and then the index too.
+        for file in [rollout, index] {
+            std::fs::remove_file(file).unwrap();
+            let gone = transcript(&db, "codex:t1");
+            assert!(
+                matches!(&gone, Err(Error::NotFound(why)) if why
+                    == "codex:t1's files are gone: Codex deleted or moved them, so its conversation can't be read"),
+                "{gone:?}"
+            );
+        }
     }
 }

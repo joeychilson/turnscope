@@ -148,7 +148,8 @@ fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
 
 An agent that keeps a SQLite database, as OpenCode does, is opened read-only
 and read on from a little before the latest `time_updated` seen, since a
-row can be committed after one stamped later (`src/agents/opencode.rs`).
+row can be committed after one stamped later, and from no later than now,
+since a row can be stamped ahead of the clock (`src/agents/opencode.rs`).
 Rows read again are reported again, which changes nothing, but what they
 say is indexed only once. `Stat::of` in `src/ingest.rs` looks for a
 write-ahead log only beside a file whose name ends in `.db`, as OpenCode's
@@ -168,7 +169,8 @@ What a read returns, in `Read`:
 
 A session's `parent` is a `Parent { id, link }`, `link` being
 `Link::Subagent` (counted in its parent's usage and listed under it),
-`Link::Fork` (the conversation branched off by the user) or
+`Link::Fork` (the conversation branched off by the user: its handoff names
+the parent as holding what came before) or
 `Link::Continuation` (the same conversation carried on in a new session). A better kind of
 title replaces a worse one, and a later one of the same kind an earlier
 one. From worst to best, a `Title` is `Prompt` (the user's first real
@@ -205,7 +207,9 @@ Rules:
 - **Text said.** Pass `read.say` only what the user typed and what the
   model replied, not what the agent adds itself. `without_tags(text, tags)`
   takes the agent's blocks out of a message sent as the user's, and
-  `inner(text, tag)` gives what one tag holds. A command of the agent's
+  `inner(text, tag)` gives what one tag holds. A tag with no closing one is
+  taken as the agent's only where the text opens with it: further in, the
+  user typed it, and what follows is theirs. A command of the agent's
   own, such as `/clear`, asks for no work, so it's no title. If the agent
   numbers a session's lines and can rewind a session to an earlier line,
   pass each line's number to `read.say_at`, push the session and the number
@@ -229,6 +233,11 @@ Rules:
 - `changed(files)` notes the files the call made last changed, as the agent
   names them: absolute, or within the session's folder. `patched(text)`
   gives the files of an `apply_patch` patch. Handoffs list these files.
+
+When none of `files` holds the conversation, as when the agent deleted the
+file that does and another still names the session, return
+`Error::NotFound(INFO.session(id))`. Turnscope then says the session's
+files are gone, as it does for a session with no file left.
 
 | `Kind` | For |
 |---|---|

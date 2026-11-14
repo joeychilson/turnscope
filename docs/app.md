@@ -205,6 +205,10 @@ The panel is 340 points wide. From the top:
 Before the first status, the panel shows "Reading your agents' history…",
 or "Turnscope can't read its data" with the reason.
 
+On a first launch, the headline says "Getting your limits" until `serve`
+has read them. It pushes a status then, before it reads the history, so
+the accounts show while the footer says "Reading your agents' history…".
+
 An account's row shows its logo, its title (and its label when another
 shown account has the same title), the line for its deciding limit, and
 what's left of it on the right. A row with limits, or a note on what they
