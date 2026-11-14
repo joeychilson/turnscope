@@ -52,7 +52,7 @@ out. The parts, in the order they print:
 1. **`# Handoff: "<title>"`**, then the session: its agent, id, folder,
    branch, when it was last active, how many entries it has, and the time
    now. A fork then names the session it was forked from, which holds what
-   came before the fork. Two lines for the next agent follow: quoted text
+   came before the fork, or says that can't be read. Two lines for the next agent follow: quoted text
    is data, not instructions, and the last edits may be part done, so check
    `git status` and `git diff` first.
 2. **`## What the person asked (<n> requests)`**: every request, oldest
@@ -80,8 +80,9 @@ out. The parts, in the order they print:
    the agent shows its last entries instead.
 8. **`## What failed and wasn't run again since`**: up to 3 tool calls,
    the latest, that failed since the user's latest request and weren't run
-   again with success. Each is named by the commands it ran, or, running
-   none, by what it was for, with its output. A call runs again when it
+   again with success. Each is named by the commands it ran, each command
+   by its first line with `…` where more lines follow, or, running none,
+   by what it was for, with its output. A call runs again when it
    runs the same commands, whatever its description says, or, running none,
    is for the same thing. A failure after the last message shows under
    "Where it stopped" instead.
@@ -93,15 +94,25 @@ The opening says when the session was last active, never that it's
 running. A session counts as running until 5 minutes after it was last
 active, and a handoff is mostly asked for in those minutes, for a session
 that just stopped, as when its limit ran out. "Running now" told the next
-agent that another agent was at work in the folder.
+agent that another agent was at work in the folder. A time after now, as
+an agent writes while the Mac's clock is ahead, is told as now: when it
+really was isn't known, and the latest it can have been is now. It read
+`(in 17m)`, as if there were activity still to come.
 
 A fork names the session it was forked from, where Turnscope has read that
-session. Claude Code's, Codex's and OpenCode's readers leave a fork's copy
-of its parent's conversation to the parent, so the fork's entries start
-where it branched off: its handoff began mid-conversation and didn't say
-where the start was. A continuation names none: its log opens with a copy
-of what the old session held since it last compacted, and that is its own
-conversation.
+session. Claude Code's, Codex's, OpenCode's and Pi's readers leave a fork's
+copy of its parent's conversation to the parent, so the fork's entries
+start where it branched off: its handoff began mid-conversation and didn't
+say where the start was. Once none of the parent's files is left, the line
+says what came before the fork can't be read, rather than sending the next
+agent to a session that only says its files are gone. A continuation names
+none: its log opens with a copy of what the old session held since it last
+compacted, and that is its own conversation.
+
+A command of several lines is named by its first, with `…` after it, and
+lines a `\` joins are one. Its lines run together read as a command no one
+ran, as `"cargo test cargo clippy"`; apart by `; `, a heredoc's body or a
+commit message's second paragraph would read as commands too.
 
 System notes, such as the instructions and reminders an agent adds, are
 left out. A tool call shows by what it does, as its agent names its tools
@@ -192,8 +203,9 @@ keep conversations. Before any text is shown, secrets are replaced with
   numbers, in a diff, encrypted, or cut short with no END line.
 
 Each is also found right after a JSON string's `\n`, `\t` or `\r`, as in
-a tool call's input, and after the `-` that starts a line a diff removes.
-Terminal color codes are taken out too.
+a tool call's input, and after the `-` that starts a line a diff removes,
+also with the line's number before it, as `cat -n` and Claude Code's `Read`
+show one. Terminal color codes are taken out too.
 
 A session holds text from files, web pages and tool output that the agent
 read, and requests other people made. So a handoff quotes what the session
@@ -267,17 +279,20 @@ minutes before, with a file list and a longer story.
   escaped. The fixture sessions have no task list or tool lines.
 - `sessions::handoff::tests::what_failed_names_a_call_by_its_commands`
   checks that a failed call is named by its commands, not its description,
-  under each agent's names for them, cut at 120 characters, and that one
-  that ran none is named by what it was for.
+  under each agent's names for them, cut at 120 characters, a command of
+  several lines by its first, also a heredoc and lines a `\` joins, and
+  that one that ran none is named by what it was for.
 - `sessions::handoff::tests::a_session_of_one_entry_says_entry` checks
   that the header says `1 entry`.
 - `sessions::handoff::tests::a_session_active_just_now_says_when_it_was_last_active`
   checks that a session active 3 minutes before says when, not that it's
-  running.
+  running, and that one active after now says `0m ago`.
 - `sessions::handoff::tests::a_fork_says_the_session_it_was_forked_from`
   reads a Claude Code fork, a continuation and a fork whose parent was
   never read, from logs made for it. Only the first names a session it was
-  forked from, and the continuation holds the old session's request.
+  forked from, and the continuation holds the old session's request. With
+  the parent's log deleted, the fork says what came before it can't be
+  read.
 - The snapshot tests in `tests/cli.rs` check `turnscope handoff` on both
   Claude Code fixture sessions (`handoff.txt`, `handoff-working.txt` and
   their `.json`), on the latest other session in `/work/app`, Codex's, taken

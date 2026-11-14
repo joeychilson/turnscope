@@ -455,7 +455,7 @@ covers what it holds, the budget, and how to test a change.
   `[redacted]`, in text before it's indexed for search and in transcripts
   before they're shown. Each is found after a JSON string's `\n`, `\t` or
   `\r`, as in a tool call's input, and after the `-` that starts a line a
-  diff removes. A private key is found in a JSON string, indented, with
+  diff removes, also with the line's number before it. A private key is found in a JSON string, indented, with
   line numbers, in a diff, encrypted, and cut short with no END line.
 - **The data directory and socket** are the owner's alone: the directory
   is created 0700, and the socket is 0600.

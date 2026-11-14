@@ -54,23 +54,24 @@ pub fn redact(text: &str) -> String {
     let mut out = String::new();
     let mut copied = 0;
     let mut at = 0;
-    while at < bytes.len() {
-        // A secret can follow a key byte: the letter of a JSON string's `\n`,
-        // `\t` or `\r`, as in a tool call's input, or the `-` of a line a
-        // diff removes. That `-` is alone at the line's start: the start of
-        // the text, after a line break, or after a JSON string's `\n`. A `-`
-        // inside a name is not, so `cache-sk-…` stays. A key's block starts
-        // with dashes, so it's looked for after any byte.
-        let escape = matches!(bytes[..at], [.., b'\\', b'n' | b't' | b'r']);
-        let removed = matches!(
-            bytes[..at],
-            [b'-'] | [.., b'\n', b'-'] | [.., b'\\', b'n', b'-']
-        );
-        let boundary = at == 0
+    // Whether a secret can start at `at`: at the text's start, after a byte
+    // that's no key byte, or after the letter of a JSON string's `\n`, `\t`
+    // or `\r`, as in a tool call's input.
+    let starts = |at: usize| {
+        at == 0
             || !key_byte(bytes[at - 1])
-            || escape
-            || removed
-            || bytes[at..].starts_with(b"-----BEGIN ");
+            || matches!(bytes[..at], [.., b'\\', b'n' | b't' | b'r'])
+    };
+    while at < bytes.len() {
+        // Or after the `-` of a line a diff removes, though `-` is a key
+        // byte. That `-` stands where a secret can start: at a line's start,
+        // or after the tab of `cat -n`, the `→` of Claude Code's `Read` or
+        // the space of a combined diff before it. A `-` after a key byte is
+        // inside a name, so `cache-sk-…` stays, as does the second `-` of
+        // `--sk-…`. A key's block starts with dashes, so it's looked for
+        // after any byte.
+        let removed = at > 0 && bytes[at - 1] == b'-' && starts(at - 1);
+        let boundary = starts(at) || removed || bytes[at..].starts_with(b"-----BEGIN ");
         match boundary.then(|| secret_at(bytes, at)).flatten() {
             Some((start, end)) => {
                 out.push_str(&text[copied..start]);
@@ -375,8 +376,18 @@ mod tests {
     fn a_key_that_starts_a_diffs_line_is_redacted() {
         for (secret, redacted) in &secrets() {
             // The line starts the text, follows a line break, or follows a
-            // JSON string's `\n`. The diff removes it or adds it.
-            for start in ["", "@@ -1 +1 @@\n", r"@@ -1 +1 @@\n"] {
+            // JSON string's `\n`; with its number, as `cat -n` and Claude
+            // Code's `Read` show it, also in a JSON string; or after a
+            // combined diff's space. The diff removes it or adds it.
+            for start in [
+                "",
+                "@@ -1 +1 @@\n",
+                r"@@ -1 +1 @@\n",
+                "     5\t",
+                "     5→",
+                r"     5\t",
+                "@@@ -1 -1 +1 @@@\n ",
+            ] {
                 for sign in ["-", "+"] {
                     assert_eq!(
                         redact(&format!("{start}{sign}{secret}\n kept")),
@@ -388,18 +399,17 @@ mod tests {
     }
 
     #[test]
-    fn a_dash_that_starts_no_line_starts_no_key() {
+    fn a_dash_inside_a_name_starts_no_key() {
         let run = "A".repeat(24);
         for text in [
             // A `-` inside a name, also on a line a diff removes.
             format!("cache-sk-{run}"),
             format!("@@ -1 +0,0 @@\n-cache-sk-{run}\n"),
             format!(r"@@ -1 +0,0 @@\n-cache-ghp_{run}\n"),
-            // The second `-` at a line's start.
+            // The second `-` at a line's start, also after a line's number.
             format!("--sk-{run}"),
             format!("see\n--sk-{run}"),
-            // A `-` after a JSON string's `\t`, which starts no line.
-            format!(r#"{{"content": "a\t-sk-{run}"}}"#),
+            format!("     5\t--sk-{run}"),
         ] {
             assert_eq!(redact(&text), text);
         }

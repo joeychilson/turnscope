@@ -7,8 +7,8 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use super::{
-    Cite, Room, Summary, call_head, clock_now, cut, cut_middle, in_quotes, kind, plural, quote,
-    render, summary, title, transcript, when,
+    Cite, Room, Summary, call_head, clock_now, cut, cut_middle, files_left, in_quotes, kind,
+    plural, quote, render, summary, title, transcript, when,
 };
 use crate::Result;
 use crate::agents::{self, Entry, Kind, Role, Tool};
@@ -41,9 +41,9 @@ const BUDGET: usize = 16_000;
 /// so at any budget the parts needed most come whole.
 pub fn handoff(db: &Connection, id: &str, cite: Cite, now: i64) -> Result<String> {
     let session = summary(db, id, now)?;
-    // The session it was forked from, where that one was read too: it's
-    // named to be read.
-    let forked: Option<String> = db
+    // The session it was forked from, where that one was read too, and
+    // whether its files are gone, as reading it would find.
+    let parent: Option<String> = db
         .query_row(
             "SELECT p.id FROM session s JOIN session p ON p.id = s.parent
              WHERE s.id = ?1 AND s.link = 'fork'",
@@ -51,15 +51,21 @@ pub fn handoff(db: &Connection, id: &str, cite: Cite, now: i64) -> Result<String
             |row| row.get(0),
         )
         .optional()?;
+    let forked = match &parent {
+        Some(parent) => Some(Forked {
+            parent,
+            gone: files_left(db, parent)?.is_empty(),
+        }),
+        None => None,
+    };
     let entries = transcript(db, id)?;
-    Ok(brief(
-        &session,
-        forked.as_deref(),
-        &entries,
-        BUDGET,
-        cite,
-        now,
-    ))
+    Ok(brief(&session, forked, &entries, BUDGET, cite, now))
+}
+
+/// The session a fork was forked from, and whether its files are gone.
+struct Forked<'a> {
+    parent: &'a str,
+    gone: bool,
 }
 
 /// The handoff of `session`, whose conversation is `entries`, in about
@@ -67,7 +73,7 @@ pub fn handoff(db: &Connection, id: &str, cite: Cite, now: i64) -> Result<String
 /// from.
 fn brief(
     session: &Summary,
-    forked: Option<&str>,
+    forked: Option<Forked>,
     entries: &[Entry],
     budget: usize,
     cite: Cite,
@@ -84,17 +90,39 @@ fn brief(
     // told the next agent that another agent was at work in the folder.
     // The fixture's session said it 3 minutes after its last entry. The
     // time is a fact either way.
-    let active = time::ago(session.active, now);
+    //
+    // A time after now is told as now. Its entry was written by a clock
+    // ahead of this one, as OpenCode's while the Mac's clock was ahead, or
+    // in the moment since now was taken: when it really was isn't known,
+    // and the latest it can have been is now. Told as it was, it read "last
+    // active 12:17 (in 17m)", activity still to come. The list of sessions
+    // calls such a session running, as one active up to now is.
+    let active = time::ago(session.active.min(now), now);
     // A fork names the session it was forked from. What came before the
-    // fork is its parent's, and Claude Code's, Codex's and OpenCode's
+    // fork is its parent's, and Claude Code's, Codex's, OpenCode's and Pi's
     // readers leave a fork's copy of it out, so its handoff began
     // mid-conversation and didn't say where the start was. A continuation
     // names none: its log opens with a copy of what the old session held
     // since it last compacted, which Claude Code's reader keeps as the
     // continuation's own, so its handoff holds what it went on from.
-    let forked = forked.map_or(String::new(), |parent| {
-        format!("It was forked from `{parent}`, which holds what came before the fork.\n")
-    });
+    //
+    // A parent whose files are gone is named as one that can't be read.
+    // Named to be read, it sent the next agent to a session that only
+    // says its files are gone. Left out, the handoff would begin
+    // mid-conversation again with no word why. Its files are looked for as
+    // reading it looks for them; a Codex thread whose index is left but
+    // whose rollouts are gone still reads as there.
+    let forked = match forked {
+        None => String::new(),
+        Some(Forked { parent, gone }) => match gone {
+            false => {
+                format!("It was forked from `{parent}`, which holds what came before the fork.\n")
+            }
+            true => format!(
+                "It was forked from `{parent}`, whose files are gone, so what came before the fork can't be read.\n"
+            ),
+        },
+    };
     // One begun with no folder has none to check.
     let check = match session.cwd {
         Some(_) => "check `git status` and `git diff` in its folder",
@@ -691,11 +719,47 @@ fn line(at: usize, entry: &Entry, tool: &Tool, now: i64) -> String {
 /// says what it meant them to do: told that "Run tests" failed, the next
 /// agent had to read the entry to learn what was run.
 fn failed_line(at: usize, entry: &Entry, tool: &Tool, now: i64) -> String {
-    let ran = match commands(tool).as_slice() {
+    let named = match commands(tool).as_slice() {
         [] => gist(tool),
-        commands => in_quotes(&commands.join("; "), GIST),
+        commands => in_quotes(&ran(commands), GIST),
     };
-    format!("{}: {ran}", call_head(at, entry, tool, now))
+    format!("{}: {named}", call_head(at, entry, tool, now))
+}
+
+/// Commands as a line names them, apart by `; `: each by its first line,
+/// and `…` where more lines follow. A line that ends with `\` goes on in
+/// the next, as the shell reads it, so `cargo test \` then `--locked` is
+/// "cargo test --locked".
+///
+/// A line in a handoff holds no line breaks. A command's lines run together
+/// read as a command no one ran: `cargo test` then `cargo clippy` read
+/// "cargo test cargo clippy". Its lines apart by `; `, as separate commands
+/// are, read as commands too where a line is none: a heredoc's body, or the
+/// second paragraph of a commit message in quotes. Its first line is what
+/// ran first, and `…` says there's more, which reading the entry gives.
+fn ran(commands: &[String]) -> String {
+    let named: Vec<String> = commands
+        .iter()
+        .map(|command| {
+            let mut lines = command.trim().lines();
+            let mut first = String::new();
+            for line in lines.by_ref() {
+                // An odd number of `\` at its end: the last isn't escaped.
+                let ends = line.len() - line.trim_end_matches('\\').len();
+                if ends % 2 == 0 {
+                    first += line;
+                    break;
+                }
+                first += &line[..line.len() - 1];
+                first += " ";
+            }
+            match lines.next() {
+                Some(_) => format!("{} …", first.trim_end()),
+                None => first.trim_end().to_owned(),
+            }
+        })
+        .collect();
+    named.join("; ")
 }
 
 /// An entry quoted under what the person asked, named where it falls: by
@@ -714,7 +778,7 @@ const GIST: usize = 120;
 
 /// What a tool call was for, in a few words and in quotes: its input's
 /// description, which Antigravity's tools call a `toolSummary`, or command
-/// or path, or the input itself.
+/// as `ran` names it, or path, or the input itself.
 fn gist(tool: &Tool) -> String {
     let said = serde_json::from_str::<serde_json::Value>(&tool.input)
         .ok()
@@ -724,21 +788,25 @@ fn gist(tool: &Tool) -> String {
                 .chain(&COMMANDS)
                 .chain(&PATHS)
                 .chain(&["pattern", "query", "url", "prompt"])
-                .find_map(|key| match input.get(key)? {
-                    serde_json::Value::String(text) => Some(text.clone()),
-                    serde_json::Value::Array(words) => Some(
-                        words
+                .find_map(|key| {
+                    let said = match input.get(key)? {
+                        serde_json::Value::String(text) => text.clone(),
+                        serde_json::Value::Array(words) => words
                             .iter()
                             .filter_map(|word| word.as_str())
                             .collect::<Vec<_>>()
                             .join(" "),
-                    ),
-                    _ => None,
+                        _ => return None,
+                    };
+                    Some(match COMMANDS.contains(key) {
+                        true => ran(&[said]),
+                        false => said,
+                    })
                 })
         })
         .unwrap_or_else(|| match commands(tool).as_slice() {
             [] => tool.input.clone(),
-            commands => commands.join("; "),
+            commands => ran(commands),
         });
     in_quotes(&said, GIST)
 }
@@ -1319,6 +1387,14 @@ mod tests {
                 ),
                 "Run the tests",
             ),
+            // A command, as what failed names it.
+            (
+                read(
+                    "bash",
+                    serde_json::json!({ "command": "cargo fmt --check\ncargo test -q" }),
+                ),
+                "cargo fmt --check …",
+            ),
         ] {
             let tool = entry.tool.unwrap();
             assert_eq!(gist(&tool), format!("\"{said}\""), "{}", tool.name);
@@ -1363,19 +1439,23 @@ mod tests {
     }
 
     /// A session active in the last five minutes says when it was, as any
-    /// other does: it may have just stopped, as when its limit ran out.
+    /// other does: it may have just stopped, as when its limit ran out. One
+    /// active after now, by a clock ahead, was active now at the latest.
     #[test]
     fn a_session_active_just_now_says_when_it_was_last_active() {
         let entries = [said(Kind::User, 0, "Fix the CSV parser.")];
-        let running = Summary {
-            running: true,
-            ..session("CSV", 2 * MINUTE)
-        };
-        let handoff = brief(&running, None, &entries, BUDGET, Cite::Tool, 5 * MINUTE);
-        assert!(
-            handoff.contains(", last active ") && handoff.contains(" (3m ago), 1 entry. "),
-            "{handoff}"
-        );
+        for (active, ago) in [(2 * MINUTE, "3m ago"), (22 * MINUTE, "0m ago")] {
+            let running = Summary {
+                running: true,
+                ..session("CSV", active)
+            };
+            let handoff = brief(&running, None, &entries, BUDGET, Cite::Tool, 5 * MINUTE);
+            assert!(
+                handoff.contains(", last active ")
+                    && handoff.contains(&format!(" ({ago}), 1 entry. ")),
+                "{handoff}"
+            );
+        }
     }
 
     /// What failed names a call by the commands it ran, not by the
@@ -1412,6 +1492,25 @@ mod tests {
                 json(serde_json::json!({ "description": "Run tests", "command": long })),
                 cut.as_str(),
             ),
+            // A command of several lines by its first, whatever follows: more
+            // commands or a heredoc's body. A line a `\` ends goes on.
+            (
+                "Bash",
+                json(
+                    serde_json::json!({ "description": "Test, lint", "command": "cargo test\ncargo clippy" }),
+                ),
+                "cargo test …",
+            ),
+            (
+                "Bash",
+                json(serde_json::json!({ "command": "cat > notes.md <<'EOF'\ncargo test\nEOF\n" })),
+                "cat > notes.md <<'EOF' …",
+            ),
+            (
+                "Bash",
+                json(serde_json::json!({ "command": "cargo test \\\n    --locked \\\n    -q" })),
+                "cargo test --locked -q",
+            ),
             // One that ran no command, by what it was for.
             (
                 "Edit",
@@ -1429,8 +1528,9 @@ mod tests {
         }
     }
 
-    /// A fork says the session it was forked from, where that one was read.
-    /// A continuation doesn't: it holds what the old session did.
+    /// A fork says the session it was forked from, where that one was read,
+    /// or that it can't be read once its files are gone. A continuation
+    /// doesn't: it holds what the old session did.
     #[test]
     fn a_fork_says_the_session_it_was_forked_from() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -1510,6 +1610,16 @@ mod tests {
         assert!(continued.contains("> Fix the CSV parser."), "{continued}");
         assert_eq!(link("orphan"), "fork");
         assert!(!handoff("orphan").contains("forked from"));
+        // Its parent's files deleted since, the fork says it can't be read.
+        std::fs::remove_file(projects.join("first.jsonl")).unwrap();
+        let fork = handoff("fork");
+        assert_eq!(
+            fork.lines().nth(3),
+            Some(
+                "It was forked from `claude-code:first`, whose files are gone, so what came before the fork can't be read."
+            ),
+            "{fork}"
+        );
     }
 }
 
