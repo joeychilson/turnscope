@@ -1225,6 +1225,7 @@ mod tests {
         assert!(read.responses.is_empty());
         assert_eq!(read.skipped, 1);
     }
+
     #[test]
     fn a_line_outside_a_repository_leaves_the_branch_as_it_was() {
         let dir = tempfile::tempdir().unwrap();

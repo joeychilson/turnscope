@@ -256,8 +256,9 @@ mod tests {
     }
 
     #[test]
-    fn a_key_read_with_line_numbers_is_redacted() {
+    fn a_private_key_is_redacted_however_its_written_and_what_follows_it_is_not() {
         for (text, redacted) in [
+            // Read with line numbers.
             (
                 "     1\t-----BEGIN OPENSSH PRIVATE KEY-----\n     2\tb3BlbnNzaC1rZXktdjEAAAAAb3BlbnNzaC1rZXktdjEAAAAA\n     3\t-----END OPENSSH PRIVATE KEY-----\n     4\t",
                 "     1\t[redacted]\n     4\t",
@@ -270,14 +271,7 @@ mod tests {
                 "     1\t-----BEGIN PGP PRIVATE KEY BLOCK-----\n     2\t\n     3\tlQOYBGZha2UAAAAAlQOYBGZha2UAAAAA\n     4\tlQOYBGZha2UAAAAA",
                 "     1\t[redacted]",
             ),
-        ] {
-            assert_eq!(redact(text), redacted, "{text}");
-        }
-    }
-
-    #[test]
-    fn a_key_in_a_diff_is_redacted() {
-        for (text, redacted) in [
+            // In a diff.
             (
                 "@@ -1,3 +0,0 @@\n------BEGIN OPENSSH PRIVATE KEY-----\n-b3BlbnNzaC1rZXktdjEAAAAA\n------END OPENSSH PRIVATE KEY-----\n",
                 "@@ -1,3 +0,0 @@\n-[redacted]\n",
@@ -286,14 +280,7 @@ mod tests {
                 "@@ -0,0 +1,3 @@\n+-----BEGIN OPENSSH PRIVATE KEY-----\n+b3BlbnNzaC1rZXktdjEAAAAA\n+-----END OPENSSH PRIVATE KEY-----\n",
                 "@@ -0,0 +1,3 @@\n+[redacted]\n",
             ),
-        ] {
-            assert_eq!(redact(text), redacted, "{text}");
-        }
-    }
-
-    #[test]
-    fn an_indented_key_is_redacted() {
-        for (text, redacted) in [
+            // Indented.
             (
                 "tls:\n  key: |\n    -----BEGIN EC PRIVATE KEY-----\n    MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n    MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n    -----END EC PRIVATE KEY-----\n  port: 443",
                 "tls:\n  key: |\n    [redacted]\n  port: 443",
@@ -302,14 +289,7 @@ mod tests {
                 "key: |\n  -----BEGIN EC PRIVATE KEY-----\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n",
                 "key: |\n  [redacted]\n",
             ),
-        ] {
-            assert_eq!(redact(text), redacted, "{text}");
-        }
-    }
-
-    #[test]
-    fn a_key_in_a_json_string_is_redacted() {
-        for (text, redacted) in [
+            // In a JSON string.
             (
                 r#"{"private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END RSA PRIVATE KEY-----\n", "type": "x"}"#,
                 r#"{"private_key": "[redacted]\n", "type": "x"}"#,
@@ -322,14 +302,7 @@ mod tests {
                 r#""-----BEGIN PRIVATE KEY-----\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC""#,
                 r#""[redacted]""#,
             ),
-        ] {
-            assert_eq!(redact(text), redacted, "{text}");
-        }
-    }
-
-    #[test]
-    fn a_key_cut_short_is_redacted_and_what_follows_it_is_not() {
-        for (text, redacted) in [
+            // Cut short.
             (
                 "$ head -3 id_rsa\n-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n$ ls",
                 "$ head -3 id_rsa\n[redacted]\n$ ls",

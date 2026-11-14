@@ -715,8 +715,18 @@ mod tests {
     }
 
     #[test]
-    fn history_read_by_a_newer_turnscope_is_left_alone() {
-        let (_dir, home, mut db, _) = store();
+    fn history_read_by_an_older_turnscope_is_read_again_and_by_a_newer_left_alone() {
+        let (_dir, home, mut db, folder) = store();
+        std::fs::write(folder.join("s1.jsonl"), line("Quote fields with commas.")).unwrap();
+        let found = "SELECT count(*) FROM said WHERE said MATCH 'commas'";
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(count(&db, found), 1);
+        // Read again, it's searched once.
+        db.execute("UPDATE state SET readers = ?1", [READERS - 1])
+            .unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(count(&db, found), 1);
+        assert_eq!(count(&db, "SELECT readers FROM state"), READERS);
         db.execute("UPDATE state SET readers = ?1", [READERS + 1])
             .unwrap();
         assert!(ingest(&mut db, home.path()).is_err());
@@ -772,6 +782,17 @@ mod tests {
             assert_eq!(count(&db, "SELECT count(*) FROM said"), 2);
             assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
         }
+
+        // Its inode, now listed by Codex, isn't Claude Code's file moved.
+        let sessions = home.path().join(".codex/sessions/2026/09/30");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let codex = sessions.join("rollout-2026-09-30T09-00-00-a.jsonl");
+        std::fs::rename(&moved, codex).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        for agent in ["claude-code", "codex"] {
+            let files = format!("SELECT count(*) FROM file WHERE agent = '{agent}'");
+            assert_eq!(count(&db, &files), 1, "{agent}");
+        }
     }
 
     #[test]
@@ -806,56 +827,6 @@ mod tests {
         std::fs::set_permissions(log("s3"), unlocked).unwrap();
         ingest(&mut db, home.path()).unwrap();
         assert_eq!(found(&db), [1, 3]);
-    }
-
-    #[test]
-    fn a_file_that_cant_be_read_is_no_new_history() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let (_dir, home, mut db, folder) = store();
-        std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
-        let locked = folder.join("s2.jsonl");
-        std::fs::write(&locked, line("Fix the parser.")).unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-        assert!(ingest(&mut db, home.path()).unwrap());
-        // Tried again, as it is each time, it reads nothing.
-        assert!(!ingest(&mut db, home.path()).unwrap());
-    }
-
-    #[test]
-    fn a_catch_up_after_the_first_read_that_reads_nothing_writes_nothing() {
-        let (dir, home, mut db, folder) = store();
-        std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
-        let unread = "SELECT history_at IS NULL FROM state";
-        assert_eq!(count(&db, unread), 1);
-        assert!(ingest(&mut db, home.path()).unwrap());
-        assert_eq!(count(&db, unread), 0);
-        // It moves when another connection writes.
-        let other = crate::db::open(dir.path()).unwrap();
-        let before = count(&other, "PRAGMA data_version");
-        assert!(!ingest(&mut db, home.path()).unwrap());
-        assert_eq!(count(&other, "PRAGMA data_version"), before);
-    }
-
-    #[test]
-    fn a_gone_files_inode_under_another_agent_isnt_taken_as_moved() {
-        let (_dir, home, mut db, folder) = store();
-        let file = folder.join("s1.jsonl");
-        std::fs::write(&file, line("Fix the parser.")).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        // The same inode, now listed by Codex: not Claude Code's file moved.
-        let sessions = home.path().join(".codex/sessions/2026/09/30");
-        std::fs::create_dir_all(&sessions).unwrap();
-        let other = sessions.join("rollout-2026-09-30T09-00-00-a.jsonl");
-        std::fs::rename(&file, &other).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(
-            count(&db, "SELECT count(*) FROM file WHERE path LIKE '%s1.jsonl'"),
-            1
-        );
-        assert_eq!(
-            count(&db, "SELECT count(*) FROM file WHERE agent = 'codex'"),
-            1
-        );
     }
 
     #[test]
@@ -955,19 +926,6 @@ mod tests {
     }
 
     #[test]
-    fn history_read_again_is_searched_once() {
-        let (_dir, home, mut db, folder) = store();
-        std::fs::write(folder.join("s1.jsonl"), line("Quote fields with commas.")).unwrap();
-        let found = "SELECT count(*) FROM said WHERE said MATCH 'commas'";
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(count(&db, found), 1);
-        db.execute("UPDATE state SET readers = ?1", [READERS - 1])
-            .unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(count(&db, found), 1);
-    }
-
-    #[test]
     fn a_long_history_read_lets_other_writes_in() {
         let (dir, home, mut db, folder) = store();
         // Seconds of writing, in one share of files.
@@ -1064,16 +1022,31 @@ mod tests {
     }
 
     #[test]
-    fn a_read_says_whether_any_file_changed() {
-        let (_dir, home, mut db, folder) = store();
+    fn a_read_says_whether_any_file_changed_and_writes_nothing_if_none_did() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (dir, home, mut db, folder) = store();
         let log = folder.join("s1.jsonl");
         std::fs::write(&log, line("Fix the parser.")).unwrap();
+        let unread = "SELECT history_at IS NULL FROM state";
+        assert_eq!(count(&db, unread), 1);
         assert!(ingest(&mut db, home.path()).unwrap());
-        // Anything but history written in the agent's folder is nothing new.
+        assert_eq!(count(&db, unread), 0);
+        // Another connection would see any write. Anything but history
+        // written in the agent's folder is nothing new.
+        let other = crate::db::open(dir.path()).unwrap();
+        let before = count(&other, "PRAGMA data_version");
+        assert!(!ingest(&mut db, home.path()).unwrap());
         std::fs::write(home.path().join(".claude/debug.txt"), "").unwrap();
         assert!(!ingest(&mut db, home.path()).unwrap());
+        assert_eq!(count(&other, "PRAGMA data_version"), before);
         std::fs::write(&log, line("Fix the parser.").repeat(2)).unwrap();
         assert!(ingest(&mut db, home.path()).unwrap());
+        // One that can't be read is tried again each time, and reads nothing.
+        let locked = folder.join("s2.jsonl");
+        std::fs::write(&locked, line("Fix the parser.")).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(!ingest(&mut db, home.path()).unwrap());
+        assert!(!ingest(&mut db, home.path()).unwrap());
     }
 
     #[test]

@@ -137,10 +137,7 @@ mod tests {
             readings[0].resets.unwrap() - readings[0].starts.unwrap(),
             5 * HOUR
         );
-    }
-
-    #[test]
-    fn a_window_not_begun_begins_now() {
+        // A window not begun begins now.
         let answer = json!({"five_hour": {"utilization": 0.0, "resets_at": null}});
         let readings = super::parse(&answer, 1_000).unwrap();
         assert_eq!(

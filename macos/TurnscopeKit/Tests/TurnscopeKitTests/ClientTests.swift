@@ -171,20 +171,7 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
 }
 
 @MainActor
-@Test func theSettingsChangeAtOnceAndGoToServeWhole() async throws {
-    let serve = try serve()
-    defer { serve.close() }
-    let (client, store) = try await connected(to: serve)
-    store.setNotify { $0.reset = false }
-    #expect(store.notify?.reset == false)
-    await until { !serve.params(of: "settings.set").isEmpty }
-    let sent = serve.params(of: "settings.set").first?["settings"] as? [String: Any]
-    #expect((sent?["notify"] as? [String: Bool]) == ["runningOut": true, "usedUp": true, "reset": false, "signIn": true])
-    client.stop()
-}
-
-@MainActor
-@Test func aRefusedSettingsChangeGoesBackToWhatServeLastSent() async throws {
+@Test func aSettingsChangeIsShownAtOnceSentWholeAndUndoneIfRefused() async throws {
     // Serve sends a status with other settings, then refuses the change.
     var status = try helloResult()["status"] as? [String: Any] ?? [:]
     status["settings"] = ["notify": ["runningOut": true, "usedUp": true, "reset": true, "signIn": false]]
@@ -199,6 +186,8 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     store.setNotify { $0.reset = false }
     #expect(store.notify?.reset == false)
     await until { store.notify?.signIn == false && store.notify?.reset == true }
+    let sent = serve.params(of: "settings.set").first?["settings"] as? [String: Any]
+    #expect((sent?["notify"] as? [String: Bool]) == ["runningOut": true, "usedUp": true, "reset": false, "signIn": true])
     // It's what serve sent, not what was shown before the change, and not
     // the change.
     #expect(store.notify == Notify(runningOut: true, usedUp: true, reset: true, signIn: false))
@@ -274,12 +263,40 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     client.stop()
 }
 
+/// How a serve that isn't this app's answers hello.
+enum OtherServe: CaseIterable {
+    /// As another engine, as after an update, when the running serve was
+    /// started by the app's previous version.
+    case anotherEngine
+    /// As an engine whose status this app can't read. The field that names
+    /// the engine is read first, so it's replaced anyway.
+    case unreadableStatus
+    /// With an error: it doesn't speak this app's protocol.
+    case anotherProtocol
+
+    var hello: Reply {
+        get throws {
+            switch self {
+            case .anotherEngine: .of(try helloResult())
+            case .unreadableStatus:
+                .of(["server": "turnscope 0.0.1", "status": ["accounts": "not a list"], "alerts": []])
+            case .anotherProtocol: .error(code: -32001, "this serve speaks protocol 2")
+            }
+        }
+    }
+}
+
 @MainActor
-@Test func aServeOfAnotherEngineIsAskedToExitOnceAndItsSuccessorKept() async throws {
-    // As after an update, when the running serve was started by the app's
-    // previous version.
-    let serve = try serve()
+@Test(arguments: OtherServe.allCases)
+func aServeNotThisAppsIsAskedToExitOnceAndTheNextKept(_ other: OtherServe) async throws {
+    let first = try other.hello
+    let hello = Reply.of(try helloResult())
+    let serve = FakeServe { method, _, serve in
+        guard method == "hello" else { return .done }
+        return serve.methods.filter { $0 == "hello" }.count == 1 ? first : hello
+    }
     defer { serve.close() }
+    // This app's engine is neither serve's.
     let (client, store) = try store(over: serve, version: "turnscope 9.9.9")
     client.start()
     await until { serve.methods.contains("shutdown") }
@@ -287,7 +304,7 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     // It takes no parameters, so it's sent none: JSON-RPC doesn't allow
     // null there.
     #expect(serve.calls(of: "shutdown").first?.keys.contains("params") == false)
-    #expect(store.status == nil)
+    #expect(store.status == nil && store.failure == nil)
     // It exits. The serve connected to next is kept, whatever engine it
     // runs, so two apps can't take turns ending each other's serve.
     serve.drop()
@@ -308,48 +325,6 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     // again, and keeps it.
     await connected(client, store)
     #expect(serve.methods == ["hello", "shutdown", "hello"])
-    client.stop()
-}
-
-@MainActor
-@Test func aServeOfAnotherEngineIsReplacedThoughItsStatusCantBeRead() async throws {
-    // This app can't read this engine's status. The field that names the
-    // engine is read first, so it's replaced anyway.
-    let hello = Reply.of(try helloResult())
-    let older = Reply.of(["server": "turnscope 0.0.1", "status": ["accounts": "not a list"], "alerts": []])
-    let serve = FakeServe { method, _, serve in
-        guard method == "hello" else { return .done }
-        return serve.methods.filter { $0 == "hello" }.count == 1 ? older : hello
-    }
-    defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await until { serve.methods.contains("shutdown") }
-    #expect(store.failure == nil)
-    serve.drop()
-    await connected(client, store)
-    #expect(serve.methods == ["hello", "shutdown", "hello"])
-    #expect(store.status != nil)
-    client.stop()
-}
-
-@MainActor
-@Test func aServeThatDoesntSpeakTheProtocolIsAskedToExit() async throws {
-    let hello = Reply.of(try helloResult())
-    let serve = FakeServe { method, _, serve in
-        guard method == "hello" else { return .done }
-        return serve.methods.filter { $0 == "hello" }.count == 1
-            ? .error(code: -32001, "this serve speaks protocol 2")
-            : hello
-    }
-    defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await until { serve.methods.contains("shutdown") }
-    serve.drop()
-    await connected(client, store)
-    #expect(serve.methods == ["hello", "shutdown", "hello"])
-    #expect(store.status != nil)
     client.stop()
 }
 

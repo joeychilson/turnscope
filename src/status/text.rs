@@ -471,29 +471,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hours_on_a_window_that_rolls_say_so_rather_than_too_little_work() {
+    fn hours_of_work_fit_or_dont_and_a_window_that_rolls_says_so() {
         let example = example();
         let now = example["params"]["at"].as_i64().unwrap();
-        // Claude Max's 5 hours made a window that rolls, as OpenCode Go's
-        // is; its weekly limit is forecast.
-        let mut account = example["params"]["accounts"][0].clone();
-        let five = &mut account["limits"][0];
-        five["window"]["startsAt"] = serde_json::Value::Null;
-        five["work"] = serde_json::Value::Null;
-        five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "rolling"});
-        let account: Account = serde_json::from_value(account).unwrap();
-        assert_eq!(
-            fit(&account, 1.0, now).unwrap(),
-            "1 more hour of work fits at your working pace, leaving about 59% of Weekly. 5 hours is a window that rolls, so it isn't forecast."
-        );
-    }
-
-    #[test]
-    fn one_hour_of_work_doesnt_fit_in_the_singular() {
-        let example = example();
-        let now = example["params"]["at"].as_i64().unwrap();
+        let claude = &example["params"]["accounts"][0];
         // Claude Max's 5 hours with half an hour of work left.
-        let mut account = example["params"]["accounts"][0].clone();
+        let mut account = claude.clone();
         account["limits"][0]["work"]["leftHours"]["likely"] = 0.5.into();
         let account: Account = serde_json::from_value(account).unwrap();
         assert_eq!(
@@ -503,6 +486,18 @@ mod tests {
         assert_eq!(
             fit(&account, 2.0, now).unwrap(),
             "2 more hours of work don't fit: 5 hours runs out after about 30m of work."
+        );
+        // Its 5 hours made a window that rolls, as OpenCode Go's is: said,
+        // rather than taken for too little work. Its weekly is forecast.
+        let mut account = claude.clone();
+        let five = &mut account["limits"][0];
+        five["window"]["startsAt"] = serde_json::Value::Null;
+        five["work"] = serde_json::Value::Null;
+        five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "rolling"});
+        let account: Account = serde_json::from_value(account).unwrap();
+        assert_eq!(
+            fit(&account, 1.0, now).unwrap(),
+            "1 more hour of work fits at your working pace, leaving about 59% of Weekly. 5 hours is a window that rolls, so it isn't forecast."
         );
     }
 

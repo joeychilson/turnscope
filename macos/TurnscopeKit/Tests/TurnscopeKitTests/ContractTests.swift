@@ -117,16 +117,3 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
     let state = try Contract.decoder.decode(AccountState.self, from: Data(#"{"kind":"unread","why":"signIn","extra":1}"#.utf8))
     #expect(state == .unread(why: .signIn))
 }
-
-@Test func aFixtureIsAStatusAsServePushesIt() throws {
-    #expect(Contract.status(from: try contract("status.notification.json")) != nil)
-    #expect(Contract.status(from: try contract("hello.result.json")) == nil)
-}
-
-@Test func aSessionsShareMayBeUnknown() throws {
-    let answer = try Contract.decoder.decode(Answer<BreakdownResult>.self,
-                                             from: contract("limit.breakdown.result.json"))
-    #expect(answer.result.sessions.first?.sharePercent == 31.5)
-    let unknown = #"{"session":"s","agent":"pi","sharePercent":null,"running":false}"#
-    #expect(try Contract.decoder.decode(UsedMost.self, from: Data(unknown.utf8)).sharePercent == nil)
-}

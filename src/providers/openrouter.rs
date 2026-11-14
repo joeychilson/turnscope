@@ -119,50 +119,45 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_weekly_key_limit_runs_monday_to_monday() {
-        // Thursday 2026-10-01 12:00 UTC.
-        let now = 1_790_856_000_000;
-        let answer =
-            json!({"data": {"limit": 20.0, "limit_remaining": 11.0, "limit_reset": "weekly"}});
-        let limit = super::own_limit(&answer, "key-abc", now).unwrap().unwrap();
-        assert_eq!(
-            (limit.name.as_str(), limit.used, limit.size),
-            ("Weekly key limit", 45.0, Some(20.0))
-        );
-        // Monday 2026-09-28 to Monday 2026-10-05, UTC.
-        assert_eq!(
-            (limit.starts, limit.resets),
-            (Some(1_790_553_600_000), Some(1_791_158_400_000))
-        );
-        for none in [json!(null), json!(0.0)] {
-            assert!(
-                super::own_limit(&json!({"data": {"limit": none}}), "key-abc", now)
-                    .unwrap()
-                    .is_none()
-            );
-        }
-    }
-
-    #[test]
-    fn daily_and_monthly_key_limits_run_by_utc_days_and_months() {
+    fn a_key_limit_runs_by_utc_days_weeks_and_months() {
         // Thursday 2026-10-01 12:00 UTC.
         let now = 1_790_856_000_000;
         let read = |answer: serde_json::Value| {
             let limit = super::own_limit(&answer, "key-abc", now).unwrap().unwrap();
-            (limit.name, limit.used, limit.starts, limit.resets)
+            (
+                limit.name,
+                limit.used,
+                limit.size,
+                limit.starts,
+                limit.resets,
+            )
         };
+        // Monday 2026-09-28 to Monday 2026-10-05.
+        assert_eq!(
+            read(
+                json!({"data": {"limit": 20.0, "limit_remaining": 11.0, "limit_reset": "weekly"}})
+            ),
+            (
+                "Weekly key limit".to_owned(),
+                45.0,
+                Some(20.0),
+                Some(1_790_553_600_000),
+                Some(1_791_158_400_000)
+            )
+        );
         // Without what remains, the window's own usage is what was spent.
-        // October 1 to 2, UTC.
+        // October 1 to 2.
         assert_eq!(
             read(json!({"data": {"limit": 10.0, "limit_reset": "daily", "usage_daily": 2.5}})),
             (
                 "Daily key limit".to_owned(),
                 25.0,
+                Some(10.0),
                 Some(1_790_812_800_000),
                 Some(1_790_899_200_000)
             )
         );
-        // October 1 to November 1, UTC.
+        // October 1 to November 1.
         assert_eq!(
             read(
                 json!({"data": {"limit": 20.0, "limit_remaining": 10.0, "limit_reset": "monthly"}})
@@ -170,14 +165,23 @@ mod tests {
             (
                 "Monthly key limit".to_owned(),
                 50.0,
+                Some(20.0),
                 Some(1_790_812_800_000),
                 Some(1_793_491_200_000)
             )
         );
         assert_eq!(
             read(json!({"data": {"limit": 8.0, "limit_reset": null, "usage": 6.0}})),
-            ("Key limit".to_owned(), 75.0, None, None)
+            ("Key limit".to_owned(), 75.0, Some(8.0), None, None)
         );
+        // A key with no limit has none.
+        for none in [json!(null), json!(0.0)] {
+            assert!(
+                super::own_limit(&json!({"data": {"limit": none}}), "key-abc", now)
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]
