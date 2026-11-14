@@ -61,7 +61,7 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 
 | Table | Holds |
 |---|---|
-| `file` | Each history file: its size, modification time and inode when last read, its reader's cursor, how many lines it couldn't read, why it couldn't be read the last time it failed, and whether it has rows in `said` |
+| `file` | Each history file: its size, modification time and inode when last read, its reader's cursor, how many lines it couldn't read, why it couldn't be read the last time it failed, whether it has rows in `said`, and the reader version it was last read with |
 | `session` | Each session: agent, agent folder, working folder, project, branch, title, parent and link, first and last activity |
 | `session_file` | Which files hold each session's conversation |
 | `response` | One row per response: tokens, prompt size, the cost the agent recorded, its cost, its account, and the file that last reported it |
@@ -71,7 +71,7 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
 | `alert` | Each alert raised, what it says, and whether a client acknowledged it |
 | `price` | models.dev's prices for each model, each from when it was read |
-| `state` | One row: the reader version the history was read with, when its first read finished, when limits and prices were last read, and the settings |
+| `state` | One row: the latest reader version that read the history, when its first read finished, when limits and prices were last read, and the settings |
 
 `db::open` creates or migrates the database. Each revision is one script: a
 shipped script is never edited, and a change is a new script at the end.
@@ -95,19 +95,23 @@ into another program's database.
   sign-in to a provider changed.
 - **Some tables can't be rebuilt.** Accounts, readings, sign-ins, past
   prices, alerts and settings exist only here, so they're never deleted.
-  History can be read again. When a reader changes, `ingest::READERS` is
-  raised, and every file still on disk is read again from the start. A
-  file at a new path with the inode of one read before, whose path is gone,
-  was moved, as an agent moves a file it archives: it's read on from where
-  it was. A file replaced or cut short is read again from the start, and
-  what it said is taken out of `said` first. A file that rewinds a session
-  to an earlier point, as a Codex rewind's rollout does, takes what the
-  session said from there on out of `said`; its agent lists it after the
-  files it rewinds, so they're read first.
-  Responses and sessions from files the agent has since deleted stay. An
-  older Turnscope, such as an agent's MCP server started before an update,
-  doesn't read history a newer one read: it says to update instead, as it
-  does for a newer schema.
+  History can be read again. A file at a new path with the inode of one
+  read before, whose path is gone, was moved, as an agent moves a file it
+  archives: it's read on from where it was. A file replaced or cut short
+  is read again from the start. When a reader changes, `ingest::READERS`
+  is raised. Each file keeps the version it was last read with, and one
+  read with an older one is read again from the start when it's next
+  found: where it was, moved, or back after it was gone. Its responses,
+  the sessions only such files hold, and which sessions it holds are
+  taken out first. Whatever a file is read from the start for, what it
+  said is taken out of `said` first. A file that rewinds a session to an
+  earlier point, as a Codex rewind's rollout does, takes what the session
+  said from there on out of `said`; its agent lists it after the files it
+  rewinds, so they're read first. Responses, sessions and what was said
+  from files the agent has since deleted stay, and search still finds
+  them. An older Turnscope, such as an agent's MCP server started before
+  an update, doesn't read history a newer one read: it says to update
+  instead, as it does for a newer schema.
 - **Transcripts aren't stored.** They're read from the agent's files when
   asked for, with secrets redacted.
 

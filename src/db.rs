@@ -199,6 +199,14 @@ CREATE VIRTUAL TABLE said USING fts5 (
 );
 UPDATE state SET readers = 0;
 "#,
+    r#"
+-- The `ingest::READERS` each file was last read with. One read with an
+-- older reader is read again from the start when it's next found: where it
+-- was, moved, or back after it was gone. Until then it keeps what it made,
+-- as one its agent deleted does.
+ALTER TABLE file ADD COLUMN readers INTEGER NOT NULL DEFAULT 0;
+UPDATE file SET readers = (SELECT readers FROM state);
+"#,
 ];
 
 /// How `said` splits text into words and folds them, as its latest revision
