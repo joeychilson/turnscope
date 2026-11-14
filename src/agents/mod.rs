@@ -73,7 +73,9 @@ pub trait Agent: Sync {
 
     /// The conversation of the session `id` (without the agent's prefix), from
     /// the files that hold it. `files` is never empty: a session whose files
-    /// are all gone isn't read.
+    /// are all gone isn't read. When none of them holds the conversation, it
+    /// fails with `Error::NotFound` naming the session, and
+    /// `sessions::transcript` says its files are gone.
     fn transcript(&self, id: &str, files: &[PathBuf]) -> Result<Vec<Entry>>;
 
     /// What `folder` holds for each provider it signs in to. A provider it
@@ -596,11 +598,25 @@ pub fn keychain(home: &Path, service: &str, account: Option<&str>) -> Result<Opt
     security.arg("-w").env("HOME", home);
     let output = crate::output_within(&mut security, std::time::Duration::from_secs(20))
         .map_err(|error| failed(error.to_string()))?;
-    // 44: no such item.
+    found(output).map_err(failed)
+}
+
+/// What `security` found, by how it ended: the item's value, or `None` when
+/// there's no such item (44). For any other end, why: what it wrote on
+/// standard error, as "User interaction is not allowed." for a locked
+/// Keychain, and how it ended.
+fn found(output: std::process::Output) -> std::result::Result<Option<Vec<u8>>, String> {
     match output.status.code() {
         Some(0) => Ok(Some(output.stdout)),
         Some(44) => Ok(None),
-        code => Err(failed(format!("security exited with {code:?}"))),
+        _ => {
+            let why = String::from_utf8_lossy(&output.stderr);
+            let why = match why.trim() {
+                "" => "security gave no reason",
+                why => why,
+            };
+            Err(format!("{why} ({})", output.status))
+        }
     }
 }
 
@@ -669,20 +685,38 @@ pub fn inner<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 
 /// `text` without the blocks `<tag>…</tag>` of `tags`, attributes or not:
 /// what an agent adds to a message sent as the person's.
+///
+/// An opening tag with no closing one is the agent's only where the text,
+/// its blocks taken out, opens with it, as Codex writes an image's
+/// `<image name=[Image #1]>` in a part of its own: all that text is the
+/// agent's. Further in, it's a word the person typed, as in `Add a <skill>
+/// element to the schema`, and what follows it is theirs too. Taken out to
+/// the end of the text wherever it was, it cut such a message at the tag.
+/// A mention before a block of the same tag still loses the words between
+/// them: tags alone don't tell the two apart. (Not measured: no real
+/// message was read for it.)
 pub fn without_tags(text: &str, tags: &[&str]) -> String {
     let mut text = text.to_owned();
     for tag in tags {
         let close = format!("</{tag}>");
-        while let Some((start, inside)) = opening(&text, tag) {
-            let end = text[inside..]
-                .find(&close)
-                .map_or(text.len(), |end| inside + end + close.len());
-            text.replace_range(start..end, "");
+        while let Some((start, inside)) = opening(&text, tag)
+            && let Some(end) = text[inside..].find(&close)
+        {
+            text.replace_range(start..inside + end + close.len(), "");
         }
         // One left closing a block an agent split across parts.
         text = text.replace(&close, "");
     }
-    text.trim().to_owned()
+    let text = text.trim();
+    // One left opening such a block, which the text then opens with.
+    let opens = tags
+        .iter()
+        .any(|tag| opening(text, tag).is_some_and(|(start, _)| start == 0));
+    if opens {
+        String::new()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// The files a patch in `text` adds, updates, deletes or moves to, as
@@ -842,6 +876,60 @@ mod tests {
         assert_eq!(
             inner("a <user_query>Do it.</user_query> b", "user_query"),
             Some("Do it.")
+        );
+    }
+
+    #[test]
+    fn a_tag_with_no_closing_one_is_the_agents_only_where_it_opens_the_text() {
+        let tags = ["image", "skill"];
+        // As Codex writes an image's two, each in a part of its own.
+        assert_eq!(without_tags("<image name=[Image #1]>", &tags), "");
+        assert_eq!(without_tags("</image>", &tags), "");
+        // After a block of the agent's, whichever tag is listed first.
+        assert_eq!(
+            without_tags(
+                "<skill>Write plainly.</skill>\n<image name=[Image #1]>",
+                &tags
+            ),
+            ""
+        );
+        // Further in, it's a word the person typed, and so is what follows.
+        for typed in [
+            "Add a <skill> element to the manifest schema and document it.",
+            "Replace the <image href=\"a.png\"/> in logo.svg with a path, then run the tests.",
+        ] {
+            assert_eq!(without_tags(typed, &tags), typed);
+        }
+        // A block of the agent's after one is still taken out.
+        assert_eq!(
+            without_tags(
+                "Document <skill> in the schema.<image name=x>y</image>",
+                &tags
+            ),
+            "Document <skill> in the schema."
+        );
+    }
+
+    #[test]
+    fn a_failed_keychain_read_says_what_security_said_and_how_it_ended() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let ended = |code: i32, stdout: &str, stderr: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        assert_eq!(found(ended(0, "kept\n", "")), Ok(Some(b"kept\n".to_vec())));
+        let none = "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.\n";
+        assert_eq!(found(ended(44, "", none)), Ok(None));
+        // A locked Keychain, with no one to ask for its password.
+        let locked = "security: SecKeychainSearchCopyNext: User interaction is not allowed.\n";
+        assert_eq!(
+            found(ended(36, "", locked)),
+            Err("security: SecKeychainSearchCopyNext: User interaction is not allowed. (exit status: 36)".to_owned())
+        );
+        assert_eq!(
+            found(ended(1, "", "")),
+            Err("security gave no reason (exit status: 1)".to_owned())
         );
     }
 

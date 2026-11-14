@@ -2,6 +2,61 @@
 
 ## 0.1.8
 
+- **A key that starts a line a diff removes,** as after deleting a file
+  that holds a token, is redacted. The `-` before the key counted as part
+  of a word, so reading a session, search and handoffs showed the key. A
+  private key on such a line was already redacted.
+- **More keys are redacted:** Stripe's (`sk_live_`, `sk_test_` and
+  `rk_live_`), Slack's (`xoxb-` and `xoxp-`), Hugging Face's (`hf_`) and
+  Google's access tokens (`ya29.`). Reading a session, search and handoffs
+  showed one unless it followed `Bearer `.
+- **A handoff** says when its session was last active, also for one active
+  in the last 5 minutes: `last active 11:57 (3m ago)`. It said `running
+  now`, so the handoff of a session that had just stopped, as when its
+  limit ran out, told the next agent that another agent was at work in the
+  folder.
+- **What failed**, in a handoff, names a call by the commands it ran, such
+  as `"cargo test --locked"`. It named it by the description the agent gave
+  them, such as `"Run tests"`, and the next agent had to read the entry to
+  learn what was run. A call that ran no command is still named by what it
+  was for.
+- **A fork's handoff** names the session it was forked from, which holds
+  what came before the fork. Claude Code's, Codex's and OpenCode's forks
+  start where they branched off, so their handoffs began mid-conversation
+  and didn't say where the start was.
+- **On a first launch** the app shows your limits as soon as they're read,
+  while the footer says it's reading your agents' history. It said
+  "Getting your limits" and showed no account until all of the history was
+  read, which can take minutes.
+- **A command that reads all of your agents' history** says so first, on
+  standard error: `Reading your agents' history…`. That's the first
+  command you run, and the first after an update that changes how history
+  is read. A command that waits for another Turnscope reading history,
+  such as the app's, says so after a second:
+  `Waiting while another Turnscope reads your agents' history…`. Both
+  waited in a blank terminal.
+- **A request that names a tag** its agent uses is read whole, such as
+  `<skill>` or `<image>` with Codex and `<system-reminder>` with Claude
+  Code. It was cut at the tag: `Add a <skill> element to the manifest
+  schema and document it.` became `Add a` in the session's title, in
+  search, in `sessions read` and `read_session`, and in the requests a
+  handoff quotes.
+- **A Pi fork** shows only its own conversation in `sessions read`,
+  `read_session` and handoffs. They opened with the fork's copy of its
+  parent's entries, and a handoff listed the parent's requests as the
+  fork's.
+- **OpenCode:** a session or message saved while the Mac's clock was ahead
+  no longer stops later ones being read. Until the clock passed the time it
+  was stamped, no new OpenCode session or usage was read, and what was
+  saved in that time stayed unread afterwards. `doctor` said nothing.
+- **`doctor`** says why a Keychain item couldn't be read, in the words of
+  macOS's `security` and with its exit status, such as `User interaction is
+  not allowed. (exit status: 36)` for a locked Keychain. It said `security
+  exited with Some(36)`.
+- **A session whose files are gone** says so one way, whichever of them is
+  left: `codex:019a…'s files are gone: Codex deleted or moved them, so its
+  conversation can't be read`. A named Codex thread whose rollouts were
+  deleted said `the thread's rollouts are gone`, naming no session.
 - **An account with more than one limit used up** is back when the last of
   them is. With 5 hours back in an hour and Weekly back in three days, the
   app and `check_limits` say it's back in three days, and `--hours` says
@@ -28,6 +83,8 @@
   across its keys: $0.00.` After the month's first day it added `on pace
   for about $0.00`. The pace is left out whenever it reads the same as
   what was spent.
+- Your agents' history is read again once after updating, so these fixes
+  apply to what was read before.
 
 ## 0.1.7
 
