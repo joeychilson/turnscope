@@ -27,7 +27,7 @@ const READERS: i64 = 7;
 /// 10 s, and SQLite tries a waiting write again every 100 ms at most, so a
 /// pause longer than that lets it in.
 ///
-/// Measured on a made-up 616 MB history of 256 files, with `config set` run
+/// Measured on a made-up 616 MB history of 256 files, with a setting saved
 /// beside it every half second: one transaction for all 256 held the lock 6
 /// to 23 s, and a write failed after 10.4 s in 4 runs of 8. A transaction a
 /// file let it go only between commits, so a write got in by chance, after

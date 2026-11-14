@@ -119,6 +119,9 @@
   `check_limits` does: no account's limits have been read yet, or every
   account is hidden, with how to see them. They printed nothing, and
   `check_limits` said no account had been read when every one was hidden.
+- **`turnscope config`** is removed. It showed the four notification
+  settings and turned one on or off. Only the app sends notifications, and
+  its Settings → General has a switch for each.
 - **`--limit` and `explain_usage`'s `limit`** take a model's limit with its
   model first, as the app names it: `"opus weekly"` as well as
   `"weekly (opus)"`. Named model first, no limit was found.

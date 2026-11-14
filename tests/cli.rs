@@ -299,7 +299,6 @@ fn every_command_answers_as_its_snapshot_says() {
         // own, Codex's, with Pi's before it.
         ("handoff-folder", vec!["handoff", "--folder", "/work/app"]),
         ("accounts", vec!["accounts"]),
-        ("config", vec!["config"]),
         ("connect", vec!["connect"]),
         ("doctor", vec!["doctor"]),
     ] {
@@ -420,11 +419,6 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "24h, 7d or 4w",
         ),
-        (
-            vec!["config", "set", "notify.everything", "on"],
-            2,
-            "notify.runningOut",
-        ),
         (vec!["sessions", "--count", "0"], 2, "0 is not in 1..=100"),
         (vec!["sessions", "-n", "101"], 2, "101 is not in 1..=100"),
         (
@@ -455,7 +449,7 @@ fn a_command_says_when_it_reads_all_of_history() {
     };
     let reading = "Reading your agents' history…\n";
     // One that reports no data reads no history.
-    assert_eq!(said(&["config"]), "");
+    assert_eq!(said(&["connect"]), "");
     assert_eq!(said(&["sessions"]), reading);
     assert_eq!(said(&["sessions"]), "");
     // As after an update that raised `ingest::READERS`.

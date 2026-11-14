@@ -181,11 +181,6 @@ enum Command {
         #[command(subcommand)]
         action: Option<AccountAction>,
     },
-    /// Show the settings, or turn a notification on or off
-    Config {
-        #[command(subcommand)]
-        action: Option<ConfigAction>,
-    },
     /// See which agents run Turnscope's MCP server, or add it to one
     Connect {
         /// The agent's id, as `connect` lists them, such as claude-code
@@ -254,26 +249,6 @@ enum AccountAction {
     Hide { account: String },
     /// Show a hidden account again
     Show { account: String },
-}
-
-#[derive(Subcommand)]
-enum ConfigAction {
-    /// Turn a notification on or off: notify.runningOut, notify.usedUp, notify.reset or notify.signIn
-    Set {
-        key: String,
-        #[arg(value_parser = ["on", "off"])]
-        value: String,
-    },
-}
-
-/// The settings `config` sets and shows, by key, in the order it shows them.
-fn notify_keys(notify: &mut alerts::Notify) -> [(&'static str, &mut bool); 4] {
-    [
-        ("notify.runningOut", &mut notify.running_out),
-        ("notify.usedUp", &mut notify.used_up),
-        ("notify.reset", &mut notify.reset),
-        ("notify.signIn", &mut notify.sign_in),
-    ]
 }
 
 fn main() -> ExitCode {
@@ -393,7 +368,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
     let mut db = db::open(data)?;
     let reports = match &command {
         Command::Accounts { action } => action.is_none(),
-        Command::Config { .. } | Command::Connect { .. } | Command::Disconnect { .. } => false,
+        Command::Connect { .. } | Command::Disconnect { .. } => false,
         _ => true,
     };
     if reports {
@@ -627,25 +602,6 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 false => lines.join("\n"),
             };
             print(json!(listed), text)
-        }
-        Command::Config { action } => {
-            let mut settings = alerts::settings(&db)?;
-            if let Some(ConfigAction::Set { key, value }) = action {
-                let mut keys = notify_keys(&mut settings.notify);
-                let Some((_, setting)) = keys.iter_mut().find(|(name, _)| *name == key) else {
-                    let [names @ .., last] = keys.map(|(name, _)| name);
-                    return Err(Error::Usage(format!(
-                        "no setting {key}; there are {} and {last}",
-                        names.join(", ")
-                    )));
-                };
-                **setting = value == "on";
-                alerts::save_settings(&db, &settings)?;
-            }
-            let word = |on: bool| if on { "on" } else { "off" };
-            let lines =
-                notify_keys(&mut settings.notify).map(|(name, on)| format!("{name} {}", word(*on)));
-            print(json!(settings), lines.join("\n"))
         }
         Command::Connect { agent: Some(id) } | Command::Disconnect { agent: id } => {
             let agent = agents::find(&id)?;

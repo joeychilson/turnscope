@@ -14,7 +14,6 @@
 | [`sessions`](#sessions) | Find sessions, show one, or read its conversation |
 | [`handoff`](#handoff) | Everything another agent needs to finish a session's work |
 | [`accounts`](#accounts) | List accounts, or hide or show one |
-| [`config`](#config) | Show the settings, or turn a notification on or off |
 | [`connect`, `disconnect`](#connect-and-disconnect) | See which agents run Turnscope's MCP server, add it to one, or remove it |
 | [`doctor`](#doctor) | What can't be read, and how to fix it |
 | [`serve`, `mcp`](#serve-and-mcp) | The app's daemon, and the MCP server |
@@ -68,8 +67,6 @@ wait for it, and after a second they say
   `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60`. A unique start of the
   id, or of the agent's own part of it, works too when it's 4 characters
   or more: `0f6e3f6a`.
-- **Settings** are `notify.runningOut`, `notify.usedUp`, `notify.reset` and
-  `notify.signIn`.
 
 `handoff` leaves out the calling agent's own session, and `usage --limit`,
 `guard` and `statusline` default to its account. They find the calling
@@ -388,31 +385,6 @@ SuperGrok (me@example.com) · xai:user-3
 A hidden account ends with `· hidden`. With no account yet, it says that
 no account's limits have been read, as `status` does, and `--json` prints
 an empty list.
-
-## Config
-
-```text
-turnscope config
-turnscope config set <key> on|off
-```
-
-Shows the settings, or turns a notification on or off. All are on by
-default.
-
-| Key | Notifies when |
-|---|---|
-| `notify.runningOut` | A limit in use will run out before its reset at this pace |
-| `notify.usedUp` | A limit in use is used up |
-| `notify.reset` | A limit that was used up is back |
-| `notify.signIn` | An account in use needs signing in again |
-
-```console
-$ turnscope config
-notify.runningOut on
-notify.usedUp on
-notify.reset on
-notify.signIn on
-```
 
 ## Connect and disconnect
 

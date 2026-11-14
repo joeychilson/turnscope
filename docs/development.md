@@ -69,7 +69,7 @@ to see it here.
 | Tests | Where | Cover |
 |---|---|---|
 | Unit | `#[cfg(test)]` in each module | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database, prices, the forecast, each provider's answers, alerts, time, redaction, the contract's examples |
-| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `sessions`, `handoff`, `accounts`, `config`, `connect` and `doctor` by snapshot, with a session of every agent listed, shown and read; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
+| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `sessions`, `handoff`, `accounts`, `connect` and `doctor` by snapshot, with a session of every agent listed, shown and read; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
 | Swift | `macos/TurnscopeKit/Tests/` | Decoding and encoding every contract example, the client against a stand-in `serve` and a real one, launch arguments, the wording |
 
 **Fixtures.** `tests/cli.rs` reads a home (`tests/fixtures/home`) with two

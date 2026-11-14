@@ -204,7 +204,7 @@ limits. A provider out of reach leaves things as they were.
 
 | Process | Catches up |
 |---|---|
-| A CLI command that reports data | Before it answers. `config`, `connect`, `disconnect`, and `accounts hide` and `show` don't. |
+| A CLI command that reports data | Before it answers. `connect`, `disconnect`, and `accounts hide` and `show` don't. |
 | `guard` | Limits only, when due. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, and before the `continue` prompt. |
