@@ -63,9 +63,6 @@ struct Due {
     path: PathBuf,
     cursor: String,
     stat: Stat,
-    /// Read before, and now replaced or cut short, so read again from the
-    /// start: what its last read said is taken out first.
-    again: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -103,9 +100,12 @@ impl Stat {
 
 /// A file as its last read left it.
 struct Known {
+    id: i64,
     agent: String,
     stat: Stat,
     cursor: String,
+    /// Whether it has rows in `said`.
+    indexed: bool,
 }
 
 /// Hold `ingest.lock` beside the database: one process writes history, or
@@ -117,14 +117,15 @@ fn lock(db: &Connection) -> Result<std::fs::File> {
 
 /// The files under `home` to read: each one new or changed since its last
 /// read, with where to read it from. A file read before that moved has its
-/// row moved with it.
-fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
+/// row moved with it, and what one replaced or cut short said is taken out.
+fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     // By the path's bytes: a `PathBuf` hashes component by component. With
     // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
     let mut known: HashMap<OsString, Known> = db
-        .prepare("SELECT path, agent, size, modified, inode, cursor FROM file")?
+        .prepare("SELECT path, agent, size, modified, inode, cursor, id, indexed FROM file")?
         .query_map([], |row| {
             let known = Known {
+                id: row.get(6)?,
                 agent: row.get(1)?,
                 stat: Stat {
                     size: row.get(2)?,
@@ -132,6 +133,7 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
                     inode: row.get(4)?,
                 },
                 cursor: row.get(5)?,
+                indexed: row.get(7)?,
             };
             Ok((OsString::from(row.get::<_, String>(0)?), known))
         })?
@@ -159,6 +161,7 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
         .collect();
 
     let mut due = Vec::new();
+    let mut again = Vec::new();
     for (agent, folder, path, stat) in found {
         let was = match known.remove(path.as_os_str()) {
             Some(was) => Some(was),
@@ -173,14 +176,17 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
                 _ => None,
             },
         };
-        let (cursor, again) = match was {
+        let cursor = match was {
             Some(was) if was.stat == stat => continue,
-            Some(was) if was.stat.inode == stat.inode && stat.size >= was.stat.size => {
-                (was.cursor, false)
-            }
+            Some(was) if was.stat.inode == stat.inode && stat.size >= was.stat.size => was.cursor,
             // A file replaced or cut short is read from the start.
-            Some(_) => (String::new(), true),
-            None => (String::new(), false),
+            Some(was) => {
+                if was.indexed {
+                    again.push(was.id);
+                }
+                String::new()
+            }
+            None => String::new(),
         };
         due.push(Due {
             agent,
@@ -188,8 +194,29 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
             path,
             cursor,
             stat,
-            again,
         });
+    }
+    // What the files replaced or cut short said is taken out here, before
+    // any is read again, in one statement for them all, over one for each
+    // as it's written: taking rows out by file scans the table. As before,
+    // only for files whose reads were indexed. They're unmarked first, and
+    // `said` holds rows of no other file not marked. With every file of a
+    // made-up history replaced at once, as when a home is restored from a
+    // backup (3,000 files, 240,000 rows), the catch-up took 167 to 249 s
+    // with a statement for each and 12 to 14 s with one, where the first
+    // read took 12 to 13 s (measured 2026-11-14). The cost: one transaction
+    // holds the write lock for it, 0.8 to 1 s there, and what they said
+    // isn't found until they're read again.
+    if !again.is_empty() {
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for id in again {
+            tx.execute("UPDATE file SET indexed = 0 WHERE id = ?1", [id])?;
+        }
+        tx.execute(
+            "DELETE FROM said WHERE file IN (SELECT id FROM file WHERE NOT indexed)",
+            [],
+        )?;
+        tx.commit()?;
     }
     Ok(due)
 }
@@ -311,11 +338,6 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
         ],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    // Only for such a file, and only one whose reads were indexed, since
-    // taking rows out by file scans the table.
-    if due.again && indexed {
-        tx.execute("DELETE FROM said WHERE file = ?1", [file])?;
-    }
 
     let mut session = tx.prepare_cached(SESSION)?;
     let mut holds =
@@ -402,12 +424,8 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
     for (session, text, ordinal) in &read.said {
         said.execute(params![session, text, file, ordinal])?;
     }
-    let now = !read.said.is_empty() || (indexed && !due.again);
-    if now != indexed {
-        tx.execute(
-            "UPDATE file SET indexed = ?2 WHERE id = ?1",
-            params![file, now],
-        )?;
+    if !indexed && !read.said.is_empty() {
+        tx.execute("UPDATE file SET indexed = 1 WHERE id = ?1", [file])?;
     }
     Ok(())
 }
@@ -691,6 +709,40 @@ mod tests {
             assert_eq!(count(&db, "SELECT count(*) FROM said"), 2);
             assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
         }
+    }
+
+    #[test]
+    fn files_replaced_at_once_are_each_searched_once() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_dir, home, mut db, folder) = store();
+        // How many rows say each of the two words.
+        let found = |db: &Connection| {
+            ["commas", "tabs"].map(|word| {
+                let said = format!("SELECT count(*) FROM said WHERE said MATCH '{word}'");
+                count(db, &said)
+            })
+        };
+        let log = |name: &str| folder.join(name).with_extension("jsonl");
+        for name in ["s1", "s2", "s3", "s4"] {
+            std::fs::write(log(name), line("Quote the commas.")).unwrap();
+        }
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(found(&db), [4, 0]);
+        // Three replaced, as a home restored from a backup is, and one left.
+        for name in ["s1", "s2", "s3"] {
+            let new = folder.join(name).with_extension("new");
+            std::fs::write(&new, line("Escape the tabs.")).unwrap();
+            std::fs::rename(&new, log(name)).unwrap();
+        }
+        // One can't be read yet: what it said before is out all the same.
+        let locked = std::fs::Permissions::from_mode(0o000);
+        std::fs::set_permissions(log("s3"), locked).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(found(&db), [1, 2]);
+        let unlocked = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(log("s3"), unlocked).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(found(&db), [1, 3]);
     }
 
     #[test]

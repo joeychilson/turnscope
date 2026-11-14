@@ -10,6 +10,10 @@
   `rk_live_`), Slack's (`xoxb-` and `xoxp-`), Hugging Face's (`hf_`) and
   Google's access tokens (`ya29.`). Reading a session, search and handoffs
   showed one unless it followed `Bearer `.
+- **History whose files were all replaced at once**, as when a home folder
+  is restored from a backup or moved to a new Mac, is read again as fast as
+  it was first read. With 3,000 sessions, the first command after took 3 to
+  4 minutes and takes 13 seconds.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
