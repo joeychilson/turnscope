@@ -125,6 +125,30 @@ fn command_as(agent: &str, data: &Path, args: &[&str]) -> Command {
     command
 }
 
+/// What the MCP server's `explain_usage` answers each of `arguments`, over
+/// the store `data`.
+fn explain_usage(data: &Path, arguments: &[&str]) -> Vec<String> {
+    let requests: String = arguments
+        .iter()
+        .map(|arguments| {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"explain_usage","arguments":{arguments}}}}}"#
+            ) + "\n"
+        })
+        .collect();
+    let output = turnscope(data, &["mcp"], Some(&requests));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| {
+            let reply: serde_json::Value = serde_json::from_str(line).unwrap();
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
 /// A store with the fixture's history read, and four accounts:
 /// - Claude Max, Claude Code's: its five hours running out within the hour
 ///   at the pace of the last three, its week lasting;
@@ -370,6 +394,26 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "cannot be used with",
         ),
+        // As `sessions --agent claude` says.
+        (
+            vec!["usage", "--agent", "claude"],
+            2,
+            "no agent is claude; agents are claude-code, ",
+        ),
+        // As `explain_usage` says of a `since` ahead of now.
+        (
+            vec![
+                "usage",
+                "--account",
+                "claude",
+                "--limit",
+                "week",
+                "--since",
+                "now",
+            ],
+            2,
+            "--since is now or later",
+        ),
         (vec!["usage", "--since", "last tuesday"], 2, "24h, 7d or 4w"),
         (
             vec!["usage", "--since", "99999999999999d"],
@@ -583,6 +627,114 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
     assert!(
         text.contains("Claude Max (me@example.com): it couldn't be read since 11:25; it's tried again every 5 minutes."),
         "{text}"
+    );
+}
+
+#[test]
+fn what_used_a_limit_whose_window_reset_since_its_read_counts_from_the_reset() {
+    let data = store();
+    // Claude's last read at 10:20, of a 5 hours from 06:00 that reset at
+    // 11:00. The working session ran from 10:00 until now, noon.
+    let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
+    db.execute_batch(&format!(
+        "UPDATE reading SET at = at - {shift} WHERE account = 'anthropic:acct-1:org-1';
+         UPDATE account SET read_at = read_at - {shift} WHERE id = 'anthropic:acct-1:org-1';
+         UPDATE reading SET starts = {starts}, resets = {resets} WHERE limit_key = 'five_hour';",
+        shift = HOUR * 3 / 2,
+        starts = NOW - 6 * HOUR,
+        resets = NOW - HOUR,
+    ))
+    .unwrap();
+    let limit = ["usage", "--account", "claude", "--limit", "5 hours"];
+    let output = turnscope(data.path(), &limit, None);
+    let text = String::from_utf8_lossy(&output.stdout);
+    // What it used before the reset is no part of the window it's in, and
+    // how much of that one is used isn't known: no shares.
+    assert!(
+        text.contains("5 hours: 100% left, reset 11:00 (1h ago).")
+            && text.contains("Thu Oct 1 11:00 to Thu Oct 1 12:00: 12 responses, $0.23\n")
+            && text.contains(" Responses   Cost\n"),
+        "{text}"
+    );
+    let output = turnscope(data.path(), &[&limit[..], &["--json"]].concat(), None);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["usage"]["since"], NOW - HOUR);
+    assert_eq!(json["sharePercents"], serde_json::Value::Null);
+
+    let answers = explain_usage(
+        data.path(),
+        &[
+            r#"{"account":"claude","limit":"5 hours"}"#,
+            r#"{"account":"claude","limit":"5 hours","since":"3h"}"#,
+        ],
+    );
+    assert!(
+        answers[0].contains("since 11:00 (1h ago): $0.23 at list prices over 12 responses.")
+            && answers[0].contains("| Session | Cost | Responses |\n"),
+        "{}",
+        answers[0]
+    );
+    // Asked since a time, there are no shares to say how to get.
+    assert!(
+        answers[1].contains("since 09:00 (3h ago)") && !answers[1].contains("Shares of"),
+        "{}",
+        answers[1]
+    );
+}
+
+#[test]
+fn explain_usage_says_a_cost_it_doesnt_know_is_unpriced() {
+    let data = store();
+    // Codex's four responses are of a model with no known price.
+    let answers = explain_usage(data.path(), &[r#"{"account":"chatgpt"}"#]);
+    assert!(
+        answers[0].ends_with(
+            "\nBy model: gpt-5.5 ($0.00 (+4 unpriced)).\nBy project: /work/app ($0.00 (+4 unpriced))."
+        ),
+        "{}",
+        answers[0]
+    );
+}
+
+#[test]
+fn what_used_a_limit_gives_the_rest_row_its_share_and_no_shares_as_null() {
+    let data = store();
+    let limit = ["usage", "--account", "claude", "--limit", "week"];
+    let asked = |more: &[&str]| {
+        let output = turnscope(data.path(), &[&limit[..], more].concat(), None);
+        assert!(output.status.success(), "{more:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    // Of the 44 points used, the row shown has 41 and the rest 3, as the
+    // tool says them.
+    let text = asked(&["--top", "1"]);
+    let rest = text.lines().find(|line| line.starts_with("  1 more "));
+    assert!(
+        rest.is_some_and(|rest| rest.ends_with(" 3  $0.03           3%")),
+        "{text}"
+    );
+    let answers = explain_usage(
+        data.path(),
+        &[r#"{"account":"claude","limit":"week","top":1}"#],
+    );
+    assert!(
+        answers[0].contains("| 1 more session | $0.03 | 3 | 3% |\n"),
+        "{}",
+        answers[0]
+    );
+    // As JSON, a share for each row, or null when no row has one, as since
+    // a time.
+    let shares = |more: &[&str]| -> serde_json::Value {
+        let json: serde_json::Value = serde_json::from_str(&asked(more)).unwrap();
+        json["sharePercents"].clone()
+    };
+    assert_eq!(
+        shares(&["--top", "1", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        shares(&["--since", "2h", "--json"]),
+        serde_json::Value::Null
     );
 }
 

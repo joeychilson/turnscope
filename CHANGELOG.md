@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.8
+
+- **What used a limit** whose window reset since it was read counts from
+  the reset, with no shares: in `usage --limit`, in `explain_usage`, and in
+  the sessions the app lists under "Used most". They listed the sessions of
+  the window before, each at `<1%` of a limit shown as 100% left. It showed
+  for an account not read since a window ended, as one whose login expired
+  overnight, or a Google AI plan an hour after Antigravity was last open.
+- **`explain_usage`** shows usage with no known price as `(+N unpriced)` in
+  its lines by model, project and account, as its table does. They showed
+  its cost as `$0.00` alone.
+- **`usage --limit`** gives the row that adds up the rest its share of the
+  limit, as `explain_usage` does. It left that row's share out. With
+  `--json`, `sharePercents` is `null` when rows get no share, where it held
+  a `null` for each row.
+- **`usage --agent`** refuses an id that names no agent and lists the ids,
+  as `sessions --agent` does. It said nothing was used.
+- **`usage --limit --since`** refuses a time at or after now, as `usage`
+  and `explain_usage` do. It printed a span that ran backwards, with
+  nothing used.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command

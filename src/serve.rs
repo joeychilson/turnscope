@@ -537,7 +537,7 @@ impl Server {
                 ))
             })
             .ok_or_else(|| Error::NotFound(format!("no limit {limit} of {account}")))?;
-        let (used, points) = usage::breakdown(
+        let (used, shares) = usage::breakdown(
             &self.db,
             found.0,
             Some(found.1),
@@ -547,7 +547,7 @@ impl Server {
             now,
         )?;
         let mut sessions = Vec::new();
-        for (row, points) in used.rows.iter().zip(points) {
+        for (at, row) in used.rows.iter().enumerate() {
             let (project, agent, running) = crate::sessions::brief(&self.db, &row.key, now)?;
             sessions.push(UsedMost {
                 session: row.key.clone(),
@@ -558,7 +558,7 @@ impl Server {
                 // By session, a row's name is its session's title.
                 title: row.name.clone(),
                 agent,
-                share_percent: points,
+                share_percent: shares.as_ref().map(|shares| shares.rows[at]),
                 running,
             });
         }
@@ -576,7 +576,8 @@ struct UsedMost {
     project: Option<String>,
     agent: String,
     /// Points of the limit it took; `None` where the window's start isn't
-    /// known, as of credits or a window that rolls.
+    /// known, as of credits or a window that rolls, where the window reset
+    /// since the limit was read, or where nothing used had a price.
     share_percent: Option<f64>,
     running: bool,
 }
@@ -605,6 +606,68 @@ mod tests {
         for each in hello["result"]["alerts"].as_array().unwrap() {
             again::<crate::alerts::Alert>(each);
         }
+    }
+
+    /// An account read two hours ago, an hour before its week ended: its one
+    /// limit reset since, so it decides the account and the app asks what
+    /// used it.
+    #[test]
+    fn what_used_a_limit_that_reset_since_its_read_is_the_sessions_since_with_no_share() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = crate::db::open(data.path()).unwrap();
+        let (now, hour) = (crate::now(), crate::time::HOUR);
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+             VALUES ('openai:a', 'openai', 'subscription', 'ChatGPT Plus', ?1)",
+            [now - 2 * hour],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+             VALUES ('openai:a', 'weekly', ?1, 'Weekly', 40, ?2, ?3)",
+            [now - 2 * hour, now - 169 * hour, now - hour],
+        )
+        .unwrap();
+        for (id, title, at) in [
+            ("codex:before", "Fix the parser", now - 3 * hour),
+            ("codex:after", "Add a flag", now - hour / 2),
+        ] {
+            db.execute(
+                "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
+                 VALUES (?1, 'codex', 'f', '/work/app', '/work/app', ?2, ?3, ?3)",
+                rusqlite::params![id, title, at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model, input,
+                     cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches,
+                     priority, cost, account)
+                 VALUES ('codex', ?1, ?1, 0, 1, 'f', ?2, 'openai', 'gpt-5', 1, 0, 0, 0, 1, 0, 1, 0, 0, 1.0, 'openai:a')",
+                rusqlite::params![id, at],
+            )
+            .unwrap();
+        }
+        let server = super::Server {
+            db,
+            home: home.path().to_path_buf(),
+            clients: super::HashMap::new(),
+            sent: None,
+            sender: std::sync::mpsc::channel().0,
+        };
+        let sessions = server.breakdown("openai:a", "weekly", now).unwrap();
+        // The one before used the week that ended, and no points of this
+        // one are known to be used.
+        assert_eq!(
+            serde_json::to_value(sessions).unwrap(),
+            serde_json::json!([{
+                "session": "codex:after",
+                "title": "Add a flag",
+                "project": "app",
+                "agent": "codex",
+                "sharePercent": null,
+                "running": false,
+            }])
+        );
     }
 
     /// A status is pushed when what it shows changed, and only then: not
