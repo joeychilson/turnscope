@@ -405,6 +405,11 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     five.outlook = .usedUp(back: nil)
     let unknown = account([week, five, weekly], title: "Google AI Pro")
     #expect(words.verdict([unknown]).detail == "\(lasts) Claude and GPT 5 hours is used up.")
+    // One running out, listed before the one used up: those models can't be
+    // used now, so the one used up is named.
+    five.outlook = runsOut
+    let running = account([week, five, weekly], title: "Google AI Pro")
+    #expect(words.verdict([running]).detail == "\(lasts) Claude and GPT weekly is used up, back Sat 9 AM.")
 }
 
 @Test func aLimitIsCalledWhatItsProviderCallsIt() {

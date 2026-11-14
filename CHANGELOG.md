@@ -80,8 +80,10 @@
   app and `check_limits` say it's back in three days, and `--hours` says
   Weekly is what's used up. They went by the first limit listed, so the
   account read as back in an hour. A used-up limit with no reset counts as
-  the last back. Under the panel's headline, of two used-up limits on the
-  same models, the app names the last back too.
+  the last back. Under the panel's headline, the app names another limit
+  that's used up before one running out, and of several used up the last
+  back. It named the first listed that doesn't last, so with Claude and
+  GPT's weekly limit used up it could say their 5 hours runs out in 2h.
 - **Under ten minutes of work left** reads `Under 10m of work left`. It
   read `About under 10m of work left (under 10m–under 10m)`. The range is
   left out when both its ends read the same, and when it's `under 10m or
