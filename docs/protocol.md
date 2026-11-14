@@ -49,7 +49,10 @@ nc -U "$(turnscope serve --socket)"
   and `--home` to get the socket's path, and `turnscope --version` to get
   its engine's name. Then it connects. If nothing listens, it starts
   `turnscope serve` with the same `--data` and `--home`, and tries to
-  connect every 100 ms for 5 seconds.
+  connect every 100 ms for 5 seconds. If that `serve` exits with an error
+  first, the app shows the last line it printed on standard error as why.
+  Its standard error is a file, not a pipe: once the app quit, a pipe
+  would end `serve` the first time it printed anything.
 - **Reconnecting.** After a dropped connection or a failed attempt, the app
   waits 0.5 s, doubling each time up to 30 s. The wait goes back to 0.5 s
   only after a connection has held for 30 s, so an engine that keeps failing

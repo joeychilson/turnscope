@@ -59,7 +59,9 @@ func marker() -> URL {
 /// A stand-in for the `turnscope` binary. `serve --socket` prints `socket`.
 /// `--version` prints `version`, which defaults to the engine named in the
 /// contract's `hello`. `serve` touches `started`, which a test watches for.
-func binary(socket: String, started: URL, version: String? = nil) throws -> URL {
+/// With `fails`, it then says that on standard error and exits 1, as a serve
+/// that can't start does.
+func binary(socket: String, started: URL, version: String? = nil, fails: String? = nil) throws -> URL {
     let folder = scratch.appending(path: "engine-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     let url = folder.appending(path: "turnscope")
@@ -68,6 +70,7 @@ func binary(socket: String, started: URL, version: String? = nil) throws -> URL 
         if [ "$2" = "--socket" ]; then echo '\(socket)'; exit 0; fi
         if [ "$1" = "--version" ]; then echo '\(try version ?? engine())'; exit 0; fi
         touch '\(started.path)'
+        \(fails.map { "echo '\($0)' >&2; exit 1" } ?? "")
         """
     try script.write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)

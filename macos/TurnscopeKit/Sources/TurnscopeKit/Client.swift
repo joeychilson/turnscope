@@ -26,7 +26,6 @@ import os
 @MainActor
 public final class Client {
     public enum Phase: Equatable, Sendable {
-        case connecting
         case connected
         /// It isn't connected, and why. It tries again on its own.
         case failed(why: String)
@@ -45,8 +44,9 @@ public final class Client {
         case alert(Alert)
     }
 
-    public private(set) var phase: Phase = .connecting {
-        didSet { if phase != oldValue { emit.yield(.phase(phase)) } }
+    /// Nil until it first connects or fails.
+    public private(set) var phase: Phase? {
+        didSet { if let phase, phase != oldValue { emit.yield(.phase(phase)) } }
     }
 
     /// What the client hears, for a single listener (`Store`).
@@ -116,7 +116,6 @@ public final class Client {
         // ending each other's serve.
         var replaced = false
         while !Task.isCancelled {
-            if phase == .connected { phase = .connecting }
             do throws(ClientError) {
                 // Serve decides the socket's path.
                 if socketPath == nil { socketPath = await engine.said(["serve", "--socket"] + engine.arguments) }
@@ -447,7 +446,8 @@ private struct Engine: Sendable {
 
     /// Connect to serve's socket at `path`. If nothing is listening, start
     /// serve and keep trying for five seconds while it starts. Returns the
-    /// socket, and the serve process if it started one.
+    /// socket, and the serve process if it started one. If serve ends with
+    /// an error instead, the last line it printed is why.
     nonisolated func open(_ path: String) async throws(ClientError) -> sending (socket: Int32, serve: Process?) {
         if let socket = Engine.connect(to: path) { return (socket, nil) }
         let serve = Process()
@@ -455,7 +455,15 @@ private struct Engine: Sendable {
         serve.arguments = ["serve"] + arguments
         serve.standardInput = FileHandle.nullDevice
         serve.standardOutput = FileHandle.nullDevice
-        serve.standardError = FileHandle.nullDevice
+        // Standard error goes to a file, to say why serve couldn't start.
+        // The file loses its name once this returns, and is gone when serve
+        // exits. Not a pipe: serve outlives the app, and a pipe the app no
+        // longer reads ends serve the first time it prints anything. A
+        // second serve given one exited 101, not 0 (November 2026).
+        let said = FileManager.default.temporaryDirectory.appending(path: "turnscope-\(UUID().uuidString)").path
+        FileManager.default.createFile(atPath: said, contents: nil)
+        defer { unlink(said) }
+        serve.standardError = FileHandle(forWritingAtPath: said) ?? FileHandle.nullDevice
         do {
             try serve.run()
         } catch {
@@ -470,6 +478,10 @@ private struct Engine: Sendable {
                 throw .failed("Turnscope stopped")
             }
             if let socket = Engine.connect(to: path) { return (socket, serve) }
+            if !serve.isRunning, serve.terminationStatus != 0,
+               let why = (try? String(contentsOfFile: said, encoding: .utf8))?.split(whereSeparator: \.isNewline).last {
+                throw .failed(String(why))
+            }
         }
         throw .failed("Turnscope's engine didn't start")
     }
