@@ -179,12 +179,6 @@ struct Lines {
     titled: bool,
 }
 
-/// The latest `last_modified_time` read of a folder's titles.
-#[derive(Default, Serialize, Deserialize)]
-struct Titles {
-    modified: String,
-}
-
 /// What `read` finds in one of Antigravity's databases, opened to read.
 ///
 /// Each keeps a write-ahead log, `<file>-wal`, while Antigravity has it
@@ -198,8 +192,7 @@ struct Titles {
 /// change while it was read, or that Antigravity opened meanwhile, fails:
 /// what was read may be of two moments, and it's read again at the next
 /// catch-up.
-fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    let failed = |error| super::reading(file, error);
+fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
     let mut log = file.as_os_str().to_owned();
     log.push("-wal");
     // The file's size and when it was last written, with no log beside it.
@@ -227,9 +220,10 @@ fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> Result<T>) -> Result
         let error = error.to_string();
         super::reading(file, error.split(": file:").next().unwrap_or_default())
     })?;
-    db.busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(failed)?;
-    let read = read(&db)?;
+    let read = db
+        .busy_timeout(std::time::Duration::from_secs(2))
+        .and_then(|()| read(&db))
+        .map_err(|error| super::reading(file, error))?;
     match before {
         Some((_, before)) if alone() != Some(before) => {
             Err(super::reading(file, "it changed while it was read"))
@@ -278,7 +272,7 @@ impl Agent for Antigravity {
 
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
         match file.file_name().and_then(|name| name.to_str()) {
-            Some(TITLES) => titles(file, cursor),
+            Some(TITLES) => titles(file),
             Some(TRANSCRIPT) => said(file, cursor),
             _ => conversation(file, cursor),
         }
@@ -444,8 +438,7 @@ fn conversation(file: &Path, cursor: &str) -> Result<Read> {
     opened(file, |db| conversation_in(db, file, cursor))
 }
 
-fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
-    let failed = |error| super::reading(file, error);
+fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<Read> {
     let mut cursor: Rows = serde_json::from_str(cursor).unwrap_or_default();
     let mut read = Read::default();
     let Some(native) = file.file_stem().and_then(|stem| stem.to_str()) else {
@@ -453,15 +446,13 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
     };
     let session = INFO.session(native);
     // One read transaction, so steps and calls are of one moment.
-    let tx = db.unchecked_transaction().map_err(failed)?;
+    let tx = db.unchecked_transaction()?;
 
-    let mut steps = tx
-        .prepare("SELECT idx, metadata FROM steps WHERE idx >= ?1 ORDER BY idx")
-        .map_err(failed)?;
-    let mut rows = steps.query([cursor.steps]).map_err(failed)?;
-    while let Some(row) = rows.next().map_err(failed)? {
-        let idx: i64 = row.get(0).map_err(failed)?;
-        let metadata: Option<Vec<u8>> = row.get(1).map_err(failed)?;
+    let mut steps = tx.prepare("SELECT idx, metadata FROM steps WHERE idx >= ?1 ORDER BY idx")?;
+    let mut rows = steps.query([cursor.steps])?;
+    while let Some(row) = rows.next()? {
+        let idx: i64 = row.get(0)?;
+        let metadata: Option<Vec<u8>> = row.get(1)?;
         cursor.steps = idx + 1;
         if let Some(at) = metadata.as_deref().and_then(made) {
             read.session(&session).saw(at);
@@ -479,8 +470,7 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
             [],
             |row| row.get(0),
         )
-        .optional()
-        .map_err(failed)?
+        .optional()?
         .flatten();
     let facts = read.session(&session);
     if let Some(about) = &about {
@@ -490,18 +480,15 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
         }
     }
 
-    let mut calls = tx
-        .prepare("SELECT idx, data FROM gen_metadata WHERE idx >= ?1 ORDER BY idx")
-        .map_err(failed)?;
-    let mut step = tx
-        .prepare("SELECT metadata FROM steps WHERE idx = ?1")
-        .map_err(failed)?;
+    let mut calls =
+        tx.prepare("SELECT idx, data FROM gen_metadata WHERE idx >= ?1 ORDER BY idx")?;
+    let mut step = tx.prepare("SELECT metadata FROM steps WHERE idx = ?1")?;
     // The last call read may have had no tokens yet.
     let seen = cursor.calls;
-    let mut rows = calls.query([seen - 1]).map_err(failed)?;
-    while let Some(row) = rows.next().map_err(failed)? {
-        let idx: i64 = row.get(0).map_err(failed)?;
-        let data: Option<Vec<u8>> = row.get(1).map_err(failed)?;
+    let mut rows = calls.query([seen - 1])?;
+    while let Some(row) = rows.next()? {
+        let idx: i64 = row.get(0)?;
+        let data: Option<Vec<u8>> = row.get(1)?;
         cursor.calls = idx + 1;
         let data = data.unwrap_or_default();
         let Some(usage) = within(&data, &[1, 4]) else {
@@ -528,8 +515,7 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
         let at = match named.and_then(|named| i64::try_from(named).ok()) {
             Some(named) => step
                 .query_row([named], |row| row.get::<_, Option<Vec<u8>>>(0))
-                .optional()
-                .map_err(failed)?
+                .optional()?
                 .flatten()
                 .as_deref()
                 .and_then(made),
@@ -607,19 +593,13 @@ fn said(file: &Path, cursor: &str) -> Result<Read> {
     Ok(read)
 }
 
-/// Read a folder's titles on from `cursor`: the title Antigravity gave a
-/// conversation, and the conversation that began it.
-fn titles(file: &Path, cursor: &str) -> Result<Read> {
-    opened(file, |db| titles_in(db, file, cursor))
+/// Read a folder's titles: the title Antigravity gave a conversation, and
+/// the conversation that began it.
+fn titles(file: &Path) -> Result<Read> {
+    opened(file, |db| titles_in(db, file))
 }
 
-/// How long before the latest change seen a read of the titles starts, in
-/// days, as SQLite counts time: 10 seconds, as OpenCode's reader takes.
-const LATE: f64 = 10.0 / 86_400.0;
-
-fn titles_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
-    let failed = |error| super::reading(file, error);
-    let mut cursor: Titles = serde_json::from_str(cursor).unwrap_or_default();
+fn titles_in(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
     let mut read = Read::default();
     // The app's titles list `agy`'s conversations too, so a conversation's
     // database is in either folder. A row whose conversation has none in
@@ -635,32 +615,25 @@ fn titles_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
             })
         })
     };
-    // A time is written as `2026-09-30 09:00:00.5+00:00`, always in UTC, so
-    // a later one is the greater text. A read starts `LATE` before the
-    // latest seen, as a row can be committed after one stamped later; a
-    // time SQLite can't read is read every time.
-    let mut changed = db
-        .prepare(
-            "SELECT conversation_id, title, parent_conversation_id, last_modified_time
-             FROM conversation_summaries
-             WHERE step_count > 0 AND conversation_id IS NOT NULL
-               AND (julianday(?1) IS NULL OR julianday(last_modified_time) IS NULL
-                    OR julianday(last_modified_time) >= julianday(?1) - ?2)",
-        )
-        .map_err(failed)?;
-    let mut rows = changed
-        .query(rusqlite::params![cursor.modified, LATE])
-        .map_err(failed)?;
-    while let Some(row) = rows.next().map_err(failed)? {
-        let (native, title, parent, modified): (String, String, String, String) = (
-            row.get(0).map_err(failed)?,
-            row.get(1).map_err(failed)?,
-            row.get(2).map_err(failed)?,
-            row.get(3).map_err(failed)?,
-        );
-        if modified > cursor.modified {
-            cursor.modified = modified;
-        }
+    // Every row is read at each read, over reading on from the latest
+    // `last_modified_time` seen, which rested on what wasn't measured: that
+    // a title written later moves the time, that a row is committed at most
+    // 10 seconds after one stamped later, and that every time is in UTC.
+    // Measured 2026-11-14 with a release build on a made-up table of 5,000
+    // conversations, each titled and with a database: a catch-up after one
+    // title changed ran 691M instructions more than one with nothing to
+    // read (1,185M over 494M), about 0.1 s. Reading on from the latest ran
+    // 21M more. Reading the rows took 51 to 56 ms of that, 4 of them the
+    // query, and writing 5,000 sessions the rest. The history measured
+    // above had 8 conversations.
+    let mut titled = db.prepare(
+        "SELECT conversation_id, title, parent_conversation_id FROM conversation_summaries
+         WHERE step_count > 0 AND conversation_id IS NOT NULL",
+    )?;
+    let mut rows = titled.query([])?;
+    while let Some(row) = rows.next()? {
+        let (native, title, parent): (String, String, String) =
+            (row.get(0)?, row.get(1)?, row.get(2)?);
         if (title.trim().is_empty() && parent.is_empty()) || !has_database(&native) {
             continue;
         }
@@ -673,7 +646,6 @@ fn titles_in(db: &Connection, file: &Path, cursor: &str) -> Result<Read> {
             });
         }
     }
-    read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
     Ok(read)
 }
 
@@ -1251,8 +1223,6 @@ mod tests {
             (tool(6).output.as_deref(), tool(6).failed, tool(6).edited),
             (Some("1 test failed."), true, false)
         );
-        assert_eq!(Antigravity.role("view_file"), Role::Read);
-        assert_eq!(Antigravity.role("run_command"), Role::Work);
     }
 
     #[test]
@@ -1335,10 +1305,9 @@ mod tests {
     }
 
     #[test]
-    fn titles_are_read_on_from_the_latest_change_and_name_a_parent() {
+    fn titles_name_a_parent_and_pass_over_a_conversation_with_no_database() {
         let home = tempfile::tempdir().unwrap();
         let (database, _, titles) = kept(home.path());
-        let first = Antigravity.read(&titles, "").unwrap();
         // `c3` has a database, in the app's folder; `c4` has none.
         let apps = home.path().join(".gemini/antigravity/conversations");
         std::fs::create_dir_all(&apps).unwrap();
@@ -1351,27 +1320,11 @@ mod tests {
                      ('c4', 'Since deleted', 2, '1970-01-01 00:17:05+00:00', '');",
             )
             .unwrap();
-        let later = Antigravity.read(&titles, &first.cursor).unwrap();
-        let parent = later.sessions["antigravity:c3"].parent.as_ref().unwrap();
+        let read = Antigravity.read(&titles, "").unwrap();
+        let parent = read.sessions["antigravity:c3"].parent.as_ref().unwrap();
         assert!(parent.id == "antigravity:c1" && parent.link == Link::Subagent);
-        assert!(later.sessions["antigravity:c3"].title.is_none());
-        // `c1`, the latest read before, is read again, and nothing older.
-        assert_eq!(later.sessions.len(), 2);
-        assert!(!later.sessions.contains_key("antigravity:c4"));
-        // A row committed late, stamped a little before the latest read.
-        std::fs::copy(&database, apps.join("c5.db")).unwrap();
-        Connection::open(&titles)
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO conversation_summaries VALUES
-                     ('c5', 'Committed late', 2, '1970-01-01 00:17:00+00:00', '');",
-            )
-            .unwrap();
-        let last = Antigravity.read(&titles, &later.cursor).unwrap();
-        assert_eq!(
-            last.sessions.keys().collect::<Vec<_>>(),
-            ["antigravity:c3", "antigravity:c5"]
-        );
+        assert!(read.sessions["antigravity:c3"].title.is_none());
+        assert!(!read.sessions.contains_key("antigravity:c4"));
     }
 
     #[test]

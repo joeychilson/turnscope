@@ -212,8 +212,6 @@ struct Cursor {
     prompted: bool,
     /// Whether the first prompt has titled the session.
     titled: bool,
-    /// Whether a subagent's description has been read.
-    described: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -534,18 +532,18 @@ impl Agent for ClaudeCode {
         let (session, agent) = named(file)
             .ok_or_else(|| Error::Failed(format!("{} isn't a Claude Code log", file.display())))?;
         let own = INFO.session(agent.as_deref().unwrap_or(&session));
-        let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
+        // Without a cursor a read saved, a log is read from its start.
+        let saved = serde_json::from_str::<Cursor>(cursor);
+        let (start, mut cursor) = (saved.is_err(), saved.unwrap_or_default());
         let mut read = Read::default();
 
-        if let Some(agent) = &agent
-            && !cursor.described
-        {
+        if start && let Some(agent) = &agent {
             let meta = meta(file, agent);
             // Read without its description, a fork's copy would read as the
             // fork's own, so a new log waits for it, and for one read while
             // Claude Code was still writing it, which won't parse. An error,
             // so it's tried again at the next read.
-            if meta.is_none() && cursor.offset == 0 && begun_lately(file) {
+            if meta.is_none() && begun_lately(file) {
                 return Err(Error::Failed(format!(
                     "{} waits for its description",
                     file.display()
@@ -553,9 +551,7 @@ impl Agent for ClaudeCode {
             }
             let meta = meta.unwrap_or_default();
             let parent = meta.parent(&session);
-            if cursor.offset == 0 {
-                cursor.copy = meta.copy(&parent);
-            }
+            cursor.copy = meta.copy(&parent);
             // A fork here is a subagent begun with a copy of its parent's
             // context: it's still the parent's subagent.
             let described = read.session(&own);
@@ -566,7 +562,6 @@ impl Agent for ClaudeCode {
             if let Some(task) = meta.description {
                 described.title(Title::Task, &task);
             }
-            cursor.described = true;
         }
 
         cursor.offset = super::lines(file, cursor.offset, |bytes| {
