@@ -40,6 +40,10 @@ their databases in a copy you can use instead:
 the command line off the network, set `TURNSCOPE_OFFLINE=1`
 ([cli.md](cli.md#environment)).
 
+`connect <agent>` and `disconnect` still run your agent's own command, with
+`HOME` set to the home `--home` names. Don't run them to try something out:
+that each agent keeps its settings in that home hasn't been tried.
+
 The app's other launch arguments are in
 [app.md](app.md#launch-arguments).
 

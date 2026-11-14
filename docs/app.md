@@ -349,7 +349,7 @@ says where each one comes from.
 | Argument | Does |
 |---|---|
 | `--data <dir>` | Passed to the engine: the data directory to use |
-| `--home <dir>` | Passed to the engine: the home folder to read agents' history and logins from |
+| `--home <dir>` | Passed to the engine: the home folder to read agents' history and logins from, and to connect agents in |
 | `--open` | Opens the panel once the first status arrives |
 | `--open <names>` | Also opens what the names say, joined by commas: `--open account,unused` |
 | `--fixture <file>` | Shows the status in a file, with no engine |

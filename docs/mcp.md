@@ -23,6 +23,8 @@ The app's Settings → Agents does the same.
 `connect` runs the agent's own command. Turnscope never writes an agent's
 files. It finds the command on the `PATH` of your interactive login shell,
 where agents' installers add their folders, so it also works from the app.
+With [`--home`](cli.md#global-options), it runs the command with `HOME` set
+to that folder.
 
 | Agent | Id | Add | Remove |
 |---|---|---|---|

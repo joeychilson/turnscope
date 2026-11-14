@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.8
+
+- **`connect` and `disconnect` with `--home`** run the agent's command
+  with `HOME` set to that folder, so that it changes the settings there.
+  The command ran in your own home: with `--home` at a copy of a home,
+  Turnscope read the copy, found no server there, and had the agent add
+  one to your own settings. The command an error says to run by hand
+  names that home too.
+- **Connecting or disconnecting an agent** is done once the agent's
+  command ends. When the command, or your login shell's startup files,
+  left a process running, Turnscope went on waiting: 10 seconds for the
+  shell, and 60 for each command it ran.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command
