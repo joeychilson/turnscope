@@ -322,7 +322,9 @@ A subagent's usage counts toward the session it ran in; a fork, branched off
 another session, is a session of its own. When there are more, the answer
 ends with `Next page: cursor "<id>".` When there are none, it says
 `No sessions found.` An agent id that isn't one fails with the ids there
-are. `folder` takes `~` and paths relative to the caller's folder.
+are. `folder` takes `~` and paths relative to the caller's folder. `.` and
+`..` are folded as written, without asking the disk: a folder that's gone
+still names its sessions, and a link isn't followed.
 
 Called with `{"folder": "/work/api"}`:
 
@@ -343,7 +345,7 @@ a quick question beside the work meant.
 | Input | Type | Default | Meaning |
 |---|---|---|---|
 | `session` | string | the latest other session in `folder` | A session id, such as `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60`, or a start of one that matches no other: 4 characters or more, with or without the agent id. |
-| `folder` | string | the caller's folder | The folder to take the latest session of, when `session` isn't given. |
+| `folder` | string | the caller's folder | The folder to take the latest session of, when `session` isn't given. Written as for [`find_sessions`](#find_sessions). |
 
 The answer is a markdown handoff of at most about 16,000 tokens. It names
 the session, its folder and branch, when it was last active, and for a
