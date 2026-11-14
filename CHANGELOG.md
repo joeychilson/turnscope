@@ -35,6 +35,28 @@
   such as the app's, says so after a second:
   `Waiting while another Turnscope reads your agents' history…`. Both
   waited in a blank terminal.
+- **A request that names a tag** its agent uses is read whole, such as
+  `<skill>` or `<image>` with Codex and `<system-reminder>` with Claude
+  Code. It was cut at the tag: `Add a <skill> element to the manifest
+  schema and document it.` became `Add a` in the session's title, in
+  search, in `sessions read` and `read_session`, and in the requests a
+  handoff quotes.
+- **A Pi fork** shows only its own conversation in `sessions read`,
+  `read_session` and handoffs. They opened with the fork's copy of its
+  parent's entries, and a handoff listed the parent's requests as the
+  fork's.
+- **OpenCode:** a session or message saved while the Mac's clock was ahead
+  no longer stops later ones being read. Until the clock passed the time it
+  was stamped, no new OpenCode session or usage was read, and what was
+  saved in that time stayed unread afterwards. `doctor` said nothing.
+- **`doctor`** says why a Keychain item couldn't be read, in the words of
+  macOS's `security` and with its exit status, such as `User interaction is
+  not allowed. (exit status: 36)` for a locked Keychain. It said `security
+  exited with Some(36)`.
+- **A session whose files are gone** says so one way, whichever of them is
+  left: `codex:019a…'s files are gone: Codex deleted or moved them, so its
+  conversation can't be read`. A named Codex thread whose rollouts were
+  deleted said `the thread's rollouts are gone`, naming no session.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
