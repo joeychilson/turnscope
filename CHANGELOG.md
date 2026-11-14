@@ -57,6 +57,52 @@
   left: `codex:019a…'s files are gone: Codex deleted or moved them, so its
   conversation can't be read`. A named Codex thread whose rollouts were
   deleted said `the thread's rollouts are gone`, naming no session.
+- **What used a limit** whose window reset since it was read counts from
+  the reset, with no shares: in `usage --limit`, in `explain_usage`, and in
+  the sessions the app lists under "Used most". They listed the sessions of
+  the window before, each at `<1%` of a limit shown as 100% left. It showed
+  for an account not read since a window ended, as one whose login expired
+  overnight, or a Google AI plan an hour after Antigravity was last open.
+- **`explain_usage`** shows usage with no known price as `(+N unpriced)` in
+  its lines by model, project and account, as its table does. They showed
+  its cost as `$0.00` alone.
+- **`usage --limit`** gives the row that adds up the rest its share of the
+  limit, as `explain_usage` does. It left that row's share out. With
+  `--json`, `sharePercents` is `null` when rows get no share, where it held
+  a `null` for each row.
+- **`usage --agent`** refuses an id that names no agent and lists the ids,
+  as `sessions --agent` does. It said nothing was used.
+- **`usage --limit --since`** refuses a time at or after now, as `usage`
+  and `explain_usage` do. It printed a span that ran backwards, with
+  nothing used.
+- **An account with more than one limit used up** is back when the last of
+  them is. With 5 hours back in an hour and Weekly back in three days, the
+  app and `check_limits` say it's back in three days, and `--hours` says
+  Weekly is what's used up. They went by the first limit listed, so the
+  account read as back in an hour. A used-up limit with no reset counts as
+  the last back. Under the panel's headline, the app names another limit
+  that's used up before one running out, and of several used up the last
+  back. It named the first listed that doesn't last, so with Claude and
+  GPT's weekly limit used up it could say their 5 hours runs out in 2h.
+- **Under ten minutes of work left** reads `Under 10m of work left`. It
+  read `About under 10m of work left (under 10m–under 10m)`. The range is
+  left out when both its ends read the same, and when it's `under 10m or
+  more`, which is any amount.
+- **A limit whose use was given back**, as by an early reset, with none
+  used since, says it lasts with what it has now: `Lasts, with about 60%
+  left at the reset.` It said `No use shows in its reading yet.` beside 60%
+  left. Only a limit with nothing used says that.
+- **`status` and `accounts`** say why when there's no account to show, as
+  `check_limits` does: no account's limits have been read yet, or every
+  account is hidden, with how to see them. They printed nothing, and
+  `check_limits` said no account had been read when every one was hidden.
+- **`--limit` and `explain_usage`'s `limit`** take a model's limit with its
+  model first, as the app names it: `"opus weekly"` as well as
+  `"weekly (opus)"`. Named model first, no limit was found.
+- **An API key that has spent nothing this month** says `This month,
+  across its keys: $0.00.` After the month's first day it added `on pace
+  for about $0.00`. The pace is left out whenever it reads the same as
+  what was spent.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

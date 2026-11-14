@@ -75,7 +75,7 @@ static TOOLS: &[Tool] = &[
         input: r#"{"type": "object", "properties": {
             "account": {"type": "string", "description": "One account, by id or part of its title or label. Default: yours."},
             "all": {"type": "boolean", "description": "Every account's usage together, as across your agents, with no share of a limit; since is then 30 days back unless given."},
-            "limit": {"type": "string", "description": "Part of a limit's name, such as week or \"5 hours\". Default: the one that decides the account."},
+            "limit": {"type": "string", "description": "Part of a limit's name, such as week or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: the one that decides the account."},
             "since": {"type": "string", "description": "From when. Default window: the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, or an RFC 3339 time."},
             "by": {"type": "string", "enum": ["session", "project", "model", "agent"], "description": "Default session."},
             "top": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Rows, default 5; the rest are added up."}
@@ -538,7 +538,7 @@ fn check_limits(server: &Server, arguments: Value) -> Result<String> {
     // The one asked about first.
     shown.sort_by_key(|account| Some(account.id.as_str()) != yours);
     let Some(first) = shown.first() else {
-        return Ok("No account's limits have been read yet: no agent here is signed in to one Turnscope reads.".to_owned());
+        return Ok(status::none(&status, Cite::Tool));
     };
     let fit = match input.hours {
         Some(hours) => format!("{}\n", status::fit(first, hours, status.at)?),
@@ -619,8 +619,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
     // with every row's share or none; every account's over the 30 days the
     // command line's `usage` takes, with none.
     let breakdown = |by: By, top: usize| match account {
-        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now)
-            .map(|(used, points)| (used, points.into_iter().collect::<Option<Vec<_>>>())),
+        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now),
         None => usage::usage(
             &server.db,
             &usage::Query {
@@ -635,7 +634,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         )
         .map(|used| (used, None)),
     };
-    let (used, points) = breakdown(by, top)?;
+    let (used, shares) = breakdown(by, top)?;
     // Times are told as of the minute the status is, as `check_limits`
     // tells them. At 12:00:40, a reset at 14:00 is in 2h. As of 12:00:40, it
     // was in 1h 59m.
@@ -660,7 +659,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
     }
     if !used.rows.is_empty() {
         // Shares are known only over a limit's own window.
-        let shares = limit.zip(points.as_deref());
+        let shares = limit.zip(shares.as_ref());
         let yours = match by {
             By::Session => server.caller.own_session(
                 &server.db,
@@ -672,9 +671,10 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         out += &format!("\n{}", usage::markdown(&used, shares, yours.as_deref()));
     }
     // Asked since a time, as the calendar week for "this week" of a weekly
-    // limit, the shares are left out: say how to get them.
+    // limit, the shares are left out: say how to get them. There are none
+    // to get of a limit whose window reset since it was read.
     if let (Some(limit), Some(_)) = (limit, since)
-        && let Some(start) = limit.window.and_then(|window| window.starts_at)
+        && let Some(start) = limit.started()
     {
         out += &format!(
             "\nShares of {} are known only over its window, since {}: leave since out for them.\n",
@@ -696,14 +696,8 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
                 .rows
                 .iter()
                 .map(|row| {
-                    format!(
-                        "{} ({})",
-                        row.name
-                            .as_deref()
-                            .or(Some(row.key.as_str()).filter(|key| !key.is_empty()))
-                            .unwrap_or("(none)"),
-                        usage::dollars(row.cost_usd)
-                    )
+                    let cost = usage::cost(row.cost_usd, row.unpriced);
+                    format!("{} ({cost})", row.label())
                 })
                 .collect();
             if !listed.is_empty() {

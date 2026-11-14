@@ -300,7 +300,9 @@ megabytes.
   all of the account's usage (not one model's or one key's) where there are
   any. The most urgent wins (used up, then running out), then the soonest
   out, then the least left (at the reset for a limit that lasts, where
-  that's forecast). When every limit reset since, it's the last to reset.
+  that's forecast). Of several used up, the last back wins, since the
+  account can't be used until then; one with no reset counts as later than
+  any. When every limit reset since, it's the last to reset.
 - **Accounts are listed** in use first (the most urgent, soonest out and
   least left first), then the rest (the most left first), then those whose
   login was refused, then those with nothing to show.
@@ -367,7 +369,8 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
     from now. The time is shown to 10 minutes
     within a day and to the hour beyond, and never before now.
   - `lasts`: with what will be left at the reset, as a range, or nothing
-    when none of it has been used.
+    when none of it has been used. After use was given back, with none
+    since, that's what it has now.
   - `unknown`: not enough data, `stale` (read over 30 minutes ago, or the
     window reset since), `rolling` (no start to pace from) or `noReset`
     (credits).
