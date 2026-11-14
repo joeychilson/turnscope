@@ -440,6 +440,14 @@ pub fn markdown(
 /// known. So its usage counts from the reset, with no shares. Counted from
 /// the start it was read with, it listed the sessions of the window before,
 /// each at `<1%` of a limit shown as 100% left.
+///
+/// Where the window's length is known, it counts from no earlier than one
+/// length back: a reset longer ago than that began a window that has ended
+/// too, as when reads failed for longer than a window while its agent
+/// worked. Chosen over the reset alone, which counted every window since:
+/// with Claude's 5 hours read 30 hours before, reset 28 hours before, `usage
+/// --limit "5 hours"` listed a session from 27 hours before. A window that
+/// rolls has no length known, and counts from the reset.
 pub fn breakdown(
     db: &Connection,
     account: &crate::status::Account,
@@ -450,7 +458,14 @@ pub fn breakdown(
     now: i64,
 ) -> Result<(Usage, Option<Shares>)> {
     let window = limit.and_then(crate::status::Limit::started);
-    let start = window.or(limit.and_then(|limit| limit.reset_since));
+    let start = window.or_else(|| {
+        let limit = limit?;
+        let reset = limit.reset_since?;
+        let length = limit
+            .window
+            .and_then(|window| Some(window.resets.at - window.starts_at?));
+        Some(length.map_or(reset, |length| reset.max(now - length)))
+    });
     let usage = usage(
         db,
         &Query {
@@ -572,6 +587,8 @@ mod tests {
         let responses = [
             ("before", "gpt-5.5", 3.0, reset - time::HOUR),
             ("after", "gpt-5.5", 1.0, reset + time::MINUTE),
+            ("this week", "gpt-5.5", 2.0, now - 2 * time::DAY),
+            ("ended", "gpt-5.5", 4.0, now - 8 * time::DAY),
         ];
         let (_dir, db) = store(account, "codex", &responses);
         let (usage, shares) =
@@ -580,6 +597,22 @@ mod tests {
         // The one before used the window that ended, and no points of this
         // one are known to be used.
         assert_eq!(keys(&usage), ["after"]);
+        assert!(shares.is_none());
+
+        // Read last 16 days ago, in a week that reset 9 days ago: the week
+        // that began then has ended too, and this one began 7 days ago at
+        // the earliest.
+        let mut late = weekly.clone();
+        let reset = now - 9 * time::DAY;
+        late.window = Some(crate::status::LimitWindow {
+            starts_at: Some(reset - 7 * time::DAY),
+            resets: crate::status::Moment::of(reset, now),
+        });
+        late.reset_since = Some(reset);
+        let (usage, shares) =
+            breakdown(&db, account, Some(&late), None, By::Session, 10, now).unwrap();
+        assert_eq!(usage.since, now - 7 * time::DAY);
+        assert_eq!(keys(&usage), ["before", "this week", "after"]);
         assert!(shares.is_none());
     }
 

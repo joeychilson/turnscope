@@ -35,6 +35,19 @@ fn capital(text: &str) -> String {
     format!("{}{}", text[..1].to_uppercase(), &text[1..])
 }
 
+/// The form of a verb whose subject is `limit`'s name: `one` as in "5 hours
+/// is used up", or `many` as in "Credits are used up". A name is plural when
+/// it's money's and ends in `s`, as the app decides (`Words.plural`):
+/// "Credits" is an amount, where "5 hours" names one limit. Every sentence
+/// here with the name as its subject asks this, so they agree with each
+/// other and with the app's notifications.
+fn agree<'a>(limit: &Limit, one: &'a str, many: &'a str) -> &'a str {
+    match limit.money.is_some() && limit.name.ends_with('s') {
+        true => many,
+        false => one,
+    }
+}
+
 /// The agents to open to sign in to `account` again: `Codex or Pi`. There's
 /// always one: with no agent signed in to it, an account is signed out,
 /// whatever its last read said (`status`).
@@ -268,8 +281,9 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
     };
     if let Some((limit, _)) = used_up(account) {
         return Ok(format!(
-            "{more} of work {dont_fit}: {} is used up.",
-            limit.name
+            "{more} of work {dont_fit}: {} {} used up.",
+            limit.name,
+            agree(limit, "is", "are")
         ));
     }
     let mut after = Vec::new();
@@ -280,8 +294,9 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
             Some(work) => {
                 if let Some(left) = work.left_hours.filter(|left| left.likely < hours) {
                     return Ok(format!(
-                        "{more} of work {dont_fit}: {} runs out after {} of work.",
+                        "{more} of work {dont_fit}: {} {} out after {} of work.",
                         limit.name,
+                        agree(limit, "runs", "run"),
                         about(left.likely)
                     ));
                 }
@@ -297,13 +312,17 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
                 .window
                 .is_some_and(|window| window.starts_at.is_none()) =>
             {
-                rolls = rolls.or(Some(&limit.name))
+                rolls = rolls.or(Some(limit))
             }
             None => unknown = unknown.or(Some(&limit.name)),
         }
     }
-    let rolls = rolls.map_or(String::new(), |name| {
-        format!(" {name} is a window that rolls, so it isn't forecast.")
+    let rolls = rolls.map_or(String::new(), |limit| {
+        format!(
+            " {} {} a window that rolls, so it isn't forecast.",
+            limit.name,
+            agree(limit, "is", "are")
+        )
     });
     Ok(match (unknown, after.is_empty()) {
         (Some(name), _) => format!(
@@ -349,7 +368,8 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
         let back = back.map_or(String::new(), |back| {
             format!(", back {}", time::ahead(back.at, now))
         });
-        return format!("{title}: {} is used up{back}.", limit.name);
+        let is = agree(limit, "is", "are");
+        return format!("{title}: {} {is} used up{back}.", limit.name);
     }
     let whole: Vec<&Limit> = account
         .limits
@@ -365,10 +385,11 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
             format!("; it resets {}", time::ahead(window.resets.at, now))
         });
         return format!(
-            "{title}: {} of work left{} before {} runs out{resets}.",
+            "{title}: {} of work left{} before {} {} out{resets}.",
             about(left.likely),
             range(limit, &left, now),
-            limit.name
+            limit.name,
+            agree(limit, "runs", "run")
         );
     }
     if !whole.is_empty() && whole.iter().all(|limit| limit.work.is_some()) {
@@ -383,16 +404,19 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     let resets = limit.resets().map(|resets| time::ahead(resets, now));
     let ahead = match (&limit.outlook, resets) {
         (Outlook::RunsOut { likely, .. }, Some(resets)) => format!(
-            " and runs out {} at this pace, before it resets {resets}",
+            " and {} out {} at this pace, before it resets {resets}",
+            agree(limit, "runs", "run"),
             time::ahead(likely.at, now)
         ),
-        (Outlook::Lasts { .. }, Some(resets)) => {
-            format!(" and lasts at this pace until it resets {resets}")
-        }
+        (Outlook::Lasts { .. }, Some(resets)) => format!(
+            " and {} at this pace until it resets {resets}",
+            agree(limit, "lasts", "last")
+        ),
         (_, Some(resets)) => format!("; it resets {resets}"),
         (_, None) => String::new(),
     };
-    format!("{title}: {} has {} left{ahead}.", limit.name, left(limit))
+    let has = agree(limit, "has", "have");
+    format!("{title}: {} {has} {} left{ahead}.", limit.name, left(limit))
 }
 
 /// `account` as one line, for an agent's status line: its title, its limits
@@ -525,6 +549,42 @@ mod tests {
         assert_eq!(
             fit(&account, 1.0, now).unwrap(),
             "1 more hour of work doesn't fit: Weekly is used up."
+        );
+    }
+
+    #[test]
+    fn credits_are_used_up_as_the_app_says_where_5_hours_is() {
+        let example = example();
+        let now = example["params"]["at"].as_i64().unwrap();
+        // The OpenRouter API key's credits, $45 of $50 left, which decide
+        // it, read just now.
+        let mut account = example["params"]["accounts"][2].clone();
+        account["state"] = serde_json::json!({"kind": "live", "readAt": now});
+        let mut credits = account["limits"][0].clone();
+        credits["key"] = "credits".into();
+        credits["name"] = "Credits".into();
+        credits["heldBy"] = serde_json::json!([]);
+        credits["leftPercent"] = 90.into();
+        credits["money"] = serde_json::json!({"sizeUsd": 50.0, "leftUsd": 45.0});
+        account["limits"] = serde_json::json!([credits]);
+        account["deciding"] = "credits".into();
+        let left: Account = serde_json::from_value(account.clone()).unwrap();
+        assert_eq!(
+            verdict(&left, now),
+            "OpenRouter API key: Credits have $45.00 of $50.00 left."
+        );
+        // Used up, they're plural as the app's notification has them.
+        account["limits"][0]["leftPercent"] = 0.into();
+        account["limits"][0]["money"]["leftUsd"] = 0.0.into();
+        account["limits"][0]["outlook"] = serde_json::json!({"kind": "usedUp", "back": null});
+        let used_up: Account = serde_json::from_value(account).unwrap();
+        assert_eq!(
+            verdict(&used_up, now),
+            "OpenRouter API key: Credits are used up."
+        );
+        assert_eq!(
+            fit(&used_up, 1.0, now).unwrap(),
+            "1 more hour of work doesn't fit: Credits are used up."
         );
     }
 

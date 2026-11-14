@@ -260,8 +260,9 @@ window, so with any other `since` the column is left out, and a line says
 from when the window runs and to leave `since` out for them.
 
 For a limit whose window reset since it was read, the usage runs from the
-reset, and no row has a share: how much of the new window is used isn't
-known. With another `since`, no line then says how to get shares.
+reset, or from one window's length ago when that's later, and no row has a
+share: how much of the new window is used isn't known. With another
+`since`, no line then says how to get shares.
 
 An account with no limit read, such as one whose login expired, still has
 its usage broken down, without the limit's line or shares: unless `since`

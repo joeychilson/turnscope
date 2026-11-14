@@ -113,8 +113,9 @@ A protocol the server doesn't speak gets `-32001` (`error.json`):
   the limit's window started, the most first. When its start isn't known,
   that is since the 1st of the month for an API key and the last 7 days
   otherwise. For a limit whose window reset since it was read, it is since
-  the reset. It looks the limit up in the status last pushed. An account or
-  limit not in it gets `-32000`.
+  the reset, or since one window's length ago when that's later. It looks
+  the limit up in the status last pushed. An account or limit not in it
+  gets `-32000`.
 - **`settings.set`** takes the whole `Settings`. A field left out is set to
   its default, which turns that notification on.
 - **`agent.connect`** and **`agent.disconnect`** take an agent's `id` from

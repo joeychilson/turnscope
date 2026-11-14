@@ -211,7 +211,8 @@ session, and each row gets its share of the limit, as does the row that
 adds up the rest. Without `--account`, the account is the calling agent's
 if it has the limit, or else the first account shown that has it. `--since`
 moves the start, and then rows get no share. A limit whose window reset
-since it was read counts from the reset, and its rows get no share either:
+since it was read counts from the reset, or from one window's length ago
+when the reset is longer ago than that, and its rows get no share either:
 how much of the new window is used isn't known. With `--json`,
 `sharePercents` holds each row's share in the rows' order, or `null` when
 rows get none.
