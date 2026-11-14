@@ -1,6 +1,6 @@
 // Settings → General: the menu bar, opening at login, notifications, and
-// updates. Notification settings belong to the engine, so `turnscope config`
-// and the app agree. Menu bar settings belong to the app.
+// updates. Notification settings belong to the engine. Menu bar settings
+// belong to the app.
 
 import ServiceManagement
 import SwiftUI
@@ -60,7 +60,8 @@ struct GeneralTab: View {
             }
             // Each finishes the sentence "Notify me when". More about when
             // it's sent shows on hover. They come with the status, so until
-            // the first one there's nothing to change.
+            // the first one there's nothing to change. While serve is away,
+            // a change would go back.
             Group {
                 SettingRow("A limit will run out", help: "Before it resets, at your pace",
                            isOn: notify(\.runningOut))
@@ -70,7 +71,7 @@ struct GeneralTab: View {
                 SettingRow("An account needs signing in", help: "Its login was refused, so its limits can't be read",
                            isOn: notify(\.signIn))
             }
-            .disabled(store.notify == nil)
+            .disabled(store.notify == nil || store.failure != nil)
         }
         // Checked again each time Settings shows, since they may have just
         // been turned on.

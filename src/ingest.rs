@@ -27,7 +27,7 @@ const READERS: i64 = 7;
 /// 10 s, and SQLite tries a waiting write again every 100 ms at most, so a
 /// pause longer than that lets it in.
 ///
-/// Measured on a made-up 616 MB history of 256 files, with `config set` run
+/// Measured on a made-up 616 MB history of 256 files, with a setting saved
 /// beside it every half second: one transaction for all 256 held the lock 6
 /// to 23 s, and a write failed after 10.4 s in 4 runs of 8. A transaction a
 /// file let it go only between commits, so a write got in by chance, after
@@ -112,7 +112,53 @@ struct Known {
 /// works out costs and accounts, at a time, so a first run isn't read twice
 /// at once and no response is written with prices or sign-ins gone stale.
 fn lock(db: &Connection) -> Result<std::fs::File> {
-    crate::db::lock(&Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock"))
+    crate::db::lock(&lock_path(db))
+}
+
+fn lock_path(db: &Connection) -> PathBuf {
+    Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock")
+}
+
+/// How long a command waits for `ingest.lock` before it says so: a second,
+/// over saying so at once. Every catch-up holds the lock, one that reads
+/// nothing too, and `serve` catches up as often as every 5 s while agents
+/// work. Said at once, a command run beside the app would now and then say
+/// it waits, for a wait no one notices: over a made-up history of 5,000
+/// files, a command that found nothing new to read took 135 to 153 ms in
+/// all, the time it held the lock included.
+const QUIET: Duration = Duration::from_secs(1);
+
+/// What a catch-up is about to wait for, where that can take minutes, in
+/// words for the command line to say first: another Turnscope reading
+/// history, once the command has waited `QUIET` for it, or this one
+/// reading all of it, the first time and after `READERS` was raised.
+///
+/// Asked before the catch-up, over said from inside `ingest`, so that only
+/// the command line says it: no one reads what `serve` or the MCP server
+/// writes to standard error. The cost: a command that finds the lock held
+/// looks again every 20 ms for up to `QUIET`, and only then reads the
+/// limits and prices that are due, which it read meanwhile before.
+pub fn waits(db: &Connection) -> Option<&'static str> {
+    let file = std::fs::File::create(lock_path(db)).ok()?;
+    let began = Instant::now();
+    while let Err(held) = file.try_lock() {
+        match held {
+            std::fs::TryLockError::WouldBlock if began.elapsed() < QUIET => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::fs::TryLockError::WouldBlock => {
+                return Some("Waiting while another Turnscope reads your agents' history…");
+            }
+            std::fs::TryLockError::Error(_) => return None,
+        }
+    }
+    let all = db.query_row(
+        "SELECT history_at IS NULL OR readers < ?1 FROM state",
+        [READERS],
+        |row| row.get(0),
+    );
+    all.unwrap_or(false)
+        .then_some("Reading your agents' history…")
 }
 
 /// The files under `home` to read: each one new or changed since its last
@@ -675,6 +721,23 @@ mod tests {
             .unwrap();
         assert!(ingest(&mut db, home.path()).is_err());
         assert_eq!(count(&db, "SELECT readers FROM state"), READERS + 1);
+    }
+
+    #[test]
+    fn a_wait_for_another_turnscope_is_told_only_once_it_lasts() {
+        let (dir, home, mut db, _) = store();
+        ingest(&mut db, home.path()).unwrap();
+        // One catching up holds the lock for a moment: nothing to say.
+        let held = lock(&db).unwrap();
+        std::thread::scope(|scope| {
+            let asked = scope.spawn(|| waits(&crate::db::open(dir.path()).unwrap()));
+            std::thread::sleep(QUIET / 10);
+            drop(held);
+            assert_eq!(asked.join().unwrap(), None);
+        });
+        // One reading all of history holds it on.
+        let _held = lock(&db).unwrap();
+        assert!(waits(&db).is_some_and(|wait| wait.starts_with("Waiting")));
     }
 
     #[test]

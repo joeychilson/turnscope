@@ -7,6 +7,7 @@ import SwiftUI
 import TurnscopeKit
 
 struct SettingsPage: View {
+    @Environment(Store.self) private var store
     @Environment(Navigation.self) private var navigation
     @State private var height: CGFloat = 400
 
@@ -35,6 +36,9 @@ struct SettingsPage: View {
                 Group {
                     switch navigation.tab {
                     case .general: GeneralTab()
+                    // The other tabs list what the status holds. Before the
+                    // first one, they say what the panel says.
+                    case _ where store.status == nil: Waiting(failure: store.failure)
                     case .agents: AgentsTab()
                     case .accounts: AccountsTab()
                     }

@@ -38,12 +38,12 @@ use crate::time::{DAY, HOUR, MINUTE};
 
 /// The 80% range of the pace that followed over the pace projected, for
 /// windows of a day or less, then longer, by share of the window left: the
-/// last tenth, quarter, half, and more. Measured by the backtest, rounded
+/// last quarter, half, and more. Measured by the backtest, rounded
 /// outward; a bucket measured on fewer than five windows takes the widest
 /// of its length's.
-const BANDS: [[(f64, f64); 4]; 2] = [
-    [(0.05, 2.5), (0.05, 2.5), (0.25, 1.8), (0.35, 1.6)],
-    [(0.0, 3.4), (0.0, 3.4), (0.0, 3.4), (0.7, 3.4)],
+const BANDS: [[(f64, f64); 3]; 2] = [
+    [(0.05, 2.5), (0.25, 1.8), (0.35, 1.6)],
+    [(0.0, 3.4), (0.0, 3.4), (0.7, 3.4)],
 ];
 
 /// A limit's current window.
@@ -120,10 +120,9 @@ pub fn band(window: &Window, at: i64) -> (f64, f64) {
     let length = (window.resets - window.starts).max(1);
     let left = (window.resets - at) as f64 / length as f64;
     let bucket = match left {
-        left if left < 0.1 => 0,
-        left if left < 0.25 => 1,
-        left if left < 0.5 => 2,
-        _ => 3,
+        left if left < 0.25 => 0,
+        left if left < 0.5 => 1,
+        _ => 2,
     };
     BANDS[usize::from(length > DAY)][bucket]
 }

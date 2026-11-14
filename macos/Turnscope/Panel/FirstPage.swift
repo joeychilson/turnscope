@@ -57,8 +57,8 @@ struct FirstPage: View {
             Footer()
                 .padding(8)
         }
-        // While an account is open, ask what used it.
-        .onChange(of: navigation.open) { _, open in store.watch(open) }
+        // As an account opens, ask what used it.
+        .onChange(of: navigation.open) { _, open in store.askWhatUsed(open) }
     }
 }
 
@@ -110,7 +110,7 @@ private struct ConnectButton: View {
 
     var body: some View {
         if store.changingAgents[agent.id] != nil {
-            ProgressView().controlSize(.mini)
+            Spinner().accessibilityElement().accessibilityLabel("Connecting \(agent.name)")
         } else {
             let outdated = agent.connection == .outdated
             Button(outdated ? "Update" : "Connect") { store.connect(agent.id) }
@@ -124,7 +124,7 @@ private struct ConnectButton: View {
 }
 
 /// Shown while the first status is on its way, or to say why none can come.
-private struct Waiting: View {
+struct Waiting: View {
     var failure: String?
 
     var body: some View {
@@ -136,7 +136,7 @@ private struct Waiting: View {
                     .textSelection(.enabled)
                 Text("It tries again on its own.").font(.small).foregroundStyle(.tertiary)
             } else {
-                ProgressView().controlSize(.small)
+                Spinner()
                 Text("Reading your agents' history…").font(.line).foregroundStyle(.secondary)
             }
         }
