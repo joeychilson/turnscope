@@ -175,7 +175,9 @@ extension Words {
     /// else that this one lasts: a limit resets, an account doesn't. A key's
     /// own limit, "Pi's key", already says whose it is. Then it names the
     /// first other limit that doesn't last, since a limit on a single model
-    /// can run out while the whole account has room.
+    /// can run out while the whole account has room. If that one is used
+    /// up, it names the one used up that's back last, as serve decides an
+    /// account: two on the same models keep them out of use until then.
     private func lasting(_ limit: LimitStatus, of account: AccountStatus) -> String {
         let others = account.limits.filter { $0.id != limit.id && $0.resetSince == nil }
         let current: Bool = if case .live = account.state { true } else { false }
@@ -188,7 +190,10 @@ extension Words {
             "\(inSentence(limit)) lasts until it resets"
         }
         let sentence = current ? "At this pace, \(lasts)." : "As last read, \(lasts)."
-        guard let other = others.first(where: { $0.standing != .lasts }) else { return sentence }
+        guard let first = others.first(where: { $0.standing != .lasts }) else { return sentence }
+        let other = first.standing == .usedUp
+            ? others.filter { $0.standing == .usedUp }.max { backAt($0) < backAt($1) } ?? first
+            : first
         switch other.outlook {
         case .usedUp(let back):
             return "\(sentence) \(name(other)) is used up\(back.map { ", back \(at($0))" } ?? "")."
@@ -197,6 +202,13 @@ extension Words {
         case .lasts, .unknown:
             return sentence
         }
+    }
+
+    /// When a used-up limit is back, to tell which of several is back last.
+    /// One with no reset is back at no known time, so it counts as later
+    /// than any, as serve has it.
+    private func backAt(_ limit: LimitStatus) -> Date {
+        if case .usedUp(let back?) = limit.outlook { back.at } else { .distantFuture }
     }
 
     /// What an opened account says under its limits that they can't say

@@ -386,6 +386,27 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(words.verdict([spent]).detail == "Back Sat 9 AM.")
 }
 
+@Test func ofOtherLimitsUsedUpTheVerdictNamesTheLastBack() {
+    // A plan whose own weekly limit lasts, with both its limits on Claude
+    // and GPT used up: 5 hours back in an hour, weekly on Saturday. Those
+    // models can't be used until Saturday.
+    let week = limit(.lasts, key: "weekly", name: "Weekly", left: 60,
+                     resets: "2026-10-04T00:00:00Z", horizon: .thisWeek)
+    var five = limit(.usedUp(back: moment("2026-09-30T13:00:00Z", .soon)), key: "5h:3p-5h", left: 0,
+                     resets: "2026-09-30T13:00:00Z")
+    var weekly = limit(.usedUp(back: moment("2026-10-03T09:00:00Z", .thisWeek)), key: "weekly:3p-weekly",
+                       name: "Weekly", left: 0, resets: "2026-10-03T09:00:00Z", horizon: .thisWeek)
+    five.scope = "Claude and GPT"
+    weekly.scope = "Claude and GPT"
+    let lasts = "At this pace, Google AI Pro's weekly lasts until it resets."
+    let plan = account([week, five, weekly], title: "Google AI Pro")
+    #expect(words.verdict([plan]).detail == "\(lasts) Claude and GPT weekly is used up, back Sat 9 AM.")
+    // One with no reset is back at no known time, so it's the last.
+    five.outlook = .usedUp(back: nil)
+    let unknown = account([week, five, weekly], title: "Google AI Pro")
+    #expect(words.verdict([unknown]).detail == "\(lasts) Claude and GPT 5 hours is used up.")
+}
+
 @Test func aLimitIsCalledWhatItsProviderCallsIt() {
     var opus = limit(.lasts, key: "seven_day_opus", name: "Weekly", left: 50)
     opus.scope = "Opus"

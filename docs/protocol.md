@@ -185,9 +185,11 @@ take a message within 2 seconds is dropped.
 app only chooses words, colors and layout.
 
 The app reads only the fields it shows. It doesn't read an account's
-`usedBy`, a limit's `readAt` or `work`, a window's `startsAt`, the outlook's
-`soonest`, `latest` or `leftAtReset`, or an alert's `at`. The command line
-and MCP server use those.
+`usedBy`, a `live` state's `readAt`, a limit's `readAt` or `work`, a
+window's `startsAt`, the outlook's `soonest`, `latest` or `leftAtReset`, or
+an alert's `at`. The command line and MCP server use the limit's, the
+window's and the outlook's in what they say, and `turnscope status --json`
+prints the account's and the state's. No client reads an alert's `at`.
 
 | Field | Type | Holds |
 |---|---|---|
@@ -244,8 +246,9 @@ The deciding limit is chosen from the limits not reset since they were
 read. Limits on the whole account win over a single model's or a single
 key's. Among those, the most urgent wins, then the soonest to run out, then
 the least left: at the reset for a limit that lasts, where that's
-forecast, or else now. When every limit reset since it was read, the last
-to reset decides.
+forecast, or else now. Of several used up, the last back wins, and one
+with no reset counts as later than any. When every limit reset since it
+was read, the last to reset decides.
 
 ### State
 

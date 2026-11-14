@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.8
+
+- **An account with more than one limit used up** is back when the last of
+  them is. With 5 hours back in an hour and Weekly back in three days, the
+  app and `check_limits` say it's back in three days, and `--hours` says
+  Weekly is what's used up. They went by the first limit listed, so the
+  account read as back in an hour. A used-up limit with no reset counts as
+  the last back. Under the panel's headline, of two used-up limits on the
+  same models, the app names the last back too.
+- **Under ten minutes of work left** reads `Under 10m of work left`. It
+  read `About under 10m of work left (under 10m–under 10m)`. The range is
+  left out when both its ends read the same, and when it's `under 10m or
+  more`, which is any amount.
+- **A limit whose use was given back**, as by an early reset, with none
+  used since, says it lasts with what it has now: `Lasts, with about 60%
+  left at the reset.` It said `No use shows in its reading yet.` beside 60%
+  left. Only a limit with nothing used says that.
+- **`status` and `accounts`** say why when there's no account to show, as
+  `check_limits` does: no account's limits have been read yet, or every
+  account is hidden, with how to see them. They printed nothing, and
+  `check_limits` said no account had been read when every one was hidden.
+- **`--limit` and `explain_usage`'s `limit`** take a model's limit with its
+  model first, as the app names it: `"opus weekly"` as well as
+  `"weekly (opus)"`. Named model first, no limit was found.
+- **An API key that has spent nothing this month** says `This month,
+  across its keys: $0.00.` After the month's first day it added `on pace
+  for about $0.00`. The pace is left out whenever it reads the same as
+  what was spent.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command

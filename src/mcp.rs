@@ -75,7 +75,7 @@ static TOOLS: &[Tool] = &[
         input: r#"{"type": "object", "properties": {
             "account": {"type": "string", "description": "One account, by id or part of its title or label. Default: yours."},
             "all": {"type": "boolean", "description": "Every account's usage together, as across your agents, with no share of a limit; since is then 30 days back unless given."},
-            "limit": {"type": "string", "description": "Part of a limit's name, such as week or \"5 hours\". Default: the one that decides the account."},
+            "limit": {"type": "string", "description": "Part of a limit's name, such as week or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: the one that decides the account."},
             "since": {"type": "string", "description": "From when. Default window: the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, or an RFC 3339 time."},
             "by": {"type": "string", "enum": ["session", "project", "model", "agent"], "description": "Default session."},
             "top": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Rows, default 5; the rest are added up."}
@@ -538,7 +538,7 @@ fn check_limits(server: &Server, arguments: Value) -> Result<String> {
     // The one asked about first.
     shown.sort_by_key(|account| Some(account.id.as_str()) != yours);
     let Some(first) = shown.first() else {
-        return Ok("No account's limits have been read yet: no agent here is signed in to one Turnscope reads.".to_owned());
+        return Ok(status::none(&status, Cite::Tool));
     };
     let fit = match input.hours {
         Some(hours) => format!("{}\n", status::fit(first, hours, status.at)?),

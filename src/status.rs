@@ -22,7 +22,7 @@ use crate::time::{self, DAY, HOUR, MINUTE};
 use crate::{Result, agents};
 
 mod text;
-pub use text::{fit, limit_text, line, stale, text, verdict};
+pub use text::{fit, limit_text, line, none, stale, text, verdict};
 
 /// How recently a response must have drawn on an account for it to be in use.
 const IN_USE: i64 = 30 * MINUTE;
@@ -235,13 +235,20 @@ impl Limit {
             .map(|window| window.resets.at)
     }
 
-    /// Whether `name` names it: part of its name as shown, with its models,
-    /// or of its key, as `week` names Weekly and `seven_day`, and
-    /// `weekly (claude` Weekly (Claude and GPT). Of the limits a name fits,
-    /// the first by key is taken: `gpt` alone is 5 hours (Claude and GPT).
+    /// Whether `name` names it: part of its name as shown, with its models
+    /// after it as the command line shows them or before it as the app
+    /// does, or part of its key. So `week` names Weekly and `seven_day`, and
+    /// `weekly (claude` and `gpt weekly` name Weekly (Claude and GPT). Of the
+    /// limits a name fits, the first by key is taken: `gpt` alone is 5 hours
+    /// (Claude and GPT).
     pub fn answers_to(&self, name: &str) -> bool {
         let name = name.to_lowercase();
-        self.named().to_lowercase().contains(&name) || self.key.to_lowercase().contains(&name)
+        let holds = |text: &str| text.to_lowercase().contains(&name);
+        let models_first = self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| holds(&format!("{scope} {}", self.name)));
+        holds(&self.named()) || models_first || holds(&self.key)
     }
 
     fn urgency(&self) -> u8 {
@@ -249,6 +256,16 @@ impl Limit {
             Outlook::UsedUp { .. } => 2,
             Outlook::RunsOut { .. } => 1,
             _ => 0,
+        }
+    }
+
+    /// When it's back, if it's used up. One with no reset, as credits, is
+    /// back at no time that's known, so it counts as later than any: its
+    /// account is never said to be back at a time it may still be used up.
+    fn back(&self) -> Option<i64> {
+        match self.outlook {
+            Outlook::UsedUp { back } => Some(back.map_or(i64::MAX, |back| back.at)),
+            _ => None,
         }
     }
 
@@ -728,7 +745,13 @@ fn outlook(window: &Window, now: i64) -> Outlook {
                 .map(|at| Moment::of(shown(at).max(likely), now)),
         };
     }
-    if projection.rate <= 0.0 {
+    // Nothing is said of the reset only for a limit with nothing used. One
+    // whose use was given back, with none since, has a pace of none too,
+    // and lasts with what it has now. That was chosen over not enough
+    // data: no use for a twentieth of the window is a pace, as it is before
+    // any use. Taken for a limit with nothing used, one 40% used said "No
+    // use shows in its reading yet" beside 60% left.
+    if projection.used <= 0.0 {
         return Outlook::Lasts {
             left_at_reset: None,
         };
@@ -748,6 +771,11 @@ fn outlook(window: &Window, now: i64) -> Outlook {
 /// The limit that decides how an account stands: of those not reset since
 /// read, on all its usage where any is, the most urgent, then the soonest
 /// out, then the least left. When every one reset since, the last to.
+///
+/// Of several used up, the last back decides, over the first listed: the
+/// account can't be used until every one is back. With 5 hours back in an
+/// hour and Weekly in three days, the first listed was 5 hours, and the
+/// account said it was back in an hour.
 fn deciding(limits: &[Limit]) -> Option<&Limit> {
     limits
         .iter()
@@ -762,6 +790,7 @@ fn deciding(limits: &[Limit]) -> Option<&Limit> {
             (
                 !limit.whole(),
                 Reverse(limit.urgency()),
+                Reverse(limit.back()),
                 limit.runs_out().unwrap_or(i64::MAX),
                 least,
             )
@@ -863,12 +892,149 @@ mod tests {
         account.limits[2].key = "weekly:3p-weekly".to_owned();
         account.limits[2].scope = Some("Claude and GPT".to_owned());
         assert_eq!(account.limit("week").unwrap().key, "seven_day");
-        for name in ["gpt", "Weekly (Claude", "3p"] {
+        // With its models after its name, as the command line shows it, or
+        // before, as the app does.
+        for name in [
+            "gpt",
+            "Weekly (Claude",
+            "3p",
+            "Claude and GPT weekly",
+            "gpt week",
+        ] {
             assert_eq!(account.limit(name).unwrap().key, "weekly:3p-weekly");
         }
         let none = account.limit("month").unwrap_err().to_string();
         let names = "has no limit named month; it has 5 hours, Weekly, Weekly (Claude and GPT)";
         assert!(none.ends_with(names), "{none}");
+    }
+
+    #[test]
+    fn of_the_limits_used_up_the_last_back_decides() {
+        let example: serde_json::Value =
+            serde_json::from_str(include_str!("../contract/status.notification.json")).unwrap();
+        let now = example["params"]["at"].as_i64().unwrap();
+        let mut account: Account =
+            serde_json::from_value(example["params"]["accounts"][0].clone()).unwrap();
+        let back = |hours: i64| Outlook::UsedUp {
+            back: Some(Moment::of(now + hours * HOUR, now)),
+        };
+        let never = Outlook::UsedUp { back: None };
+        let decides = |account: &Account| deciding(&account.limits).unwrap().key.clone();
+        // 5 hours is back in an hour and Weekly in three days: the account
+        // can't be used until Weekly is.
+        (account.limits[0].outlook, account.limits[1].outlook) = (back(1), back(72));
+        assert_eq!(decides(&account), "seven_day");
+        // One with no reset is back at no known time, wherever it's listed.
+        account.limits[1].outlook = never.clone();
+        assert_eq!(decides(&account), "seven_day");
+        (account.limits[0].outlook, account.limits[1].outlook) = (never, back(72));
+        assert_eq!(decides(&account), "five_hour");
+    }
+
+    /// An account and its sign-in, read at `now`, with `readings` of its
+    /// limit `five_hour`, a window from 0 to 5 hours: when, and percent used.
+    fn read(now: i64, kind: &str, readings: &[(i64, f64)]) -> Status {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+             VALUES ('anthropic:a', 'anthropic', ?1, 'Claude', ?2)",
+            params![kind, now],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account)
+             VALUES ('claude-code', '/a', 'anthropic', 0, 'anthropic:a')",
+            [],
+        )
+        .unwrap();
+        for (at, used) in readings {
+            db.execute(
+                "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+                 VALUES ('anthropic:a', 'five_hour', ?1, '5 hours', ?2, 0, ?3)",
+                params![at, used, 5 * HOUR],
+            )
+            .unwrap();
+        }
+        status(&db, now).unwrap()
+    }
+
+    #[test]
+    fn a_limit_with_use_given_back_and_none_since_lasts_with_what_it_has() {
+        // Half used after an hour, 40% at two hours, as an early reset gives
+        // back, and still 40% half an hour on.
+        let now = 2 * HOUR + 30 * MINUTE;
+        let given_back = [(HOUR, 50.0), (2 * HOUR, 40.0), (now, 40.0)];
+        let status = read(now, "subscription", &given_back);
+        let limit = &status.accounts[0].limits[0];
+        let left = Some(Spread {
+            low: 60,
+            likely: 60,
+            high: 60,
+        });
+        assert_eq!(limit.left_percent, 60);
+        assert_eq!(
+            limit.outlook,
+            Outlook::Lasts {
+                left_at_reset: left
+            }
+        );
+        let said = limit_text(limit, status.at);
+        assert!(
+            said.ends_with("Lasts, with about 60% left at the reset."),
+            "{said}"
+        );
+        // Only one with nothing used says no use shows.
+        let status = read(now, "subscription", &[(HOUR, 0.0), (now, 0.0)]);
+        let limit = &status.accounts[0].limits[0];
+        assert_eq!(
+            limit.outlook,
+            Outlook::Lasts {
+                left_at_reset: None
+            }
+        );
+        let said = limit_text(limit, status.at);
+        assert!(said.ends_with("No use shows in its reading yet."), "{said}");
+    }
+
+    #[test]
+    fn a_key_that_spent_nothing_says_no_pace() {
+        // 2026-10-15 12:00 UTC: mid-month in every time zone, so the month
+        // has a pace.
+        let now = 1_792_065_600_000;
+        let status = read(now, "apiKey", &[]);
+        let account = &status.accounts[0];
+        let spent = Spend {
+            month_usd: 0.0,
+            forecast_usd: Some(0.0),
+            partial: false,
+        };
+        assert_eq!(account.spend, Some(spent));
+        let said = text(&status, &[account], None);
+        assert!(
+            said.ends_with("This month, across its keys: $0.00."),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn an_account_no_agent_is_signed_in_to_is_signed_out_whatever_its_read_said() {
+        // Its login refused, then signed out of: the agents to sign in with
+        // are named only for a login refused or expired, so one is always
+        // there to name.
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        db.execute_batch(
+            "INSERT INTO account (id, provider, kind, title, read_at, problem) VALUES
+                 ('xai:a', 'xai', 'subscription', 'SuperGrok', NULL, 'signIn'),
+                 ('xai:b', 'xai', 'subscription', 'SuperGrok', 0, 'expired');",
+        )
+        .unwrap();
+        let status = status(&db, HOUR).unwrap();
+        for account in &status.accounts {
+            assert!(account.agents.is_empty());
+            assert_eq!(account.state.why(), Some(Stale::SignedOut));
+        }
     }
 
     #[test]
