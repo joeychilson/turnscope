@@ -2,6 +2,14 @@
 
 ## 0.1.8
 
+- **A key that starts a line a diff removes,** as after deleting a file
+  that holds a token, is redacted. The `-` before the key counted as part
+  of a word, so reading a session, search and handoffs showed the key. A
+  private key on such a line was already redacted.
+- **More keys are redacted:** Stripe's (`sk_live_`, `sk_test_` and
+  `rk_live_`), Slack's (`xoxb-` and `xoxp-`), Hugging Face's (`hf_`) and
+  Google's access tokens (`ya29.`). Reading a session, search and handoffs
+  showed one unless it followed `Bearer `.
 - **A handoff** says when its session was last active, also for one active
   in the last 5 minutes: `last active 11:57 (3m ago)`. It said `running
   now`, so the handoff of a session that had just stopped, as when its
@@ -16,6 +24,8 @@
   what came before the fork. Claude Code's, Codex's and OpenCode's forks
   start where they branched off, so their handoffs began mid-conversation
   and didn't say where the start was.
+- Your agents' history is read again once after updating, so these fixes
+  apply to what was read before.
 
 ## 0.1.7
 
