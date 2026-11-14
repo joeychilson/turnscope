@@ -30,7 +30,9 @@ pub enum Cite {
     Tool,
 }
 
-/// How recently a session, or one within it, was active to be running.
+/// How recently a session, or one within it, was active to be running. One
+/// active after now, by a clock ahead of this one, is running: as a handoff
+/// says, the latest it can have been active is now.
 const RUNNING: i64 = 5 * MINUTE;
 
 /// About how much text a page of a conversation holds, 3,000 tokens: past
@@ -552,19 +554,23 @@ pub fn account(db: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
     .optional()
 }
 
-/// A session's conversation, read from its agent's files now.
-pub fn transcript(db: &Connection, id: &str) -> Result<Vec<Entry>> {
-    let (agent, native) = parse(id)?;
+/// The files of session `id` that are still there. A file its agent has
+/// since moved or deleted is left out: Codex moves an archived thread to
+/// `archived_sessions/`, which is read as a file of the session too.
+fn files_left(db: &Connection, id: &str) -> Result<Vec<PathBuf>> {
     let mut statement = db.prepare("SELECT f.path FROM session_file s JOIN file f ON f.id = s.file WHERE s.session = ?1 ORDER BY f.path")?;
-    // A file its agent has since moved or deleted is left out: Codex moves
-    // an archived thread to `archived_sessions/`, which is read as a file of
-    // the session too.
-    let files: Vec<PathBuf> = statement
+    Ok(statement
         .query_map([id], |row| Ok(PathBuf::from(row.get::<_, String>(0)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?
         .into_iter()
         .filter(|path| path.exists())
-        .collect();
+        .collect())
+}
+
+/// A session's conversation, read from its agent's files now.
+pub fn transcript(db: &Connection, id: &str) -> Result<Vec<Entry>> {
+    let (agent, native) = parse(id)?;
+    let files = files_left(db, id)?;
     // Said one way, whether no file is left or none left holds the
     // conversation, as the file that names a Codex thread doesn't once its
     // rollouts are deleted.

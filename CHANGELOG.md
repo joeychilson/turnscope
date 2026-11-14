@@ -3,9 +3,10 @@
 ## 0.1.8
 
 - **A key that starts a line a diff removes,** as after deleting a file
-  that holds a token, is redacted. The `-` before the key counted as part
-  of a word, so reading a session, search and handoffs showed the key. A
-  private key on such a line was already redacted.
+  that holds a token, is redacted, also with the line's number before it,
+  as Claude Code's `Read` shows a patch. The `-` before the key counted as
+  part of a word, so reading a session, search and handoffs showed the
+  key. A private key on such a line was already redacted.
 - **More keys are redacted:** Stripe's (`sk_live_`, `sk_test_` and
   `rk_live_`), Slack's (`xoxb-` and `xoxp-`), Hugging Face's (`hf_`) and
   Google's access tokens (`ya29.`). Reading a session, search and handoffs
@@ -16,14 +17,16 @@
   limit ran out, told the next agent that another agent was at work in the
   folder.
 - **What failed**, in a handoff, names a call by the commands it ran, such
-  as `"cargo test --locked"`. It named it by the description the agent gave
-  them, such as `"Run tests"`, and the next agent had to read the entry to
-  learn what was run. A call that ran no command is still named by what it
-  was for.
+  as `"cargo test --locked"`, and a command of several lines by its first:
+  `"cargo test …"`. It named it by the description the agent gave them,
+  such as `"Run tests"`, and the next agent had to read the entry to learn
+  what was run. A call that ran no command is still named by what it was
+  for.
 - **A fork's handoff** names the session it was forked from, which holds
-  what came before the fork. Claude Code's, Codex's and OpenCode's forks
-  start where they branched off, so their handoffs began mid-conversation
-  and didn't say where the start was.
+  what came before the fork, or says that can't be read once that
+  session's files are gone. Claude Code's, Codex's, OpenCode's and Pi's
+  forks start where they branched off, so their handoffs began
+  mid-conversation and didn't say where the start was.
 - **On a first launch** the app shows your limits as soon as they're read,
   while the footer says it's reading your agents' history. It said
   "Getting your limits" and showed no account until all of the history was
