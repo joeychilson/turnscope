@@ -950,9 +950,7 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
         .stderr(Stdio::piped())
         .spawn()?;
     // Read as written, so a child that writes more than a pipe holds
-    // doesn't wait on us. A process it leaves running, as a login shell's
-    // background job, can hold the pipes open after it ends, so they're
-    // read until the deadline at most.
+    // doesn't wait on us.
     fn drain(
         pipe: Option<impl std::io::Read + Send + 'static>,
     ) -> std::sync::mpsc::Receiver<Vec<u8>> {
@@ -983,12 +981,26 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    // What it wrote before it ended is read at once, but it may have ended
-    // just as the deadline passed.
-    let until = deadline.max(Instant::now() + Duration::from_millis(100));
+    // What it wrote before it ended is read at once. A process it leaves
+    // running, as a login shell's background job, can hold the pipes open
+    // after that, writing nothing and closing nothing, so each pipe is read
+    // until it closes or nothing new comes for `QUIET`. Chosen over reading
+    // to the deadline, which waited all of it for such a child: 10 s for a
+    // login shell's `PATH`, 60 s for an agent's command. The cost: the end
+    // of what a child wrote is lost if the thread reading it waits longer
+    // than `QUIET` for a processor. Measured on 2026-11-14, at a load of 7
+    // on 8 cores: `sleep 4 & echo said` given 4 s came back in 0.22 s,
+    // where it took the 4 s; and 300 children that wrote 1 MB to each pipe
+    // gave all of it, none waited on more than 0.3 ms for what came next.
+    // Never read past the deadline, but that the child may have ended just
+    // as it passed.
+    const QUIET: Duration = Duration::from_millis(100);
+    let until = deadline.max(Instant::now() + QUIET);
     let collect = |read: std::sync::mpsc::Receiver<Vec<u8>>| {
         let mut bytes = Vec::new();
-        while let Ok(more) = read.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        while let Ok(more) =
+            read.recv_timeout(QUIET.min(until.saturating_duration_since(Instant::now())))
+        {
             bytes.extend(more);
         }
         bytes
@@ -1055,17 +1067,45 @@ mod tests {
     }
 
     #[test]
-    fn a_command_is_waited_on_no_longer_than_asked_whatever_it_leaves_running() {
+    fn a_command_is_waited_on_to_its_end_not_for_what_it_leaves_running() {
         let began = Instant::now();
-        let mut command = Process::new("sh");
-        command.args(["-c", "sleep 5 & echo started"]);
-        let output = output_within(&mut command, Duration::from_secs(1)).unwrap();
+        let mut command = Process::new("/bin/sh");
+        command.args(["-c", "sleep 4 & echo said"]);
+        let output = output_within(&mut command, Duration::from_secs(4)).unwrap();
         assert!(output.status.success());
-        assert_eq!(output.stdout, b"started\n");
+        assert_eq!(output.stdout, b"said\n");
         assert!(
-            began.elapsed() < Duration::from_secs(3),
+            began.elapsed() < Duration::from_secs(2),
             "{:?}",
             began.elapsed()
         );
+    }
+
+    #[test]
+    fn a_command_is_waited_on_no_longer_than_asked_whatever_it_leaves_running() {
+        let began = Instant::now();
+        let mut command = Process::new("/bin/sh");
+        // What it leaves running goes on writing, for 3 s or more.
+        let writing = "n=0; while [ $n -lt 150 ]; do echo more; sleep 0.02; n=$((n + 1)); done";
+        command.args(["-c", &format!("({writing}) & echo said")]);
+        let output = output_within(&mut command, Duration::from_secs(1)).unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("said\n"));
+        assert!(
+            began.elapsed() < Duration::from_millis(2500),
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_command_that_writes_more_than_a_pipe_holds_gives_all_of_it() {
+        let mut command = Process::new("/bin/sh");
+        let megabyte = "/usr/bin/head -c 1048576 /dev/zero";
+        command.args(["-c", &format!("{megabyte}; {megabyte} >&2")]);
+        let output = output_within(&mut command, Duration::from_secs(30)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 1 << 20);
+        assert_eq!(output.stderr.len(), 1 << 20);
     }
 }

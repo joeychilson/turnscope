@@ -103,6 +103,16 @@
   across its keys: $0.00.` After the month's first day it added `on pace
   for about $0.00`. The pace is left out whenever it reads the same as
   what was spent.
+- **`connect` and `disconnect` with `--home`** run the agent's command
+  with `HOME` set to that folder, so that it changes the settings there.
+  The command ran in your own home: with `--home` at a copy of a home,
+  Turnscope read the copy, found no server there, and had the agent add
+  one to your own settings. The command an error says to run by hand
+  names that home too.
+- **Connecting or disconnecting an agent** is done once the agent's
+  command ends. When the command, or your login shell's startup files,
+  left a process running, Turnscope went on waiting: 10 seconds for the
+  shell, and 60 for each command it ran.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 

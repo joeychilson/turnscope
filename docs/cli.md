@@ -32,7 +32,7 @@ The examples below are the output of the snapshot tests
 | Option | Default | |
 |---|---|---|
 | `--data <dir>` | `~/Library/Application Support/com.joeychilson.turnscope` | Where Turnscope keeps its data |
-| `--home <dir>` | `$HOME` | The home folder to read the agents' history and logins from |
+| `--home <dir>` | `$HOME` | The home folder to read the agents' history and logins from. `connect` and `disconnect` change the agents' settings there |
 | `--json` | | Print JSON instead of text |
 | `-h`, `--help` | | Print help |
 | `-V`, `--version` | | Print the version |
@@ -441,6 +441,10 @@ An agent that runs another copy of Turnscope says so, and `connect` points
 it at this one. `connect` refuses when Turnscope runs from a disk image or
 a drive in `/Volumes`, or from the copy macOS runs a downloaded app from:
 the agent would lose it once that's gone.
+
+With `--home`, the agent's command runs with `HOME` set to that folder, so
+that it changes the settings there and not your own. The command is still
+found on the `PATH` your login shell sets in your own home.
 
 ## Doctor
 
