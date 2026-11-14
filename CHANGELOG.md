@@ -74,6 +74,10 @@
   no longer stops later ones being read. Until the clock passed the time it
   was stamped, no new OpenCode session or usage was read, and what was
   saved in that time stayed unread afterwards. `doctor` said nothing.
+- **History whose files were all replaced at once**, as when a home folder
+  is restored from a backup or moved to a new Mac, is read again as fast as
+  it was first read. With 3,000 sessions, the first command after took 3 to
+  4 minutes and takes 13 seconds.
 - **`doctor`** says why a Keychain item couldn't be read, in the words of
   macOS's `security` and with its exit status, such as `User interaction is
   not allowed. (exit status: 36)` for a locked Keychain. It said `security
