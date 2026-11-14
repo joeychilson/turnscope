@@ -21,7 +21,7 @@ that cost money. Turnscope does four things:
 
 It answers through the command line ([cli.md](cli.md)), an MCP server for
 agents ([mcp.md](mcp.md)), and `serve`, the daemon the app talks to. Most of
-the code stores and queries data. The hard parts are reading five agents'
+the code stores and queries data. The hard parts are reading six agents'
 formats correctly, and the forecast.
 
 ## Glossary
