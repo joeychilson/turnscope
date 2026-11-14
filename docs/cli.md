@@ -157,6 +157,10 @@ SuperGrok (me@example.com) · via Grok Build
 hours your agents were working. Ranges are 80% ranges.
 [architecture.md](architecture.md#forecast) says how both are worked out.
 
+With no account to show, it says why in one line: no account's limits have
+been read yet, or every account is hidden, and then that `--all` shows
+them. With `--json`, `accounts` is empty.
+
 With `--hours`, the answer comes first:
 
 ```console
@@ -214,6 +218,12 @@ since it was read counts from the reset, and its rows get no share either:
 how much of the new window is used isn't known. With `--json`,
 `sharePercents` holds each row's share in the rows' order, or `null` when
 rows get none.
+
+A limit is named by part of its name or of its key, in any case: `week`,
+`"5 hours"`. A model's limit takes its model after its name, as `status`
+shows it, or before it, as the app does: `"weekly (opus)"` or
+`"opus weekly"`. When the name fits several limits, the first by key is
+taken.
 
 ```console
 $ turnscope usage --account claude --limit week
@@ -375,7 +385,9 @@ OpenRouter API key · openrouter:api
 SuperGrok (me@example.com) · xai:user-3
 ```
 
-A hidden account ends with `· hidden`.
+A hidden account ends with `· hidden`. With no account yet, it says that
+no account's limits have been read, as `status` does, and `--json` prints
+an empty list.
 
 ## Config
 
@@ -470,7 +482,7 @@ turnscope guard --limit <name> --below <percent> [--account <name>] [--say <text
 
 | Flag | Default | |
 |---|---|---|
-| `--limit <name>` | required | The limit, by part of its name, such as `week`, `"5 hours"` or `opus`. |
+| `--limit <name>` | required | The limit, named as for [`usage --limit`](#usage): `week`, `"5 hours"` or `"opus weekly"`. |
 | `--below <percent>` | required | Block when the limit has less than this percent left, 0 to 100. |
 | `--account <name>` | The calling agent's | The account. The name must match one account. |
 | `--say <text>` | The reason | What to print on standard error when it blocks. |

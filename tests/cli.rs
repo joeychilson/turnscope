@@ -812,6 +812,58 @@ fn status_shows_a_hidden_account_it_names() {
 }
 
 #[test]
+fn with_no_account_to_show_every_front_end_says_why() {
+    let said = |data: &Path, args: &[&str]| {
+        let output = turnscope(data, args, None);
+        assert!(output.status.success(), "{args:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let check_limits = |data: &Path, arguments: &str| {
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"check_limits","arguments":{arguments}}}}}"#
+        );
+        let output = turnscope(data, &["mcp"], Some(&(request + "\n")));
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // A new data directory, off the network: no account is known yet.
+    let data = tempfile::tempdir().unwrap();
+    let none = "No account's limits have been read yet: no agent here is signed in to one Turnscope reads.";
+    assert_eq!(said(data.path(), &["status"]), none);
+    assert_eq!(said(data.path(), &["accounts"]), none);
+    assert_eq!(check_limits(data.path(), "{}"), none);
+    // As JSON, none is an empty list.
+    assert_eq!(said(data.path(), &["accounts", "--json"]), "[]");
+    assert_eq!(
+        said(data.path(), &["status", "--json"]),
+        "{\n  \"accounts\": [],\n  \"fit\": null\n}"
+    );
+    // Every account hidden: there are accounts, and each front end says how
+    // it shows one.
+    let data = store();
+    for account in ["claude", "chatgpt", "openrouter", "supergrok"] {
+        said(data.path(), &["accounts", "hide", account]);
+    }
+    assert_eq!(
+        said(data.path(), &["status"]),
+        "Every account is hidden: `turnscope status --all` shows them."
+    );
+    assert_eq!(
+        said(data.path(), &["status", "--all"])
+            .matches(" · hidden")
+            .count(),
+        4
+    );
+    assert_eq!(
+        check_limits(data.path(), r#"{"all":true}"#),
+        "Every account is hidden: name one with account to see its limits."
+    );
+}
+
+#[test]
 fn an_mcp_session_answers_as_its_snapshot_says() {
     let data = store();
     let requests = [

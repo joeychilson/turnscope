@@ -412,7 +412,10 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 (Some(hours), Some(first)) => Some(status::fit(first, hours, status.at)?),
                 _ => None,
             };
-            let text = status::text(&status, &shown, None);
+            let text = match shown.is_empty() {
+                true => status::none(&status, sessions::Cite::Command),
+                false => status::text(&status, &shown, None),
+            };
             let text = match &fit {
                 Some(fit) => format!("{fit}\n\n{text}"),
                 None => text,
@@ -587,7 +590,11 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                     (line, json!({ "id": account.id, "title": title, "kind": account.kind, "hidden": account.hidden }))
                 })
                 .unzip();
-            print(json!(listed), lines.join("\n"))
+            let text = match lines.is_empty() {
+                true => status::none(&status, sessions::Cite::Command),
+                false => lines.join("\n"),
+            };
+            print(json!(listed), text)
         }
         Command::Config { action } => {
             let mut settings = alerts::settings(&db)?;

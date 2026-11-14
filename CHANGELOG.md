@@ -75,6 +75,34 @@
 - **`usage --limit --since`** refuses a time at or after now, as `usage`
   and `explain_usage` do. It printed a span that ran backwards, with
   nothing used.
+- **An account with more than one limit used up** is back when the last of
+  them is. With 5 hours back in an hour and Weekly back in three days, the
+  app and `check_limits` say it's back in three days, and `--hours` says
+  Weekly is what's used up. They went by the first limit listed, so the
+  account read as back in an hour. A used-up limit with no reset counts as
+  the last back. Under the panel's headline, the app names another limit
+  that's used up before one running out, and of several used up the last
+  back. It named the first listed that doesn't last, so with Claude and
+  GPT's weekly limit used up it could say their 5 hours runs out in 2h.
+- **Under ten minutes of work left** reads `Under 10m of work left`. It
+  read `About under 10m of work left (under 10m–under 10m)`. The range is
+  left out when both its ends read the same, and when it's `under 10m or
+  more`, which is any amount.
+- **A limit whose use was given back**, as by an early reset, with none
+  used since, says it lasts with what it has now: `Lasts, with about 60%
+  left at the reset.` It said `No use shows in its reading yet.` beside 60%
+  left. Only a limit with nothing used says that.
+- **`status` and `accounts`** say why when there's no account to show, as
+  `check_limits` does: no account's limits have been read yet, or every
+  account is hidden, with how to see them. They printed nothing, and
+  `check_limits` said no account had been read when every one was hidden.
+- **`--limit` and `explain_usage`'s `limit`** take a model's limit with its
+  model first, as the app names it: `"opus weekly"` as well as
+  `"weekly (opus)"`. Named model first, no limit was found.
+- **An API key that has spent nothing this month** says `This month,
+  across its keys: $0.00.` After the month's first day it added `on pace
+  for about $0.00`. The pace is left out whenever it reads the same as
+  what was spent.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
