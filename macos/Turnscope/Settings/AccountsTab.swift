@@ -10,9 +10,22 @@ struct AccountsTab: View {
     @Environment(Store.self) private var store
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            group("Subscriptions", store.all.filter { !$0.apiKey })
-            group("API keys", store.all.filter(\.apiKey))
+        if store.all.isEmpty {
+            // With no account to list, what the panel's headline says, as
+            // "Getting your limits" on a first launch, over an empty tab.
+            let said = store.verdict(in: store.words())
+            VStack(spacing: 8) {
+                Text(said.headline).font(.system(size: 13, weight: .semibold))
+                Text(said.detail).font(.line).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, minHeight: 140)
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                group("Subscriptions", store.all.filter { !$0.apiKey })
+                group("API keys", store.all.filter(\.apiKey))
+            }
         }
     }
 

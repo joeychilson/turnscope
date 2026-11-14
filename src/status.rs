@@ -512,12 +512,13 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             limits,
         });
     }
-    rank(&mut accounts);
+    let history_read = db.query_row("SELECT history_at IS NOT NULL FROM state", [], |row| {
+        row.get(0)
+    })?;
+    rank(&mut accounts, history_read);
     Ok(Status {
         at: now,
-        history_read: db.query_row("SELECT history_at IS NOT NULL FROM state", [], |row| {
-            row.get(0)
-        })?,
+        history_read,
         accounts,
         settings: crate::alerts::settings(db)?,
     })
@@ -810,22 +811,31 @@ fn deciding(limits: &[Limit]) -> Option<&Limit> {
 /// urgent and soonest out first, then the least left; then the rest, the
 /// most left first; then those whose login was refused; then those with
 /// nothing to show.
-fn rank(accounts: &mut [Account]) {
+///
+/// Until the first read of history ends (`history_read` false), every
+/// account is ranked as one in use. Which are in use isn't known yet: on a
+/// first launch the limits are read and pushed before any history
+/// (`serve::keep`), so none is. Ranked as accounts not in use, the most
+/// left came first, and the app, which shows every account as in use until
+/// then, would have headlined the account least used. `in_use` itself
+/// stays as measured, so no alert is raised on a guess.
+fn rank(accounts: &mut [Account], history_read: bool) {
     accounts.sort_by_cached_key(|account| {
+        let in_use = account.in_use || !history_read;
         let deciding = account.deciding_limit();
         let left = deciding.map_or(i32::MAX, |limit| i32::from(limit.left_percent));
         let group = match () {
-            () if account.in_use => 0,
+            () if in_use => 0,
             () if account.refused() => 2,
             () if deciding.is_some() => 1,
             () => 3,
         };
-        let urgent = deciding.filter(|_| account.in_use);
+        let urgent = deciding.filter(|_| in_use);
         (
             group,
             Reverse(urgent.map_or(0, Limit::urgency)),
             urgent.and_then(Limit::runs_out).unwrap_or(i64::MAX),
-            if account.in_use { left } else { -left },
+            if in_use { left } else { -left },
             account.id.clone(),
         )
     });
@@ -1003,6 +1013,46 @@ mod tests {
         );
         let said = limit_text(limit, status.at);
         assert!(said.ends_with("No use shows in its reading yet."), "{said}");
+    }
+
+    /// As on a first launch, between the limits read and the history read:
+    /// two accounts read two hours into their 5 hours, with no response yet.
+    #[test]
+    fn until_history_is_read_accounts_are_ranked_as_if_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let now = 2 * HOUR;
+        for (id, used) in [("anthropic:a", 90.0), ("openai:b", 10.0)] {
+            let provider = id.split(':').next().unwrap();
+            db.execute(
+                "INSERT INTO account (id, provider, kind, title, read_at)
+                 VALUES (?1, ?2, 'subscription', ?1, ?3)",
+                params![id, provider, now],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+                 VALUES (?1, 'five_hour', ?2, '5 hours', ?3, 0, ?4)",
+                params![id, now, used, 5 * HOUR],
+            )
+            .unwrap();
+        }
+        let ranked = |db: &rusqlite::Connection| -> Vec<String> {
+            let status = status(db, now).unwrap();
+            // Neither is said to be in use, which alerts go by.
+            assert!(status.accounts.iter().all(|account| !account.in_use));
+            status
+                .accounts
+                .iter()
+                .map(|account| account.id.clone())
+                .collect()
+        };
+        // Neither is known to be in use yet: the one running out comes first.
+        assert_eq!(ranked(&db), ["anthropic:a", "openai:b"]);
+        // Once history is read, neither is in use: the most left first.
+        db.execute("UPDATE state SET history_at = ?1", [now])
+            .unwrap();
+        assert_eq!(ranked(&db), ["openai:b", "anthropic:a"]);
     }
 
     #[test]

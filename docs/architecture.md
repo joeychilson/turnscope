@@ -305,7 +305,9 @@ megabytes.
   any. When every limit reset since, it's the last to reset.
 - **Accounts are listed** in use first (the most urgent, soonest out and
   least left first), then the rest (the most left first), then those whose
-  login was refused, then those with nothing to show.
+  login was refused, then those with nothing to show. Until the first read
+  of history ends, every account is listed as one in use, since which are
+  isn't known yet.
 - Each **agent** is `installed` when its own folder exists. Its connection
   is `connected` when the MCP configuration of every one of its folders
   runs this binary, `outdated` when one runs another copy, and `available`

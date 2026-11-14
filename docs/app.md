@@ -209,6 +209,10 @@ Accounts show the same.
 On a first launch, the headline says "Getting your limits" until `serve`
 has read them. It pushes a status then, before it reads the history, so
 the accounts show while the footer says "Reading your agents' history…".
+Until that read ends (`historyRead` false), which accounts are in use
+isn't known, so every account shown counts as in use (`Store.inUse`): the
+headline is about the most urgent, the menu bar shows each, and none is
+folded away. `serve` lists them as accounts in use until then.
 
 An account's row shows its logo, its title (and its label when another
 shown account has the same title), the line for its deciding limit, and
@@ -263,7 +267,7 @@ are in cards. Changes take effect at once.
 |---|---|
 | General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert, grayed out until the first status arrives. **Updates**: the version, Check now and Check automatically |
 | Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed. Run from its disk image, the switches are off and the heading says to move Turnscope to Applications |
-| Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
+| Accounts | Subscriptions, then API keys, each with a switch to show or hide it. With no account, what the panel's headline says (`Store.verdict`), such as "Getting your limits" |
 
 While `serve` is away, the switches that change something through it are
 grayed out: the notification switches, and those of Agents and Accounts. A
@@ -378,7 +382,16 @@ as an option's value, so `--open --data <dir>` opens nothing in the panel.
 - **`--fixture`** reads a `status` notification, such as
   `contract/status.notification.json`. Its words are as of the status's
   `at`, so it reads the same whenever it's drawn. Changes made in it show on
-  screen and go nowhere.
+  screen and go nowhere. To see a first launch while the history is read,
+  with no account known to be in use:
+
+  ```sh
+  jq '.params.historyRead = false
+    | .params.accounts |= map(.inUse = false | .recent = false | .usedBy = [])' \
+    contract/status.notification.json > /tmp/first-launch.json
+  target/xcode/Build/Products/Debug/Turnscope.app/Contents/MacOS/Turnscope \
+    --fixture /tmp/first-launch.json --open
+  ```
 - **`--snapshot`** needs `--fixture`. With `--open`, it opens a row or the
   fold first, or draws Settings at the tab named. It draws the window
   background where the panel has glass, the panel at its full height with
