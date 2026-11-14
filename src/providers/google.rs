@@ -130,14 +130,13 @@ impl Provider for Google {
             .as_str()
             .filter(|project| !project.is_empty())
             .ok_or(Problem::Unavailable)?;
-        let spent = u32::try_from(began.elapsed().as_secs()).unwrap_or(super::WAIT);
         let answer = super::ask_sending(
             QUOTA,
             credential,
             &[CLIENT],
             &json!({"project": project}),
             &[401],
-            super::WAIT.saturating_sub(spent).max(1),
+            super::wait_left(began.elapsed()),
         )?;
         let readings = parse(&answer)
             .filter(|readings| !readings.is_empty())

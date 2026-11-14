@@ -392,8 +392,8 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
 | Kind | Raised when |
 |---|---|
 | `runningOut` | A limit of an account in use runs out before its reset at its pace, as the status shows it |
-| `usedUp` | A limit of an account in use is used up |
-| `reset` | A limit that was used up is back: its window ended in the last day, or use was given back early |
+| `usedUp` | A limit of an account in use is used up: one with a window, or money that never resets, such as credits |
+| `reset` | A limit that was used up is back: its window ended in the last day, use was given back early, or money that never resets has some left |
 | `signIn` | An account in use can't be read because its login was refused |
 
 - `serve` raises alerts (`alerts::raise`) each time it pushes a changed
@@ -401,14 +401,18 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
 - Each is raised once per account, limit, kind and window (the window's
   reset, within 5 minutes; for `signIn`, the last read that worked), so
   neither a restart nor a pace near the line repeats one.
+- Money that never resets has no window, so its size stands in for one:
+  credits used up are told once, and again when more were bought and used
+  up too. A limit with neither a window nor a size, a window whose reset
+  its provider didn't say, raises nothing.
 - Some alerts are recorded as already shown: one for a hidden account, one
   of a kind turned off, and a `reset` while another limit on the same models or on the whole
   account is still used up. Showing the account or turning the kind on
   later doesn't bring back the past.
 - An alert waits until a client acknowledges it (`alerts.ack`). Until then
-  `hello` returns it: a `runningOut` or `usedUp` while its window lasts, a
-  `reset` for a day, and a `signIn` for a day while its account still can't
-  be read.
+  `hello` returns it: a `runningOut` or `usedUp` while its window lasts, or
+  with no window while its limit is still used up; a `reset` for a day; and
+  a `signIn` for a day while its account still can't be read.
 
 ## Handoff
 

@@ -427,8 +427,9 @@ sent.
 An alert is sent right after the status that raised it. Until a client
 acknowledges it with `alerts.ack`, it's sent again in every `hello` result
 while it still applies: a `runningOut` or `usedUp` alert until its window
-resets, a `reset` alert for a day, and a `signIn` alert for a day while its
-account still can't be read.
+resets, or with no window while its limit is still used up; a `reset` alert
+for a day; and a `signIn` alert for a day while its account still can't be
+read.
 
 | Field | Type | Holds |
 |---|---|---|
@@ -440,7 +441,7 @@ account still can't be read.
 | `limit` | string or null | The limit's key. Null for `signIn` |
 | `limitName` | string or null | The limit's name. Null for `signIn` |
 | `replaces` | string | The notification it takes the place of: `limit:<account>:<key>` or `account:<account>`. A limit that's back replaces the one saying it was used up |
-| `resets` | Moment or null | When the limit's window resets |
+| `resets` | Moment or null | When the limit's window resets. Null for `signIn`, and for a limit that never resets, such as credits |
 | `runsOut` | Moment or null | For `runningOut`, when it likely runs out. Otherwise null |
 
 The horizons of `resets` and `runsOut` are worked out when the alert is

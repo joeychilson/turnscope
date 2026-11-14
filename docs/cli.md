@@ -493,8 +493,9 @@ Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at t
 
 A hook waits for the guard, so it reads no history and no prices. It reads
 the limits only when five minutes have passed since any process did. While
-the app runs, its daemon always has. Each request to a provider gives up
-after 15 seconds, or after 5 if it can't connect.
+the app runs, its daemon always has. Each read of a login's limits gives
+up after 15 seconds, whether its provider takes one request or two, or
+after 5 if it can't connect.
 
 ## Status line
 

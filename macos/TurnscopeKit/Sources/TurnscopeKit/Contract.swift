@@ -265,7 +265,8 @@ public struct Alert: Decodable, Equatable, Sendable {
     /// The notification this one replaces. There's one per limit, or per
     /// account, so "back" replaces the one saying the limit was used up.
     public var replaces: String
-    /// When the limit resets, or reset.
+    /// When the limit resets, or reset. Nil for one that never resets, such
+    /// as credits.
     public var resets: Moment?
     /// For `runningOut`, when it likely runs out.
     public var runsOut: Moment?

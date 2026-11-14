@@ -300,6 +300,10 @@ fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
   key.
 - A provider the folder held a login for and no longer lists is taken as
   signed out of, so `logins` only lists what the folder holds.
+- A folder that held a login and that `folders` no longer lists is signed
+  out of too, as one deleted. So `folders` lists a folder for as long as
+  the agent may be signed in there, by what's on disk alone: not by an
+  environment variable or a running process, which come and go.
 
 ## 4. Register it
 
