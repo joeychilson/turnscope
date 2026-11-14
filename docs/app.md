@@ -206,6 +206,10 @@ Before the first status, the panel shows "Reading your agents' history…",
 or "Turnscope can't read its data" with the reason. Settings → Agents and
 Accounts show the same.
 
+On a first launch, the headline says "Getting your limits" until `serve`
+has read them. It pushes a status then, before it reads the history, so
+the accounts show while the footer says "Reading your agents' history…".
+
 An account's row shows its logo, its title (and its label when another
 shown account has the same title), the line for its deciding limit, and
 what's left of it on the right. A row with limits, or a note on what they
@@ -272,7 +276,7 @@ Where each setting is kept:
 | Show (menu bar) | The app's defaults, `menuShows`: `all` or `one` | |
 | Offers to connect put away | The app's defaults, `dismissedConnect`: agent ids joined by commas | |
 | Open at login | macOS's login items (`SMAppService.mainApp`) | System Settings |
-| Notify me when | The engine's settings, through `settings.set` | `turnscope config set notify.<kind> on\|off` |
+| Notify me when | The engine's settings, through `settings.set` | |
 | Hidden accounts | The engine, through `account.hide` | `turnscope accounts hide\|show` |
 | Connected agents | Each agent's own configuration, through `agent.connect` and `agent.disconnect` | `turnscope connect`, `turnscope disconnect` |
 | Check automatically | Sparkle's defaults | |
@@ -354,7 +358,7 @@ says where each one comes from.
 | Argument | Does |
 |---|---|
 | `--data <dir>` | Passed to the engine: the data directory to use |
-| `--home <dir>` | Passed to the engine: the home folder to read agents' history and logins from |
+| `--home <dir>` | Passed to the engine: the home folder to read agents' history and logins from, and to connect agents in |
 | `--open` | Opens the panel once the first status arrives |
 | `--open <names>` | Also opens what the names say, joined by commas: `--open account,unused` |
 | `--fixture <file>` | Shows the status in a file, with no engine |
@@ -371,10 +375,10 @@ says where each one comes from.
 An unknown name opens nothing. A value that starts with `--` is never read
 as an option's value, so `--open --data <dir>` opens nothing in the panel.
 
-- **`--fixture`** reads a status on its own, a `status` notification or a
-  `hello` result, such as `contract/status.notification.json`. Its words are
-  as of the status's `at`, so it reads the same whenever it's drawn.
-  Changes made in it show on screen and go nowhere.
+- **`--fixture`** reads a `status` notification, such as
+  `contract/status.notification.json`. Its words are as of the status's
+  `at`, so it reads the same whenever it's drawn. Changes made in it show on
+  screen and go nowhere.
 - **`--snapshot`** needs `--fixture`. With `--open`, it opens a row or the
   fold first, or draws Settings at the tab named. It draws the window
   background where the panel has glass, the panel at its full height with
@@ -447,13 +451,12 @@ First decide who owns it.
    takes the same default while the key isn't set. `AppDelegate` redraws
    the menu bar item on any change to the defaults.
 
-**An engine setting** must agree with the command line, or changes what
-`serve` does, like the notification switches. It's a protocol change
+**An engine setting** changes what `serve` does, like the notification
+switches. It's a protocol change
 ([protocol.md](protocol.md#change-the-protocol)):
 
 1. Add the field to `Settings` or `Notify` in `src/alerts.rs`, with its
-   default, and to `turnscope config` in `src/main.rs` and
-   [cli.md](cli.md).
+   default.
 2. Add it to the examples in `contract/` that carry settings.
 3. Add it to `Settings` or `Notify` in `Contract.swift`. The app sends the
    whole `Settings` back, so a field it leaves out is reset to its default

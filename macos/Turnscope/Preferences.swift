@@ -1,5 +1,5 @@
 // The app's own preferences, kept in its defaults. Which notifications are
-// sent is the engine's setting instead, so the command line and the app agree.
+// sent is the engine's setting instead.
 
 import Foundation
 

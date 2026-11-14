@@ -1,6 +1,6 @@
 // Settings → General: the menu bar, opening at login, notifications, and
-// updates. Notification settings belong to the engine, so `turnscope config`
-// and the app agree. Menu bar settings belong to the app.
+// updates. Notification settings belong to the engine. Menu bar settings
+// belong to the app.
 
 import ServiceManagement
 import SwiftUI
