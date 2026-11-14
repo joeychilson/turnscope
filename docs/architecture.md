@@ -21,7 +21,7 @@ that cost money. Turnscope does four things:
 
 It answers through the command line ([cli.md](cli.md)), an MCP server for
 agents ([mcp.md](mcp.md)), and `serve`, the daemon the app talks to. Most of
-the code stores and queries data. The hard parts are reading five agents'
+the code stores and queries data. The hard parts are reading six agents'
 formats correctly, and the forecast.
 
 ## Glossary
@@ -208,9 +208,16 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, and before the `continue` prompt. |
-| `serve` | On a thread of its own: at start, 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up, and at least every minute. |
+| `serve` | On a thread of its own: at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. |
 
 While `serve` runs, the other processes rarely find anything new to read.
+
+A catch-up reads all of history the first time, and again after
+`ingest::READERS` is raised. That can take minutes. A CLI command says so
+on standard error before it starts one, and says that it waits once it has
+waited a second for another process that reads history
+(`ingest::waits`). `mcp` and `serve` say nothing, since no one reads their
+standard error: a tool call waits the read out.
 
 ### Locks
 
@@ -248,6 +255,11 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
   thread works out the status. If anything it shows changed, it raises
   alerts and sends `status`, then each new `alert`, to every client that
   said `hello`.
+- At start, that thread reads the limits, when they're due, before its
+  first catch-up, and the main thread works out the status then too. On a
+  first launch the catch-up reads all of history, so the app shows the
+  accounts while it does, and the status says the history isn't read yet
+  (`historyRead`).
 - `settings.set`, `account.hide`, and an `agent.connect` or
   `agent.disconnect` that worked push the status too. Connecting runs the
   agent's own command on a thread of its own, as it can take a minute.
@@ -288,7 +300,9 @@ megabytes.
   all of the account's usage (not one model's or one key's) where there are
   any. The most urgent wins (used up, then running out), then the soonest
   out, then the least left (at the reset for a limit that lasts, where
-  that's forecast). When every limit reset since, it's the last to reset.
+  that's forecast). Of several used up, the last back wins, since the
+  account can't be used until then; one with no reset counts as later than
+  any. When every limit reset since, it's the last to reset.
 - **Accounts are listed** in use first (the most urgent, soonest out and
   least left first), then the rest (the most left first), then those whose
   login was refused, then those with nothing to show.
@@ -355,7 +369,8 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
     from now. The time is shown to 10 minutes
     within a day and to the hour beyond, and never before now.
   - `lasts`: with what will be left at the reset, as a range, or nothing
-    when none of it has been used.
+    when none of it has been used. After use was given back, with none
+    since, that's what it has now.
   - `unknown`: not enough data, `stale` (read over 30 minutes ago, or the
     window reset since), `rolling` (no start to pace from) or `noReset`
     (credits).
@@ -436,9 +451,9 @@ covers what it holds, the budget, and how to test a change.
   Web Tokens, `Bearer` tokens and private keys' PEM blocks with
   `[redacted]`, in text before it's indexed for search and in transcripts
   before they're shown. Each is found after a JSON string's `\n`, `\t` or
-  `\r`, as in a tool call's input. A private key is found in a JSON string,
-  indented, with line numbers, in a diff, encrypted, and cut short with no
-  END line.
+  `\r`, as in a tool call's input, and after the `-` that starts a line a
+  diff removes. A private key is found in a JSON string, indented, with
+  line numbers, in a diff, encrypted, and cut short with no END line.
 - **The data directory and socket** are the owner's alone: the directory
   is created 0700, and the socket is 0600.
 - **The MCP server only reads.** Its instructions tell agents that what a

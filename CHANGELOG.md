@@ -2,6 +2,61 @@
 
 ## 0.1.8
 
+- **A key that starts a line a diff removes,** as after deleting a file
+  that holds a token, is redacted. The `-` before the key counted as part
+  of a word, so reading a session, search and handoffs showed the key. A
+  private key on such a line was already redacted.
+- **More keys are redacted:** Stripe's (`sk_live_`, `sk_test_` and
+  `rk_live_`), Slack's (`xoxb-` and `xoxp-`), Hugging Face's (`hf_`) and
+  Google's access tokens (`ya29.`). Reading a session, search and handoffs
+  showed one unless it followed `Bearer `.
+- **A handoff** says when its session was last active, also for one active
+  in the last 5 minutes: `last active 11:57 (3m ago)`. It said `running
+  now`, so the handoff of a session that had just stopped, as when its
+  limit ran out, told the next agent that another agent was at work in the
+  folder.
+- **What failed**, in a handoff, names a call by the commands it ran, such
+  as `"cargo test --locked"`. It named it by the description the agent gave
+  them, such as `"Run tests"`, and the next agent had to read the entry to
+  learn what was run. A call that ran no command is still named by what it
+  was for.
+- **A fork's handoff** names the session it was forked from, which holds
+  what came before the fork. Claude Code's, Codex's and OpenCode's forks
+  start where they branched off, so their handoffs began mid-conversation
+  and didn't say where the start was.
+- **On a first launch** the app shows your limits as soon as they're read,
+  while the footer says it's reading your agents' history. It said
+  "Getting your limits" and showed no account until all of the history was
+  read, which can take minutes.
+- **A command that reads all of your agents' history** says so first, on
+  standard error: `Reading your agents' history…`. That's the first
+  command you run, and the first after an update that changes how history
+  is read. A command that waits for another Turnscope reading history,
+  such as the app's, says so after a second:
+  `Waiting while another Turnscope reads your agents' history…`. Both
+  waited in a blank terminal.
+- **A request that names a tag** its agent uses is read whole, such as
+  `<skill>` or `<image>` with Codex and `<system-reminder>` with Claude
+  Code. It was cut at the tag: `Add a <skill> element to the manifest
+  schema and document it.` became `Add a` in the session's title, in
+  search, in `sessions read` and `read_session`, and in the requests a
+  handoff quotes.
+- **A Pi fork** shows only its own conversation in `sessions read`,
+  `read_session` and handoffs. They opened with the fork's copy of its
+  parent's entries, and a handoff listed the parent's requests as the
+  fork's.
+- **OpenCode:** a session or message saved while the Mac's clock was ahead
+  no longer stops later ones being read. Until the clock passed the time it
+  was stamped, no new OpenCode session or usage was read, and what was
+  saved in that time stayed unread afterwards. `doctor` said nothing.
+- **`doctor`** says why a Keychain item couldn't be read, in the words of
+  macOS's `security` and with its exit status, such as `User interaction is
+  not allowed. (exit status: 36)` for a locked Keychain. It said `security
+  exited with Some(36)`.
+- **A session whose files are gone** says so one way, whichever of them is
+  left: `codex:019a…'s files are gone: Codex deleted or moved them, so its
+  conversation can't be read`. A named Codex thread whose rollouts were
+  deleted said `the thread's rollouts are gone`, naming no session.
 - **A folder** names its sessions with `..`, `.` or a slash at its end:
   for `sessions --folder`, `handoff --folder`, and the `folder` of
   `find_sessions` and `handoff`. `..` was kept as written, so `sessions
@@ -20,6 +75,64 @@
   the folder, of any agent: after Codex ran last in a folder, a new Claude
   Code session's status line showed the Codex account's limits until the
   session was read.
+- **What used a limit** whose window reset since it was read counts from
+  the reset, with no shares: in `usage --limit`, in `explain_usage`, and in
+  the sessions the app lists under "Used most". They listed the sessions of
+  the window before, each at `<1%` of a limit shown as 100% left. It showed
+  for an account not read since a window ended, as one whose login expired
+  overnight, or a Google AI plan an hour after Antigravity was last open.
+- **`explain_usage`** shows usage with no known price as `(+N unpriced)` in
+  its lines by model, project and account, as its table does. They showed
+  its cost as `$0.00` alone.
+- **`usage --limit`** gives the row that adds up the rest its share of the
+  limit, as `explain_usage` does. It left that row's share out. With
+  `--json`, `sharePercents` is `null` when rows get no share, where it held
+  a `null` for each row.
+- **`usage --agent`** refuses an id that names no agent and lists the ids,
+  as `sessions --agent` does. It said nothing was used.
+- **`usage --limit --since`** refuses a time at or after now, as `usage`
+  and `explain_usage` do. It printed a span that ran backwards, with
+  nothing used.
+- **An account with more than one limit used up** is back when the last of
+  them is. With 5 hours back in an hour and Weekly back in three days, the
+  app and `check_limits` say it's back in three days, and `--hours` says
+  Weekly is what's used up. They went by the first limit listed, so the
+  account read as back in an hour. A used-up limit with no reset counts as
+  the last back. Under the panel's headline, the app names another limit
+  that's used up before one running out, and of several used up the last
+  back. It named the first listed that doesn't last, so with Claude and
+  GPT's weekly limit used up it could say their 5 hours runs out in 2h.
+- **Under ten minutes of work left** reads `Under 10m of work left`. It
+  read `About under 10m of work left (under 10m–under 10m)`. The range is
+  left out when both its ends read the same, and when it's `under 10m or
+  more`, which is any amount.
+- **A limit whose use was given back**, as by an early reset, with none
+  used since, says it lasts with what it has now: `Lasts, with about 60%
+  left at the reset.` It said `No use shows in its reading yet.` beside 60%
+  left. Only a limit with nothing used says that.
+- **`status` and `accounts`** say why when there's no account to show, as
+  `check_limits` does: no account's limits have been read yet, or every
+  account is hidden, with how to see them. They printed nothing, and
+  `check_limits` said no account had been read when every one was hidden.
+- **`--limit` and `explain_usage`'s `limit`** take a model's limit with its
+  model first, as the app names it: `"opus weekly"` as well as
+  `"weekly (opus)"`. Named model first, no limit was found.
+- **An API key that has spent nothing this month** says `This month,
+  across its keys: $0.00.` After the month's first day it added `on pace
+  for about $0.00`. The pace is left out whenever it reads the same as
+  what was spent.
+- **`connect` and `disconnect` with `--home`** run the agent's command
+  with `HOME` set to that folder, so that it changes the settings there.
+  The command ran in your own home: with `--home` at a copy of a home,
+  Turnscope read the copy, found no server there, and had the agent add
+  one to your own settings. The command an error says to run by hand
+  names that home too.
+- **Connecting or disconnecting an agent** is done once the agent's
+  command ends. When the command, or your login shell's startup files,
+  left a process running, Turnscope went on waiting: 10 seconds for the
+  shell, and 60 for each command it ran.
+- Your agents' history is read again once after updating, so these fixes
+  apply to what was read before.
 
 ## 0.1.7
 
