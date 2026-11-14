@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.8
+
+- **On a first launch** the app shows your limits as soon as they're read,
+  while the footer says it's reading your agents' history. It said
+  "Getting your limits" and showed no account until all of the history was
+  read, which can take minutes.
+- **A command that reads all of your agents' history** says so first, on
+  standard error: `Reading your agents' history…`. That's the first
+  command you run, and the first after an update that changes how history
+  is read. A command that waits for another Turnscope reading history,
+  such as the app's, says so after a second:
+  `Waiting while another Turnscope reads your agents' history…`. Both
+  waited in a blank terminal.
+
 ## 0.1.7
 
 - **The app's countdowns** count from the minute it is, as the command
