@@ -31,9 +31,8 @@ import Testing
     // The words are as of the status's time, whenever it's drawn.
     #expect(store.words(now: .distantFuture).now == store.status?.at)
     #expect(store.words().agent("claude-code") == "Claude Code")
-    // A status as serve pushes it, or in the answer to hello.
-    #expect(Store(fixture: example("hello.result.json")).status != nil)
-    #expect(Contract.status(from: Data("{}".utf8)) == nil)
+    // A status only as serve pushes it, not in the answer to hello.
+    #expect(Store(fixture: example("hello.result.json")).status == nil)
     #expect(Store(fixture: "/nonexistent.json").status == nil)
     #expect(Store(fixture: nil).status == nil)
 }

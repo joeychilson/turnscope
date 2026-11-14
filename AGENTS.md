@@ -43,7 +43,7 @@ runs, Swift tests included.
 | The handoff | `docs/handoff.md`; try it on the handoff cases ([development.md](docs/development.md#handoff-cases)) |
 | The forecast | The decision written in `forecast.rs`, [architecture.md](docs/architecture.md#forecast); run the backtest |
 | The database schema | A new script at the end of `db::REVISIONS`: a shipped one is never edited. The tables in [architecture.md](docs/architecture.md#data) |
-| An alert kind or a notification setting | `alerts.rs`; the `CHECK` on `alert.kind`, in a new revision; `alerts::Notify` and the `notify.*` keys in `main.rs` and `docs/cli.md`; the contract (above); `Words+Notes.swift`; `Settings/GeneralTab.swift`; [architecture.md](docs/architecture.md#alerts) |
+| An alert kind or a notification setting | `alerts.rs`; the `CHECK` on `alert.kind`, in a new revision; `alerts::Notify`; the contract (above); `Words+Notes.swift`; `Settings/GeneralTab.swift`; [architecture.md](docs/architecture.md#alerts) |
 | Text the app shows | `Words` and its tests; run `scripts/screenshots.sh` if the panel looks different |
 | An app setting or launch argument | [docs/app.md](docs/app.md), which says how to add one |
 | A time form | `src/time.rs`, the flags' help in `main.rs`, the MCP tools' descriptions, [cli.md](docs/cli.md#time-forms) |

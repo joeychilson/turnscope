@@ -181,11 +181,6 @@ enum Command {
         #[command(subcommand)]
         action: Option<AccountAction>,
     },
-    /// Show the settings, or turn a notification on or off
-    Config {
-        #[command(subcommand)]
-        action: Option<ConfigAction>,
-    },
     /// See which agents run Turnscope's MCP server, or add it to one
     Connect {
         /// The agent's id, as `connect` lists them, such as claude-code
@@ -203,9 +198,6 @@ enum Command {
         /// Print the socket's path and exit
         #[arg(long)]
         socket: bool,
-        /// How long to stay after the last client leaves
-        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
-        linger: u64,
     },
     /// The MCP server on standard input and output, for a coding agent
     Mcp,
@@ -256,26 +248,6 @@ enum AccountAction {
     Show { account: String },
 }
 
-#[derive(Subcommand)]
-enum ConfigAction {
-    /// Turn a notification on or off: notify.runningOut, notify.usedUp, notify.reset or notify.signIn
-    Set {
-        key: String,
-        #[arg(value_parser = ["on", "off"])]
-        value: String,
-    },
-}
-
-/// The settings `config` sets and shows, by key, in the order it shows them.
-fn notify_keys(notify: &mut alerts::Notify) -> [(&'static str, &mut bool); 4] {
-    [
-        ("notify.runningOut", &mut notify.running_out),
-        ("notify.usedUp", &mut notify.used_up),
-        ("notify.reset", &mut notify.reset),
-        ("notify.signIn", &mut notify.sign_in),
-    ]
-}
-
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -300,10 +272,8 @@ fn main() -> ExitCode {
     let outcome = match cli.command {
         // Servers answer at once, and catch up as they're asked.
         Command::Mcp => mcp::run(&home, &data).map(|()| String::new()),
-        Command::Serve { socket: true, .. } => Ok(serve::socket_path(&data).display().to_string()),
-        Command::Serve { linger, .. } => {
-            serve::run(&home, &data, Duration::from_secs(linger)).map(|()| String::new())
-        }
+        Command::Serve { socket: true } => Ok(serve::socket_path(&data).display().to_string()),
+        Command::Serve { socket: false } => serve::run(&home, &data).map(|()| String::new()),
         // A hook reads its exit code, so a guard that can't tell blocks nothing.
         Command::Guard {
             limit,
@@ -355,20 +325,60 @@ fn absolute(path: PathBuf) -> PathBuf {
     std::path::absolute(&path).unwrap_or(path)
 }
 
+/// `given`, a folder as a person, an agent or a variable gives it, in the
+/// form sessions and responses hold theirs: absolute, with `.` and `..`
+/// folded and no slash at its end. A relative one is in the current folder.
+/// As it is when it can't be made absolute.
+///
+/// A session is found by its folder, and the caller's account by its agent
+/// folder, as text. `std::path::absolute` alone, which `--folder` took,
+/// drops `.` and keeps `..` and a slash at the end, so `--folder ..` looked
+/// for `/work/app/..` and found nothing.
+///
+/// Folded by the path's text, over asking the disk as `canonicalize` does.
+/// A folder that's gone, as a worktree deleted since, still names its
+/// sessions, where the disk has nothing to resolve. A link isn't followed
+/// either: a session's folder is kept as its agent wrote it, link or not.
+pub fn folded(given: &Path) -> PathBuf {
+    let Ok(absolute) = std::path::absolute(given) else {
+        return given.to_path_buf();
+    };
+    let mut folded = PathBuf::new();
+    for part in absolute.components() {
+        match part {
+            // Above the root is the root, where there's nothing to drop.
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            part => folded.push(part),
+        }
+    }
+    folded
+}
+
 /// A command's answer, as text or JSON. Those that report data catch up
-/// first; those that change a setting don't wait for it.
+/// first, and say so on standard error when that can take long; those that
+/// change a setting don't wait for it.
 fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<String> {
     let mut db = db::open(data)?;
     let reports = match &command {
         Command::Accounts { action } => action.is_none(),
-        Command::Config { .. } | Command::Connect { .. } | Command::Disconnect { .. } => false,
+        Command::Connect { .. } | Command::Disconnect { .. } => false,
         _ => true,
     };
-    // What's in the database still answers when what's new can't be read.
-    if reports && let Err(error) = catch_up(&mut db, home) {
-        eprintln!(
-            "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
-        );
+    if reports {
+        // Said before a wait that can take minutes, not left to a blank
+        // terminal.
+        if let Some(wait) = ingest::waits(&db) {
+            eprintln!("{wait}");
+        }
+        // What's in the database still answers when what's new can't be
+        // read.
+        if let Err(error) = catch_up(&mut db, home) {
+            eprintln!(
+                "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
+            );
+        }
     }
     let connecting = matches!(command, Command::Connect { .. });
     let now = now();
@@ -403,7 +413,10 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 (Some(hours), Some(first)) => Some(status::fit(first, hours, status.at)?),
                 _ => None,
             };
-            let text = status::text(&status, &shown, None);
+            let text = match shown.is_empty() {
+                true => status::none(&status, sessions::Cite::Command),
+                false => status::text(&status, &shown, None),
+            };
             let text = match &fit {
                 Some(fit) => format!("{fit}\n\n{text}"),
                 None => text,
@@ -421,19 +434,25 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             let status = status::status(&db, now)?;
             let (account, limit) = limit_of(&db, home, &status, account.as_deref(), &name)?;
             let by = by.unwrap_or(usage::By::Session);
-            let (used, shares) =
-                usage::breakdown(&db, account, Some(limit), time_of(&from)?, by, top, now)?;
+            let since = time_of(&from)?;
+            // As `explain_usage` refuses it. Taken, the span ran backwards.
+            if since.is_some_and(|since| since >= now) {
+                return Err(Error::Usage(
+                    "--since is now or later, so there's no usage after it: give an earlier --since"
+                        .to_owned(),
+                ));
+            }
+            let (used, shares) = usage::breakdown(&db, account, Some(limit), since, by, top, now)?;
             let heading = format!(
                 "{} · {}\n",
                 account.full_title(),
                 status::limit_text(limit, status.at)
             );
             let named = limit.named();
-            let column = shares
-                .iter()
-                .any(Option::is_some)
-                .then_some((named.as_str(), shares.as_slice()));
+            let column = shares.as_ref().map(|shares| (named.as_str(), shares));
             let text = heading + &usage::text(&used, column);
+            // Each row's share, in the rows' order, or null with none.
+            let shares = shares.map(|shares| shares.rows);
             let value = json!({ "account": account.id, "limit": limit.key, "usage": used, "sharePercents": shares });
             print(value, text)
         }
@@ -446,6 +465,11 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             limit: None,
             top,
         } => {
+            // As `sessions` refuses an agent there isn't. Taken, it said
+            // nothing was used.
+            if let Some(agent) = &agent {
+                agents::find(agent)?;
+            }
             let account = match account {
                 Some(name) => Some(one_account(&status::status(&db, now)?, &name)?.id.clone()),
                 None => None,
@@ -515,7 +539,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         } => {
             let query = sessions::Query {
                 search,
-                folder: folder.map(absolute),
+                folder: folder.as_deref().map(folded),
                 agent,
                 since: time_of(&from)?,
                 running,
@@ -525,16 +549,17 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             };
             let page = sessions::find(&db, home, &query, now)?;
             let caller = mcp::Caller::detect();
-            let own = caller.own_session(&db, home, caller.folder.as_deref())?;
+            let own = caller.own_session(&db, home)?;
             print(
                 json!(page),
                 sessions::text(&page, sessions::Cite::Command, own.as_deref(), now),
             )
         }
         Command::Handoff { session, folder } => {
-            let folder = folder
-                .map_or_else(std::env::current_dir, std::path::absolute)
-                .unwrap_or_default();
+            let folder = match folder {
+                Some(given) => folded(&given),
+                None => std::env::current_dir().unwrap_or_default(),
+            };
             // Run by an agent, not the session it's run from.
             let (session, others) = mcp::Caller::detect().session_to_hand_off(
                 &db,
@@ -567,26 +592,11 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                     (line, json!({ "id": account.id, "title": title, "kind": account.kind, "hidden": account.hidden }))
                 })
                 .unzip();
-            print(json!(listed), lines.join("\n"))
-        }
-        Command::Config { action } => {
-            let mut settings = alerts::settings(&db)?;
-            if let Some(ConfigAction::Set { key, value }) = action {
-                let mut keys = notify_keys(&mut settings.notify);
-                let Some((_, setting)) = keys.iter_mut().find(|(name, _)| *name == key) else {
-                    let [names @ .., last] = keys.map(|(name, _)| name);
-                    return Err(Error::Usage(format!(
-                        "no setting {key}; there are {} and {last}",
-                        names.join(", ")
-                    )));
-                };
-                **setting = value == "on";
-                alerts::save_settings(&db, &settings)?;
-            }
-            let word = |on: bool| if on { "on" } else { "off" };
-            let lines =
-                notify_keys(&mut settings.notify).map(|(name, on)| format!("{name} {}", word(*on)));
-            print(json!(settings), lines.join("\n"))
+            let text = match lines.is_empty() {
+                true => status::none(&status, sessions::Cite::Command),
+                false => lines.join("\n"),
+            };
+            print(json!(listed), text)
         }
         Command::Connect { agent: Some(id) } | Command::Disconnect { agent: id } => {
             let agent = agents::find(&id)?;
@@ -855,8 +865,14 @@ fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String>
 }
 
 /// The account of the session a harness names in the JSON it writes to a
-/// status line's standard input, as Claude Code does: its `session_id`, or
-/// else its folder's latest.
+/// status line's standard input, as Claude Code does, by its `session_id`.
+/// None for a session not read yet, as a new one, since a status line never
+/// catches up, or one with no response on an account yet.
+///
+/// The calling agent's own account answers then, over the account of the
+/// latest response in the session's folder, which answered before. That one
+/// could be another agent's: after Codex ran last in a folder, a new Claude
+/// Code session's status line showed the Codex account's limits.
 fn harness(db: &rusqlite::Connection) -> Option<String> {
     use std::io::IsTerminal as _;
     if std::io::stdin().is_terminal() {
@@ -876,18 +892,6 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
         .as_str()
         .and_then(|session| sessions::resolve(db, session).ok())
         .and_then(|session| sessions::account(db, &session).ok().flatten())
-        .or_else(|| {
-            let folder = given["workspace"]["current_dir"]
-                .as_str()
-                .or(given["cwd"].as_str())?;
-            db.query_row(
-                "SELECT r.account FROM response r JOIN session s ON s.id = r.session
-                 WHERE s.cwd = ?1 AND r.account IS NOT NULL ORDER BY r.at DESC LIMIT 1",
-                [folder],
-                |row| row.get(0),
-            )
-            .ok()
-        })
 }
 
 /// Bring the database up to date: prices and limits when due, then what's
@@ -923,9 +927,7 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
         .stderr(Stdio::piped())
         .spawn()?;
     // Read as written, so a child that writes more than a pipe holds
-    // doesn't wait on us. A process it leaves running, as a login shell's
-    // background job, can hold the pipes open after it ends, so they're
-    // read until the deadline at most.
+    // doesn't wait on us.
     fn drain(
         pipe: Option<impl std::io::Read + Send + 'static>,
     ) -> std::sync::mpsc::Receiver<Vec<u8>> {
@@ -956,12 +958,26 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    // What it wrote before it ended is read at once, but it may have ended
-    // just as the deadline passed.
-    let until = deadline.max(Instant::now() + Duration::from_millis(100));
+    // What it wrote before it ended is read at once. A process it leaves
+    // running, as a login shell's background job, can hold the pipes open
+    // after that, writing nothing and closing nothing, so each pipe is read
+    // until it closes or nothing new comes for `QUIET`. Chosen over reading
+    // to the deadline, which waited all of it for such a child: 10 s for a
+    // login shell's `PATH`, 60 s for an agent's command. The cost: the end
+    // of what a child wrote is lost if the thread reading it waits longer
+    // than `QUIET` for a processor. Measured on 2026-11-14, at a load of 7
+    // on 8 cores: `sleep 4 & echo said` given 4 s came back in 0.22 s,
+    // where it took the 4 s; and 300 children that wrote 1 MB to each pipe
+    // gave all of it, none waited on more than 0.3 ms for what came next.
+    // Never read past the deadline, but that the child may have ended just
+    // as it passed.
+    const QUIET: Duration = Duration::from_millis(100);
+    let until = deadline.max(Instant::now() + QUIET);
     let collect = |read: std::sync::mpsc::Receiver<Vec<u8>>| {
         let mut bytes = Vec::new();
-        while let Ok(more) = read.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        while let Ok(more) =
+            read.recv_timeout(QUIET.min(until.saturating_duration_since(Instant::now())))
+        {
             bytes.extend(more);
         }
         bytes
@@ -976,6 +992,35 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// None of these folders is on the disk.
+    #[test]
+    fn a_folder_is_folded_by_its_text() {
+        for (given, kept) in [
+            ("/work/app", "/work/app"),
+            ("/work/app/", "/work/app"),
+            ("/work/app/.", "/work/app"),
+            ("/work/./app", "/work/app"),
+            ("/work//app", "/work/app"),
+            ("/work/app/..", "/work"),
+            ("/work/app/../api/", "/work/api"),
+            ("/work/app/src/../../api", "/work/api"),
+            ("/..", "/"),
+            ("/", "/"),
+        ] {
+            // As text, which is how it's compared: two paths are equal with
+            // or without a slash at the end.
+            assert_eq!(folded(Path::new(given)).to_str(), Some(kept), "{given}");
+        }
+        // A relative one is in the current folder.
+        let here = std::env::current_dir().unwrap();
+        for (given, kept) in [
+            ("gone/../app/", here.join("app")),
+            ("..", here.parent().unwrap().to_path_buf()),
+        ] {
+            assert_eq!(folded(Path::new(given)).to_str(), kept.to_str(), "{given}");
+        }
+    }
 
     /// Eleven files that can't be read, one more than doctor names.
     #[test]
@@ -1013,17 +1058,45 @@ mod tests {
     }
 
     #[test]
-    fn a_command_is_waited_on_no_longer_than_asked_whatever_it_leaves_running() {
+    fn a_command_is_waited_on_to_its_end_not_for_what_it_leaves_running() {
         let began = Instant::now();
-        let mut command = Process::new("sh");
-        command.args(["-c", "sleep 5 & echo started"]);
-        let output = output_within(&mut command, Duration::from_secs(1)).unwrap();
+        let mut command = Process::new("/bin/sh");
+        command.args(["-c", "sleep 4 & echo said"]);
+        let output = output_within(&mut command, Duration::from_secs(4)).unwrap();
         assert!(output.status.success());
-        assert_eq!(output.stdout, b"started\n");
+        assert_eq!(output.stdout, b"said\n");
         assert!(
-            began.elapsed() < Duration::from_secs(3),
+            began.elapsed() < Duration::from_secs(2),
             "{:?}",
             began.elapsed()
         );
+    }
+
+    #[test]
+    fn a_command_is_waited_on_no_longer_than_asked_whatever_it_leaves_running() {
+        let began = Instant::now();
+        let mut command = Process::new("/bin/sh");
+        // What it leaves running goes on writing, for 3 s or more.
+        let writing = "n=0; while [ $n -lt 150 ]; do echo more; sleep 0.02; n=$((n + 1)); done";
+        command.args(["-c", &format!("({writing}) & echo said")]);
+        let output = output_within(&mut command, Duration::from_secs(1)).unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("said\n"));
+        assert!(
+            began.elapsed() < Duration::from_millis(2500),
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_command_that_writes_more_than_a_pipe_holds_gives_all_of_it() {
+        let mut command = Process::new("/bin/sh");
+        let megabyte = "/usr/bin/head -c 1048576 /dev/zero";
+        command.args(["-c", &format!("{megabyte}; {megabyte} >&2")]);
+        let output = output_within(&mut command, Duration::from_secs(30)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 1 << 20);
+        assert_eq!(output.stderr.len(), 1 << 20);
     }
 }

@@ -20,14 +20,14 @@ use crate::{Error, Result};
 
 /// Raised when a reader would read a file it read before differently: every
 /// file still there is then read again.
-const READERS: i64 = 6;
+const READERS: i64 = 7;
 
 /// How long a transaction writes history before it lets the write lock go,
 /// and for how long: another process's write waits no more than `db::open`'s
 /// 10 s, and SQLite tries a waiting write again every 100 ms at most, so a
 /// pause longer than that lets it in.
 ///
-/// Measured on a made-up 616 MB history of 256 files, with `config set` run
+/// Measured on a made-up 616 MB history of 256 files, with a setting saved
 /// beside it every half second: one transaction for all 256 held the lock 6
 /// to 23 s, and a write failed after 10.4 s in 4 runs of 8. A transaction a
 /// file let it go only between commits, so a write got in by chance, after
@@ -63,9 +63,6 @@ struct Due {
     path: PathBuf,
     cursor: String,
     stat: Stat,
-    /// Read before, and now replaced or cut short, so read again from the
-    /// start: what its last read said is taken out first.
-    again: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -103,28 +100,78 @@ impl Stat {
 
 /// A file as its last read left it.
 struct Known {
+    id: i64,
     agent: String,
     stat: Stat,
     cursor: String,
+    /// Whether it has rows in `said`.
+    indexed: bool,
 }
 
 /// Hold `ingest.lock` beside the database: one process writes history, or
 /// works out costs and accounts, at a time, so a first run isn't read twice
 /// at once and no response is written with prices or sign-ins gone stale.
 fn lock(db: &Connection) -> Result<std::fs::File> {
-    crate::db::lock(&Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock"))
+    crate::db::lock(&lock_path(db))
+}
+
+fn lock_path(db: &Connection) -> PathBuf {
+    Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock")
+}
+
+/// How long a command waits for `ingest.lock` before it says so: a second,
+/// over saying so at once. Every catch-up holds the lock, one that reads
+/// nothing too, and `serve` catches up as often as every 5 s while agents
+/// work. Said at once, a command run beside the app would now and then say
+/// it waits, for a wait no one notices: over a made-up history of 5,000
+/// files, a command that found nothing new to read took 135 to 153 ms in
+/// all, the time it held the lock included.
+const QUIET: Duration = Duration::from_secs(1);
+
+/// What a catch-up is about to wait for, where that can take minutes, in
+/// words for the command line to say first: another Turnscope reading
+/// history, once the command has waited `QUIET` for it, or this one
+/// reading all of it, the first time and after `READERS` was raised.
+///
+/// Asked before the catch-up, over said from inside `ingest`, so that only
+/// the command line says it: no one reads what `serve` or the MCP server
+/// writes to standard error. The cost: a command that finds the lock held
+/// looks again every 20 ms for up to `QUIET`, and only then reads the
+/// limits and prices that are due, which it read meanwhile before.
+pub fn waits(db: &Connection) -> Option<&'static str> {
+    let file = std::fs::File::create(lock_path(db)).ok()?;
+    let began = Instant::now();
+    while let Err(held) = file.try_lock() {
+        match held {
+            std::fs::TryLockError::WouldBlock if began.elapsed() < QUIET => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::fs::TryLockError::WouldBlock => {
+                return Some("Waiting while another Turnscope reads your agents' history…");
+            }
+            std::fs::TryLockError::Error(_) => return None,
+        }
+    }
+    let all = db.query_row(
+        "SELECT history_at IS NULL OR readers < ?1 FROM state",
+        [READERS],
+        |row| row.get(0),
+    );
+    all.unwrap_or(false)
+        .then_some("Reading your agents' history…")
 }
 
 /// The files under `home` to read: each one new or changed since its last
 /// read, with where to read it from. A file read before that moved has its
-/// row moved with it.
-fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
+/// row moved with it, and what one replaced or cut short said is taken out.
+fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     // By the path's bytes: a `PathBuf` hashes component by component. With
     // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
     let mut known: HashMap<OsString, Known> = db
-        .prepare("SELECT path, agent, size, modified, inode, cursor FROM file")?
+        .prepare("SELECT path, agent, size, modified, inode, cursor, id, indexed FROM file")?
         .query_map([], |row| {
             let known = Known {
+                id: row.get(6)?,
                 agent: row.get(1)?,
                 stat: Stat {
                     size: row.get(2)?,
@@ -132,6 +179,7 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
                     inode: row.get(4)?,
                 },
                 cursor: row.get(5)?,
+                indexed: row.get(7)?,
             };
             Ok((OsString::from(row.get::<_, String>(0)?), known))
         })?
@@ -159,6 +207,7 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
         .collect();
 
     let mut due = Vec::new();
+    let mut again = Vec::new();
     for (agent, folder, path, stat) in found {
         let was = match known.remove(path.as_os_str()) {
             Some(was) => Some(was),
@@ -173,14 +222,17 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
                 _ => None,
             },
         };
-        let (cursor, again) = match was {
+        let cursor = match was {
             Some(was) if was.stat == stat => continue,
-            Some(was) if was.stat.inode == stat.inode && stat.size >= was.stat.size => {
-                (was.cursor, false)
-            }
+            Some(was) if was.stat.inode == stat.inode && stat.size >= was.stat.size => was.cursor,
             // A file replaced or cut short is read from the start.
-            Some(_) => (String::new(), true),
-            None => (String::new(), false),
+            Some(was) => {
+                if was.indexed {
+                    again.push(was.id);
+                }
+                String::new()
+            }
+            None => String::new(),
         };
         due.push(Due {
             agent,
@@ -188,8 +240,29 @@ fn due(db: &Connection, home: &Path) -> Result<Vec<Due>> {
             path,
             cursor,
             stat,
-            again,
         });
+    }
+    // What the files replaced or cut short said is taken out here, before
+    // any is read again, in one statement for them all, over one for each
+    // as it's written: taking rows out by file scans the table. As before,
+    // only for files whose reads were indexed. They're unmarked first, and
+    // `said` holds rows of no other file not marked. With every file of a
+    // made-up history replaced at once, as when a home is restored from a
+    // backup (3,000 files, 240,000 rows), the catch-up took 167 to 249 s
+    // with a statement for each and 12 to 14 s with one, where the first
+    // read took 12 to 13 s (measured 2026-11-14). The cost: one transaction
+    // holds the write lock for it, 0.8 to 1 s there, and what they said
+    // isn't found until they're read again.
+    if !again.is_empty() {
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for id in again {
+            tx.execute("UPDATE file SET indexed = 0 WHERE id = ?1", [id])?;
+        }
+        tx.execute(
+            "DELETE FROM said WHERE file IN (SELECT id FROM file WHERE NOT indexed)",
+            [],
+        )?;
+        tx.commit()?;
     }
     Ok(due)
 }
@@ -311,11 +384,6 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
         ],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    // Only for such a file, and only one whose reads were indexed, since
-    // taking rows out by file scans the table.
-    if due.again && indexed {
-        tx.execute("DELETE FROM said WHERE file = ?1", [file])?;
-    }
 
     let mut session = tx.prepare_cached(SESSION)?;
     let mut holds =
@@ -402,12 +470,8 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
     for (session, text, ordinal) in &read.said {
         said.execute(params![session, text, file, ordinal])?;
     }
-    let now = !read.said.is_empty() || (indexed && !due.again);
-    if now != indexed {
-        tx.execute(
-            "UPDATE file SET indexed = ?2 WHERE id = ?1",
-            params![file, now],
-        )?;
+    if !indexed && !read.said.is_empty() {
+        tx.execute("UPDATE file SET indexed = 1 WHERE id = ?1", [file])?;
     }
     Ok(())
 }
@@ -670,6 +734,23 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_for_another_turnscope_is_told_only_once_it_lasts() {
+        let (dir, home, mut db, _) = store();
+        ingest(&mut db, home.path()).unwrap();
+        // One catching up holds the lock for a moment: nothing to say.
+        let held = lock(&db).unwrap();
+        std::thread::scope(|scope| {
+            let asked = scope.spawn(|| waits(&crate::db::open(dir.path()).unwrap()));
+            std::thread::sleep(QUIET / 10);
+            drop(held);
+            assert_eq!(asked.join().unwrap(), None);
+        });
+        // One reading all of history holds it on.
+        let _held = lock(&db).unwrap();
+        assert!(waits(&db).is_some_and(|wait| wait.starts_with("Waiting")));
+    }
+
+    #[test]
     fn a_moved_or_replaced_file_is_counted_once() {
         let (_dir, home, mut db, first) = store();
         let second = first.with_file_name("-work-b");
@@ -712,6 +793,40 @@ mod tests {
             let files = format!("SELECT count(*) FROM file WHERE agent = '{agent}'");
             assert_eq!(count(&db, &files), 1, "{agent}");
         }
+    }
+
+    #[test]
+    fn files_replaced_at_once_are_each_searched_once() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_dir, home, mut db, folder) = store();
+        // How many rows say each of the two words.
+        let found = |db: &Connection| {
+            ["commas", "tabs"].map(|word| {
+                let said = format!("SELECT count(*) FROM said WHERE said MATCH '{word}'");
+                count(db, &said)
+            })
+        };
+        let log = |name: &str| folder.join(name).with_extension("jsonl");
+        for name in ["s1", "s2", "s3", "s4"] {
+            std::fs::write(log(name), line("Quote the commas.")).unwrap();
+        }
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(found(&db), [4, 0]);
+        // Three replaced, as a home restored from a backup is, and one left.
+        for name in ["s1", "s2", "s3"] {
+            let new = folder.join(name).with_extension("new");
+            std::fs::write(&new, line("Escape the tabs.")).unwrap();
+            std::fs::rename(&new, log(name)).unwrap();
+        }
+        // One can't be read yet: what it said before is out all the same.
+        let locked = std::fs::Permissions::from_mode(0o000);
+        std::fs::set_permissions(log("s3"), locked).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(found(&db), [1, 2]);
+        let unlocked = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(log("s3"), unlocked).unwrap();
+        ingest(&mut db, home.path()).unwrap();
+        assert_eq!(found(&db), [1, 3]);
     }
 
     #[test]

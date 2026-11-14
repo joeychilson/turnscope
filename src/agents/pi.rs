@@ -21,7 +21,9 @@
 //!
 //! **Forks.** A fork's file copies every entry of its parent's, times and
 //! response ids as they were, after a header of its own: an entry from before
-//! the header is a copy of the parent's.
+//! the header is a copy of the parent's. The copy is the parent's: its
+//! responses are marked copies of the parent's, and nothing else in it is
+//! the fork's.
 //!
 //! **Providers.** A response names its provider as Pi's registry does, kept
 //! as it is: its ChatGPT sign-in is `openai-codex`, beside `openai` for a key,
@@ -38,7 +40,7 @@ use serde_json::Value;
 
 use super::{
     Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
-    Tokens,
+    Tokens, texts,
 };
 use crate::Result;
 
@@ -68,20 +70,6 @@ struct Cursor {
     /// The provider and model of the latest response, which a summary is
     /// written with.
     model: Option<(String, String)>,
-}
-
-/// The text of a message: a string, or its text blocks.
-fn texts(message: &Value) -> Vec<&str> {
-    match &message["content"] {
-        Value::String(text) => vec![text],
-        content => content
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|block| block["type"] == "text")
-            .filter_map(|block| block["text"].as_str())
-            .collect(),
-    }
 }
 
 impl Agent for Pi {
@@ -121,11 +109,21 @@ impl Agent for Pi {
         // One file; every branch, in the order written.
         let file = &files[0];
         let mut conversation = Conversation::default();
+        let mut began = None;
         super::lines(file, 0, |bytes| {
             let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
                 return;
             };
             let entry_at = line["timestamp"].as_str().and_then(crate::time::millis);
+            if line["type"] == "session" {
+                began = entry_at;
+                return;
+            }
+            // A fork's copy of its parent's entries is the parent's
+            // conversation.
+            if copied(entry_at, began) {
+                return;
+            }
             let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
             let message = match line["type"].as_str() {
                 Some("message") => &line["message"],
@@ -133,15 +131,17 @@ impl Agent for Pi {
                     return conversation.say(Kind::Summary, entry_at, &text(&line["summary"]));
                 }
                 Some("custom_message") => {
-                    return conversation.say(Kind::System, entry_at, &texts(&line).join("\n"));
+                    let added = texts(&line["content"]).join("\n");
+                    return conversation.say(Kind::System, entry_at, &added);
                 }
                 _ => return,
             };
             let at = message["timestamp"].as_i64().or(entry_at);
+            let content = &message["content"];
             match message["role"].as_str() {
-                Some("user") => conversation.say(Kind::User, at, &texts(message).join("\n")),
+                Some("user") => conversation.say(Kind::User, at, &texts(content).join("\n")),
                 Some("assistant") => {
-                    for block in message["content"].as_array().into_iter().flatten() {
+                    for block in content.as_array().into_iter().flatten() {
                         match block["type"].as_str() {
                             Some("text") => {
                                 conversation.say(Kind::Assistant, at, &text(&block["text"]))
@@ -165,7 +165,7 @@ impl Agent for Pi {
                 Some("toolResult") => {
                     if let Some(call) = message["toolCallId"].as_str() {
                         let failed = message["isError"].as_bool().unwrap_or(false);
-                        conversation.answer(call, texts(message).join("\n"), failed);
+                        conversation.answer(call, texts(content).join("\n"), failed);
                     }
                 }
                 // A command the person ran with `!`.
@@ -181,7 +181,7 @@ impl Agent for Pi {
                 Some("compactionSummary" | "branchSummary") => {
                     conversation.say(Kind::Summary, at, &text(&message["summary"]))
                 }
-                Some("custom") => conversation.say(Kind::System, at, &texts(message).join("\n")),
+                Some("custom") => conversation.say(Kind::System, at, &texts(content).join("\n")),
                 _ => {}
             }
         })?;
@@ -213,6 +213,12 @@ impl Agent for Pi {
     }
 }
 
+/// Whether an entry stamped `at` is a fork's copy of its parent's: one from
+/// before the session began, at `began`.
+fn copied(at: Option<i64>, began: Option<i64>) -> bool {
+    at.zip(began).is_some_and(|(at, began)| at < began)
+}
+
 fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
     let at = line["timestamp"].as_str().and_then(crate::time::millis);
     if line["type"] == "session" {
@@ -242,7 +248,7 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
     let Some(session) = cursor.session.clone() else {
         return;
     };
-    let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
+    let copy = copied(at, cursor.began);
     if let (false, Some(at)) = (copy, at) {
         read.session(&session).saw(at);
     }
@@ -278,7 +284,7 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
             let message = &line["message"];
             match message["role"].as_str() {
                 Some("user") if !copy => {
-                    for text in texts(message) {
+                    for text in texts(&message["content"]) {
                         read.say(&session, text);
                         if !cursor.titled {
                             read.session(&session).title(Title::Prompt, text);
@@ -297,7 +303,7 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
                     };
                     cursor.model = Some((provider.to_owned(), model.to_owned()));
                     if !copy {
-                        read.say(&session, &texts(message).join("\n"));
+                        read.say(&session, &texts(&message["content"]).join("\n"));
                     }
                     // A copy without a response id couldn't be told
                     // from its parent's.
@@ -497,23 +503,36 @@ mod tests {
     fn a_forks_copies_of_its_parents_entries_are_the_parents() {
         let dir = tempfile::tempdir().unwrap();
         let copied = json!({"type": "message", "id": "e2", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant",
-            "provider": "xai", "model": "grok-4.6", "responseId": "resp_1", "content": [], "usage": usage(50, 0.01)}});
+            "provider": "xai", "model": "grok-4.6", "responseId": "resp_1", "content": [{"type": "text", "text": "Added."}], "usage": usage(50, 0.01)}});
         let file = session(
             dir.path(),
             "2026-09-30T10-00-00-000Z_s2.jsonl",
             &[
                 json!({"type": "session", "id": "s2", "cwd": "/work/cli", "timestamp": "2026-09-30T10:00:00Z",
                     "parentSession": "/Users/me/.pi/agent/sessions/--work-cli--/2026-09-30T09-00-00-000Z_s1.jsonl"}),
+                json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:01Z", "message": {"role": "user", "content": "Add a --verbose flag."}}),
                 copied,
                 json!({"type": "usage", "id": "e3", "timestamp": "2026-09-30T09:00:06Z", "provider": "xai",
                     "model": "grok-4.6", "usage": usage(20, 0.01)}),
                 json!({"type": "session_info", "id": "e4", "timestamp": "2026-09-30T09:00:07Z", "name": "The parent"}),
+                json!({"type": "message", "id": "e5", "timestamp": "2026-09-30T10:00:01Z", "message": {"role": "user", "content": "Make it --quiet instead."}}),
             ],
         );
         let read = Pi.read(&file, "").unwrap();
-        // The parent's own usage and name, copied, aren't the fork's.
+        // The parent's own usage, name and request, copied, aren't the fork's.
         assert_eq!(read.responses.len(), 1);
-        assert!(read.sessions["pi:s2"].title.is_none());
+        assert_eq!(
+            read.sessions["pi:s2"].title.as_ref().unwrap().1,
+            "Make it --quiet instead."
+        );
+        assert_eq!(read.said.len(), 1);
+        // Nor are they its conversation.
+        let entries = Pi.transcript("s2", std::slice::from_ref(&file)).unwrap();
+        let said: Vec<(Kind, &str)> = entries
+            .iter()
+            .map(|entry| (entry.kind, entry.text.as_str()))
+            .collect();
+        assert_eq!(said, [(Kind::User, "Make it --quiet instead.")]);
         let copy = &read.responses["resp_1"];
         assert_eq!((copy.session.as_str(), copy.copy), ("pi:s2", true));
         let fork = &read.sessions["pi:s2"];

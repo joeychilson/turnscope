@@ -201,6 +201,11 @@ UPDATE state SET readers = 0;
 "#,
 ];
 
+/// How `said` splits text into words and folds them, as its latest revision
+/// makes it. The message a search quotes is found by indexing a session's
+/// messages again the same way.
+pub const TOKENIZE: &str = "unicode61 remove_diacritics 2";
+
 /// "TRNS", in the header, so a file that isn't Turnscope's is never written.
 const APPLICATION_ID: i32 = 0x5452_4E53;
 
@@ -306,5 +311,22 @@ mod tests {
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    #[test]
+    fn said_is_made_with_the_tokenizer_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = super::open(dir.path()).unwrap();
+        let made: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE name = 'said'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            made.contains(&format!("tokenize = '{}'", super::TOKENIZE)),
+            "{made}"
+        );
     }
 }

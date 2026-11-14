@@ -125,6 +125,30 @@ fn command_as(agent: &str, data: &Path, args: &[&str]) -> Command {
     command
 }
 
+/// What the MCP server's `explain_usage` answers each of `arguments`, over
+/// the store `data`.
+fn explain_usage(data: &Path, arguments: &[&str]) -> Vec<String> {
+    let requests: String = arguments
+        .iter()
+        .map(|arguments| {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"explain_usage","arguments":{arguments}}}}}"#
+            ) + "\n"
+        })
+        .collect();
+    let output = turnscope(data, &["mcp"], Some(&requests));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| {
+            let reply: serde_json::Value = serde_json::from_str(line).unwrap();
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
 /// A store with the fixture's history read, and four accounts:
 /// - Claude Max, Claude Code's: its five hours running out within the hour
 ///   at the pace of the last three, its week lasting;
@@ -275,7 +299,6 @@ fn every_command_answers_as_its_snapshot_says() {
         // own, Codex's, with Pi's before it.
         ("handoff-folder", vec!["handoff", "--folder", "/work/app"]),
         ("accounts", vec!["accounts"]),
-        ("config", vec!["config"]),
         ("connect", vec!["connect"]),
         ("doctor", vec!["doctor"]),
     ] {
@@ -370,16 +393,31 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "cannot be used with",
         ),
+        // As `sessions --agent claude` says.
+        (
+            vec!["usage", "--agent", "claude"],
+            2,
+            "no agent is claude; agents are claude-code, ",
+        ),
+        // As `explain_usage` says of a `since` ahead of now.
+        (
+            vec![
+                "usage",
+                "--account",
+                "claude",
+                "--limit",
+                "week",
+                "--since",
+                "now",
+            ],
+            2,
+            "--since is now or later",
+        ),
         (vec!["usage", "--since", "last tuesday"], 2, "24h, 7d or 4w"),
         (
             vec!["usage", "--since", "99999999999999d"],
             2,
             "24h, 7d or 4w",
-        ),
-        (
-            vec!["config", "set", "notify.everything", "on"],
-            2,
-            "notify.runningOut",
         ),
         (vec!["sessions", "--count", "0"], 2, "0 is not in 1..=100"),
         (vec!["sessions", "-n", "101"], 2, "101 is not in 1..=100"),
@@ -397,6 +435,62 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// A command says so before it reads all of history: the first time, and
+/// again once a reader changed. Otherwise it says nothing.
+#[test]
+fn a_command_says_when_it_reads_all_of_history() {
+    let data = tempfile::tempdir().unwrap();
+    let said = |args: &[&str]| {
+        let output = turnscope(data.path(), args, None);
+        assert!(output.status.success(), "{args:?}");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let reading = "Reading your agents' history…\n";
+    // One that reports no data reads no history.
+    assert_eq!(said(&["connect"]), "");
+    assert_eq!(said(&["sessions"]), reading);
+    assert_eq!(said(&["sessions"]), "");
+    // As after an update that raised `ingest::READERS`.
+    let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
+    db.execute("UPDATE state SET readers = 0", []).unwrap();
+    assert_eq!(said(&["status"]), reading);
+    assert_eq!(said(&["status"]), "");
+}
+
+/// A command that waits for another Turnscope reading history says so, and
+/// answers once that one is done.
+#[test]
+fn a_command_says_when_it_waits_for_another_turnscope_reading_history() {
+    let data = tempfile::tempdir().unwrap();
+    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    // Held as the other Turnscope holds it, all the while it reads.
+    let reading = std::fs::File::create(data.path().join("ingest.lock")).unwrap();
+    reading.lock().unwrap();
+    let mut waiting = command(data.path(), &["sessions"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = BufReader::new(waiting.stderr.take().unwrap()).lines();
+    let (send, first) = std::sync::mpsc::channel();
+    let rest = std::thread::spawn(move || {
+        let _ = send.send(said.next().and_then(Result::ok));
+        said.map_while(Result::ok).collect::<Vec<String>>()
+    });
+    // It says so while it waits, not once the wait is over: until then, the
+    // other Turnscope goes on reading.
+    let first = first.recv_timeout(std::time::Duration::from_secs(20));
+    drop(reading);
+    let output = waiting.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        first.ok().flatten().as_deref(),
+        Some("Waiting while another Turnscope reads your agents' history…")
+    );
+    assert_eq!(rest.join().unwrap(), Vec::<String>::new());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(SESSION));
 }
 
 #[test]
@@ -417,6 +511,116 @@ fn a_relative_folder_is_in_the_current_folder() {
             String::from_utf8_lossy(&relative.stderr)
         );
     }
+}
+
+/// A folder names its sessions however it's written: with `..`, `.` or a
+/// slash at its end.
+#[test]
+fn a_folder_names_its_sessions_however_its_written() {
+    let data = store();
+    // Once the history is read, a session of `/work/app`'s project run
+    // beside it, as in a worktree kept outside its repository.
+    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    Connection::open(data.path().join("turnscope.sqlite"))
+        .unwrap()
+        .execute(
+            "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
+             VALUES ('codex:beside', 'codex', 'f', '/work/app-beside', '/work/app', 'Try a faster importer', ?1, ?1)",
+            [NOW - 30 * HOUR],
+        )
+        .unwrap();
+    for command_name in ["sessions", "handoff"] {
+        let answer = |folder: &str, from: &str| {
+            let output = command(data.path(), &[command_name, "--folder", folder])
+                .current_dir(from)
+                .output()
+                .unwrap();
+            (
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+        let (plain, _) = answer("/work/app", "/");
+        assert!(
+            plain.contains(CODEX) && plain.contains("codex:beside"),
+            "{command_name}: {plain}"
+        );
+        for (folder, from) in [
+            ("/work/app/", "/"),
+            ("/work/app/.", "/"),
+            ("/work/api/../app", "/"),
+            ("work/./app/", "/"),
+            ("../work/app", "/usr"),
+        ] {
+            let (given, error) = answer(folder, from);
+            assert_eq!(
+                given, plain,
+                "{command_name} --folder {folder} in {from}: {error}"
+            );
+        }
+    }
+}
+
+/// Codex pointed at its agent folder by `CODEX_HOME`, written with a slash
+/// at its end or with `..`: the account is still the caller's.
+#[test]
+fn the_callers_account_is_its_agent_folders_however_its_written() {
+    let data = store();
+    // Read the history first: neither command below does.
+    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    for written in ["/.codex", "/.codex/", "/.claude/../.codex"] {
+        let folder = format!("{}{written}", home().display());
+        let run = |args: &[&str]| {
+            command_as("codex", data.path(), args)
+                .env("CODEX_HOME", &folder)
+                .output()
+                .unwrap()
+        };
+        assert_eq!(
+            String::from_utf8_lossy(&run(&["statusline"]).stdout).trim(),
+            "ChatGPT Plus · weekly 80%",
+            "{written}"
+        );
+        // Its weekly limit has 80% left, so a guard under 90% blocks.
+        let guard = run(&["guard", "--limit", "week", "--below", "90"]);
+        assert_eq!(guard.status.code(), Some(2), "{written}");
+    }
+}
+
+/// Claude Code's folder as its variable gives it, and a tool's `folder`
+/// within it, both with `..` and a slash at the end.
+#[test]
+fn the_tools_fold_the_callers_folder_and_the_folder_they_are_given() {
+    let data = store();
+    let requests = [
+        // No folder: the caller's, `/work/api`.
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_sessions","arguments":{"folder":"../docs/"}}}"#,
+    ];
+    let mut mcp = command(data.path(), &["mcp"])
+        .env("CLAUDE_PROJECT_DIR", "/work/app/../api/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(mcp.stdin.take().unwrap(), "{}", requests.join("\n")).unwrap();
+    let output = mcp.wait_with_output().unwrap();
+    let texts: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| {
+            let reply: serde_json::Value = serde_json::from_str(line).unwrap();
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        texts[0].starts_with("# Handoff: \"Add retries with backoff to the HTTP client.\""),
+        "{}",
+        texts[0]
+    );
+    assert!(texts[1].contains(GROK_BUILD), "{}", texts[1]);
 }
 
 #[test]
@@ -487,6 +691,45 @@ fn a_status_line_says_the_account_of_the_session_it_is_given() {
         line(&["statusline", "--account", "supergrok"], None),
         "SuperGrok · sign in again"
     );
+}
+
+/// A new session isn't read yet, as a status line never catches up: its
+/// agent's own account shows, not that of whichever agent ran last in its
+/// folder.
+#[test]
+fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
+    let data = store();
+    // Read the history, as the app's daemon has.
+    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    let new = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+    let line = |agent: &str, session: &str, folder: &str| {
+        let mut line = command_as(agent, data.path(), &["statusline"])
+            .env("CLAUDE_CODE_SESSION_ID", new)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let given = format!(r#"{{"session_id": "{session}", "cwd": "{folder}"}}"#);
+        line.stdin
+            .take()
+            .unwrap()
+            .write_all(given.as_bytes())
+            .unwrap();
+        let output = line.wait_with_output().unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let (claude, chatgpt) = (
+        "Claude Max · 5h 25%, out in 1h · weekly 56%",
+        "ChatGPT Plus · weekly 80%",
+    );
+    // A session that's read says its own account, whoever asks.
+    let (_, codex) = CODEX.split_once(':').unwrap();
+    assert_eq!(line("claude", codex, "/work/app"), chatgpt);
+    // Claude Code's new session, where Grok Build ran last, on SuperGrok.
+    assert_eq!(line("claude", new, "/work/docs"), claude);
+    // Codex's, where Claude Code ran last: not the first account in use,
+    // which is Claude Code's too.
+    assert_eq!(line("codex", new, "/work/api"), chatgpt);
 }
 
 #[test]
@@ -587,6 +830,114 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
 }
 
 #[test]
+fn what_used_a_limit_whose_window_reset_since_its_read_counts_from_the_reset() {
+    let data = store();
+    // Claude's last read at 10:20, of a 5 hours from 06:00 that reset at
+    // 11:00. The working session ran from 10:00 until now, noon.
+    let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
+    db.execute_batch(&format!(
+        "UPDATE reading SET at = at - {shift} WHERE account = 'anthropic:acct-1:org-1';
+         UPDATE account SET read_at = read_at - {shift} WHERE id = 'anthropic:acct-1:org-1';
+         UPDATE reading SET starts = {starts}, resets = {resets} WHERE limit_key = 'five_hour';",
+        shift = HOUR * 3 / 2,
+        starts = NOW - 6 * HOUR,
+        resets = NOW - HOUR,
+    ))
+    .unwrap();
+    let limit = ["usage", "--account", "claude", "--limit", "5 hours"];
+    let output = turnscope(data.path(), &limit, None);
+    let text = String::from_utf8_lossy(&output.stdout);
+    // What it used before the reset is no part of the window it's in, and
+    // how much of that one is used isn't known: no shares.
+    assert!(
+        text.contains("5 hours: 100% left, reset 11:00 (1h ago).")
+            && text.contains("Thu Oct 1 11:00 to Thu Oct 1 12:00: 12 responses, $0.23\n")
+            && text.contains(" Responses   Cost\n"),
+        "{text}"
+    );
+    let output = turnscope(data.path(), &[&limit[..], &["--json"]].concat(), None);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["usage"]["since"], NOW - HOUR);
+    assert_eq!(json["sharePercents"], serde_json::Value::Null);
+
+    let answers = explain_usage(
+        data.path(),
+        &[
+            r#"{"account":"claude","limit":"5 hours"}"#,
+            r#"{"account":"claude","limit":"5 hours","since":"3h"}"#,
+        ],
+    );
+    assert!(
+        answers[0].contains("since 11:00 (1h ago): $0.23 at list prices over 12 responses.")
+            && answers[0].contains("| Session | Cost | Responses |\n"),
+        "{}",
+        answers[0]
+    );
+    // Asked since a time, there are no shares to say how to get.
+    assert!(
+        answers[1].contains("since 09:00 (3h ago)") && !answers[1].contains("Shares of"),
+        "{}",
+        answers[1]
+    );
+}
+
+#[test]
+fn explain_usage_says_a_cost_it_doesnt_know_is_unpriced() {
+    let data = store();
+    // Codex's four responses are of a model with no known price.
+    let answers = explain_usage(data.path(), &[r#"{"account":"chatgpt"}"#]);
+    assert!(
+        answers[0].ends_with(
+            "\nBy model: gpt-5.5 ($0.00 (+4 unpriced)).\nBy project: /work/app ($0.00 (+4 unpriced))."
+        ),
+        "{}",
+        answers[0]
+    );
+}
+
+#[test]
+fn what_used_a_limit_gives_the_rest_row_its_share_and_no_shares_as_null() {
+    let data = store();
+    let limit = ["usage", "--account", "claude", "--limit", "week"];
+    let asked = |more: &[&str]| {
+        let output = turnscope(data.path(), &[&limit[..], more].concat(), None);
+        assert!(output.status.success(), "{more:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    // Of the 44 points used, the row shown has 41 and the rest 3, as the
+    // tool says them.
+    let text = asked(&["--top", "1"]);
+    let rest = text.lines().find(|line| line.starts_with("  1 more "));
+    assert!(
+        rest.is_some_and(|rest| rest.ends_with(" 3  $0.03           3%")),
+        "{text}"
+    );
+    let answers = explain_usage(
+        data.path(),
+        &[r#"{"account":"claude","limit":"week","top":1}"#],
+    );
+    assert!(
+        answers[0].contains("| 1 more session | $0.03 | 3 | 3% |\n"),
+        "{}",
+        answers[0]
+    );
+    // As JSON, a share for each row, or null when no row has one, as since
+    // a time.
+    let shares = |more: &[&str]| -> serde_json::Value {
+        let json: serde_json::Value = serde_json::from_str(&asked(more)).unwrap();
+        json["sharePercents"].clone()
+    };
+    assert_eq!(
+        shares(&["--top", "1", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        shares(&["--since", "2h", "--json"]),
+        serde_json::Value::Null
+    );
+}
+
+#[test]
 fn status_shows_a_hidden_account_it_names() {
     let data = store();
     let hide = turnscope(data.path(), &["accounts", "hide", "supergrok"], None);
@@ -601,6 +952,58 @@ fn status_shows_a_hidden_account_it_names() {
     assert!(named.starts_with(grok), "{named:?}");
     assert!(!status(&["status"]).contains(grok));
     assert!(status(&["status", "--all"]).contains(grok));
+}
+
+#[test]
+fn with_no_account_to_show_every_front_end_says_why() {
+    let said = |data: &Path, args: &[&str]| {
+        let output = turnscope(data, args, None);
+        assert!(output.status.success(), "{args:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let check_limits = |data: &Path, arguments: &str| {
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"check_limits","arguments":{arguments}}}}}"#
+        );
+        let output = turnscope(data, &["mcp"], Some(&(request + "\n")));
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // A new data directory, off the network: no account is known yet.
+    let data = tempfile::tempdir().unwrap();
+    let none = "No account's limits have been read yet: no agent here is signed in to one Turnscope reads.";
+    assert_eq!(said(data.path(), &["status"]), none);
+    assert_eq!(said(data.path(), &["accounts"]), none);
+    assert_eq!(check_limits(data.path(), "{}"), none);
+    // As JSON, none is an empty list.
+    assert_eq!(said(data.path(), &["accounts", "--json"]), "[]");
+    assert_eq!(
+        said(data.path(), &["status", "--json"]),
+        "{\n  \"accounts\": [],\n  \"fit\": null\n}"
+    );
+    // Every account hidden: there are accounts, and each front end says how
+    // it shows one.
+    let data = store();
+    for account in ["claude", "chatgpt", "openrouter", "supergrok"] {
+        said(data.path(), &["accounts", "hide", account]);
+    }
+    assert_eq!(
+        said(data.path(), &["status"]),
+        "Every account is hidden: `turnscope status --all` shows them."
+    );
+    assert_eq!(
+        said(data.path(), &["status", "--all"])
+            .matches(" · hidden")
+            .count(),
+        4
+    );
+    assert_eq!(
+        check_limits(data.path(), r#"{"all":true}"#),
+        "Every account is hidden: name one with account to see its limits."
+    );
 }
 
 #[test]
@@ -644,9 +1047,7 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
     assert!(turnscope(data.path(), &["sessions"], None).status.success());
     let socket =
         String::from_utf8(turnscope(data.path(), &["serve", "--socket"], None).stdout).unwrap();
-    let mut serve = command(data.path(), &["serve", "--linger", "5"])
-        .spawn()
-        .unwrap();
+    let mut serve = command(data.path(), &["serve"]).spawn().unwrap();
     let stream = (0..100)
         .find_map(|_| {
             std::thread::sleep(std::time::Duration::from_millis(50));

@@ -203,7 +203,7 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     let (client, store) = try await connected(to: serve)
     #expect(!serve.methods.contains("limit.breakdown"))
     let claude = try #require(store.all.first { $0.id == "anthropic:acct-1:org-1" })
-    store.watch(claude.id)
+    store.askWhatUsed(claude.id)
     await until { !store.usedMost(claude).isEmpty }
     let asked = serve.params(of: "limit.breakdown")
     #expect(asked.allSatisfy { $0["account"] as? String == claude.id })
@@ -216,7 +216,7 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     #expect(store.usedMost(decided).isEmpty)
     // An account not in use is asked about the same way, once it's open.
     let chatgpt = try #require(store.all.first { $0.id == "openai:acct-2" })
-    store.watch(chatgpt.id)
+    store.askWhatUsed(chatgpt.id)
     await until { !store.usedMost(chatgpt).isEmpty }
     #expect(serve.params(of: "limit.breakdown").last?["limit"] as? String == "secondary")
     client.stop()
@@ -247,6 +247,19 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     defer { serve.close() }
     await until { store.status != nil }
     #expect(client.phase == .connected)
+    client.stop()
+}
+
+@MainActor
+@Test func whyServeCouldntStartIsSaid() async throws {
+    // As when a newer Turnscope has updated the data: serve says so on
+    // standard error and exits.
+    let why = "turnscope: a newer Turnscope has updated this data; update Turnscope"
+    let client = Client(binary: try binary(socket: socketPath(), started: marker(), fails: why))
+    let store = Store(client: client)
+    client.start()
+    await until { store.failure != nil }
+    #expect(store.failure == why)
     client.stop()
 }
 

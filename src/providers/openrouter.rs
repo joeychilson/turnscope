@@ -10,6 +10,13 @@
 //! /api/v1/credits` gives the account's `total_credits` and `total_usage`; a
 //! key without access to credits still reports its own limit. A limit of 0
 //! or less is no limit.
+//!
+//! `total_credits` is taken for all the account ever bought and
+//! `total_usage` for all it ever used, as they're named: no purchase was
+//! made to measure it. So buying credits makes the limit's size larger,
+//! which is how an alert tells credits used up again from the time before
+//! (`alerts::window`). A key's limit that never resets counts all the key
+//! ever used, and is given more by raising `limit`.
 
 use jiff::tz::TimeZone;
 use serde_json::Value;
@@ -37,13 +44,22 @@ impl Provider for OpenRouter {
     }
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
+        // Both within the time one request gets elsewhere, as `guard` waits
+        // on a read.
+        let began = std::time::Instant::now();
         let key = super::ask("https://openrouter.ai/api/v1/key", credential, &[])?;
         let name = format!("key-{}", credential.secret.fingerprint());
         let mut readings: Vec<Reading> = own_limit(&key, &name, now)
             .ok_or(Problem::Unavailable)?
             .into_iter()
             .collect();
-        match super::ask("https://openrouter.ai/api/v1/credits", credential, &[]) {
+        let left = super::wait_left(began.elapsed());
+        match super::ask_within(
+            "https://openrouter.ai/api/v1/credits",
+            credential,
+            &[],
+            left,
+        ) {
             Ok(answer) => readings.extend(credits(&answer).ok_or(Problem::Unavailable)?),
             Err(Problem::SignIn) => {}
             Err(problem) => return Err(problem),

@@ -75,7 +75,7 @@ static TOOLS: &[Tool] = &[
         input: r#"{"type": "object", "properties": {
             "account": {"type": "string", "description": "One account, by id or part of its title or label. Default: yours."},
             "all": {"type": "boolean", "description": "Every account's usage together, as across your agents, with no share of a limit; since is then 30 days back unless given."},
-            "limit": {"type": "string", "description": "Part of a limit's name, such as week or \"5 hours\". Default: the one that decides the account."},
+            "limit": {"type": "string", "description": "Part of a limit's name, such as week or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: the one that decides the account."},
             "since": {"type": "string", "description": "From when. Default window: the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, or an RFC 3339 time."},
             "by": {"type": "string", "enum": ["session", "project", "model", "agent"], "description": "Default session."},
             "top": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Rows, default 5; the rest are added up."}
@@ -172,38 +172,35 @@ impl Caller {
                 .find(|agent| agent.info().session_var.and_then(variable).is_some())
         });
         let info = agent.map(|agent| agent.info());
+        // A folder a variable gives is folded, as it's compared with a
+        // session's folder and a response's agent folder as text:
+        // `CODEX_HOME` with a slash at its end found no account.
+        let given = |name: Option<&str>| {
+            let folder = name.and_then(variable)?;
+            Some(crate::folded(Path::new(&folder)))
+        };
         Caller {
             agent,
             folder: info
-                .and_then(|info| info.cwd_var)
-                .and_then(variable)
-                .map(PathBuf::from)
+                .and_then(|info| given(info.cwd_var))
                 .or_else(|| std::env::current_dir().ok())
                 .filter(|folder| agent.is_none() || folder.parent().is_some()),
             session: info
                 .and_then(|info| Some(format!("{}:{}", info.id, variable(info.session_var?)?))),
-            agent_folder: info
-                .and_then(|info| info.folder_var)
-                .and_then(variable)
-                .map(PathBuf::from),
+            agent_folder: info.and_then(|info| given(info.folder_var)),
         }
     }
 
-    /// The caller's own session in `folder`. Only Claude Code names it.
-    /// Another agent has written its turn by the time it asks, so its own
-    /// session is its agent's latest run in the folder itself, or else in
-    /// the folder's project, or anywhere when the folder isn't known.
+    /// The caller's own session. Only Claude Code names it. Another agent
+    /// has written its turn by the time it asks, so its own session is its
+    /// agent's latest run in the folder it works in, or else in that
+    /// folder's project, or anywhere when the folder isn't known.
     ///
     /// The folder itself first: in a project, another session of the same
     /// agent, as in another worktree, can be the latest. Taken for the
     /// caller's, it was marked as the caller's, and `handoff` left it out
     /// and gave the caller its own.
-    pub fn own_session(
-        &self,
-        db: &Connection,
-        home: &Path,
-        folder: Option<&Path>,
-    ) -> Result<Option<String>> {
+    pub fn own_session(&self, db: &Connection, home: &Path) -> Result<Option<String>> {
         if let Some(session) = &self.session {
             return Ok(Some(session.clone()));
         }
@@ -212,7 +209,7 @@ impl Caller {
         };
         let latest = |run_in: Option<&Path>| -> Result<Option<String>> {
             let query = sessions::Query {
-                folder: folder.map(Path::to_path_buf),
+                folder: self.folder.clone(),
                 run_in: run_in.map(Path::to_path_buf),
                 agent: Some(agent.info().id.to_owned()),
                 count: 1,
@@ -221,7 +218,7 @@ impl Caller {
             let page = sessions::find(db, home, &query, crate::now())?;
             Ok(page.sessions.into_iter().next().map(|found| found.id))
         };
-        if let Some(folder) = folder
+        if let Some(folder) = &self.folder
             && let Some(own) = latest(Some(folder))?
         {
             return Ok(Some(own));
@@ -248,7 +245,7 @@ impl Caller {
         let folder = folder.ok_or_else(|| {
             Error::Usage("which folder you work in isn't known: give folder or session".to_owned())
         })?;
-        let own = self.own_session(db, home, self.folder.as_deref())?;
+        let own = self.own_session(db, home)?;
         sessions::latest(db, home, &folder, own.as_deref())
     }
 
@@ -538,7 +535,7 @@ fn check_limits(server: &Server, arguments: Value) -> Result<String> {
     // The one asked about first.
     shown.sort_by_key(|account| Some(account.id.as_str()) != yours);
     let Some(first) = shown.first() else {
-        return Ok("No account's limits have been read yet: no agent here is signed in to one Turnscope reads.".to_owned());
+        return Ok(status::none(&status, Cite::Tool));
     };
     let fit = match input.hours {
         Some(hours) => format!("{}\n", status::fit(first, hours, status.at)?),
@@ -619,8 +616,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
     // with every row's share or none; every account's over the 30 days the
     // command line's `usage` takes, with none.
     let breakdown = |by: By, top: usize| match account {
-        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now)
-            .map(|(used, points)| (used, points.into_iter().collect::<Option<Vec<_>>>())),
+        Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now),
         None => usage::usage(
             &server.db,
             &usage::Query {
@@ -635,7 +631,7 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         )
         .map(|used| (used, None)),
     };
-    let (used, points) = breakdown(by, top)?;
+    let (used, shares) = breakdown(by, top)?;
     // Times are told as of the minute the status is, as `check_limits`
     // tells them. At 12:00:40, a reset at 14:00 is in 2h. As of 12:00:40, it
     // was in 1h 59m.
@@ -660,21 +656,18 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
     }
     if !used.rows.is_empty() {
         // Shares are known only over a limit's own window.
-        let shares = limit.zip(points.as_deref());
+        let shares = limit.zip(shares.as_ref());
         let yours = match by {
-            By::Session => server.caller.own_session(
-                &server.db,
-                &server.home,
-                server.caller.folder.as_deref(),
-            )?,
+            By::Session => server.caller.own_session(&server.db, &server.home)?,
             _ => None,
         };
         out += &format!("\n{}", usage::markdown(&used, shares, yours.as_deref()));
     }
     // Asked since a time, as the calendar week for "this week" of a weekly
-    // limit, the shares are left out: say how to get them.
+    // limit, the shares are left out: say how to get them. There are none
+    // to get of a limit whose window reset since it was read.
     if let (Some(limit), Some(_)) = (limit, since)
-        && let Some(start) = limit.window.and_then(|window| window.starts_at)
+        && let Some(start) = limit.started()
     {
         out += &format!(
             "\nShares of {} are known only over its window, since {}: leave since out for them.\n",
@@ -696,14 +689,8 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
                 .rows
                 .iter()
                 .map(|row| {
-                    format!(
-                        "{} ({})",
-                        row.name
-                            .as_deref()
-                            .or(Some(row.key.as_str()).filter(|key| !key.is_empty()))
-                            .unwrap_or("(none)"),
-                        usage::dollars(row.cost_usd)
-                    )
+                    let cost = usage::cost(row.cost_usd, row.unpriced);
+                    format!("{} ({cost})", row.label())
                 })
                 .collect();
             if !listed.is_empty() {
@@ -728,10 +715,7 @@ fn find_sessions(server: &Server, arguments: Value) -> Result<String> {
     }
     let input: Input = input(arguments)?;
     let now = crate::now();
-    let own =
-        server
-            .caller
-            .own_session(&server.db, &server.home, server.caller.folder.as_deref())?;
+    let own = server.caller.own_session(&server.db, &server.home)?;
     let query = sessions::Query {
         // Its own words would match a search first.
         except: input.search.is_some().then(|| own.clone()).flatten(),
@@ -760,7 +744,8 @@ fn find_sessions(server: &Server, arguments: Value) -> Result<String> {
 }
 
 /// A folder as an agent gives it: `~` is the home folder, and a relative
-/// one is in the folder the caller works in.
+/// one is in the folder the caller works in. Folded, as `crate::folded`
+/// says.
 fn folder(server: &Server, given: PathBuf) -> Result<PathBuf> {
     let path = match given.strip_prefix("~") {
         Ok(rest) => server.home.join(rest),
@@ -775,7 +760,7 @@ fn folder(server: &Server, given: PathBuf) -> Result<PathBuf> {
         },
         Err(_) => given,
     };
-    Ok(path.components().collect())
+    Ok(crate::folded(&path))
 }
 
 fn handoff(server: &Server, arguments: Value) -> Result<String> {
@@ -883,6 +868,34 @@ mod tests {
         assert_eq!(above(12345), None);
     }
 
+    #[test]
+    fn a_tools_folder_is_folded_within_the_callers() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server {
+            db: crate::db::open(dir.path()).unwrap(),
+            home: PathBuf::from("/home/me"),
+            caller: Caller {
+                agent: None,
+                folder: Some(PathBuf::from("/work/app/src")),
+                session: None,
+                agent_folder: None,
+            },
+        };
+        for (given, kept) in [
+            ("..", "/work/app"),
+            ("../../api/", "/work/api"),
+            ("./", "/work/app/src"),
+            ("~", "/home/me"),
+            ("~/code/../notes/", "/home/me/notes"),
+            ("/work/app/../docs", "/work/docs"),
+        ] {
+            let folder = folder(&server, PathBuf::from(given)).unwrap();
+            // As text, which is how it's compared: two paths are equal with
+            // or without a slash at the end.
+            assert_eq!(folder.to_str(), Some(kept), "{given}");
+        }
+    }
+
     /// Codex in one of two worktrees of a project, with a later session of
     /// its own in the other.
     #[test]
@@ -905,27 +918,27 @@ mod tests {
             )
             .unwrap();
         }
-        let caller = Caller {
+        let working_in = |folder: &str| Caller {
             agent: agents::ALL
                 .iter()
                 .copied()
                 .find(|agent| agent.info().id == "codex"),
-            folder: Some(PathBuf::from(one)),
+            folder: Some(PathBuf::from(folder)),
             session: None,
             agent_folder: None,
         };
         let home = Path::new("/home");
-        let own = |folder: &str| {
-            caller
-                .own_session(&db, home, Some(Path::new(folder)))
-                .unwrap()
-        };
-        assert_eq!(own(one).as_deref(), Some("codex:mine"));
+        let own = |caller: &Caller| caller.own_session(&db, home).unwrap();
+        let caller = working_in(one);
+        assert_eq!(own(&caller).as_deref(), Some("codex:mine"));
         // So a handoff leaves its own out, and takes the latest other.
         let taken = caller.session_to_hand_off(&db, home, None, caller.folder.clone());
         assert_eq!(taken.unwrap().0, "codex:other");
         // Where none of its sessions ran, its latest in the project.
-        assert_eq!(own("/work/app").as_deref(), Some("codex:other"));
+        assert_eq!(
+            own(&working_in("/work/app")).as_deref(),
+            Some("codex:other")
+        );
     }
 
     /// As in Antigravity's app, which starts the server in `/`.
@@ -957,12 +970,8 @@ mod tests {
             agent_folder: None,
         };
         let home = Path::new("/home");
-        let own = |folder| caller.own_session(&db, home, folder).unwrap();
-        assert_eq!(own(None).as_deref(), Some("antigravity:b"));
-        assert_eq!(
-            own(Some(Path::new("/work/app"))).as_deref(),
-            Some("antigravity:a")
-        );
+        let own = |caller: &Caller| caller.own_session(&db, home).unwrap();
+        assert_eq!(own(&caller).as_deref(), Some("antigravity:b"));
         // A handoff needs the folder: with none, it would be any project's.
         let hand_off = |folder: Option<&str>| {
             caller.session_to_hand_off(&db, home, None, folder.map(PathBuf::from))
@@ -976,6 +985,7 @@ mod tests {
             folder: Some(PathBuf::from("/work/app")),
             ..caller
         };
+        assert_eq!(own(&there).as_deref(), Some("antigravity:a"));
         let taken = there.session_to_hand_off(&db, home, None, there.folder.clone());
         assert_eq!(taken.unwrap().0, "codex:c");
     }

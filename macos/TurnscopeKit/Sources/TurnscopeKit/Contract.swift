@@ -265,7 +265,8 @@ public struct Alert: Decodable, Equatable, Sendable {
     /// The notification this one replaces. There's one per limit, or per
     /// account, so "back" replaces the one saying the limit was used up.
     public var replaces: String
-    /// When the limit resets, or reset.
+    /// When the limit resets, or reset. Nil for one that never resets, such
+    /// as credits.
     public var resets: Moment?
     /// For `runningOut`, when it likely runs out.
     public var runsOut: Moment?
@@ -338,12 +339,9 @@ public enum Contract {
         return decoder
     }()
 
-    /// A status read from a file as a fixture: a status on its own, a
-    /// `status` notification, or a `hello` answer.
+    /// A status read from a file as a fixture: a `status` notification.
     public static func status(from data: Data) -> Status? {
-        (try? decoder.decode(Status.self, from: data))
-            ?? (try? decoder.decode(Pushed<Status>.self, from: data))?.params
-            ?? (try? decoder.decode(Answer<HelloResult>.self, from: data))?.result.status
+        (try? decoder.decode(Pushed<Status>.self, from: data))?.params
     }
 }
 

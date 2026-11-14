@@ -77,6 +77,8 @@ struct AccountRow: View {
                         .contentTransition(.numericText())
                         .fixedSize()
                         .transition(appears)
+                        // VoiceOver says what a limit's figure is: "87% left".
+                        .accessibilityLabel(Text("\(left)\(then)\(account.decidingLimit == nil ? "" : " left")"))
                 }
             }
             // VoiceOver reads the row as one button with its name and line.
@@ -170,6 +172,7 @@ private struct LimitLine: View {
                 }
                 Spacer(minLength: 8)
                 Text("\(left)\(size)").monospacedDigit().fixedSize()
+                    .accessibilityLabel(Text("\(left)\(size) left"))
             }
             Bar(limit: limit)
         }

@@ -319,6 +319,28 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(words.note(days, accounts: accounts).body == "Back Saturday 12 AM.")
 }
 
+@Test func aNoteForCreditsSaysTheyAreUsedUpThenBackWithWhatIsLeft() {
+    // Money that never resets: its alert has no reset, so no time it's back.
+    var credits = LimitStatus(key: "credits", name: "Credits", scope: nil, window: nil,
+                              leftPercent: 0, money: Money(sizeUsd: 10, leftUsd: 0),
+                              resetSince: nil, heldBy: [], outlook: .usedUp(back: nil))
+    var key = account([credits], id: "openrouter:api", title: "OpenRouter API key", kind: .apiKey)
+    let alert = { (kind: AlertKind) in
+        Alert(id: 1, kind: kind, account: "openrouter:api", accountTitle: "OpenRouter API key",
+              limit: "credits", limitName: "Credits", replaces: "limit:openrouter:api:credits",
+              resets: nil, runsOut: nil)
+    }
+    #expect(words.note(alert(.usedUp), accounts: [key])
+        == Words.Note(title: "OpenRouter API key", subtitle: "Credits are used up", body: ""))
+    // $10 more bought.
+    credits.leftPercent = 50
+    credits.money = Money(sizeUsd: 20, leftUsd: 10)
+    credits.outlook = .unknown(reason: .noReset)
+    key.limits = [credits]
+    #expect(words.note(alert(.reset), accounts: [key])
+        == Words.Note(title: "OpenRouter API key", subtitle: "Credits are back", body: "$10 of $20 left."))
+}
+
 @Test func theFoldsAndAgentsSayWhatTheyHold() {
     #expect(words.hidden(2) == "2 hidden")
     var codex = AgentStatus(id: "codex", name: "Codex", installed: true, connection: .available, inUse: true)
@@ -384,6 +406,32 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     // When it's back is worded for its horizon, as in the row.
     let spent = account([limit(.usedUp(back: moment("2026-10-03T09:00:00Z", .thisWeek)), left: 0)])
     #expect(words.verdict([spent]).detail == "Back Sat 9 AM.")
+}
+
+@Test func ofOtherLimitsUsedUpTheVerdictNamesTheLastBack() {
+    // A plan whose own weekly limit lasts, with both its limits on Claude
+    // and GPT used up: 5 hours back in an hour, weekly on Saturday. Those
+    // models can't be used until Saturday.
+    let week = limit(.lasts, key: "weekly", name: "Weekly", left: 60,
+                     resets: "2026-10-04T00:00:00Z", horizon: .thisWeek)
+    var five = limit(.usedUp(back: moment("2026-09-30T13:00:00Z", .soon)), key: "5h:3p-5h", left: 0,
+                     resets: "2026-09-30T13:00:00Z")
+    var weekly = limit(.usedUp(back: moment("2026-10-03T09:00:00Z", .thisWeek)), key: "weekly:3p-weekly",
+                       name: "Weekly", left: 0, resets: "2026-10-03T09:00:00Z", horizon: .thisWeek)
+    five.scope = "Claude and GPT"
+    weekly.scope = "Claude and GPT"
+    let lasts = "At this pace, Google AI Pro's weekly lasts until it resets."
+    let plan = account([week, five, weekly], title: "Google AI Pro")
+    #expect(words.verdict([plan]).detail == "\(lasts) Claude and GPT weekly is used up, back Sat 9 AM.")
+    // One with no reset is back at no known time, so it's the last.
+    five.outlook = .usedUp(back: nil)
+    let unknown = account([week, five, weekly], title: "Google AI Pro")
+    #expect(words.verdict([unknown]).detail == "\(lasts) Claude and GPT 5 hours is used up.")
+    // One running out, listed before the one used up: those models can't be
+    // used now, so the one used up is named.
+    five.outlook = runsOut
+    let running = account([week, five, weekly], title: "Google AI Pro")
+    #expect(words.verdict([running]).detail == "\(lasts) Claude and GPT weekly is used up, back Sat 9 AM.")
 }
 
 @Test func aLimitIsCalledWhatItsProviderCallsIt() {

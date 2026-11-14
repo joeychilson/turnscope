@@ -11,6 +11,16 @@
 //! again. (From OpenCode's code, `packages/core/src/database/`, read
 //! 2026-10-12.)
 //!
+//! The latest seen is taken no later than the clock. A row stamped while the
+//! Mac's clock was ahead, as one set by hand and then put right, is later
+//! than every row stamped at the true time until the clock passes it. Read
+//! on from it, none of those was ever read, and `doctor` said nothing, since
+//! each read succeeded: on a made-up database with a session stamped a day
+//! ahead, one saved a minute before now was still unread two days on. So
+//! such a row is read again at each read until the clock passes it, which
+//! changes nothing, and one that can't be read is counted then. (No real
+//! history was looked at for such a row.)
+//!
 //! What follows was measured on this Mac's history, September and October 2026.
 //!
 //! **Usage.** `tokens.input` excludes cached input, and `reasoning` is apart
@@ -73,6 +83,8 @@ const OWN: &str = "(s.fork_session_id IS NULL OR m.time_created >= s.time_create
 
 #[derive(Default, Serialize, Deserialize)]
 struct Cursor {
+    /// The latest `time_updated` seen in each table, and no later than the
+    /// clock was at that read.
     sessions: i64,
     messages: i64,
     /// The messages whose text was indexed at a time within `LATE` of
@@ -84,11 +96,9 @@ struct Cursor {
 /// committed after one stamped later is read.
 const LATE: i64 = 10_000;
 
-fn open(file: &Path) -> Result<Connection> {
-    let failed = |error| super::reading(file, error);
-    let db = Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(failed)?;
-    db.busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(failed)?;
+fn open(file: &Path) -> rusqlite::Result<Connection> {
+    let db = Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    db.busy_timeout(std::time::Duration::from_secs(2))?;
     Ok(db)
 }
 
@@ -106,90 +116,29 @@ impl Agent for OpenCode {
     }
 
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
-        let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
-        let db = open(file)?;
-        let mut read = Read::default();
-        // One read transaction, so sessions and messages are of one moment.
-        let tx = db
-            .unchecked_transaction()
-            .map_err(|error| super::reading(file, error))?;
-        sessions(&tx, file, &mut cursor, &mut read)?;
-        messages(&tx, file, &mut cursor, &mut read)?;
-        read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
-        Ok(read)
+        read_at(file, cursor, crate::now()).map_err(|error| super::reading(file, error))
     }
 
     fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        let file = &files[0];
-        let failed = |error| super::reading(file, error);
-        let db = open(file)?;
-        let mut statement = db
-            .prepare(&format!(
-                "SELECT m.type, m.time_created, m.data
-                 FROM session_message m JOIN session_v2 s ON s.id = m.session_id
-                 WHERE m.session_id = ?1 AND {OWN} ORDER BY m.seq"
-            ))
-            .map_err(failed)?;
-        let mut rows = statement.query([native]).map_err(failed)?;
-        let mut conversation = Conversation::default();
-        while let Some(row) = rows.next().map_err(failed)? {
-            let kind: String = row.get(0).map_err(failed)?;
-            let at = Some(row.get::<_, i64>(1).map_err(failed)?);
-            let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(2).map_err(failed)?)
-            else {
-                continue;
-            };
-            match kind.as_str() {
-                "user" => conversation.say(Kind::User, at, &text(&data["text"])),
-                "assistant" => {
-                    for part in data["content"].as_array().into_iter().flatten() {
-                        match part["type"].as_str() {
-                            Some("text") => {
-                                conversation.say(Kind::Assistant, at, &text(&part["text"]))
-                            }
-                            Some("reasoning") => {
-                                conversation.say(Kind::Reasoning, at, &text(&part["text"]))
-                            }
-                            Some("tool") => tool(part, at, &mut conversation),
-                            _ => {}
-                        }
-                    }
-                }
-                // A command the person ran with `!`.
-                "shell" => {
-                    let call = data["shellID"].as_str();
-                    conversation.call(call, at, "shell", text(&data["command"]));
-                    if let Some(call) = call {
-                        let failed = data["exit"].as_i64().is_some_and(|exit| exit != 0);
-                        conversation.answer(call, text(&data["output"]["output"]), failed);
-                    }
-                }
-                "compaction" => conversation.say(Kind::Summary, at, &text(&data["summary"])),
-                _ => conversation.say(Kind::System, at, data["text"].as_str().unwrap_or_default()),
-            }
-        }
-        Ok(conversation.entries)
+        transcript(&files[0], native).map_err(|error| super::reading(&files[0], error))
     }
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
         let file = folder.join("opencode.db");
         let mut logins: Vec<Login> = Vec::new();
         if file.is_file() {
-            let failed = |error| super::reading(&file, error);
-            let db = open(&file)?;
             // Of several to one provider, the latest active one is in use.
-            let rows: Vec<(String, String)> = db
-                .prepare(
-                    "SELECT integration_id, value FROM credential
-                     WHERE integration_id IS NOT NULL AND coalesce(active, 1) != 0
-                     ORDER BY time_updated DESC",
-                )
-                .and_then(|mut statement| {
-                    statement
-                        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                        .collect()
+            let rows: Vec<(String, String)> = open(&file)
+                .and_then(|db| {
+                    db.prepare(
+                        "SELECT integration_id, value FROM credential
+                         WHERE integration_id IS NOT NULL AND coalesce(active, 1) != 0
+                         ORDER BY time_updated DESC",
+                    )?
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
                 })
-                .map_err(failed)?;
+                .map_err(|error| super::reading(&file, error))?;
             for (provider, value) in rows {
                 if logins.iter().any(|login| login.provider == provider) {
                     continue;
@@ -219,28 +168,39 @@ impl Agent for OpenCode {
     }
 }
 
+/// What `file` holds past `cursor`, read with the clock at `now`.
+fn read_at(file: &Path, cursor: &str, now: i64) -> rusqlite::Result<Read> {
+    let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
+    let db = open(file)?;
+    let mut read = Read::default();
+    // One read transaction, so sessions and messages are of one moment.
+    let tx = db.unchecked_transaction()?;
+    sessions(&tx, now, &mut cursor, &mut read)?;
+    messages(&tx, now, &mut cursor, &mut read)?;
+    read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
+    Ok(read)
+}
+
 /// Read the sessions changed since `cursor` into `read`.
-fn sessions(db: &Connection, file: &Path, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
-    let failed = |error| super::reading(file, error);
-    let mut sessions = db
-        .prepare(&format!(
-            "SELECT s.id, nullif(s.parent_id, ''), nullif(s.fork_session_id, ''),
-                 nullif(s.directory, ''), s.title, s.time_created, s.time_updated,
-                 (SELECT m.data FROM session_message m WHERE m.session_id = s.id
-                     AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
-             FROM session_v2 s WHERE s.time_updated >= ?1"
-        ))
-        .map_err(failed)?;
-    let mut rows = sessions.query([cursor.sessions - LATE]).map_err(failed)?;
-    while let Some(row) = rows.next().map_err(failed)? {
-        let (native, parent, fork): (String, Option<String>, Option<String>) = (
-            row.get(0).map_err(failed)?,
-            row.get(1).map_err(failed)?,
-            row.get(2).map_err(failed)?,
-        );
-        let (created, updated): (i64, i64) =
-            (row.get(5).map_err(failed)?, row.get(6).map_err(failed)?);
-        cursor.sessions = cursor.sessions.max(updated);
+fn sessions(
+    db: &Connection,
+    now: i64,
+    cursor: &mut Cursor,
+    read: &mut Read,
+) -> rusqlite::Result<()> {
+    let mut sessions = db.prepare(&format!(
+        "SELECT s.id, nullif(s.parent_id, ''), nullif(s.fork_session_id, ''),
+             nullif(s.directory, ''), s.title, s.time_created, s.time_updated,
+             (SELECT m.data FROM session_message m WHERE m.session_id = s.id
+                 AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
+         FROM session_v2 s WHERE s.time_updated >= ?1"
+    ))?;
+    let mut rows = sessions.query([cursor.sessions - LATE])?;
+    while let Some(row) = rows.next()? {
+        let (native, parent, fork): (String, Option<String>, Option<String>) =
+            (row.get(0)?, row.get(1)?, row.get(2)?);
+        let (created, updated): (i64, i64) = (row.get(5)?, row.get(6)?);
+        cursor.sessions = cursor.sessions.max(updated.min(now));
         let session = read.session(&INFO.session(&native));
         session.parent = match (parent, fork) {
             (Some(parent), _) => Some(Parent {
@@ -253,10 +213,10 @@ fn sessions(db: &Connection, file: &Path, cursor: &mut Cursor, read: &mut Read) 
             }),
             _ => None,
         };
-        session.cwd = row.get(3).map_err(failed)?;
+        session.cwd = row.get(3)?;
         session.saw(created);
         session.saw(updated);
-        let first: Option<String> = row.get(7).map_err(failed)?;
+        let first: Option<String> = row.get(7)?;
         if let Some(text) = first.and_then(|data| serde_json::from_str::<Value>(&data).ok()) {
             session.title(Title::Prompt, text["text"].as_str().unwrap_or_default());
         }
@@ -269,7 +229,7 @@ fn sessions(db: &Connection, file: &Path, cursor: &mut Cursor, read: &mut Read) 
                     .is_some()
             })
         };
-        let title: Option<String> = row.get(4).map_err(failed)?;
+        let title: Option<String> = row.get(4)?;
         if let Some(title) = title.filter(|title| !placeholder(title)) {
             session.title(Title::Generated, &title);
         }
@@ -278,38 +238,36 @@ fn sessions(db: &Connection, file: &Path, cursor: &mut Cursor, read: &mut Read) 
 }
 
 /// Read the messages changed since `cursor` into `read`.
-fn messages(db: &Connection, file: &Path, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
-    let failed = |error| super::reading(file, error);
-    let mut messages = db
-        .prepare(&format!(
-            "SELECT m.id, m.session_id, m.type, m.time_created, m.time_updated, m.data
-             FROM session_message m LEFT JOIN session_v2 s ON s.id = m.session_id
-             WHERE m.time_updated >= ?1 AND m.type IN ('user', 'assistant') AND {OWN}"
-        ))
-        .map_err(failed)?;
+fn messages(
+    db: &Connection,
+    now: i64,
+    cursor: &mut Cursor,
+    read: &mut Read,
+) -> rusqlite::Result<()> {
+    let mut messages = db.prepare(&format!(
+        "SELECT m.id, m.session_id, m.type, m.time_created, m.time_updated, m.data
+         FROM session_message m LEFT JOIN session_v2 s ON s.id = m.session_id
+         WHERE m.time_updated >= ?1 AND m.type IN ('user', 'assistant') AND {OWN}"
+    ))?;
     // A message is read again each time it changes, and while it's
     // within `LATE` of the latest change; what it says is indexed once,
     // when it's new or a response completes.
     let mark = cursor.messages;
     let was_said = std::mem::take(&mut cursor.said);
     let mut said_at = Vec::new();
-    let mut rows = messages.query(params![mark - LATE]).map_err(failed)?;
-    while let Some(row) = rows.next().map_err(failed)? {
-        let (message, native, kind): (String, String, String) = (
-            row.get(0).map_err(failed)?,
-            row.get(1).map_err(failed)?,
-            row.get(2).map_err(failed)?,
-        );
-        let (created, updated): (i64, i64) =
-            (row.get(3).map_err(failed)?, row.get(4).map_err(failed)?);
-        cursor.messages = cursor.messages.max(updated);
-        // A row read again only for being within `LATE` was counted. One
-        // committed late, stamped at or before the last read, isn't:
-        // knowing it wasn't seen would take every bad row's id in the
-        // cursor, for a count only doctor shows.
-        let unseen = u64::from(updated > mark);
-        let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(5).map_err(failed)?)
-        else {
+    let mut rows = messages.query(params![mark - LATE])?;
+    while let Some(row) = rows.next()? {
+        let (message, native, kind): (String, String, String) =
+            (row.get(0)?, row.get(1)?, row.get(2)?);
+        let (created, updated): (i64, i64) = (row.get(3)?, row.get(4)?);
+        cursor.messages = cursor.messages.max(updated.min(now));
+        // A row read again only for being within `LATE` was counted, and
+        // one stamped ahead of the clock is counted by the read that takes
+        // the cursor past it. One committed late, stamped at or before the
+        // last read, isn't: knowing it wasn't seen would take every bad
+        // row's id in the cursor, for a count only doctor shows.
+        let unseen = u64::from(updated > mark && updated <= now);
+        let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(5)?) else {
             read.skipped += unseen;
             continue;
         };
@@ -397,6 +355,52 @@ fn messages(db: &Connection, file: &Path, cursor: &mut Cursor, read: &mut Read) 
         .map(|(message, _)| message)
         .collect();
     Ok(())
+}
+
+/// The conversation of the session `native` in the database `file`.
+fn transcript(file: &Path, native: &str) -> rusqlite::Result<Vec<Entry>> {
+    let db = open(file)?;
+    let mut statement = db.prepare(&format!(
+        "SELECT m.type, m.time_created, m.data
+         FROM session_message m JOIN session_v2 s ON s.id = m.session_id
+         WHERE m.session_id = ?1 AND {OWN} ORDER BY m.seq"
+    ))?;
+    let mut rows = statement.query([native])?;
+    let mut conversation = Conversation::default();
+    while let Some(row) = rows.next()? {
+        let kind: String = row.get(0)?;
+        let at = Some(row.get::<_, i64>(1)?);
+        let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(2)?) else {
+            continue;
+        };
+        match kind.as_str() {
+            "user" => conversation.say(Kind::User, at, &text(&data["text"])),
+            "assistant" => {
+                for part in data["content"].as_array().into_iter().flatten() {
+                    match part["type"].as_str() {
+                        Some("text") => conversation.say(Kind::Assistant, at, &text(&part["text"])),
+                        Some("reasoning") => {
+                            conversation.say(Kind::Reasoning, at, &text(&part["text"]))
+                        }
+                        Some("tool") => tool(part, at, &mut conversation),
+                        _ => {}
+                    }
+                }
+            }
+            // A command the person ran with `!`.
+            "shell" => {
+                let call = data["shellID"].as_str();
+                conversation.call(call, at, "shell", text(&data["command"]));
+                if let Some(call) = call {
+                    let failed = data["exit"].as_i64().is_some_and(|exit| exit != 0);
+                    conversation.answer(call, text(&data["output"]["output"]), failed);
+                }
+            }
+            "compaction" => conversation.say(Kind::Summary, at, &text(&data["summary"])),
+            _ => conversation.say(Kind::System, at, data["text"].as_str().unwrap_or_default()),
+        }
+    }
+    Ok(conversation.entries)
 }
 
 /// Add a tool call, a part of an assistant message, with its outcome.
@@ -644,6 +648,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(OpenCode.read(&file, &first.cursor).unwrap().skipped, 0);
+    }
+
+    #[test]
+    fn a_row_stamped_ahead_of_the_clock_doesnt_stop_later_rows_being_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = database(dir.path());
+        let db = Connection::open(&file).unwrap();
+        // Saved at 20,000 by a clock an hour ahead: a session, a reply in
+        // it, and a row that can't be read.
+        let ahead = 3_620_000;
+        let reply = json!({"model": {"providerID": "opencode-go", "id": "glm-5.3"}, "time": {"created": ahead, "completed": ahead},
+            "tokens": {"input": 50, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+            "content": [{"type": "text", "text": "Added a dark theme."}]});
+        db.execute_batch(&format!(
+            "INSERT INTO session_v2 VALUES ('s3', NULL, NULL, '/work/web', 'Dark theme', {ahead}, {ahead});
+             INSERT INTO session_message VALUES ('m4', 's3', 'assistant', 1, {ahead}, {ahead}, '{reply}');
+             INSERT INTO session_message VALUES ('m5', 's3', 'assistant', 2, {ahead}, {ahead}, 'not JSON');"
+        ))
+        .unwrap();
+        let first = read_at(&file, "", 20_000).unwrap();
+        assert_eq!(first.said.len(), 3);
+        // The clock put right, a session and a request at 30,000.
+        db.execute_batch(
+            "INSERT INTO session_v2 VALUES ('s4', NULL, NULL, '/work/web', 'Footer', 30000, 30000);
+             INSERT INTO session_message VALUES ('m6', 's4', 'user', 1, 30000, 30000, '{\"text\": \"Add a footer.\"}');",
+        )
+        .unwrap();
+        let later = read_at(&file, &first.cursor, 31_000).unwrap();
+        assert!(later.sessions.contains_key("opencode:s4"));
+        assert_eq!(
+            later.said,
+            [("opencode:s4".to_owned(), "Add a footer.".to_owned(), None)]
+        );
+        // The rows stamped ahead are read again, which changes nothing: the
+        // reply is the same response, said once.
+        assert_eq!(later.responses["m4"], first.responses["m4"]);
+        // The row that can't be read is counted once, when the clock passes
+        // it.
+        let passed = read_at(&file, &later.cursor, ahead + 1_000).unwrap();
+        let after = read_at(&file, &passed.cursor, ahead + 2_000).unwrap();
+        assert_eq!(
+            [first.skipped, later.skipped, passed.skipped, after.skipped],
+            [0, 0, 1, 0]
+        );
+        assert!(passed.said.is_empty() && after.said.is_empty());
     }
 
     #[test]

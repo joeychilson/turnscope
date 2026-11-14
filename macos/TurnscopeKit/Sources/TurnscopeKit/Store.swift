@@ -33,9 +33,6 @@ public final class Store {
     @ObservationIgnored public var onChange: () -> Void = {}
 
     @ObservationIgnored private let client: Client?
-    /// The account the panel has open. The store asks what used its deciding
-    /// limit.
-    @ObservationIgnored private var watched: String?
     /// The settings serve last sent. A change serve refuses goes back to
     /// these.
     @ObservationIgnored private(set) var served: Settings?
@@ -200,19 +197,10 @@ public final class Store {
         for account in all where !account.hidden { ask(account) }
     }
 
-    /// Set which account the panel has open, or nil if none is or the panel
-    /// is closed. What used it is asked for now, and again with each status
-    /// while it stays open.
-    public func watch(_ account: String?) {
-        guard account != watched else { return }
-        watched = account
-        askWhatUsed()
-    }
-
-    /// Ask what used the account the panel has open.
-    private func askWhatUsed() {
-        guard let id = watched, let account = all.first(where: { $0.id == id }) else { return }
-        ask(account)
+    /// Ask what used the account `id`, the one the panel has open, if any:
+    /// as it opens, and again with each status while it stays open.
+    public func askWhatUsed(_ id: String?) {
+        if let account = all.first(where: { $0.id == id }) { ask(account) }
     }
 
     /// Ask what used `account`'s deciding limit.
@@ -236,10 +224,6 @@ public final class Store {
         case .phase(.connected):
             failure = nil
             onChange()
-        // What's shown is out of date only once connecting fails, not while
-        // a planned reconnect, such as replacing another engine's serve, is
-        // under way.
-        case .phase(.connecting): break
         case .hello(let hello):
             take(hello.status)
             hello.alerts.forEach(onAlert)
@@ -251,7 +235,6 @@ public final class Store {
     private func take(_ status: Status) {
         self.status = status
         served = status.settings
-        askWhatUsed()
         onChange()
     }
 }

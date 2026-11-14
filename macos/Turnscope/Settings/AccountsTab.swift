@@ -37,6 +37,8 @@ private struct AccountSwitch: View {
             Switch(label: "Show \(store.words().called(account, labelled: true))",
                    on: Binding(get: { !account.hidden },
                                set: { shown in withAnimation(spring) { store.setHidden(!shown, for: account.id) } }))
+                // While serve is away, a change would go back.
+                .disabled(store.failure != nil)
         }
         .padding(Row.padding)
         .frame(minHeight: Row.setting)

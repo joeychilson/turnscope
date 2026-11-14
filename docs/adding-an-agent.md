@@ -65,7 +65,7 @@ static INFO: Info = Info {
 | `command` | `&'static str` | The program `connect` runs. The MCP server also finds the agent calling it by this name among its parent processes: `acme`, `acme-<anything>` for a versioned build, or a script of that name run by `node`, `bun`, `deno`, `python` or `python3`. |
 | `app` | `Option<&'static str>` | The program in its app that starts an MCP server, as the end of its path, when the app doesn't run `command`: Antigravity's is `Antigravity.app/Contents/Resources/bin/language_server`. Name that program and not the app, or a person's shell in a terminal the app holds counts as the agent. Check with the agent connected: start a session in its app and look at the server's parents with `ps`. `None` for an agent whose app runs `command`, or that has no app. |
 | `resume` | `&'static str` | The command that resumes a session, `{id}` being the agent's own id. `sessions show` puts `cd <folder> &&` before it, and `folder_var` for a session in a second account's folder. |
-| `mcp_add` | `&'static [&'static str]` | The arguments to `command` that add an MCP server. `connect` runs `<command> <mcp_add> <path to turnscope> mcp`. |
+| `mcp_add` | `&'static [&'static str]` | The arguments to `command` that add an MCP server. `connect` runs `<command> <mcp_add> <path to turnscope> mcp`, with `HOME` set to the home Turnscope was given. |
 | `mcp_remove` | `Option<&'static [&'static str]>` | The arguments that remove it, if the agent has a command for that. `connect` runs them first, so a refused add can put back the server that was there. With `None`, `disconnect` tells the user to remove it by hand. |
 | `folder_var` | `Option<&'static str>` | The environment variable that points the agent at a folder other than its own, such as `CODEX_HOME`. Needed when `folders` can find more than one. |
 | `charges` | `bool` | The cost the agent records is what the provider charged, so it's used before list prices. `false` when it's the agent's estimate. |
@@ -148,7 +148,8 @@ fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
 
 An agent that keeps a SQLite database, as OpenCode does, is opened read-only
 and read on from a little before the latest `time_updated` seen, since a
-row can be committed after one stamped later (`src/agents/opencode.rs`).
+row can be committed after one stamped later, and from no later than now,
+since a row can be stamped ahead of the clock (`src/agents/opencode.rs`).
 Rows read again are reported again, which changes nothing, but what they
 say is indexed only once. `Stat::of` in `src/ingest.rs` looks for a
 write-ahead log only beside a file whose name ends in `.db`, as OpenCode's
@@ -168,7 +169,8 @@ What a read returns, in `Read`:
 
 A session's `parent` is a `Parent { id, link }`, `link` being
 `Link::Subagent` (counted in its parent's usage and listed under it),
-`Link::Fork` (the conversation branched off by the user) or
+`Link::Fork` (the conversation branched off by the user: its handoff names
+the parent as holding what came before) or
 `Link::Continuation` (the same conversation carried on in a new session). A better kind of
 title replaces a worse one, and a later one of the same kind an earlier
 one. From worst to best, a `Title` is `Prompt` (the user's first real
@@ -205,7 +207,9 @@ Rules:
 - **Text said.** Pass `read.say` only what the user typed and what the
   model replied, not what the agent adds itself. `without_tags(text, tags)`
   takes the agent's blocks out of a message sent as the user's, and
-  `inner(text, tag)` gives what one tag holds. A command of the agent's
+  `inner(text, tag)` gives what one tag holds. A tag with no closing one is
+  taken as the agent's only where the text opens with it: further in, the
+  user typed it, and what follows is theirs. A command of the agent's
   own, such as `/clear`, asks for no work, so it's no title. If the agent
   numbers a session's lines and can rewind a session to an earlier line,
   pass each line's number to `read.say_at`, push the session and the number
@@ -229,6 +233,11 @@ Rules:
 - `changed(files)` notes the files the call made last changed, as the agent
   names them: absolute, or within the session's folder. `patched(text)`
   gives the files of an `apply_patch` patch. Handoffs list these files.
+
+When none of `files` holds the conversation, as when the agent deleted the
+file that does and another still names the session, return
+`Error::NotFound(INFO.session(id))`. Turnscope then says the session's
+files are gone, as it does for a session with no file left.
 
 | `Kind` | For |
 |---|---|
@@ -300,6 +309,10 @@ fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
   key.
 - A provider the folder held a login for and no longer lists is taken as
   signed out of, so `logins` only lists what the folder holds.
+- A folder that held a login and that `folders` no longer lists is signed
+  out of too, as one deleted. So `folders` lists a folder for as long as
+  the agent may be signed in there, by what's on disk alone: not by an
+  environment variable or a running process, which come and go.
 
 ## 4. Register it
 

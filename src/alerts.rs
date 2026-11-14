@@ -3,15 +3,19 @@
 //! | Kind | Raised when |
 //! |---|---|
 //! | `runningOut` | a limit in use runs out before its reset at its pace, as the panel shows it |
-//! | `usedUp` | a limit in use is used up |
-//! | `reset` | a limit that was used up is back, and no other limit on the whole account still is |
+//! | `usedUp` | a limit in use is used up: one with a window, or money that never resets, as credits |
+//! | `reset` | a limit that was used up is back: its window ended in the last day, use was given back early, or money that never resets has some left |
 //! | `signIn` | an account in use can't be read because its login was refused |
 //!
 //! Each is raised once per account, limit, kind and window, so neither a
-//! restart nor a pace near the line repeats one. One of a hidden account, or
-//! of a kind turned off, is recorded as already seen, so showing it or
-//! turning it on doesn't bring back the past. An alert waits until a client
-//! acknowledges it.
+//! restart nor a pace near the line repeats one. The window is its reset,
+//! within five minutes; for money that never resets, its size ([`window`]);
+//! for `signIn`, the last read that worked. One of a hidden account, or of
+//! a kind turned off, is recorded as already seen, so showing it or turning
+//! it on doesn't bring back the past. So is a `reset` while another limit
+//! on the whole account, or on the same models, is still used up. An alert
+//! waits until a client acknowledges it, and until then is sent again only
+//! while it still stands ([`pending`]).
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -69,10 +73,12 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
                      runs_out: Option<i64>|
      -> Result<()> {
         let key = limit.map_or("", |limit| limit.key.as_str());
+        // A reset drifts from read to read. A size, below zero, doesn't.
+        let drift = if window < 0 { 0 } else { forecast::DRIFT };
         let known = tx
             .query_row(
                 "SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3 AND window BETWEEN ?4 - ?5 AND ?4 + ?5",
-                params![account.id, key, kind_name(kind), window, forecast::DRIFT],
+                params![account.id, key, kind_name(kind), window, drift],
                 |_| Ok(()),
             )
             .optional()?;
@@ -117,32 +123,48 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             raise(account, None, Kind::SignIn, last_good, None)?;
         }
         for limit in &account.limits {
-            let Some(window) = limit.window else { continue };
+            let Some(window) = window(limit) else {
+                continue;
+            };
             match limit.outlook {
                 Outlook::UsedUp { .. } if account.in_use => {
-                    raise(account, Some(limit), Kind::UsedUp, window.resets.at, None)?
+                    raise(account, Some(limit), Kind::UsedUp, window, None)?
                 }
                 Outlook::RunsOut { likely, .. } if account.in_use => raise(
                     account,
                     Some(limit),
                     Kind::RunningOut,
-                    window.resets.at,
+                    window,
                     Some(likely.at),
                 )?,
                 _ => {}
             }
             // Back after being used up: a window used up that ended in the
-            // last day, or this one, when use was given back early.
-            let used_up: Vec<i64> = tx
+            // last day, or this one, when use was given back early. `window`
+            // is read as a time here, and a size isn't one: it's asked for
+            // apart, below zero, where it has always ended and is never
+            // this window. So money used up at any size is back once a cent
+            // is left: by the cent, not the percent, as $5 more is under 1%
+            // of $1,000 ever bought. Only the last time it was used up is
+            // asked: of two with none back between, as a size that grew
+            // while more was used than bought, one "back" tells both.
+            let used_up: Option<i64> = tx
                 .prepare_cached(
                     "SELECT window FROM alert WHERE account = ?1 AND limit_key = ?2
-                     AND kind = 'usedUp' AND window >= ?3",
+                     AND kind = 'usedUp' AND (window >= ?3 OR window < 0)
+                     ORDER BY id DESC LIMIT 1",
                 )?
-                .query_map(params![account.id, limit.key, now - DAY], |row| row.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            for ended in used_up {
-                let this = forecast::same_reset(Some(ended), Some(window.resets.at));
-                if (ended <= now && limit.left_percent > 0) || (this && limit.left_percent > 1) {
+                .query_row(params![account.id, limit.key, now - DAY], |row| row.get(0))
+                .optional()?;
+            if let Some(ended) = used_up {
+                let left = match limit.money {
+                    Some(money) => money.left_usd > 0.0,
+                    None => limit.left_percent > 0,
+                };
+                let this = limit.window.is_some_and(|window| {
+                    forecast::same_reset(Some(ended), Some(window.resets.at))
+                });
+                if (ended <= now && left) || (this && limit.left_percent > 1) {
                     raise(account, Some(limit), Kind::Reset, ended, None)?;
                 }
             }
@@ -150,6 +172,30 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
     }
     tx.commit()?;
     Ok(raised)
+}
+
+/// What tells one time `limit` is used up from the next, as an alert's
+/// `window`: its window's reset.
+///
+/// Money that never resets, as credits, has its size instead, in cents. Its
+/// size is all that was ever bought (`providers::Reading::size`), so more
+/// bought makes it larger: credits used up are told once, and again when
+/// more were bought and used up too. A size it was used up at before isn't
+/// told again. Chosen over when it was first read used up, which would take
+/// its readings and is a time, as a reset is. A size is kept below zero,
+/// where no time is, so neither is taken for the other, and is matched
+/// exactly: within `forecast::DRIFT`, $10 more would be the same window.
+/// One under half a cent counts as a cent, so it's below zero too.
+///
+/// `None` for a limit with neither, a window whose reset its provider
+/// didn't say: nothing tells one time it's used up from the next, so it
+/// raises nothing, over telling it once and never again.
+fn window(limit: &Limit) -> Option<i64> {
+    match (limit.window, limit.money) {
+        (Some(window), _) => Some(window.resets.at),
+        (None, Some(money)) => Some(-((money.size_usd * 100.0).round() as i64).max(1)),
+        (None, None) => None,
+    }
 }
 
 /// Whether a limit other than `limit` that stops what it covers is used up:
@@ -164,9 +210,11 @@ fn blocked(account: &Account, limit: &Limit) -> bool {
 }
 
 /// Every alert not yet acknowledged that still stands: a warning while its
-/// window lasts, a reset for a day, and a sign-in for a day while its
-/// account still can't be read, as `status` says. One for an account that
-/// can be read again would be posted with its sound, then removed at once.
+/// window lasts, or with no window while its limit is still used up; a
+/// reset for a day; and a sign-in for a day while its account still can't
+/// be read. `status` says what still is. A sign-in for an account that can
+/// be read again would be posted with its sound, then removed at once, and
+/// credits bought since would be posted as used up.
 pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>> {
     let mut statement = db.prepare(
         "SELECT id, kind, at, account, limit_key, detail FROM alert WHERE acknowledged = 0 ORDER BY id",
@@ -182,7 +230,15 @@ pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>>
         let (id, at, account, limit): (i64, i64, String, String) =
             (row.get(0)?, row.get(2)?, row.get(3)?, row.get(4)?);
         let stands = match kind {
-            Kind::RunningOut | Kind::UsedUp => detail.resets.is_none_or(|resets| resets > now),
+            Kind::RunningOut | Kind::UsedUp => match detail.resets {
+                Some(resets) => resets > now,
+                None => status.accounts.iter().any(|known| {
+                    known.id == account
+                        && known.limits.iter().any(|known| {
+                            known.key == limit && matches!(known.outlook, Outlook::UsedUp { .. })
+                        })
+                }),
+            },
             Kind::Reset => now - at <= DAY,
             Kind::SignIn => {
                 now - at <= DAY
@@ -366,6 +422,100 @@ mod tests {
         // Use given back within the window: it's back.
         let back = status(DAY + MINUTE, 60, LASTS);
         assert_eq!(kinds(&raise(&mut db, &back).unwrap()), [Kind::Reset]);
+    }
+
+    /// An OpenRouter account whose credits, `size` dollars of them, have
+    /// `left` dollars left, with the percent the status works out for it.
+    fn credits(at: i64, size: f64, left: f64) -> Status {
+        let outlook = match left > 0.0 {
+            false => Outlook::UsedUp { back: None },
+            true => Outlook::Unknown {
+                reason: crate::status::Unknown::NoReset,
+            },
+        };
+        let mut status = status(at, (left / size * 100.0) as u8, outlook);
+        let account = &mut status.accounts[0];
+        account.id = "openrouter:api".to_owned();
+        let limit = &mut account.limits[0];
+        limit.key = "credits".to_owned();
+        limit.name = "Credits".to_owned();
+        limit.window = None;
+        limit.money = Some(crate::status::Money {
+            size_usd: size,
+            left_usd: left,
+        });
+        status
+    }
+
+    #[test]
+    fn credits_used_up_are_told_once_and_again_when_more_are_used_up_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let used_up = credits(DAY, 10.0, 0.0);
+        let raised = raise(&mut db, &used_up).unwrap();
+        assert_eq!(kinds(&raised), [Kind::UsedUp]);
+        assert_eq!(raised[0].replaces, "limit:openrouter:api:credits");
+        assert_eq!(raised[0].resets, None);
+        assert!(raise(&mut db, &used_up).unwrap().is_empty(), "told once");
+        // $10 more bought: they're back.
+        let bought = credits(DAY + MINUTE, 20.0, 10.0);
+        assert_eq!(kinds(&raise(&mut db, &bought).unwrap()), [Kind::Reset]);
+        assert!(raise(&mut db, &bought).unwrap().is_empty(), "told once");
+        // Those used up too: a size $10 from the last is another, where a
+        // reset five minutes from the last is the same.
+        let again = credits(DAY + 2 * MINUTE, 20.0, 0.0);
+        assert_eq!(kinds(&raise(&mut db, &again).unwrap()), [Kind::UsedUp]);
+        assert!(raise(&mut db, &again).unwrap().is_empty(), "told once");
+    }
+
+    #[test]
+    fn credits_used_up_are_sent_again_only_while_they_still_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let used_up = credits(DAY, 10.0, 0.0);
+        assert_eq!(kinds(&raise(&mut db, &used_up).unwrap()), [Kind::UsedUp]);
+        // Not acknowledged, as when notifications were off: a week on, it
+        // still stands.
+        assert_eq!(
+            kinds(&pending(&db, &used_up, 8 * DAY).unwrap()),
+            [Kind::UsedUp]
+        );
+        // More bought, with the kind that says so turned off.
+        let mut bought = credits(8 * DAY, 20.0, 10.0);
+        bought.settings.notify.reset = false;
+        assert!(raise(&mut db, &bought).unwrap().is_empty());
+        assert!(pending(&db, &bought, 8 * DAY).unwrap().is_empty());
+    }
+
+    #[test]
+    fn credits_are_back_once_a_cent_is_left_and_are_told_back_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        // Used up at $1,000 bought, and still at $1,010, with more used than
+        // bought: used up twice, with none back between.
+        for (minute, size) in [(0, 1000.0), (1, 1010.0)] {
+            let used_up = credits(DAY + minute * MINUTE, size, 0.0);
+            assert_eq!(kinds(&raise(&mut db, &used_up).unwrap()), [Kind::UsedUp]);
+        }
+        // $5 more: under 1% of all ever bought, so 0% left, and back all
+        // the same. Told once, for the two.
+        let bought = credits(DAY + 2 * MINUTE, 1015.0, 5.0);
+        assert_eq!(bought.accounts[0].limits[0].left_percent, 0);
+        assert_eq!(kinds(&raise(&mut db, &bought).unwrap()), [Kind::Reset]);
+        assert!(raise(&mut db, &bought).unwrap().is_empty(), "told once");
+        // A size under half a cent is below zero too, as every size is.
+        let tiny = credits(DAY, 0.001, 0.0);
+        assert_eq!(window(&tiny.accounts[0].limits[0]), Some(-1));
+    }
+
+    #[test]
+    fn a_limit_with_no_window_and_no_size_raises_nothing() {
+        // A window whose reset its provider didn't say.
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let mut used_up = status(DAY, 0, Outlook::UsedUp { back: None });
+        used_up.accounts[0].limits[0].window = None;
+        assert!(raise(&mut db, &used_up).unwrap().is_empty());
     }
 
     #[test]

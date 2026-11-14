@@ -68,8 +68,7 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
 }
 
 @Test func theStatusSaysWhatTheEngineDecided() throws {
-    let hello = try Contract.decoder.decode(Answer<HelloResult>.self, from: contract("hello.result.json")).result
-    let status = hello.status
+    let status = try Contract.decoder.decode(Pushed<Status>.self, from: contract("status.notification.json")).params
     let claude = status.accounts[0]
     #expect(claude.inUse && claude.standing == .runningOut)
     #expect(claude.decidingLimit?.key == "five_hour")
@@ -82,7 +81,6 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
     #expect(likely.horizon == .soon)
     #expect(claude.limits.map(\.standing) == [.runningOut, .lasts, .usedUp])
     let chatgpt = status.accounts[1]
-    #expect(chatgpt.state == .asOf(readAt: Date(timeIntervalSince1970: 1_791_459_600), why: .expired))
     // Its weekly limit reset since it was read, so it's full, and the
     // monthly limit decides.
     #expect(chatgpt.limits[0].resetSince != nil && chatgpt.limits[0].leftPercent == 100)
@@ -96,8 +94,10 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
     #expect(status.accounts[3].state == .unread(why: .signIn))
     #expect(status.accounts[5].state == .unread(why: .readFailed))
     #expect(status.agents.map(\.connection) == [.connected, .outdated, .available, .available, .available, .available])
-    #expect(hello.alerts.map(\.kind) == [.runningOut, .usedUp, .reset, .signIn])
     #expect(status.settings.notify == Notify(runningOut: true, usedUp: true, reset: true, signIn: true))
+    let hello = try Contract.decoder.decode(Answer<HelloResult>.self, from: contract("hello.result.json")).result
+    #expect(hello.status.accounts[0].state == .asOf(readAt: Date(timeIntervalSince1970: 1_791_459_600), why: .expired))
+    #expect(hello.alerts.map(\.kind) == [.runningOut, .usedUp, .reset, .signIn])
 }
 
 @Test func aValueItDoesntKnowIsAnErrorNeverAGuess() throws {

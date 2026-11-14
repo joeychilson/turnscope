@@ -109,6 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             drawItem()
             notifier.renewed(store.all)
             guard store.status != nil else { return }
+            // What used the account open in the panel is asked again.
+            if open { store.askWhatUsed(navigation.open) }
             if let opening {
                 self.opening = nil
                 openOnce(opening)
@@ -263,7 +265,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         navigation.go(.main)
         navigation.open = account
         navigation.unusedOpen = store.unused.contains { $0.id == account }
-        store.watch(account)
     }
 
     private func show() {
@@ -300,7 +301,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let outside { NSEvent.removeMonitor(outside) }
         outside = nil
         item?.button?.highlight(false)
-        store.watch(nil)
         tick()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.1
