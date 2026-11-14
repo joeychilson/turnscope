@@ -35,8 +35,8 @@ runs, Swift tests included.
 
 | When you change | Also update |
 |---|---|
-| A command or flag of the command line, or its output | `docs/cli.md`; its case in `tests/cli.rs`; the README's quick start if it's shown there |
-| An MCP tool, its description or inputs, its answer, or the prompt | `docs/mcp.md`; the README's tool list if a name changes |
+| A command or flag of the command line, or its output | `docs/cli.md`; its case in `tests/cli.rs`; the README's command line section if it's shown there |
+| An MCP tool, its description or inputs, its answer, or the prompt | `docs/mcp.md` |
 | The status, an alert, or any `serve` message | In one commit: `contract/`, the Rust types, `Contract.swift`, `docs/protocol.md`. Anything but an added field also raises `serve::PROTOCOL` and `protocolVersion` ([how](docs/protocol.md#change-the-protocol)) |
 | An agent, or how an agent's files are read | [docs/adding-an-agent.md](docs/adding-an-agent.md), which lists the docs to update. Raise `ingest::READERS` when a reader would read a file it read before differently |
 | A provider | [docs/adding-a-provider.md](docs/adding-a-provider.md), which lists the docs to update |
