@@ -40,7 +40,7 @@ use serde_json::Value;
 
 use super::{
     Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
-    Tokens,
+    Tokens, texts,
 };
 use crate::Result;
 
@@ -70,20 +70,6 @@ struct Cursor {
     /// The provider and model of the latest response, which a summary is
     /// written with.
     model: Option<(String, String)>,
-}
-
-/// The text of a message: a string, or its text blocks.
-fn texts(message: &Value) -> Vec<&str> {
-    match &message["content"] {
-        Value::String(text) => vec![text],
-        content => content
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|block| block["type"] == "text")
-            .filter_map(|block| block["text"].as_str())
-            .collect(),
-    }
 }
 
 impl Agent for Pi {
@@ -145,15 +131,17 @@ impl Agent for Pi {
                     return conversation.say(Kind::Summary, entry_at, &text(&line["summary"]));
                 }
                 Some("custom_message") => {
-                    return conversation.say(Kind::System, entry_at, &texts(&line).join("\n"));
+                    let added = texts(&line["content"]).join("\n");
+                    return conversation.say(Kind::System, entry_at, &added);
                 }
                 _ => return,
             };
             let at = message["timestamp"].as_i64().or(entry_at);
+            let content = &message["content"];
             match message["role"].as_str() {
-                Some("user") => conversation.say(Kind::User, at, &texts(message).join("\n")),
+                Some("user") => conversation.say(Kind::User, at, &texts(content).join("\n")),
                 Some("assistant") => {
-                    for block in message["content"].as_array().into_iter().flatten() {
+                    for block in content.as_array().into_iter().flatten() {
                         match block["type"].as_str() {
                             Some("text") => {
                                 conversation.say(Kind::Assistant, at, &text(&block["text"]))
@@ -177,7 +165,7 @@ impl Agent for Pi {
                 Some("toolResult") => {
                     if let Some(call) = message["toolCallId"].as_str() {
                         let failed = message["isError"].as_bool().unwrap_or(false);
-                        conversation.answer(call, texts(message).join("\n"), failed);
+                        conversation.answer(call, texts(content).join("\n"), failed);
                     }
                 }
                 // A command the person ran with `!`.
@@ -193,7 +181,7 @@ impl Agent for Pi {
                 Some("compactionSummary" | "branchSummary") => {
                     conversation.say(Kind::Summary, at, &text(&message["summary"]))
                 }
-                Some("custom") => conversation.say(Kind::System, at, &texts(message).join("\n")),
+                Some("custom") => conversation.say(Kind::System, at, &texts(content).join("\n")),
                 _ => {}
             }
         })?;
@@ -296,7 +284,7 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
             let message = &line["message"];
             match message["role"].as_str() {
                 Some("user") if !copy => {
-                    for text in texts(message) {
+                    for text in texts(&message["content"]) {
                         read.say(&session, text);
                         if !cursor.titled {
                             read.session(&session).title(Title::Prompt, text);
@@ -315,7 +303,7 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
                     };
                     cursor.model = Some((provider.to_owned(), model.to_owned()));
                     if !copy {
-                        read.say(&session, &texts(message).join("\n"));
+                        read.say(&session, &texts(&message["content"]).join("\n"));
                     }
                     // A copy without a response id couldn't be told
                     // from its parent's.

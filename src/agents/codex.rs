@@ -439,10 +439,7 @@ impl Agent for Codex {
         if rollouts.is_empty() {
             return Err(Error::NotFound(thread));
         }
-        let kept: Vec<Option<i64>> = rollouts
-            .iter()
-            .map(|rollout| rewound_to(rollout, native))
-            .collect();
+        let kept: Vec<Option<i64>> = rollouts.iter().map(|rollout| rewound_to(rollout)).collect();
         let mut conversation = Conversation::default();
         for (index, rollout) in rollouts.into_iter().enumerate() {
             let rewound = kept[index + 1..].iter().flatten().min().copied();
@@ -579,18 +576,14 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
     }
 }
 
-/// Where the history that `rollout` goes on from ends, if it's thread
-/// `native`'s: from its first line, its `session_meta`.
-fn rewound_to(rollout: &Path, native: &str) -> Option<i64> {
+/// Where the history that `rollout` goes on from ends: from its first line,
+/// its `session_meta`.
+fn rewound_to(rollout: &Path) -> Option<i64> {
     let mut first = Vec::new();
     BufReader::new(File::open(rollout).ok()?)
         .read_until(b'\n', &mut first)
         .ok()?;
-    let meta = serde_json::from_slice::<Line>(&first).ok()?.payload?;
-    if meta.id.as_deref() != Some(native) {
-        return None;
-    }
-    meta.base()
+    serde_json::from_slice::<Line>(&first).ok()?.payload?.base()
 }
 
 /// Whether `line`, in a legacy fork's rollout of `thread`, is of its copy of
