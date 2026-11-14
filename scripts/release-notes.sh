@@ -22,7 +22,11 @@ notes=$(awk -v version="$version" '
   inside && (started || NF) { started = 1; print }
 ' CHANGELOG.md)
 
-if [ -z "${notes//[[:space:]]/}" ]; then
+# Empty if no character isn't a space, found with a regular expression over
+# deleting the spaces with `${notes//[[:space:]]/}`: macOS's bash 3.2, which
+# the release's publish job runs, took 88 s to delete them from 0.1.8's
+# 11,453 characters, and this takes 0.2 s.
+if ! [[ $notes =~ [^[:space:]] ]]; then
   echo "release-notes.sh: CHANGELOG.md has no notes under \"## $version\"" >&2
   exit 1
 fi
