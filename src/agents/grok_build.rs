@@ -133,11 +133,11 @@ impl Agent for GrokBuild {
         Ok(read)
     }
 
-    fn transcript(&self, _native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
+    fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
         let file = files
             .iter()
             .find(|file| file.ends_with("chat_history.jsonl"))
-            .ok_or_else(|| Error::NotFound("the session's conversation is gone".to_owned()))?;
+            .ok_or_else(|| Error::NotFound(INFO.session(native)))?;
         let mut conversation = Conversation::default();
         super::lines(file, 0, |bytes| {
             let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
@@ -598,5 +598,21 @@ mod tests {
         // Read, the file is the session's, so its conversation can be found.
         let read = GrokBuild.read(&file, "").unwrap();
         assert!(read.sessions.contains_key("grok-build:s1"));
+    }
+
+    #[test]
+    fn a_tag_the_person_typed_is_theirs_and_grok_builds_own_are_taken_out() {
+        let asked = "Give each <agent> its own <dir>, then list the <rules> it reads.";
+        // In their query, and in a message with none.
+        for sent in [
+            format!("<user_info>macOS</user_info><user_query>{asked}</user_query>"),
+            format!("<git_status>clean</git_status>{asked}"),
+        ] {
+            assert_eq!(typed(&sent), asked);
+        }
+        assert_eq!(
+            typed("<rules>Be brief.</rules><git_status>clean</git_status>"),
+            ""
+        );
     }
 }

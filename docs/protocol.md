@@ -106,9 +106,11 @@ A protocol the server doesn't speak gets `-32001` (`error.json`):
 
 - **`limit.breakdown`** takes an account's `id` and a limit's `key`. It
   answers with up to 3 sessions that cost the most on that account since
-  the limit's window started (the last 7 days when its start isn't known),
-  the most first. It looks the limit up in the status last pushed. An
-  account or limit not in it gets `-32000`.
+  the limit's window started, the most first. When its start isn't known,
+  that is since the 1st of the month for an API key and the last 7 days
+  otherwise. For a limit whose window reset since it was read, it is since
+  the reset. It looks the limit up in the status last pushed. An account or
+  limit not in it gets `-32000`.
 - **`settings.set`** takes the whole `Settings`. A field left out is set to
   its default, which turns that notification on.
 - **`agent.connect`** and **`agent.disconnect`** take an agent's `id` from
@@ -144,7 +146,10 @@ new, ran in a new minute, or followed another process's write to the
 database, and after a successful `settings.set`, `account.hide`,
 `agent.connect` or `agent.disconnect`. A catch-up runs when `serve` starts,
 once writes to an agent's folders have paused for 250 ms (a second at most)
-but no sooner than 5 s after the last catch-up, and every minute. Alerts are
+but no sooner than 5 s after the last catch-up, and every minute. When it
+starts, `serve` reads the limits first and works out the status before
+that catch-up too: on a first launch, a `status` with the accounts and
+`historyRead` false comes while all of history is read. Alerts are
 raised only when the status changed. An agent connected or disconnected
 outside the app, as with `turnscope connect` in a terminal, writes nothing
 to the database, so its `agents` entry changes within a minute.
@@ -414,7 +419,7 @@ A session in a `limit.breakdown` result.
 | `title` | string or null | Its title |
 | `project` | string or null | The name of its project's folder |
 | `agent` | string | The agent's id |
-| `sharePercent` | number or null | About how many points of the limit it used: its share of the cost, times the points used. Null when the window's start isn't known, or nothing used had a price |
+| `sharePercent` | number or null | About how many points of the limit it used: its share of the cost, times the points used. Null when the window's start isn't known, the window reset since the limit was read, or nothing used had a price |
 | `running` | bool | Whether it's running now |
 
 ## Alerts

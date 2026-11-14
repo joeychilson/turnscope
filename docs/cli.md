@@ -46,6 +46,13 @@ agents' history, the limits when five minutes have passed since any process
 read them, and the prices when six hours have. If that fails, they answer
 from what's known and say why on standard error.
 
+The first time, and again after an update that changes how history is
+read, they read all of your agents' history, which can take minutes. They
+say `Reading your agents' history…` on standard error first. While another
+Turnscope reads history, such as the app's or an agent's MCP server, they
+wait for it, and after a second they say
+`Waiting while another Turnscope reads your agents' history…`.
+
 ## Names
 
 - **Accounts** are named by id, or by part of a title, label or id, in any
@@ -199,10 +206,14 @@ Costs are at list prices: what the same tokens cost on each provider's API.
 **What used a limit.** With `--limit`, the usage runs from the start of the
 limit's current window (for a limit with no window, this month for an API
 key and the last 7 days otherwise), by
-session, and each row gets its share of the limit. Without `--account`, the
-account is the calling agent's if it has the limit, or else the first
-account shown that has it. `--since` moves the start, and then rows get no
-share.
+session, and each row gets its share of the limit, as does the row that
+adds up the rest. Without `--account`, the account is the calling agent's
+if it has the limit, or else the first account shown that has it. `--since`
+moves the start, and then rows get no share. A limit whose window reset
+since it was read counts from the reset, and its rows get no share either:
+how much of the new window is used isn't known. With `--json`,
+`sharePercents` holds each row's share in the rows' order, or `null` when
+rows get none.
 
 ```console
 $ turnscope usage --account claude --limit week

@@ -587,9 +587,7 @@ impl Agent for ClaudeCode {
                 let named = named(file)?;
                 (named.1.as_deref().unwrap_or(&named.0) == native).then_some((file, named))
             })
-            .ok_or_else(|| {
-                Error::NotFound(format!("the log of {} is gone", INFO.session(native)))
-            })?;
+            .ok_or_else(|| Error::NotFound(INFO.session(native)))?;
         let mut copy = agent
             .as_deref()
             .and_then(|agent| meta(file, agent))
@@ -1371,6 +1369,36 @@ mod tests {
                 (Kind::User, "Also the tests."),
                 (Kind::System, "<agent-message ")
             ]
+        );
+    }
+
+    #[test]
+    fn a_tag_the_person_typed_is_theirs_and_claude_codes_own_are_taken_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let asked =
+            "Wrap the note in a <system-reminder> tag, then say how a <task-notification> differs.";
+        let file = log(
+            dir.path(),
+            "s1.jsonl",
+            &[
+                json!({"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
+                    "message": {"role": "user", "content": format!("<system-reminder>be brief</system-reminder>\n{asked}")}}),
+            ],
+        );
+        let read = ClaudeCode.read(&file, "").unwrap();
+        assert_eq!(
+            read.sessions["claude-code:s1"].title.as_ref().unwrap().1,
+            asked
+        );
+        assert_eq!(
+            read.said,
+            [("claude-code:s1".to_owned(), asked.to_owned(), None)]
+        );
+        let entries = ClaudeCode.transcript("s1", &[file]).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            (entries[0].kind, entries[0].text.as_str()),
+            (Kind::User, asked)
         );
     }
 

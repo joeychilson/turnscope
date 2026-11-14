@@ -356,7 +356,8 @@ fn absolute(path: PathBuf) -> PathBuf {
 }
 
 /// A command's answer, as text or JSON. Those that report data catch up
-/// first; those that change a setting don't wait for it.
+/// first, and say so on standard error when that can take long; those that
+/// change a setting don't wait for it.
 fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<String> {
     let mut db = db::open(data)?;
     let reports = match &command {
@@ -364,11 +365,19 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         Command::Config { .. } | Command::Connect { .. } | Command::Disconnect { .. } => false,
         _ => true,
     };
-    // What's in the database still answers when what's new can't be read.
-    if reports && let Err(error) = catch_up(&mut db, home) {
-        eprintln!(
-            "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
-        );
+    if reports {
+        // Said before a wait that can take minutes, not left to a blank
+        // terminal.
+        if let Some(wait) = ingest::waits(&db) {
+            eprintln!("{wait}");
+        }
+        // What's in the database still answers when what's new can't be
+        // read.
+        if let Err(error) = catch_up(&mut db, home) {
+            eprintln!(
+                "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
+            );
+        }
     }
     let connecting = matches!(command, Command::Connect { .. });
     let now = now();
@@ -421,19 +430,25 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             let status = status::status(&db, now)?;
             let (account, limit) = limit_of(&db, home, &status, account.as_deref(), &name)?;
             let by = by.unwrap_or(usage::By::Session);
-            let (used, shares) =
-                usage::breakdown(&db, account, Some(limit), time_of(&from)?, by, top, now)?;
+            let since = time_of(&from)?;
+            // As `explain_usage` refuses it. Taken, the span ran backwards.
+            if since.is_some_and(|since| since >= now) {
+                return Err(Error::Usage(
+                    "--since is now or later, so there's no usage after it: give an earlier --since"
+                        .to_owned(),
+                ));
+            }
+            let (used, shares) = usage::breakdown(&db, account, Some(limit), since, by, top, now)?;
             let heading = format!(
                 "{} · {}\n",
                 account.full_title(),
                 status::limit_text(limit, status.at)
             );
             let named = limit.named();
-            let column = shares
-                .iter()
-                .any(Option::is_some)
-                .then_some((named.as_str(), shares.as_slice()));
+            let column = shares.as_ref().map(|shares| (named.as_str(), shares));
             let text = heading + &usage::text(&used, column);
+            // Each row's share, in the rows' order, or null with none.
+            let shares = shares.map(|shares| shares.rows);
             let value = json!({ "account": account.id, "limit": limit.key, "usage": used, "sharePercents": shares });
             print(value, text)
         }
@@ -446,6 +461,11 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             limit: None,
             top,
         } => {
+            // As `sessions` refuses an agent there isn't. Taken, it said
+            // nothing was used.
+            if let Some(agent) = &agent {
+                agents::find(agent)?;
+            }
             let account = match account {
                 Some(name) => Some(one_account(&status::status(&db, now)?, &name)?.id.clone()),
                 None => None,

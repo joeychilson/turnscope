@@ -290,9 +290,7 @@ impl Agent for Antigravity {
         let file = files
             .iter()
             .find(|file| file.file_name().is_some_and(|name| name == TRANSCRIPT))
-            .ok_or_else(|| {
-                Error::NotFound(format!("the log of {} is gone", INFO.session(native)))
-            })?;
+            .ok_or_else(|| Error::NotFound(INFO.session(native)))?;
         super::lines(file, 0, |bytes| {
             let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
                 return;
@@ -1258,6 +1256,26 @@ mod tests {
     }
 
     #[test]
+    fn a_tag_the_person_typed_is_theirs_and_antigravitys_own_are_taken_out() {
+        let asked =
+            "Log each <USER_SETTINGS_CHANGE> block, then the <ADDITIONAL_METADATA> after it.";
+        let added = "<ADDITIONAL_METADATA>\nThe current local time is: 1970-01-01T00:16:40Z.\n</ADDITIONAL_METADATA>";
+        // In their request, and in content with none.
+        for content in [
+            format!("<USER_REQUEST>\n{asked}\n</USER_REQUEST>\n{added}"),
+            format!("{added}\n{asked}"),
+        ] {
+            assert_eq!(request(&content), asked);
+        }
+        assert_eq!(
+            request(&format!(
+                "<USER_SETTINGS_CHANGE>\nThe model is now Gemini 3.8 Flash.\n</USER_SETTINGS_CHANGE>\n{added}"
+            )),
+            ""
+        );
+    }
+
+    #[test]
     fn a_file_is_changed_by_either_name_its_tools_give_it() {
         let home = tempfile::tempdir().unwrap();
         let (_, transcript, _) = kept(home.path());
@@ -1298,7 +1316,7 @@ mod tests {
         let (database, _, titles) = kept(home.path());
         let gone = Antigravity.transcript("c1", &[database, titles]);
         assert!(
-            matches!(&gone, Err(Error::NotFound(why)) if why == "the log of antigravity:c1 is gone"),
+            matches!(&gone, Err(Error::NotFound(session)) if session == "antigravity:c1"),
             "{:?}",
             gone.map(|entries| entries.len())
         );
