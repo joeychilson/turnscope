@@ -339,12 +339,9 @@ public enum Contract {
         return decoder
     }()
 
-    /// A status read from a file as a fixture: a status on its own, a
-    /// `status` notification, or a `hello` answer.
+    /// A status read from a file as a fixture: a `status` notification.
     public static func status(from data: Data) -> Status? {
-        (try? decoder.decode(Status.self, from: data))
-            ?? (try? decoder.decode(Pushed<Status>.self, from: data))?.params
-            ?? (try? decoder.decode(Answer<HelloResult>.self, from: data))?.result.status
+        (try? decoder.decode(Pushed<Status>.self, from: data))?.params
     }
 }
 

@@ -105,7 +105,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
 - **`Client`** connects to `serve` and keeps connected. It runs
   `turnscope serve --socket` once for the socket's path, starts `serve` when
   nothing listens, and says `hello` on each connection. It hands the store
-  events in order: its phase (connecting, connected, or failed and why),
+  events in order: its phase (connected, or failed and why),
   each `hello` result, each status and each alert. A status or alert it
   can't read drops the connection, so the store hears that it failed.
   `request` sends a request and waits for its result.
@@ -119,7 +119,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   setting show at once, and go back if `serve` refuses. Connecting or
   disconnecting an agent shows as soon as `serve` has done it. It also
   holds which agents are being connected, why connecting failed, and the
-  sessions that used the open account's deciding limit (`usedMost`), shown
+  sessions that used an account's deciding limit (`usedMost`), shown
   only while that limit still decides it. It calls `onChange` after each
   status and each time `serve` connects or fails, and `onAlert` with each
   alert. `AppDelegate` sets these to redraw the menu bar item and post
@@ -203,7 +203,8 @@ The panel is 340 points wide. From the top:
    Settings (⌘,) and Quit (⌘Q).
 
 Before the first status, the panel shows "Reading your agents' history…",
-or "Turnscope can't read its data" with the reason.
+or "Turnscope can't read its data" with the reason. Settings → Agents and
+Accounts show the same.
 
 On a first launch, the headline says "Getting your limits" until `serve`
 has read them. It pushes a status then, before it reads the history, so
@@ -216,14 +217,14 @@ can't say (`Words.opened`), opens in place on a click, Space or Return,
 closing any other. Open, it shows each limit on a line of its own with a
 bar, the note, and the sessions that used the deciding limit most, from
 `limit.breakdown`. The store asks for those of every account as the panel
-opens, so a row opens with them in one motion, and again for the open
-account with each status. Hovering shows a Hide button, and right-clicking
-offers Hide too. Hide and Show name the account as its row does
-(`Words.called`), so two with the same title are told apart.
+opens, so a row opens with them in one motion. `AppDelegate` has it ask
+again for the open account with each status. Hovering shows a Hide button,
+and right-clicking offers Hide too. Hide and Show name the account as its
+row does (`Words.called`), so two with the same title are told apart.
+VoiceOver reads a limit's figure as what's left: "87% left".
 
 With Reduce Motion on, pages fade instead of sliding, a limit's bar is
-drawn at its level instead of growing to it, and the footer's spinner holds
-still.
+drawn at its level instead of growing to it, and a spinner holds still.
 
 The window is a borderless, transparent panel hung under the item, as tall
 as the screen allows. The SwiftUI view draws its own glass, edge and shadow
@@ -264,6 +265,10 @@ are in cards. Changes take effect at once.
 | Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed. Run from its disk image, the switches are off and the heading says to move Turnscope to Applications |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 
+While `serve` is away, the switches that change something through it are
+grayed out: the notification switches, and those of Agents and Accounts. A
+change made then would be lost.
+
 Where each setting is kept:
 
 | Setting | Kept in | Also changed by |
@@ -271,7 +276,7 @@ Where each setting is kept:
 | Show (menu bar) | The app's defaults, `menuShows`: `all` or `one` | |
 | Offers to connect put away | The app's defaults, `dismissedConnect`: agent ids joined by commas | |
 | Open at login | macOS's login items (`SMAppService.mainApp`) | System Settings |
-| Notify me when | The engine's settings, through `settings.set` | `turnscope config set notify.<kind> on\|off` |
+| Notify me when | The engine's settings, through `settings.set` | |
 | Hidden accounts | The engine, through `account.hide` | `turnscope accounts hide\|show` |
 | Connected agents | Each agent's own configuration, through `agent.connect` and `agent.disconnect` | `turnscope connect`, `turnscope disconnect` |
 | Check automatically | Sparkle's defaults | |
@@ -353,7 +358,7 @@ says where each one comes from.
 | Argument | Does |
 |---|---|
 | `--data <dir>` | Passed to the engine: the data directory to use |
-| `--home <dir>` | Passed to the engine: the home folder to read agents' history and logins from |
+| `--home <dir>` | Passed to the engine: the home folder to read agents' history and logins from, and to connect agents in |
 | `--open` | Opens the panel once the first status arrives |
 | `--open <names>` | Also opens what the names say, joined by commas: `--open account,unused` |
 | `--fixture <file>` | Shows the status in a file, with no engine |
@@ -370,10 +375,10 @@ says where each one comes from.
 An unknown name opens nothing. A value that starts with `--` is never read
 as an option's value, so `--open --data <dir>` opens nothing in the panel.
 
-- **`--fixture`** reads a status on its own, a `status` notification or a
-  `hello` result, such as `contract/status.notification.json`. Its words are
-  as of the status's `at`, so it reads the same whenever it's drawn.
-  Changes made in it show on screen and go nowhere.
+- **`--fixture`** reads a `status` notification, such as
+  `contract/status.notification.json`. Its words are as of the status's
+  `at`, so it reads the same whenever it's drawn. Changes made in it show on
+  screen and go nowhere.
 - **`--snapshot`** needs `--fixture`. With `--open`, it opens a row or the
   fold first, or draws Settings at the tab named. It draws the window
   background where the panel has glass, the panel at its full height with
@@ -399,8 +404,9 @@ TURNSCOPE_BINARY=$PWD/target/debug/turnscope "$app" --data /tmp/ts --open accoun
 ```
 
 The app logs to the unified log, under the subsystem
-`com.joeychilson.turnscope`. A `serve` it starts writes nowhere. To watch
-the connection:
+`com.joeychilson.turnscope`. What a `serve` it starts prints on standard
+error is kept only to say why it couldn't start
+([protocol.md](protocol.md#lifecycle)). To watch the connection:
 
 ```sh
 log stream --predicate 'subsystem == "com.joeychilson.turnscope"'
@@ -445,13 +451,12 @@ First decide who owns it.
    takes the same default while the key isn't set. `AppDelegate` redraws
    the menu bar item on any change to the defaults.
 
-**An engine setting** must agree with the command line, or changes what
-`serve` does, like the notification switches. It's a protocol change
+**An engine setting** changes what `serve` does, like the notification
+switches. It's a protocol change
 ([protocol.md](protocol.md#change-the-protocol)):
 
 1. Add the field to `Settings` or `Notify` in `src/alerts.rs`, with its
-   default, and to `turnscope config` in `src/main.rs` and
-   [cli.md](cli.md).
+   default.
 2. Add it to the examples in `contract/` that carry settings.
 3. Add it to `Settings` or `Notify` in `Contract.swift`. The app sends the
    whole `Settings` back, so a field it leaves out is reset to its default

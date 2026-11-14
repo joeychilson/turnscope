@@ -161,7 +161,7 @@ Each kind of extension lives in one place.
 |---|---|---|
 | An agent | `src/agents/<agent>.rs`, implementing `Agent` | A line in `agents::ALL` ([adding-an-agent.md](adding-an-agent.md)) |
 | A provider | `src/providers/<provider>.rs`, implementing `Provider` | A line in `providers::ALL` ([adding-a-provider.md](adding-a-provider.md)) |
-| An MCP tool | A function `fn(&mut Server, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
+| An MCP tool | A function `fn(&Server, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
 | A CLI command | A variant of `main::Command` | Its arm in `main::answer`, and whether it catches up first |
 | A `serve` method | Its arm in `serve::Server::answer` | Its example in `contract/` ([protocol.md](protocol.md)) |
 | A database change | A new script at the end of `db::REVISIONS` | |
@@ -204,7 +204,7 @@ limits. A provider out of reach leaves things as they were.
 
 | Process | Catches up |
 |---|---|
-| A CLI command that reports data | Before it answers. `config`, `connect`, `disconnect`, and `accounts hide` and `show` don't. |
+| A CLI command that reports data | Before it answers. `connect`, `disconnect`, and `accounts hide` and `show` don't. |
 | `guard` | Limits only, when due. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, and before the `continue` prompt. |
@@ -265,7 +265,7 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
   agent's own command on a thread of its own, as it can take a minute.
 - If the thread that keeps the data current stops, `serve` exits with an
   error, so the app starts one that works.
-- It exits `--linger` seconds (default 60) after its last client leaves.
+- It exits 60 seconds after its last client leaves.
 
 ## Status
 
@@ -300,7 +300,9 @@ megabytes.
   all of the account's usage (not one model's or one key's) where there are
   any. The most urgent wins (used up, then running out), then the soonest
   out, then the least left (at the reset for a limit that lasts, where
-  that's forecast). When every limit reset since, it's the last to reset.
+  that's forecast). Of several used up, the last back wins, since the
+  account can't be used until then; one with no reset counts as later than
+  any. When every limit reset since, it's the last to reset.
 - **Accounts are listed** in use first (the most urgent, soonest out and
   least left first), then the rest (the most left first), then those whose
   login was refused, then those with nothing to show.
@@ -367,7 +369,8 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
     from now. The time is shown to 10 minutes
     within a day and to the hour beyond, and never before now.
   - `lasts`: with what will be left at the reset, as a range, or nothing
-    when none of it has been used.
+    when none of it has been used. After use was given back, with none
+    since, that's what it has now.
   - `unknown`: not enough data, `stale` (read over 30 minutes ago, or the
     window reset since), `rolling` (no start to pace from) or `noReset`
     (credits).
@@ -379,8 +382,7 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
 
   | Share of the window left | Day or less | Longer |
   |---|---|---|
-  | Under 10% | 0.05–2.5 | 0–3.4 |
-  | 10% to 25% | 0.05–2.5 | 0–3.4 |
+  | Under 25% | 0.05–2.5 | 0–3.4 |
   | 25% to 50% | 0.25–1.8 | 0–3.4 |
   | 50% or more | 0.35–1.6 | 0.7–3.4 |
 

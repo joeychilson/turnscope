@@ -14,7 +14,6 @@
 | [`sessions`](#sessions) | Find sessions, show one, or read its conversation |
 | [`handoff`](#handoff) | Everything another agent needs to finish a session's work |
 | [`accounts`](#accounts) | List accounts, or hide or show one |
-| [`config`](#config) | Show the settings, or turn a notification on or off |
 | [`connect`, `disconnect`](#connect-and-disconnect) | See which agents run Turnscope's MCP server, add it to one, or remove it |
 | [`doctor`](#doctor) | What can't be read, and how to fix it |
 | [`serve`, `mcp`](#serve-and-mcp) | The app's daemon, and the MCP server |
@@ -32,7 +31,7 @@ The examples below are the output of the snapshot tests
 | Option | Default | |
 |---|---|---|
 | `--data <dir>` | `~/Library/Application Support/com.joeychilson.turnscope` | Where Turnscope keeps its data |
-| `--home <dir>` | `$HOME` | The home folder to read the agents' history and logins from |
+| `--home <dir>` | `$HOME` | The home folder to read the agents' history and logins from. `connect` and `disconnect` change the agents' settings there |
 | `--json` | | Print JSON instead of text |
 | `-h`, `--help` | | Print help |
 | `-V`, `--version` | | Print the version |
@@ -68,8 +67,6 @@ wait for it, and after a second they say
   `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60`. A unique start of the
   id, or of the agent's own part of it, works too when it's 4 characters
   or more: `0f6e3f6a`.
-- **Settings** are `notify.runningOut`, `notify.usedUp`, `notify.reset` and
-  `notify.signIn`.
 
 `handoff` leaves out the calling agent's own session, and `usage --limit`,
 `guard` and `statusline` default to its account. They find the calling
@@ -157,6 +154,10 @@ SuperGrok (me@example.com) · via Grok Build
 hours your agents were working. Ranges are 80% ranges.
 [architecture.md](architecture.md#forecast) says how both are worked out.
 
+With no account to show, it says why in one line: no account's limits have
+been read yet, or every account is hidden, and then that `--all` shows
+them. With `--json`, `accounts` is empty.
+
 With `--hours`, the answer comes first:
 
 ```console
@@ -215,6 +216,12 @@ how much of the new window is used isn't known. With `--json`,
 `sharePercents` holds each row's share in the rows' order, or `null` when
 rows get none.
 
+A limit is named by part of its name or of its key, in any case: `week`,
+`"5 hours"`. A model's limit takes its model after its name, as `status`
+shows it, or before it, as the app does: `"weekly (opus)"` or
+`"opus weekly"`. When the name fits several limits, the first by key is
+taken.
+
 ```console
 $ turnscope usage --account claude --limit week
 Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
@@ -250,8 +257,8 @@ session ends with `· yours`. Usage with no known price shows as
 
 | Flag | Default | |
 |---|---|---|
-| `--search <words>` | | Sessions where all these words were said, by you or the model, in any of its messages. Whole words, in any case. Those with all of them in the most messages come first, and the first three show the latest such message. |
-| `--folder <dir>` | every folder | Sessions of this folder's project (its git repository), or run in it or under it. |
+| `--search <words>` | | Sessions where all these words were said, by you or the model, in any of its messages. Whole words, in any case, with or without their accents. A word with punctuation in it, as `csv::quoted`, is its parts in a row. Those with all of them in the most messages come first, and the first three show the latest such message. |
+| `--folder <dir>` | every folder | Sessions of this folder's project (its git repository), or run in it or under it. A relative one is in the current folder. `.` and `..` are folded as written, without asking the disk: a folder that's gone still names its sessions, and a link isn't followed. |
 | `--agent <id>` | every agent | Only this agent's sessions. |
 | `--since <when>` | | Active since this [time](#time-forms). |
 | `--running` | | Only sessions active in the last 5 minutes. |
@@ -348,7 +355,7 @@ holds and how it's built, with an example.
 | Argument | Default | |
 |---|---|---|
 | `<session>` | The latest session in the folder, other than the caller's own | The session to hand off. Taken by default, the handoff first lists the two sessions before it in the folder; `--json` gives them as `others`. |
-| `--folder <dir>` | The current folder | The folder to take the latest session of: its project's sessions, or those run in it or under it. |
+| `--folder <dir>` | The current folder | The folder to take the latest session of: its project's sessions, or those run in it or under it. Written as for [`sessions --folder`](#sessions). |
 
 Only Claude Code says which session is calling. From another agent, its
 own session is taken to be that agent's latest run in the folder it runs
@@ -375,32 +382,9 @@ OpenRouter API key · openrouter:api
 SuperGrok (me@example.com) · xai:user-3
 ```
 
-A hidden account ends with `· hidden`.
-
-## Config
-
-```text
-turnscope config
-turnscope config set <key> on|off
-```
-
-Shows the settings, or turns a notification on or off. All are on by
-default.
-
-| Key | Notifies when |
-|---|---|
-| `notify.runningOut` | A limit in use will run out before its reset at this pace |
-| `notify.usedUp` | A limit in use is used up |
-| `notify.reset` | A limit that was used up is back |
-| `notify.signIn` | An account in use needs signing in again |
-
-```console
-$ turnscope config
-notify.runningOut on
-notify.usedUp on
-notify.reset on
-notify.signIn on
-```
+A hidden account ends with `· hidden`. With no account yet, it says that
+no account's limits have been read, as `status` does, and `--json` prints
+an empty list.
 
 ## Connect and disconnect
 
@@ -430,6 +414,10 @@ it at this one. `connect` refuses when Turnscope runs from a disk image or
 a drive in `/Volumes`, or from the copy macOS runs a downloaded app from:
 the agent would lose it once that's gone.
 
+With `--home`, the agent's command runs with `HOME` set to that folder, so
+that it changes the settings there and not your own. The command is still
+found on the `PATH` your login shell sets in your own home.
+
 ## Doctor
 
 ```text
@@ -444,18 +432,18 @@ and `serve` not running. When all is well it prints `Nothing to fix.`
 ## Serve and MCP
 
 ```text
-turnscope serve [--socket] [--linger <seconds>]
+turnscope serve [--socket]
 turnscope mcp
 ```
 
 `serve` is the daemon the menu bar app talks to, over a Unix socket
 ([protocol.md](protocol.md)). The app starts it. Only one runs per data
-directory; a second one exits at once.
+directory; a second one exits at once. It exits 60 seconds after its last
+client leaves.
 
-| Flag | Default | |
-|---|---|---|
-| `--socket` | | Print the socket's path and exit. |
-| `--linger <seconds>` | 60 | How long to keep running with no client connected. |
+| Flag | |
+|---|---|
+| `--socket` | Print the socket's path and exit. |
 
 `mcp` is the MCP server on standard input and output, which agents start
 ([mcp.md](mcp.md)).
@@ -470,7 +458,7 @@ turnscope guard --limit <name> --below <percent> [--account <name>] [--say <text
 
 | Flag | Default | |
 |---|---|---|
-| `--limit <name>` | required | The limit, by part of its name, such as `week`, `"5 hours"` or `opus`. |
+| `--limit <name>` | required | The limit, named as for [`usage --limit`](#usage): `week`, `"5 hours"` or `"opus weekly"`. |
 | `--below <percent>` | required | Block when the limit has less than this percent left, 0 to 100. |
 | `--account <name>` | The calling agent's | The account. The name must match one account. |
 | `--say <text>` | The reason | What to print on standard error when it blocks. |
@@ -544,7 +532,8 @@ In Claude Code's `settings.json`:
 ```
 
 Without `--account`, it takes the account of the session Claude Code names
-on standard input (`session_id`, or else the latest session in
-`workspace.current_dir` or `cwd`), then the calling agent's, then the first
-account in use. It answers from the database alone, so it never waits on
-the network. It always exits 0: when nothing is known, it prints nothing.
+on standard input (`session_id`), then the calling agent's, then the first
+account in use. A new session isn't read yet, so the calling agent's
+account shows for it. It answers from the database alone, so it never
+waits on the network. It always exits 0: when nothing is known, it prints
+nothing.

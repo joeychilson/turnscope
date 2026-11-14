@@ -58,7 +58,7 @@ private struct AgentRow: View {
                                set: { on in
                                    withAnimation(spring) { on ? store.connect(agent.id) : store.disconnect(agent.id) }
                                }))
-                .disabled(changing != nil || store.fromDiskImage)
+                .disabled(changing != nil || store.fromDiskImage || store.failure != nil)
         }
         .padding(Row.padding)
         .frame(minHeight: Row.setting)

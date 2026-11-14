@@ -76,6 +76,8 @@ WITH RECURSIVE tree (id) AS (
     SELECT s.id FROM session s JOIN tree ON s.parent = tree.id WHERE +s.link = 'subagent'
 )";
 
+/// Its folders are as `crate::folded` makes them: a session's is compared
+/// with them as text.
 #[derive(Default)]
 pub struct Query {
     /// All these words said in it.
@@ -162,6 +164,8 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         .folder
         .as_ref()
         .map(|folder| crate::ingest::project(&folder.to_string_lossy(), home));
+    // Only the root still ends with a slash. Without it, `?3 || '/'` below
+    // starts every folder, as every folder is under the root.
     let folder = query
         .folder
         .as_ref()
@@ -195,10 +199,7 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
         true => query.since.unwrap_or(0).max(now - RUNNING),
         false => query.since.unwrap_or(0),
     };
-    let run_in = query
-        .run_in
-        .as_ref()
-        .map(|folder| folder.to_string_lossy().trim_end_matches('/').to_owned());
+    let run_in = query.run_in.as_ref().map(|folder| folder.to_string_lossy());
     let mut rows = statement.query(params![query.agent, project, folder, since, run_in])?;
     // Each with the ids of the sessions in its tree, until the page is cut.
     let mut found: Vec<(Summary, String)> = Vec::new();
@@ -268,7 +269,7 @@ pub fn find(db: &Connection, home: &Path, query: &Query, now: i64) -> Result<Pag
             Some((session, held))
         });
         for (session, held) in holding.take(SAYING) {
-            session.said = said(db, held, &words).map(|said| Said {
+            session.said = said(db, held, &words)?.map(|said| Said {
                 subagent: (held != session.id).then(|| held.to_owned()),
                 ..said
             });
@@ -681,63 +682,71 @@ pub struct Reading {
     pub failed: bool,
 }
 
-/// The latest message of session `id` that holds all of `words`, matched
-/// as the search index matches them, a whole word at a time, with about 240
-/// characters around the longest of them, on one line.
-fn said(db: &Connection, id: &str, words: &[String]) -> Option<Said> {
-    // Text as the index reads it: letters and digits, in lower case, the
-    // rest spaces, one character for each, so places in it are the text's.
-    let plain = |text: &str| -> Vec<char> {
-        text.chars()
-            .map(|char| match char.is_alphanumeric() {
-                true => char.to_lowercase().next().unwrap_or(char),
-                false => ' ',
-            })
-            .collect()
+/// The latest message of session `id` that holds all of `words`, with about
+/// 240 characters around the longest of them, on one line.
+///
+/// The index tells which sessions hold the words, not which message, and
+/// keeps no text. So the session's messages are indexed again here, in
+/// memory, by the index's own tokenizer, and asked for the words as the
+/// index was. Matching them in Rust instead, as letters and digits in lower
+/// case, found no message where the index had found one: for `csv::quoted`,
+/// which the index reads as `csv` then `quoted` whatever lies between them,
+/// or for `cafe` where `café` was said. It couldn't be made to agree: which
+/// characters make a word, and what each folds to, are tables of SQLite's
+/// own. On a made-up session of 2,000 turns, a 15 MB file with 3.3 MB of it
+/// said in 4,000 messages, indexing them all takes 25 ms, after 150 ms
+/// reading the file. Matching in Rust took up to 15 ms, and none when the
+/// last message held the words (November 2026).
+fn said(db: &Connection, id: &str, words: &[String]) -> Result<Option<Said>> {
+    let Ok(entries) = transcript(db, id) else {
+        return Ok(None);
     };
-    // A word as a whole word: spaces around it, the text with spaces at its
-    // ends.
-    let words: Vec<Vec<char>> = words
-        .iter()
-        .map(|word| {
-            let word: String = plain(&word.to_lowercase()).into_iter().collect();
-            format!(
-                " {} ",
-                word.split_whitespace().collect::<Vec<_>>().join(" ")
-            )
-            .chars()
-            .collect()
-        })
-        .collect();
-    let find =
-        |text: &[char], word: &[char]| text.windows(word.len()).position(|window| window == word);
-    let entries = transcript(db, id).ok()?;
-    let (entry, found, padded) = entries
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(entry, found)| {
-            if found.tool.is_some() || found.kind == Kind::System {
-                return None;
-            }
-            let padded: Vec<char> = std::iter::once(' ')
-                .chain(plain(&found.text))
-                .chain(std::iter::once(' '))
-                .collect();
-            words
-                .iter()
-                .all(|word| find(&padded, word).is_some())
-                .then_some((entry, found, padded))
-        })?;
+    let index = Connection::open_in_memory()?;
+    // In a transaction left open: at each commit the index writes out what
+    // it was given, 64 ms for 500 turns against 6.
+    index.execute_batch(&format!(
+        "BEGIN; CREATE VIRTUAL TABLE message USING fts5 (text, tokenize = '{}')",
+        crate::db::TOKENIZE
+    ))?;
+    let mut add = index.prepare("INSERT INTO message (rowid, text) VALUES (?1, ?2)")?;
+    for (entry, message) in entries.iter().enumerate() {
+        if message.tool.is_none() && message.kind != Kind::System {
+            // A NUL would end the text `highlight` gives back. A space is
+            // as long, so places in what's indexed are the text's.
+            add.execute(params![entry as i64, message.text.replace('\0', " ")])?;
+        }
+    }
+    let latest: Option<i64> = index.query_row(
+        "SELECT max(rowid) FROM message WHERE message MATCH ?1",
+        [words.join(" AND ")],
+        |row| row.get(0),
+    )?;
     // Around the longest word, the one that says most of what's looked
     // for, as a common one may be anywhere.
-    let longest = words.iter().max_by_key(|word| word.len())?;
-    let at = find(&padded, longest)?;
+    let longest = words.iter().max_by_key(|word| word.chars().count());
+    let (Some(entry), Some(longest)) = (latest, longest) else {
+        return Ok(None);
+    };
+    // `highlight` puts a space where the word starts. A word starts at a
+    // letter or a digit, so that's where the two first differ.
+    let (indexed, marked): (String, String) = index.query_row(
+        "SELECT text, highlight(message, 0, ' ', '') FROM message
+         WHERE message MATCH ?1 AND rowid = ?2",
+        params![longest, entry],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let at = indexed
+        .chars()
+        .zip(marked.chars())
+        .take_while(|(indexed, marked)| indexed == marked)
+        .count();
+    let entry = entry as usize;
+    let found = &entries[entry];
     let text: Vec<char> = found.text.chars().collect();
     let (start, end) = (at.saturating_sub(80), (at + 160).min(text.len()));
     let around: String = text[start..end].iter().collect();
     let around = around.split_whitespace().collect::<Vec<_>>().join(" ");
-    Some(Said {
+    Ok(Some(Said {
         subagent: None,
         entry,
         kind: found.kind,
@@ -746,7 +755,7 @@ fn said(db: &Connection, id: &str, words: &[String]) -> Option<Said> {
             if start > 0 { "…" } else { "" },
             if end < text.len() { "…" } else { "" }
         ),
-    })
+    }))
 }
 
 /// A page of a conversation: its entries with their numbers, and the number
@@ -1162,8 +1171,127 @@ pub fn detail_text(detail: &Detail, now: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cite, Entry, Error, Kind, Page, Reading, Said, Summary, page, page_text, text, transcript,
+        Cite, Entry, Error, Kind, Page, Query, Reading, Said, Summary, find, page, page_text, said,
+        search, text, transcript,
     };
+
+    /// A home of made-up Claude Code sessions, `claude-code:s0` on, each with
+    /// one of `texts` as what the person said, and a database that has read
+    /// it.
+    fn saying(texts: &[&str]) -> (tempfile::TempDir, tempfile::TempDir, rusqlite::Connection) {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let folder = home.path().join(".claude/projects/-work-app");
+        std::fs::create_dir_all(&folder).unwrap();
+        for (session, text) in texts.iter().enumerate() {
+            let line = serde_json::json!({"type": "user", "sessionId": format!("s{session}"),
+                "timestamp": "2026-09-30T09:00:00Z", "cwd": "/work/app",
+                "message": {"role": "user", "content": text}});
+            std::fs::write(
+                folder.join(format!("s{session}.jsonl")),
+                format!("{line}\n"),
+            )
+            .unwrap();
+        }
+        let mut db = crate::db::open(data.path()).unwrap();
+        crate::ingest::ingest(&mut db, home.path()).unwrap();
+        (data, home, db)
+    }
+
+    #[test]
+    fn a_search_quotes_a_message_for_the_words_the_index_finds() {
+        // What was said, the words searched for, and whether they're found.
+        let cases = [
+            // Whole words, in any case.
+            ("The test csv::quoted failed.", "QUOTED", true),
+            ("The test csv::quoted failed.", "quote", false),
+            // Each word anywhere in the message.
+            ("Quoted the CSV.", "csv quoted", true),
+            // A word with punctuation in it is its parts in a row, whatever
+            // lies between them.
+            ("The test csv::quoted failed.", "csv::quoted", true),
+            ("The test csv::quoted failed.", "csv.quoted", true),
+            ("Call foo, bar next.", "foo.bar", true),
+            ("I don't know.", "don't", true),
+            ("The test csv::quoted failed.", "quoted::csv", false),
+            ("The test csv::quoted failed.", "csv::failed", false),
+            // With or without its accents, an accent a character of its own
+            // or not.
+            ("Open the café.", "cafe", true),
+            ("Open the cafe.", "café", true),
+            ("Open the cafe\u{301}s.", "cafés", true),
+            ("Open the cafe\u{301}s.", "cafe", false),
+            // A stroke isn't an accent, and ß isn't ss.
+            ("Smørrebrød", "smorrebrod", false),
+            ("Die Straße.", "strasse", false),
+            // Forms of one letter that lower case keeps apart: a final sigma,
+            // the micro sign, a long s.
+            ("ΟΔΟΣ", "οδος", true),
+            ("5 µm wide", "μm", true),
+            ("ſtop", "stop", true),
+            // Capitals the index doesn't fold: Cherokee's, Georgian's.
+            ("ᎠᎡ", "ꭰꭱ", false),
+            ("ᲐᲑ", "აბ", false),
+            // A vowel sign ends a word in the index, as in Hindi and Thai.
+            ("हिंदी भाषा", "हिंद", true),
+            ("हिंदी भाषा", "हद", false),
+            ("สวัสดี", "สว", true),
+            // To the index a circled letter is no letter, and a character
+            // for private use is one.
+            ("aⒶb", "a", true),
+            ("a\u{e000}b", "a", false),
+        ];
+        let texts: Vec<&str> = cases.iter().map(|(text, ..)| *text).collect();
+        let (_data, _home, db) = saying(&texts);
+        let mut wrong = Vec::new();
+        for (session, (text, words, found)) in cases.into_iter().enumerate() {
+            let id = format!("claude-code:s{session}");
+            // Each word as a phrase, as `find` asks for it.
+            let phrases: Vec<String> = words
+                .split_whitespace()
+                .map(|word| format!("\"{word}\""))
+                .collect();
+            let index = search(&db, &phrases)
+                .unwrap()
+                .is_some_and(|search| search.together.contains_key(&id));
+            let quoted = said(&db, &id, &phrases).unwrap().is_some();
+            if (index, quoted) != (found, found) {
+                wrong.push(format!(
+                    "{words:?} in {text:?}: the index {index}, the message quoted {quoted}, not {found}"
+                ));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn what_a_search_quotes_is_cut_around_a_word_with_punctuation() {
+        // Before the word, a NUL, and capitals with accents, each two bytes
+        // that the index reads as a letter of one: the places are the
+        // text's all the same.
+        let text = format!(
+            "Look.\0 {}The test csv::quoted failed. {}",
+            "É ".repeat(100),
+            "ü ".repeat(100)
+        );
+        let (_data, home, db) = saying(&[&text]);
+        let query = Query {
+            search: Some("csv::quoted".to_owned()),
+            count: 1,
+            ..Query::default()
+        };
+        let found = find(&db, home.path(), &query, 0).unwrap();
+        let quoted = found.sessions[0].said.as_ref().expect("a message quoted");
+        assert_eq!((quoted.entry, quoted.kind), (0, Kind::User));
+        // From 80 characters before the word to 160 after its start.
+        assert_eq!(
+            quoted.text,
+            format!(
+                "…{}The test csv::quoted failed. {}…",
+                "É ".repeat(35),
+                "ü ".repeat(70).trim_end()
+            )
+        );
+    }
 
     #[test]
     fn what_a_search_quotes_is_escaped_as_json() {

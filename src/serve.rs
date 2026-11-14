@@ -92,7 +92,10 @@ struct Server {
     sender: Sender<Message>,
 }
 
-pub fn run(home: &Path, data: &Path, linger: Duration) -> Result<()> {
+/// How long serve stays with no client: an app restart reconnects first.
+const LINGER: Duration = Duration::from_secs(60);
+
+pub fn run(home: &Path, data: &Path) -> Result<()> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -143,7 +146,7 @@ pub fn run(home: &Path, data: &Path, linger: Duration) -> Result<()> {
     let mut next = 0;
     loop {
         let wait = alone.map_or(Duration::from_secs(3600), |since| {
-            linger.saturating_sub(since.elapsed())
+            LINGER.saturating_sub(since.elapsed())
         });
         match messages.recv_timeout(wait) {
             Ok(Message::Connected(stream)) => {
@@ -206,7 +209,6 @@ pub fn run(home: &Path, data: &Path, linger: Duration) -> Result<()> {
                     server.push();
                 }
             }
-            // The linger, with no client: an app restart reconnects first.
             Err(RecvTimeoutError::Timeout) if alone.is_some() => break,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,

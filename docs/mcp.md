@@ -23,6 +23,8 @@ The app's Settings → Agents does the same.
 `connect` runs the agent's own command. Turnscope never writes an agent's
 files. It finds the command on the `PATH` of your interactive login shell,
 where agents' installers add their folders, so it also works from the app.
+With [`--home`](cli.md#global-options), it runs the command with `HOME` set
+to that folder.
 
 | Agent | Id | Add | Remove |
 |---|---|---|---|
@@ -178,7 +180,9 @@ The answer has three parts:
    rolls, as OpenCode Go's 5 hours does, has no start to measure work
    from, so the answer leaves it out and says so.
 2. A one-sentence verdict on the first account: how much work is left
-   before which limit runs out, and when that limit resets.
+   before which limit runs out, and when that limit resets. A used-up
+   account says which limit is used up and when it's back: of several, the
+   last back.
 3. Each account, the caller's first and marked `yours`, with the agents
    that use it (`via OpenCode and Pi`), and `in use` and `hidden` where
    they apply. Then a note if its limits couldn't be read, a
@@ -189,6 +193,10 @@ The answer has three parts:
 if use goes on as it has. "Hours of work" counts only the time agents were
 working: how much more work the limit allows. See
 [Forecast](architecture.md#forecast).
+
+With no account to show, the answer is one line saying why, as the command
+line's `status` says it: no account's limits have been read yet, or every
+account is hidden, and then to name one with `account`.
 
 Called with `{"all": true, "hours": 2}`:
 
@@ -223,7 +231,7 @@ together, as for "what did I spend across my agents".
 |---|---|---|---|
 | `account` | string | the caller's | One account: its id, or text in its title, label or id. If the text matches several, the error lists them. |
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
-| `limit` | string | the limit that decides how the account stands | Text in a limit's name or key, any case, such as `week` or `5 hours`. |
+| `limit` | string | the limit that decides how the account stands | Text in a limit's name or key, any case, such as `week` or `5 hours`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
 | `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit. The description says that "this week" of a weekly limit is its window, as `week` is the calendar week from Monday: an agent asked what used a weekly limit this week passed `week` and lost the shares. A `since` at or after now is an error, as it is for the command line's `usage`. |
 | `by` | `session`, `project`, `model` or `agent` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
@@ -303,7 +311,9 @@ messages first, then the most recently active, and each says in how many
 (`· all the words in 3 messages`). The first three with any such message
 show the latest one: its entry, who said it, the subagent it's in where
 it's in one, and the text around the words, read from the session's files.
-The words are matched whole, as the index matches them.
+The words are matched whole, as the index matches them: in any case, with
+or without their accents, and a word with punctuation in it, as
+`csv::quoted`, as its parts in a row.
 
 ```markdown
 - `claude-code:0f6e3f6a-…` "Fix the CSV parser so quoted commas work. Don't change the public API." · … · all the words in 3 messages
@@ -314,7 +324,9 @@ A subagent's usage counts toward the session it ran in; a fork, branched off
 another session, is a session of its own. When there are more, the answer
 ends with `Next page: cursor "<id>".` When there are none, it says
 `No sessions found.` An agent id that isn't one fails with the ids there
-are. `folder` takes `~` and paths relative to the caller's folder.
+are. `folder` takes `~` and paths relative to the caller's folder. `.` and
+`..` are folded as written, without asking the disk: a folder that's gone
+still names its sessions, and a link isn't followed.
 
 Called with `{"folder": "/work/api"}`:
 
@@ -335,7 +347,7 @@ a quick question beside the work meant.
 | Input | Type | Default | Meaning |
 |---|---|---|---|
 | `session` | string | the latest other session in `folder` | A session id, such as `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60`, or a start of one that matches no other: 4 characters or more, with or without the agent id. |
-| `folder` | string | the caller's folder | The folder to take the latest session of, when `session` isn't given. |
+| `folder` | string | the caller's folder | The folder to take the latest session of, when `session` isn't given. Written as for [`find_sessions`](#find_sessions). |
 
 The answer is a markdown handoff of at most about 16,000 tokens. It names
 the session, its folder and branch, when it was last active, and for a

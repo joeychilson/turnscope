@@ -10,8 +10,9 @@ socket. The server is `src/serve.rs`. The app's side is `Client.swift` and
 one file per message, covering every enum value. A file is named for its
 method and what it is: `hello.request.json`, `hello.result.json`,
 `status.notification.json`. `done.result.json` is the empty result, and
-`error.json` is an error. The examples are pretty-printed. On the socket,
-each message is one line.
+`error.json` is an error. The whole status is in the notification:
+`hello.result.json` has only the account that shows `expired`. The examples
+are pretty-printed. On the socket, each message is one line.
 
 Both sides test against the examples, so they can't drift apart:
 
@@ -49,7 +50,10 @@ nc -U "$(turnscope serve --socket)"
   and `--home` to get the socket's path, and `turnscope --version` to get
   its engine's name. Then it connects. If nothing listens, it starts
   `turnscope serve` with the same `--data` and `--home`, and tries to
-  connect every 100 ms for 5 seconds.
+  connect every 100 ms for 5 seconds. If that `serve` exits with an error
+  first, the app shows the last line it printed on standard error as why.
+  Its standard error is a file, not a pipe: once the app quit, a pipe
+  would end `serve` the first time it printed anything.
 - **Reconnecting.** After a dropped connection or a failed attempt, the app
   waits 0.5 s, doubling each time up to 30 s. The wait goes back to 0.5 s
   only after a connection has held for 30 s, so an engine that keeps failing
@@ -57,11 +61,11 @@ nc -U "$(turnscope serve --socket)"
   30 s counts as a failed attempt. That's long because `hello` works out the
   whole status, which is slow on a long history. A `status` or `alert` the
   app can't read drops the connection.
-- **Exiting.** `serve` exits `--linger` seconds (default 60) after its last
-  client leaves, or after it starts if no client connects. An app restart or
-  update reconnects in that time without reading anything again. `shutdown`
-  makes it exit now. If the thread that keeps the data current fails, `serve`
-  exits with an error, and the app starts a new one.
+- **Exiting.** `serve` exits 60 seconds after its last client leaves, or
+  after it starts if no client connects. An app restart or update reconnects
+  in that time without reading anything again. `shutdown` makes it exit now.
+  If the thread that keeps the data current fails, `serve` exits with an
+  error, and the app starts a new one.
 - **Another engine.** The app only talks to the engine it ships with. The
   `hello` result names the server, as `turnscope --version` prints it
   (`turnscope 0.1.0`), and the app checks that before reading the rest. If
@@ -119,9 +123,9 @@ A protocol the server doesn't speak gets `-32001` (`error.json`):
   meanwhile. On success it pushes the status. An unknown agent gets
   `-32602`. A command that fails gets `-32000` with its reason.
 
-`turnscope config set` and `turnscope accounts hide|show` change the same
-settings from the command line. A running `serve` pushes the status that
-carries them within a minute.
+`turnscope accounts hide|show` hides or shows an account from the command
+line. A running `serve` pushes the status that carries the change within a
+minute.
 
 ```json
 {"id":3,"jsonrpc":"2.0","method":"limit.breakdown","params":{"account":"anthropic:acct-1:org-1","limit":"five_hour"}}
@@ -190,9 +194,11 @@ take a message within 2 seconds is dropped.
 app only chooses words, colors and layout.
 
 The app reads only the fields it shows. It doesn't read an account's
-`usedBy`, a limit's `readAt` or `work`, a window's `startsAt`, the outlook's
-`soonest`, `latest` or `leftAtReset`, or an alert's `at`. The command line
-and MCP server use those.
+`usedBy`, a `live` state's `readAt`, a limit's `readAt` or `work`, a
+window's `startsAt`, the outlook's `soonest`, `latest` or `leftAtReset`, or
+an alert's `at`. The command line and MCP server use the limit's, the
+window's and the outlook's in what they say, and `turnscope status --json`
+prints the account's and the state's. No client reads an alert's `at`.
 
 | Field | Type | Holds |
 |---|---|---|
@@ -249,8 +255,9 @@ The deciding limit is chosen from the limits not reset since they were
 read. Limits on the whole account win over a single model's or a single
 key's. Among those, the most urgent wins, then the soonest to run out, then
 the least left: at the reset for a limit that lasts, where that's
-forecast, or else now. When every limit reset since it was read, the last
-to reset decides.
+forecast, or else now. Of several used up, the last back wins, and one
+with no reset counts as later than any. When every limit reset since it
+was read, the last to reset decides.
 
 ### State
 
