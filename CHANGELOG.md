@@ -41,6 +41,11 @@
   schema and document it.` became `Add a` in the session's title, in
   search, in `sessions read` and `read_session`, and in the requests a
   handoff quotes.
+- **Search** quotes the message that holds a word with punctuation in it,
+  such as `csv::quoted`, or a word said with accents and searched for
+  without, as `cafe` finds `café`. The message quoted is found by the same
+  rules as the session. A session found by such a word was listed with no
+  message under it.
 - **A Pi fork** shows only its own conversation in `sessions read`,
   `read_session` and handoffs. They opened with the fork's copy of its
   parent's entries, and a handoff listed the parent's requests as the

@@ -311,7 +311,9 @@ messages first, then the most recently active, and each says in how many
 (`· all the words in 3 messages`). The first three with any such message
 show the latest one: its entry, who said it, the subagent it's in where
 it's in one, and the text around the words, read from the session's files.
-The words are matched whole, as the index matches them.
+The words are matched whole, as the index matches them: in any case, with
+or without their accents, and a word with punctuation in it, as
+`csv::quoted`, as its parts in a row.
 
 ```markdown
 - `claude-code:0f6e3f6a-…` "Fix the CSV parser so quoted commas work. Don't change the public API." · … · all the words in 3 messages
