@@ -443,6 +443,62 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
     }
 }
 
+/// A command says so before it reads all of history: the first time, and
+/// again once a reader changed. Otherwise it says nothing.
+#[test]
+fn a_command_says_when_it_reads_all_of_history() {
+    let data = tempfile::tempdir().unwrap();
+    let said = |args: &[&str]| {
+        let output = turnscope(data.path(), args, None);
+        assert!(output.status.success(), "{args:?}");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let reading = "Reading your agents' history…\n";
+    // One that reports no data reads no history.
+    assert_eq!(said(&["config"]), "");
+    assert_eq!(said(&["sessions"]), reading);
+    assert_eq!(said(&["sessions"]), "");
+    // As after an update that raised `ingest::READERS`.
+    let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
+    db.execute("UPDATE state SET readers = 0", []).unwrap();
+    assert_eq!(said(&["status"]), reading);
+    assert_eq!(said(&["status"]), "");
+}
+
+/// A command that waits for another Turnscope reading history says so, and
+/// answers once that one is done.
+#[test]
+fn a_command_says_when_it_waits_for_another_turnscope_reading_history() {
+    let data = tempfile::tempdir().unwrap();
+    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    // Held as the other Turnscope holds it, all the while it reads.
+    let reading = std::fs::File::create(data.path().join("ingest.lock")).unwrap();
+    reading.lock().unwrap();
+    let mut waiting = command(data.path(), &["sessions"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = BufReader::new(waiting.stderr.take().unwrap()).lines();
+    let (send, first) = std::sync::mpsc::channel();
+    let rest = std::thread::spawn(move || {
+        let _ = send.send(said.next().and_then(Result::ok));
+        said.map_while(Result::ok).collect::<Vec<String>>()
+    });
+    // It says so while it waits, not once the wait is over: until then, the
+    // other Turnscope goes on reading.
+    let first = first.recv_timeout(std::time::Duration::from_secs(20));
+    drop(reading);
+    let output = waiting.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        first.ok().flatten().as_deref(),
+        Some("Waiting while another Turnscope reads your agents' history…")
+    );
+    assert_eq!(rest.join().unwrap(), Vec::<String>::new());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(SESSION));
+}
+
 #[test]
 fn a_relative_folder_is_in_the_current_folder() {
     let data = store();

@@ -437,7 +437,7 @@ impl Agent for Codex {
             .collect();
         rollouts.sort_by_key(|file| file.file_name());
         if rollouts.is_empty() {
-            return Err(Error::NotFound("the thread's rollouts are gone".to_owned()));
+            return Err(Error::NotFound(thread));
         }
         let kept: Vec<Option<i64>> = rollouts
             .iter()
@@ -1487,6 +1487,43 @@ mod tests {
                     patched.as_slice()
                 )
             ]
+        );
+    }
+
+    #[test]
+    fn a_tag_the_person_typed_is_theirs_and_codexs_own_are_taken_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let asked = "Replace the <image href=\"a.png\"/> in logo.svg with a path, then add a <skill> element to the manifest.";
+        let file = rollout(
+            dir.path(),
+            "t1",
+            &[
+                line(0, "session_meta", json!({"id": "t1"})),
+                line(
+                    1,
+                    "response_item",
+                    json!({"type": "message", "role": "user", "content": [
+                        {"type": "input_text", "text": "<environment_context>x</environment_context>"},
+                        {"type": "input_text", "text": "<skill>\n<name>docs</name>\nWrite plainly.\n</skill>"},
+                        // An image's tags, each in a part of its own.
+                        {"type": "input_text", "text": "<image name=[Image #1]>"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                        {"type": "input_text", "text": "</image>"},
+                        {"type": "input_text", "text": asked}]}),
+                ),
+            ],
+        );
+        let read = Codex.read(&file, "").unwrap();
+        assert_eq!(read.sessions["codex:t1"].title.as_ref().unwrap().1, asked);
+        assert_eq!(
+            read.said,
+            [("codex:t1".to_owned(), asked.to_owned(), Some(1))]
+        );
+        let entries = Codex.transcript("t1", &[file]).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            (entries[0].kind, entries[0].text.as_str()),
+            (Kind::User, asked)
         );
     }
 

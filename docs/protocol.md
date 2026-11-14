@@ -146,7 +146,10 @@ new, ran in a new minute, or followed another process's write to the
 database, and after a successful `settings.set`, `account.hide`,
 `agent.connect` or `agent.disconnect`. A catch-up runs when `serve` starts,
 once writes to an agent's folders have paused for 250 ms (a second at most)
-but no sooner than 5 s after the last catch-up, and every minute. Alerts are
+but no sooner than 5 s after the last catch-up, and every minute. When it
+starts, `serve` reads the limits first and works out the status before
+that catch-up too: on a first launch, a `status` with the accounts and
+`historyRead` false comes while all of history is read. Alerts are
 raised only when the status changed. An agent connected or disconnected
 outside the app, as with `turnscope connect` in a terminal, writes nothing
 to the database, so its `agents` entry changes within a minute.

@@ -356,7 +356,8 @@ fn absolute(path: PathBuf) -> PathBuf {
 }
 
 /// A command's answer, as text or JSON. Those that report data catch up
-/// first; those that change a setting don't wait for it.
+/// first, and say so on standard error when that can take long; those that
+/// change a setting don't wait for it.
 fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<String> {
     let mut db = db::open(data)?;
     let reports = match &command {
@@ -364,11 +365,19 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         Command::Config { .. } | Command::Connect { .. } | Command::Disconnect { .. } => false,
         _ => true,
     };
-    // What's in the database still answers when what's new can't be read.
-    if reports && let Err(error) = catch_up(&mut db, home) {
-        eprintln!(
-            "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
-        );
+    if reports {
+        // Said before a wait that can take minutes, not left to a blank
+        // terminal.
+        if let Some(wait) = ingest::waits(&db) {
+            eprintln!("{wait}");
+        }
+        // What's in the database still answers when what's new can't be
+        // read.
+        if let Err(error) = catch_up(&mut db, home) {
+            eprintln!(
+                "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
+            );
+        }
     }
     let connecting = matches!(command, Command::Connect { .. });
     let now = now();
