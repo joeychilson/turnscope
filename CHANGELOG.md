@@ -10,6 +10,20 @@
   `rk_live_`), Slack's (`xoxb-` and `xoxp-`), Hugging Face's (`hf_`) and
   Google's access tokens (`ya29.`). Reading a session, search and handoffs
   showed one unless it followed `Bearer `.
+- **A handoff** says when its session was last active, also for one active
+  in the last 5 minutes: `last active 11:57 (3m ago)`. It said `running
+  now`, so the handoff of a session that had just stopped, as when its
+  limit ran out, told the next agent that another agent was at work in the
+  folder.
+- **What failed**, in a handoff, names a call by the commands it ran, such
+  as `"cargo test --locked"`. It named it by the description the agent gave
+  them, such as `"Run tests"`, and the next agent had to read the entry to
+  learn what was run. A call that ran no command is still named by what it
+  was for.
+- **A fork's handoff** names the session it was forked from, which holds
+  what came before the fork. Claude Code's, Codex's and OpenCode's forks
+  start where they branched off, so their handoffs began mid-conversation
+  and didn't say where the start was.
 - Your agents' history is read again once after updating, so these fixes
   apply to what was read before.
 
