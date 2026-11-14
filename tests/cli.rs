@@ -205,7 +205,8 @@ fn store() -> tempfile::TempDir {
     db.execute_batch(
         "INSERT INTO price (provider, model, since, cost) VALUES ('anthropic', 'claude-opus-5', 0, '{\"input\":5,\"output\":25,\"cache_read\":0.5,\"cache_write\":6.25}');
          -- Read the history again, now priced and attributed.
-         UPDATE state SET readers = 0;",
+         UPDATE state SET readers = 0;
+         UPDATE file SET readers = 0;",
     )
     .unwrap();
     data
@@ -454,7 +455,8 @@ fn a_command_says_when_it_reads_all_of_history() {
     assert_eq!(said(&["sessions"]), "");
     // As after an update that raised `ingest::READERS`.
     let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
-    db.execute("UPDATE state SET readers = 0", []).unwrap();
+    db.execute_batch("UPDATE state SET readers = 0; UPDATE file SET readers = 0;")
+        .unwrap();
     assert_eq!(said(&["status"]), reading);
     assert_eq!(said(&["status"]), "");
 }
