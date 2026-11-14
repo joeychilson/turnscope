@@ -14,6 +14,18 @@
 
 /// Key prefixes, each with how many key characters must follow. `sk-` covers
 /// Anthropic's `sk-ant-`, OpenRouter's `sk-or-` and OpenAI's `sk-proj-`.
+/// Stripe's `sk_live_`, `sk_test_` and `rk_live_` and Hugging Face's `hf_`
+/// start names too, as `hf_hub_download`, so as many must follow as their
+/// shortest key has. A Google service account's token starts `ya29.c.`: its
+/// second dot ends the key characters after `ya29.`, so it's a prefix of its
+/// own.
+///
+/// npm's `npm_` is left out: a count can't tell its tokens from the names
+/// npm writes. A token has 36 letters and digits after `npm_`. A `config`
+/// key in `package.json` is in a script's environment as
+/// `npm_package_config_<key>`, however long: 42 key characters after `npm_`
+/// in `npm_package_config_mongodbMemoryServer_version` (npm 11.20, November
+/// 2026). With `("npm_", 36)` here, that name was redacted.
 const PREFIXES: &[(&str, usize)] = &[
     ("sk-", 20),
     ("xai-", 20),
@@ -26,6 +38,14 @@ const PREFIXES: &[(&str, usize)] = &[
     ("glpat-", 20),
     ("AKIA", 16),
     ("AIza", 30),
+    ("ya29.", 20),
+    ("ya29.c.", 20),
+    ("sk_live_", 24),
+    ("sk_test_", 24),
+    ("rk_live_", 24),
+    ("xoxb-", 20),
+    ("xoxp-", 20),
+    ("hf_", 34),
 ];
 
 /// `text` with every secret in it replaced by `[redacted]`.
@@ -36,12 +56,20 @@ pub fn redact(text: &str) -> String {
     let mut at = 0;
     while at < bytes.len() {
         // A secret can follow a key byte: the letter of a JSON string's `\n`,
-        // `\t` or `\r`, as in a tool call's input, or for a key's block, the
-        // `-` of a line a diff removes.
+        // `\t` or `\r`, as in a tool call's input, or the `-` of a line a
+        // diff removes. That `-` is alone at the line's start: the start of
+        // the text, after a line break, or after a JSON string's `\n`. A `-`
+        // inside a name is not, so `cache-sk-…` stays. A key's block starts
+        // with dashes, so it's looked for after any byte.
         let escape = matches!(bytes[..at], [.., b'\\', b'n' | b't' | b'r']);
+        let removed = matches!(
+            bytes[..at],
+            [b'-'] | [.., b'\n', b'-'] | [.., b'\\', b'n', b'-']
+        );
         let boundary = at == 0
             || !key_byte(bytes[at - 1])
             || escape
+            || removed
             || bytes[at..].starts_with(b"-----BEGIN ");
         match boundary.then(|| secret_at(bytes, at)).flatten() {
             Some((start, end)) => {
@@ -339,8 +367,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_key_after_a_json_strings_escape_is_redacted() {
+    /// A made-up secret of each kind but a private key, with what it's
+    /// redacted to. A key is its prefix and as many `A`s as must follow, so
+    /// this file holds none whole.
+    fn secrets() -> Vec<(String, &'static str)> {
         let mut secrets: Vec<(String, &str)> = PREFIXES
             .iter()
             .map(|(prefix, least)| (format!("{prefix}{}", "A".repeat(*least)), "[redacted]"))
@@ -353,7 +383,12 @@ mod tests {
             "Bearer abcdefghijklmnopqrstuvwxyz012345".into(),
             "Bearer [redacted]",
         ));
-        for (secret, redacted) in &secrets {
+        secrets
+    }
+
+    #[test]
+    fn a_key_after_a_json_strings_escape_is_redacted() {
+        for (secret, redacted) in &secrets() {
             for escape in [r"\n", r"\t", r"\r"] {
                 assert_eq!(
                     redact(&format!(r#"{{"content": "line one{escape}{secret}"}}"#)),
@@ -361,5 +396,78 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_key_that_starts_a_diffs_line_is_redacted() {
+        for (secret, redacted) in &secrets() {
+            // The line starts the text, follows a line break, or follows a
+            // JSON string's `\n`. The diff removes it or adds it.
+            for start in ["", "@@ -1 +1 @@\n", r"@@ -1 +1 @@\n"] {
+                for sign in ["-", "+"] {
+                    assert_eq!(
+                        redact(&format!("{start}{sign}{secret}\n kept")),
+                        format!("{start}{sign}{redacted}\n kept")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_dash_that_starts_no_line_starts_no_key() {
+        let run = "A".repeat(24);
+        for text in [
+            // A `-` inside a name, also on a line a diff removes.
+            format!("cache-sk-{run}"),
+            format!("@@ -1 +0,0 @@\n-cache-sk-{run}\n"),
+            format!(r"@@ -1 +0,0 @@\n-cache-ghp_{run}\n"),
+            // The second `-` at a line's start.
+            format!("--sk-{run}"),
+            format!("see\n--sk-{run}"),
+            // A `-` after a JSON string's `\t`, which starts no line.
+            format!(r#"{{"content": "a\t-sk-{run}"}}"#),
+        ] {
+            assert_eq!(redact(&text), text);
+        }
+    }
+
+    #[test]
+    fn a_key_by_its_prefix_is_redacted_and_a_name_that_starts_like_one_is_not() {
+        // A made-up key in the form its provider gives one, apart from its
+        // prefix so this file holds none whole, and names that start as it
+        // does.
+        let stripe = "0123456789abcdefghijABCD";
+        let slack = "123456789012-123456789012-abcdefghijABCDEFGHIJ0123";
+        let google = "b0AbCdEf_0123456789-abcdefghijABCDEFGHIJ";
+        for (prefix, key, names) in [
+            ("sk_live_", stripe, "sk_live_key sk_live_secret_key"),
+            (
+                "sk_test_",
+                stripe,
+                "sk_test_key sk_test_logistic_regression_fit",
+            ),
+            ("rk_live_", stripe, "rk_live_key rk_live_restricted_key"),
+            ("xoxb-", slack, "xoxb-token xoxb-your-bot-token"),
+            ("xoxp-", slack, "xoxp-token xoxp-your-user-token"),
+            (
+                "hf_",
+                "abcdefghijABCDEFGHIJ0123456789abcd",
+                "hf_hub_download hf_token hf_pretrained_model_name_or_path",
+            ),
+            ("ya29.", google, "ya29.a0 ya29.json"),
+            ("ya29.c.", google, "ya29.c.b0 ya29.c.json"),
+        ] {
+            assert_eq!(
+                redact(&format!("export KEY={prefix}{key}; run")),
+                "export KEY=[redacted]; run",
+                "{prefix}"
+            );
+            assert_eq!(redact(names), names);
+        }
+        // `npm_` is no prefix: the last name is longer than npm's token.
+        let names = "npm_config_registry npm_package_json \
+            npm_package_config_mongodbMemoryServer_version";
+        assert_eq!(redact(names), names);
     }
 }
