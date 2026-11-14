@@ -1253,8 +1253,6 @@ mod tests {
             (tool(6).output.as_deref(), tool(6).failed, tool(6).edited),
             (Some("1 test failed."), true, false)
         );
-        assert_eq!(Antigravity.role("view_file"), Role::Read);
-        assert_eq!(Antigravity.role("run_command"), Role::Work);
     }
 
     #[test]
@@ -1285,8 +1283,10 @@ mod tests {
         assert_eq!(changed, ["/work/a.md", "/work/b.md", "/work/c.md", ""]);
         for (name, role) in [
             ("read_file", Role::Read),
+            ("view_file", Role::Read),
             ("ask_question", Role::Ask),
             ("write_file", Role::Work),
+            ("run_command", Role::Work),
         ] {
             assert_eq!(Antigravity.role(name), role);
         }

@@ -940,6 +940,15 @@ mod tests {
             role(&tool("exec: apply_patch, exec_command", patches)),
             Role::Work
         );
+        // Antigravity's command, under its own key.
+        let run = |command: &str| {
+            tool(
+                "run_command",
+                &serde_json::json!({ "CommandLine": command }).to_string(),
+            )
+        };
+        assert_eq!(role(&run("ls src")), Role::Read);
+        assert_eq!(role(&run("cargo test")), Role::Work);
         for reads in [
             "cd src && sed -n 1,80p a.rs; grep -n x b.rs 2>/dev/null | head",
             "git diff --stat && git status",
@@ -990,30 +999,34 @@ mod tests {
         }
     }
 
-    fn bash_call(description: &str, command: &str, failed: bool) -> Entry {
-        let input = serde_json::json!({ "description": description, "command": command });
-        call("Bash", input, "error", failed, Role::Work)
-    }
-
+    /// Under Claude Code's names for them, and Antigravity's.
     #[test]
     fn a_failed_command_run_again_is_matched_by_the_command_not_its_description() {
         let failed = |entries: &[Entry]| failing(entries, 0, entries.len(), 2000, 10 * MINUTE);
-        // Run again under a reworded description, it passed.
-        let rerun = [
-            bash_call("Run tests", "cargo test", true),
-            bash_call("Run the tests again after the fix", "cargo test", false),
-        ];
-        assert_eq!(failed(&rerun), "");
-        // Another command under the same description didn't run it again.
-        let other = [
-            bash_call("Run tests", "cargo test", true),
-            bash_call("Run tests", "cargo build", false),
-        ];
-        assert!(
-            failed(&other).contains("#0 tool `Bash` (failed)"),
-            "{}",
-            failed(&other)
-        );
+        for (name, description, command) in [
+            ("Bash", "description", "command"),
+            ("run_command", "toolSummary", "CommandLine"),
+        ] {
+            let run = |said: &str, ran: &str, failed: bool| {
+                let input = serde_json::json!({ description: said, command: ran });
+                call(name, input, "error", failed, Role::Work)
+            };
+            // Run again under a reworded description, it passed.
+            let rerun = [
+                run("Run tests", "cargo test", true),
+                run("Run the tests again after the fix", "cargo test", false),
+            ];
+            assert_eq!(failed(&rerun), "", "{name}");
+            // Another command under the same description didn't run it again.
+            let other = failed(&[
+                run("Run tests", "cargo test", true),
+                run("Run tests", "cargo build", false),
+            ]);
+            assert!(
+                other.contains(&format!("#0 tool `{name}` (failed)")),
+                "{other}"
+            );
+        }
     }
 
     /// Where it stopped says which entries after the last message it had no
@@ -1215,70 +1228,44 @@ mod tests {
         }
     }
 
-    /// A read is named by its path under whichever key its agent's tool
-    /// takes it: OpenCode's `read` takes `filePath`, Claude Code's
-    /// `NotebookRead` `notebook_path`.
-    #[test]
-    fn a_read_is_named_by_its_path() {
-        for (name, key) in [("read", "filePath"), ("NotebookRead", "notebook_path")] {
-            let entries = [
-                said(Kind::User, 0, "Fix the CSV parser."),
-                said(Kind::Assistant, 1, "Reading the parser."),
-                call(
-                    name,
-                    serde_json::json!({ key: "src/csv.rs" }),
-                    "",
-                    false,
-                    Role::Read,
-                ),
-            ];
-            let handoff = brief(
-                &session("CSV", 2 * MINUTE),
-                &entries,
-                BUDGET,
-                Cite::Tool,
-                3 * MINUTE,
-            );
-            let line = format!("#2 tool `{name}`: \"src/csv.rs\"");
-            assert!(
-                handoff.lines().any(|shown| shown == line),
-                "{line} is missing:\n{handoff}"
-            );
-        }
-    }
-
-    /// Antigravity's tools name a command `CommandLine`, a file
-    /// `AbsolutePath`, `Path` or `TargetFile`, and what a call is for
+    /// Each agent's tools name a file, and what a call is for, under keys of
+    /// their own: OpenCode's `read` a file `filePath`, Claude Code's
+    /// `NotebookRead` `notebook_path`, and Antigravity's tools a file
+    /// `AbsolutePath`, `Path` or `TargetFile`, and what it's for
     /// `toolSummary`.
     #[test]
-    fn a_calls_command_file_and_purpose_are_read_under_antigravitys_names() {
-        let run = |summary: &str, command: &str, failed: bool| {
-            let input = serde_json::json!({
-                "CommandLine": command, "Cwd": "/work/app", "toolSummary": summary,
-            });
-            call("run_command", input, "error", failed, Role::Work)
-        };
-        let tool = |entry: Entry| entry.tool.unwrap();
-        assert_eq!(role(&tool(run("List them", "ls src", false))), Role::Read);
-        let tests = tool(run("Run the tests", "cargo test", false));
-        assert_eq!(role(&tests), Role::Work);
-        assert_eq!(gist(&tests), "\"Run the tests\"");
-        // Run again under a reworded summary, it passed.
-        let rerun = [
-            run("Run the tests", "cargo test", true),
-            run("Run the tests again after the fix", "cargo test", false),
-        ];
-        assert_eq!(failing(&rerun, 0, rerun.len(), 2000, 10 * MINUTE), "");
-
-        let read = |name: &str, key: &str, file: &str| {
-            call(
-                name,
-                serde_json::json!({ key: file }),
-                "",
-                false,
-                Role::Read,
-            )
-        };
+    fn a_call_is_read_under_the_names_its_agents_tools_give() {
+        let read = |name: &str, input: serde_json::Value| call(name, input, "", false, Role::Read);
+        for (entry, said) in [
+            (
+                read("read", serde_json::json!({ "filePath": "src/csv.rs" })),
+                "src/csv.rs",
+            ),
+            (
+                read(
+                    "NotebookRead",
+                    serde_json::json!({ "notebook_path": "a.ipynb" }),
+                ),
+                "a.ipynb",
+            ),
+            (
+                read(
+                    "view_file",
+                    serde_json::json!({ "AbsolutePath": "/work/app/src/csv.rs" }),
+                ),
+                "/work/app/src/csv.rs",
+            ),
+            (
+                read(
+                    "run_command",
+                    serde_json::json!({ "CommandLine": "cargo test", "toolSummary": "Run the tests" }),
+                ),
+                "Run the tests",
+            ),
+        ] {
+            let tool = entry.tool.unwrap();
+            assert_eq!(gist(&tool), format!("\"{said}\""), "{}", tool.name);
+        }
         let mut changed = call(
             "replace_file_content",
             serde_json::json!({ "TargetFile": "/work/app/src/row.rs" }),
@@ -1288,15 +1275,16 @@ mod tests {
         );
         changed.tool.as_mut().unwrap().files = vec!["/work/app/src/row.rs".to_owned()];
         let entries = [
-            read("view_file", "AbsolutePath", "/work/app/src/csv.rs"),
-            read("read_file", "Path", "/work/app/src/csv.rs"),
+            read(
+                "view_file",
+                serde_json::json!({ "AbsolutePath": "/work/app/src/csv.rs" }),
+            ),
+            read(
+                "read_file",
+                serde_json::json!({ "Path": "/work/app/src/csv.rs" }),
+            ),
             changed,
-            run("Search it", "rg -n quoted src/lexer.rs", false),
         ];
-        assert_eq!(
-            gist(entries[0].tool.as_ref().unwrap()),
-            "\"/work/app/src/csv.rs\""
-        );
         let files = files(&entries, 0, Some("/work/app"), 2000);
         for line in ["- `src/csv.rs` (read 2×)", "- `src/row.rs` (changed 1×)"] {
             assert!(files.lines().any(|shown| shown == line), "{line}:\n{files}");
