@@ -48,6 +48,10 @@ hands off sessions.
   Until that agent's session is restarted, its `check_limits` answers from
   what's known and says why, and its `explain_usage` fails when it lists
   sessions, which it does unless asked for `by` something else.
+- **A Turnscope left running through a later update that changes its
+  database** reads nothing more into it from this version on: no history,
+  limits or prices. It answers from what it read before and says a newer
+  Turnscope has updated the data, where 0.1.8 went on until a read failed.
 
 ## 0.1.8
 

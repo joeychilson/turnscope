@@ -100,12 +100,16 @@ into another program's database.
   found: where it was, moved, or back after it was gone. Its responses,
   the sessions only such files hold, and which sessions it holds are
   taken out first. Responses and sessions from files the agent has since
-  deleted stay. An older Turnscope still running, such as an agent's MCP
-  server started before an update, doesn't read history a newer one read:
-  it says to update instead. Where an update changed the schema and not
-  the readers, as 0.2.0 did, its reads of history fail and it answers from
-  what it read before, where its query still fits the schema: 0.1.8's
-  usage by session doesn't fit 0.2.0's, and fails. One started after the
+  deleted stay.
+- **An older Turnscope still running**, such as an agent's MCP server
+  started before an update, stops reading into the data. Once a newer one
+  has raised the readers, it reads no more history (`ingest`); it still
+  reads limits and prices, which the schema holds as before. Once a newer
+  one has changed the schema, it reads nothing more: no history, limits or
+  prices (`catch_up`). Either way it answers from what it read before and
+  says to update, where its query still fits the schema. 0.1.8 checks only
+  the readers, which 0.2.0 didn't raise: its reads of history fail on the
+  changed schema, as does its usage by session. One started after the
   schema changed doesn't open the data, and says to update (`db::open`).
 - **What was said isn't kept.** Of a session's conversation, only its
   title is: the one its agent or the person gave it, or else the first

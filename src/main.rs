@@ -734,7 +734,20 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
 /// provider out of reach leaves things as they were. The history is read
 /// even when the limits can't be, and their error is given after. Whether
 /// there was anything new: prices, limits or history.
+///
+/// Nothing is read into a schema a newer Turnscope has changed since `db`
+/// was opened, as under an agent's MCP server left running through an
+/// update: the caller answers from what was read before, and says why.
+/// That's over going on until a statement fails. 0.1.8 did, and after
+/// 0.2.0 changed the schema its server's answers ended with SQLite's own
+/// words, `no such column: indexed in SELECT path, agent, …`; a statement
+/// that still fits a changed schema would write the old way and say
+/// nothing. It's checked here, over beside the readers in `ingest`, since
+/// prices and limits are written before history is read. A query that no
+/// longer fits still fails: 0.1.8's usage by session did. Reading the
+/// revision takes 2.8 µs (November 2026).
 pub fn catch_up(db: &mut rusqlite::Connection, home: &Path) -> Result<bool> {
+    db::revision(db)?;
     let (priced, limits) = match online() {
         true => (
             prices::refresh(db).unwrap_or(false),
