@@ -298,38 +298,39 @@ pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>) -> 
         cost(usage.total.cost_usd, usage.total.unpriced),
     );
     let time = usage.by.period().is_some();
-    let mut rows: Vec<(&Row, Option<f64>)> = usage
+    let label = |row: &Row| match (&usage.by, &row.name) {
+        (By::Session, Some(name)) => format!("{} {name}", start(&row.key)),
+        (By::Session, None) => start(&row.key),
+        _ => row.label().to_owned(),
+    };
+    let mut rows: Vec<(&Row, Option<f64>, String)> = usage
         .rows
         .iter()
         .enumerate()
-        .map(|(at, row)| (row, shares.map(|(_, shares)| shares.rows[at])))
+        .map(|(at, row)| {
+            let points = shares.map(|(_, shares)| shares.rows[at]);
+            (row, points, short(&label(row), 55))
+        })
         .collect();
+    // Its key counts the rows it adds up, `3551 more`, and isn't a session.
     if let Some(rest) = &usage.rest {
         let points = shares.and_then(|(_, shares)| shares.rest);
-        rows.insert(if time { 0 } else { rows.len() }, (rest, points));
+        rows.insert(
+            if time { 0 } else { rows.len() },
+            (rest, points, rest.label().to_owned()),
+        );
     }
     if rows.is_empty() {
         return out + "Nothing was used.";
     }
     let what = usage.by.title();
-    let labels: Vec<String> = rows
+    let wide = rows
         .iter()
-        .map(|(row, _)| {
-            let label = match (&usage.by, &row.name) {
-                (By::Session, Some(name)) => format!("{} {name}", start(&row.key)),
-                (By::Session, None) => start(&row.key),
-                _ => row.label().to_owned(),
-            };
-            short(&label, 55)
-        })
-        .collect();
-    let wide = labels
-        .iter()
-        .map(|label| label.chars().count())
+        .map(|(_, _, label)| label.chars().count())
         .chain([what.len()])
         .max()
         .unwrap_or_default();
-    let costs: Vec<String> = rows.iter().map(|(row, _)| dollars(row.cost_usd)).collect();
+    let costs: Vec<String> = rows.iter().map(|(row, ..)| dollars(row.cost_usd)).collect();
     let cost_wide = costs.iter().map(String::len).max().unwrap_or(4).max(4);
     let share_head = shares.map(|(limit, _)| format!("% of {}", limit.named()));
     out += &format!(
@@ -340,7 +341,7 @@ pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>) -> 
             .as_ref()
             .map_or(String::new(), |head| format!("  {head}"))
     );
-    for (((row, points), label), cost) in rows.iter().zip(&labels).zip(&costs) {
+    for ((row, points, label), cost) in rows.iter().zip(&costs) {
         let points = match (&share_head, points) {
             (Some(head), Some(points)) => {
                 format!("  {:>width$}", share(*points), width = head.len())
@@ -680,6 +681,29 @@ mod tests {
             markdown.contains("| 1 more model | $0.25 | 1 |\n"),
             "{markdown}"
         );
+    }
+
+    /// Over 999 sessions, the rest's key is longer than the 8 characters a
+    /// session's id is cut to.
+    #[test]
+    fn the_rest_of_many_sessions_is_named_in_full() {
+        let row = |key: &str, name: Option<&str>| Row {
+            key: key.to_owned(),
+            name: name.map(str::to_owned),
+            responses: 1,
+            ..Row::default()
+        };
+        let usage = Usage {
+            since: 0,
+            until: 0,
+            by: By::Session,
+            total: row("total", None),
+            rows: vec![row("codex:7c1d2e3f-4a5b", Some("Fix it"))],
+            rest: Some(row("3551 more", None)),
+        };
+        let text = text(&usage, None);
+        assert!(text.contains("  7c1d2e3f Fix it  "), "{text}");
+        assert!(text.contains("  3551 more  "), "{text}");
     }
 
     #[test]
