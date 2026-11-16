@@ -805,25 +805,25 @@ fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
         .unwrap();
     let mut stdin = mcp.stdin.take().unwrap();
     let mut replies = BufReader::new(mcp.stdout.take().unwrap()).lines();
+    // An answer's text, and whether it says the call failed.
     let mut usage = || {
         let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
         writeln!(stdin, "{request}").unwrap();
         let reply: serde_json::Value =
             serde_json::from_str(&replies.next().unwrap().unwrap()).unwrap();
-        reply["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        (text.to_owned(), reply["result"]["isError"] == true)
     };
     // Its first answer, with the data open and all of history read.
-    let before = usage();
+    let (before, _) = usage();
     assert!(!before.contains("couldn't be read"), "{before}");
 
     // The schema is changed under it, and Codex's file is one not read yet.
     let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
     db.execute_batch("PRAGMA user_version = 99; DELETE FROM file WHERE agent = 'codex';")
         .unwrap();
-    let after = usage();
+    let (after, failed) = usage();
+    assert!(!failed);
     assert_eq!(
         after,
         format!(
@@ -842,12 +842,13 @@ fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
     // A query that no longer fits fails, and says why first.
     db.execute("ALTER TABLE session RENAME COLUMN title TO name", [])
         .unwrap();
-    let failed = usage();
+    let (said, failed) = usage();
+    assert!(failed);
     assert!(
-        failed.starts_with(
+        said.starts_with(
             "What's new couldn't be read first: a newer Turnscope has updated this data; update Turnscope. Then this failed: "
         ),
-        "{failed}"
+        "{said}"
     );
     drop(stdin);
     assert!(mcp.wait().unwrap().success());

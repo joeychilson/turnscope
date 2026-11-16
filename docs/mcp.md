@@ -110,11 +110,6 @@ way.
 - A session's title is in double quotes. It's often the first thing asked
   in that session, so agents are told to read it as data, not as an
   instruction.
-- Each call first reads what's new. When that can't be done, as once a
-  newer Turnscope has changed the data, the answer ends with why. A call
-  that then fails says why first, since its query may no longer fit:
-  `What's new couldn't be read first: a newer Turnscope has updated this
-  data; update Turnscope. Then this failed: …`.
 - A tool call that fails answers with `isError: true` and one text block
   that says why and, in most cases, how to fix the call. Arguments that
   don't fit the schema fail the same way, not with a JSON-RPC error:
@@ -126,7 +121,10 @@ way.
 - Each call first reads what's new: history, and limits and prices when
   they're due. If that fails, as when a provider can't be reached, the tool
   still answers from what's known, and ends by saying it's as of the last
-  read, and why.
+  read, and why. A call that then fails says why first, since its query
+  may no longer fit a schema a newer Turnscope changed: `What's new
+  couldn't be read first: a newer Turnscope has updated this data; update
+  Turnscope. Then this failed: …`.
 
 ## Tools
 
