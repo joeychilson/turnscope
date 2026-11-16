@@ -22,7 +22,7 @@ use crate::time::{self, DAY, HOUR, MINUTE};
 use crate::{Result, agents};
 
 mod text;
-pub use text::{fit, limit_text, line, none, stale, text, verdict};
+pub use text::{Cite, fit, limit_text, line, none, stale, text, verdict};
 
 /// How recently a response must have drawn on an account for it to be in use.
 const IN_USE: i64 = 30 * MINUTE;

@@ -19,15 +19,10 @@ use rusqlite::{Connection, params};
 /// 2026-10-01 12:00 UTC.
 const NOW: i64 = 1_790_856_000_000;
 const HOUR: i64 = 3_600_000;
-const SESSION: &str = "claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60";
 /// The session working through the last two hours.
 const WORKING: &str = "claude-code:7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
-/// Each other agent's session, a day before.
+/// Codex's session, a day before.
 const CODEX: &str = "codex:019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b";
-const OPENCODE: &str = "opencode:ses_2f9a8b7c6d5e4f3a2b1c0d9e8f";
-const PI: &str = "pi:5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9";
-const GROK_BUILD: &str = "grok-build:8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a";
-const ANTIGRAVITY: &str = "antigravity:4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f";
 
 /// The fixture home, copied once a run to where tests may write: history
 /// that is a database, as OpenCode's and Antigravity's, is built there from
@@ -86,8 +81,7 @@ fn turnscope(data: &Path, args: &[&str], input: Option<&str>) -> Output {
     child.wait_with_output().unwrap()
 }
 
-/// `turnscope` with `args` over the store `data`, as Claude Code runs it in
-/// its session `SESSION`.
+/// `turnscope` with `args` over the store `data`, as Claude Code runs it.
 fn command(data: &Path, args: &[&str]) -> Command {
     command_as("claude", data, args)
 }
@@ -244,61 +238,15 @@ fn every_command_answers_as_its_snapshot_says() {
             "usage-account",
             vec!["usage", "--since", "2026-09-29", "--by", "account"],
         ),
+        // Every agent's session, each with its title.
+        (
+            "usage-session",
+            vec!["usage", "--since", "2026-09-29", "--by", "session"],
+        ),
         (
             "usage-limit",
             vec!["usage", "--account", "claude", "--limit", "week"],
         ),
-        ("sessions", vec!["sessions"]),
-        // The page after the session the cursor names.
-        (
-            "sessions-cursor",
-            vec!["sessions", "--count", "2", "--cursor", SESSION],
-        ),
-        // Words said in different messages of one session find it.
-        ("sessions-search", vec!["sessions", "--search", "CSV RFC"]),
-        // Words said together, so the message that says them is quoted.
-        (
-            "sessions-search-said",
-            vec!["sessions", "--search", "quoted commas"],
-        ),
-        // A unique start of an agent's own id names the session.
-        ("sessions-show", vec!["sessions", "show", "0f6e3f6a"]),
-        (
-            "sessions-read",
-            vec!["sessions", "read", SESSION, "--from", "1", "--count", "3"],
-        ),
-        ("sessions-show-codex", vec!["sessions", "show", CODEX]),
-        ("sessions-read-codex", vec!["sessions", "read", CODEX]),
-        // The last of its two failed calls.
-        (
-            "sessions-read-failed",
-            vec!["sessions", "read", CODEX, "--failed", "--from", "-1"],
-        ),
-        ("sessions-show-opencode", vec!["sessions", "show", OPENCODE]),
-        ("sessions-read-opencode", vec!["sessions", "read", OPENCODE]),
-        ("sessions-show-pi", vec!["sessions", "show", PI]),
-        ("sessions-read-pi", vec!["sessions", "read", PI]),
-        (
-            "sessions-show-grok-build",
-            vec!["sessions", "show", GROK_BUILD],
-        ),
-        (
-            "sessions-read-grok-build",
-            vec!["sessions", "read", GROK_BUILD],
-        ),
-        (
-            "sessions-show-antigravity",
-            vec!["sessions", "show", ANTIGRAVITY],
-        ),
-        (
-            "sessions-read-antigravity",
-            vec!["sessions", "read", ANTIGRAVITY],
-        ),
-        ("handoff", vec!["handoff", SESSION]),
-        ("handoff-working", vec!["handoff", WORKING]),
-        // Taken by default: the folder's latest session but the caller's
-        // own, Codex's, with Pi's before it.
-        ("handoff-folder", vec!["handoff", "--folder", "/work/app"]),
         ("accounts", vec!["accounts"]),
         ("connect", vec!["connect"]),
         ("doctor", vec!["doctor"]),
@@ -368,12 +316,6 @@ fn the_docs_show_what_the_snapshots_hold() {
 fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
     let data = store();
     for (args, code, says) in [
-        (vec!["sessions", "show", "nope"], 3, "Session ids look like"),
-        (
-            vec!["sessions", "show", "claude-code:nope"],
-            3,
-            "no session is claude-code:nope",
-        ),
         (
             vec!["accounts", "hide", "me@example.com"],
             2,
@@ -394,7 +336,6 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "cannot be used with",
         ),
-        // As `sessions --agent claude` says.
         (
             vec!["usage", "--agent", "claude"],
             2,
@@ -420,13 +361,6 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "24h, 7d or 4w",
         ),
-        (vec!["sessions", "--count", "0"], 2, "0 is not in 1..=100"),
-        (vec!["sessions", "-n", "101"], 2, "101 is not in 1..=100"),
-        (
-            vec!["sessions", "read", "claude-code:0f6e", "--count", "0"],
-            2,
-            "0 is not in 1..=100",
-        ),
     ] {
         let output = turnscope(data.path(), &args, None);
         assert_eq!(output.status.code(), Some(code), "{args:?}");
@@ -451,8 +385,8 @@ fn a_command_says_when_it_reads_all_of_history() {
     let reading = "Reading your agents' history…\n";
     // One that reports no data reads no history.
     assert_eq!(said(&["connect"]), "");
-    assert_eq!(said(&["sessions"]), reading);
-    assert_eq!(said(&["sessions"]), "");
+    assert_eq!(said(&["usage"]), reading);
+    assert_eq!(said(&["usage"]), "");
     // As after an update that raised `ingest::READERS`.
     let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
     db.execute_batch("UPDATE state SET readers = 0; UPDATE file SET readers = 0;")
@@ -466,11 +400,12 @@ fn a_command_says_when_it_reads_all_of_history() {
 #[test]
 fn a_command_says_when_it_waits_for_another_turnscope_reading_history() {
     let data = tempfile::tempdir().unwrap();
-    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    let by_session = ["usage", "--since", "7d", "--by", "session"];
+    assert!(turnscope(data.path(), &by_session, None).status.success());
     // Held as the other Turnscope holds it, all the while it reads.
     let reading = std::fs::File::create(data.path().join("ingest.lock")).unwrap();
     reading.lock().unwrap();
-    let mut waiting = command(data.path(), &["sessions"])
+    let mut waiting = command(data.path(), &by_session)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -492,75 +427,8 @@ fn a_command_says_when_it_waits_for_another_turnscope_reading_history() {
         Some("Waiting while another Turnscope reads your agents' history…")
     );
     assert_eq!(rest.join().unwrap(), Vec::<String>::new());
-    assert!(String::from_utf8_lossy(&output.stdout).contains(SESSION));
-}
-
-#[test]
-fn a_relative_folder_is_in_the_current_folder() {
-    let data = store();
-    for command_name in ["sessions", "handoff"] {
-        let given = turnscope(data.path(), &[command_name, "--folder", "/work/app"], None);
-        let relative = command(data.path(), &[command_name, "--folder", "work/app"])
-            .current_dir("/")
-            .output()
-            .unwrap();
-        assert!(given.status.success(), "{command_name}");
-        assert!(String::from_utf8_lossy(&given.stdout).contains(CODEX));
-        assert_eq!(
-            String::from_utf8_lossy(&relative.stdout),
-            String::from_utf8_lossy(&given.stdout),
-            "{command_name}: {}",
-            String::from_utf8_lossy(&relative.stderr)
-        );
-    }
-}
-
-/// A folder names its sessions however it's written: with `..`, `.` or a
-/// slash at its end.
-#[test]
-fn a_folder_names_its_sessions_however_its_written() {
-    let data = store();
-    // Once the history is read, a session of `/work/app`'s project run
-    // beside it, as in a worktree kept outside its repository.
-    assert!(turnscope(data.path(), &["sessions"], None).status.success());
-    Connection::open(data.path().join("turnscope.sqlite"))
-        .unwrap()
-        .execute(
-            "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
-             VALUES ('codex:beside', 'codex', 'f', '/work/app-beside', '/work/app', 'Try a faster importer', ?1, ?1)",
-            [NOW - 30 * HOUR],
-        )
-        .unwrap();
-    for command_name in ["sessions", "handoff"] {
-        let answer = |folder: &str, from: &str| {
-            let output = command(data.path(), &[command_name, "--folder", folder])
-                .current_dir(from)
-                .output()
-                .unwrap();
-            (
-                String::from_utf8_lossy(&output.stdout).into_owned(),
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            )
-        };
-        let (plain, _) = answer("/work/app", "/");
-        assert!(
-            plain.contains(CODEX) && plain.contains("codex:beside"),
-            "{command_name}: {plain}"
-        );
-        for (folder, from) in [
-            ("/work/app/", "/"),
-            ("/work/app/.", "/"),
-            ("/work/api/../app", "/"),
-            ("work/./app/", "/"),
-            ("../work/app", "/usr"),
-        ] {
-            let (given, error) = answer(folder, from);
-            assert_eq!(
-                given, plain,
-                "{command_name} --folder {folder} in {from}: {error}"
-            );
-        }
-    }
+    // The working session, by the start of its id.
+    assert!(String::from_utf8_lossy(&output.stdout).contains("7c1d2e3f "));
 }
 
 /// Codex pointed at its agent folder by `CODEX_HOME`, written with a slash
@@ -569,7 +437,7 @@ fn a_folder_names_its_sessions_however_its_written() {
 fn the_callers_account_is_its_agent_folders_however_its_written() {
     let data = store();
     // Read the history first: neither command below does.
-    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    assert!(turnscope(data.path(), &["usage"], None).status.success());
     for written in ["/.codex", "/.codex/", "/.claude/../.codex"] {
         let folder = format!("{}{written}", home().display());
         let run = |args: &[&str]| {
@@ -589,60 +457,48 @@ fn the_callers_account_is_its_agent_folders_however_its_written() {
     }
 }
 
-/// Claude Code's folder as its variable gives it, and a tool's `folder`
-/// within it, both with `..` and a slash at the end.
+/// Claude Code names its session in the environment, so its row is marked.
+/// Codex, run from Claude Code's shell, inherits that name, which isn't its
+/// own: none of its rows is.
 #[test]
-fn the_tools_fold_the_callers_folder_and_the_folder_they_are_given() {
+fn explain_usage_marks_the_session_its_caller_names() {
     let data = store();
-    let requests = [
-        // No folder: the caller's, `/work/api`.
-        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff","arguments":{}}}"#,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_sessions","arguments":{"folder":"../docs/"}}}"#,
-    ];
-    let mut mcp = command(data.path(), &["mcp"])
-        .env("CLAUDE_PROJECT_DIR", "/work/app/../api/")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    writeln!(mcp.stdin.take().unwrap(), "{}", requests.join("\n")).unwrap();
-    let output = mcp.wait_with_output().unwrap();
-    let texts: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| {
-            let reply: serde_json::Value = serde_json::from_str(line).unwrap();
-            reply["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .collect();
+    // Over a week, which holds the session Claude Code names.
+    let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"limit":"week"}}}"#;
+    let asked_by = |agent: &str| {
+        let mut mcp = command_as(agent, data.path(), &["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(mcp.stdin.take().unwrap(), "{request}").unwrap();
+        let output = mcp.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let yours = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| line.contains(" (yours) |"))
+            .map(str::to_owned)
+            .collect()
+    };
+    let claude = asked_by("claude");
+    assert!(claude.starts_with("Usage of Claude Max"), "{claude}");
+    let marked = yours(&claude);
     assert!(
-        texts[0].starts_with("# Handoff: \"Add retries with backoff to the HTTP client.\""),
-        "{}",
-        texts[0]
+        marked.len() == 1 && marked[0].starts_with("| `0f6e3f6a` "),
+        "{claude}"
     );
-    assert!(texts[1].contains(GROK_BUILD), "{}", texts[1]);
-}
-
-#[test]
-fn sessions_marks_the_session_of_an_agent_that_names_it_nowhere() {
-    let data = store();
-    // Run by Codex, as from Claude Code's shell, whose session is named in
-    // the environment. Run from `/`, which is no folder to work in, its own
-    // session is its latest anywhere. Its latest in a folder is marked in
-    // `explain_usage_marks_the_callers_session_whichever_agent_asks`.
-    let output = command_as("codex", data.path(), &["sessions"])
-        .current_dir("/")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let text = String::from_utf8_lossy(&output.stdout);
-    let yours: Vec<&str> = text
-        .lines()
-        .filter(|line| line.ends_with(" · yours"))
-        .collect();
-    assert!(yours.len() == 1 && yours[0].contains(CODEX), "{text}");
+    let codex = asked_by("codex");
+    assert!(codex.starts_with("Usage of ChatGPT Plus"), "{codex}");
+    assert!(
+        codex.contains("| `019a2b3c` ") && yours(&codex).is_empty(),
+        "{codex}"
+    );
 }
 
 #[test]
@@ -702,7 +558,7 @@ fn a_status_line_says_the_account_of_the_session_it_is_given() {
 fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
     let data = store();
     // Read the history, as the app's daemon has.
-    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    assert!(turnscope(data.path(), &["usage"], None).status.success());
     let new = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
     let line = |agent: &str, session: &str, folder: &str| {
         let mut line = command_as(agent, data.path(), &["statusline"])
@@ -1017,13 +873,13 @@ fn an_mcp_session_answers_as_its_snapshot_says() {
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
         r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"check_limits","arguments":{"all":true,"hours":2}}}"#,
         r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","limit":"week","by":"model"}}}"#,
-        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_sessions","arguments":{"folder":"/work/api"}}}"#,
-        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"handoff","arguments":{"folder":"/work/api"}}}"#,
-        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_session","arguments":{"session":"claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60","kinds":["user"]}}}"#,
-        r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"read_session","arguments":{"session":"nope"}}}"#,
-        r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"check_limits","arguments":{"hours":"two"}}}"#,
-        r#"{"jsonrpc":"2.0","id":10,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
-        r#"{"jsonrpc":"2.0","id":11,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-01-01"}}}"#,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"nope"}}}"#,
+        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"check_limits","arguments":{"hours":"two"}}}"#,
+        // A tool and a method it doesn't have.
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":8,"method":"prompts/list"}"#,
+        r#"{"jsonrpc":"2.0","id":9,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
+        r#"{"jsonrpc":"2.0","id":10,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-01-01"}}}"#,
     ];
     let output = turnscope(data.path(), &["mcp"], Some(&(requests.join("\n") + "\n")));
     assert!(output.status.success());
@@ -1046,7 +902,7 @@ fn an_mcp_session_answers_as_its_snapshot_says() {
 fn serve_says_hello_with_the_status_and_answers_in_turn() {
     let data = store();
     // Read the history first, or serve reads it while the test asks.
-    assert!(turnscope(data.path(), &["sessions"], None).status.success());
+    assert!(turnscope(data.path(), &["usage"], None).status.success());
     let socket =
         String::from_utf8(turnscope(data.path(), &["serve", "--socket"], None).stdout).unwrap();
     let mut serve = command(data.path(), &["serve"]).spawn().unwrap();

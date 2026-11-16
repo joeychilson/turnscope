@@ -20,10 +20,9 @@ The steps use a provider called Acme, with id `acme`.
 | [3. Implement `Provider`](#3-implement-provider) | `src/providers/acme.rs` |
 | [4. Register it](#4-register-it) | `src/providers/mod.rs` |
 | [5. Have an agent hold its logins](#5-have-an-agent-hold-its-logins) | `src/agents/<agent>.rs` |
-| [6. Redact its keys](#6-redact-its-keys) | `src/redact.rs` |
-| [7. Test it](#7-test-it) | `src/providers/acme.rs` |
-| [8. Add its logo](#8-add-its-logo) | `macos/Logos/providers/acme.svg` |
-| [9. Update the docs](#9-update-the-docs) | `README.md`, `docs/architecture.md`, `CHANGELOG.md` |
+| [6. Test it](#6-test-it) | `src/providers/acme.rs` |
+| [7. Add its logo](#7-add-its-logo) | `macos/Logos/providers/acme.svg` |
+| [8. Update the docs](#8-update-the-docs) | `README.md`, `docs/architecture.md`, `CHANGELOG.md` |
 
 ## 1. Measure its answers
 
@@ -164,7 +163,7 @@ Helpers in `src/providers/mod.rs`:
 | `wait_left(spent)` | The `seconds` for a second request: what's left of the 15 with `spent` gone, a second at least. A provider that asks twice shares the 15 between the two, as `guard` waits on a read. |
 | `get(url, headers, seconds)` | The request itself, giving the status and body, for a provider whose token goes in another header. It gives up after `seconds`, or after 5 without a connection. A limit read passes 15, as `ask` does. |
 | `absent(window)` | Whether a window is null or all nulls, as providers send one a plan doesn't have. |
-| `window_name(seconds)` | A window's name by its length: `Hourly`, `5 hours`, `Daily`, `Weekly`, `Monthly`, or `<n> days`. |
+| `window_name(length)` | A window's name by its length in milliseconds: `Hourly`, `5 hours`, `Daily`, `Weekly`, `Monthly`, or `<n> days`. |
 | `words(key)` | A provider's key as words: `super_heavy` is `Super Heavy`. |
 | `api_account(provider)` | The one account, `<provider>:api`, that all of a provider's API keys draw on. |
 | `subscription(provider, (id, label))` | The subscription account `<provider>:<id>`, with `label`, from an id and label such as `credential.identity`. |
@@ -215,23 +214,16 @@ account through it.
 - OpenCode and Pi name providers by their ids, so they pick up a new one
   when they keep its login under its id. They take an OAuth login for a
   sign-in's token, except OpenRouter's, which is a key. If the new
-  provider's sign-in gives a key too, add it beside `openrouter` in their
-  `logins`.
-- Where Pi names the provider its own way, add the pair to `ALIASES` in
-  `src/agents/pi.rs`, as `("openai-codex", "openai")`.
+  provider's sign-in gives a key too, add it beside `openrouter` in
+  `kept_login` in `src/agents/mod.rs`.
+- Where Pi names the provider its own way, add an arm to the `match` in
+  `logins` in `src/agents/pi.rs`, as `"openai-codex" => Some("openai")`.
 - Claude Code, Codex, Grok Build and Antigravity read only their own
   provider's login, so holding another there takes code in that agent's
   `logins`
   ([adding-an-agent.md](adding-an-agent.md#logins)).
 
-## 6. Redact its keys
-
-If the provider's API keys start with a prefix not in `PREFIXES` in
-`src/redact.rs`, add it, with the least number of key characters that must
-follow it, and a case to the test there. `sk-` already covers keys like
-`sk-ant-`, `sk-or-` and `sk-proj-`.
-
-## 7. Test it
+## 6. Test it
 
 In a `#[cfg(test)]` module in `src/providers/acme.rs`, feed `parse` answers
 shaped like the provider's, written by hand, with no real ids, emails or
@@ -270,7 +262,7 @@ cargo test --locked
 
 Adding a provider changes no CLI snapshot.
 
-## 8. Add its logo
+## 7. Add its logo
 
 Add a one-color SVG (`currentColor`) at `macos/Logos/providers/acme.svg`.
 models.dev has most providers' logos, at `https://models.dev/logos/<id>.svg`.
@@ -278,7 +270,7 @@ It must be shapes, not an embedded picture, and not models.dev's placeholder
 ([macos/Logos/README.md](../macos/Logos/README.md)). Without one, the app
 draws a generic mark.
 
-## 9. Update the docs
+## 8. Update the docs
 
 Name the provider in:
 

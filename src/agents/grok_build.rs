@@ -2,10 +2,11 @@
 //!
 //! Each session is a directory, `~/.grok/sessions/<encoded directory>/<session>/`:
 //! `summary.json`, rewritten as the session goes on, with its directory,
-//! times, branch, title, and the session it was forked from; `updates.jsonl`,
-//! its stream of updates, one JSON-RPC notification a line, and the only
-//! record of usage: a `turn_completed` per prompt with the turn's usage per
-//! model and what xAI charged; and `chat_history.jsonl`, the conversation.
+//! times and title; and
+//! `updates.jsonl`, its stream of updates, one JSON-RPC notification a line,
+//! and the only record of usage: a `turn_completed` per prompt with the
+//! turn's usage per model and what xAI charged. `chat_history.jsonl`, the
+//! conversation, isn't read.
 //!
 //! What follows was measured on this Mac's history, September and October 2026.
 //!
@@ -23,21 +24,17 @@
 //! its finished subagents' added up to its turn's. So a parent's turn is
 //! counted less what those subagents' turns counted.
 //!
-//! **What it sends as the person's.** The person's words are in
-//! `<user_query>`, beside context Grok Build adds (its rules, the git status,
-//! the folder); a line it adds itself, a reminder or word that a task
-//! finished, carries `synthetic_reason`. Every conversation opens with the
-//! system prompt, which isn't the session's to show.
+//! **Titles.** A session Grok Build gave no title is titled by the first
+//! thing the person asked, its first `user_message_chunk`. Their words are
+//! in `<user_query>`, beside context Grok Build adds (its rules, the git
+//! status, the folder).
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{
-    Agent, Conversation, Credential, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role,
-    Secret, Session, Title, Tokens,
-};
+use super::{Agent, Credential, Info, Login, Read, Response, Secret, Session, Title, Tokens};
 use crate::{Error, Result};
 
 pub struct GrokBuild;
@@ -47,13 +44,11 @@ static INFO: Info = Info {
     name: "Grok Build",
     command: "grok",
     app: None,
-    resume: "grok --resume {id}",
     mcp_add: &["mcp", "add", "--scope", "user", "turnscope"],
     mcp_remove: Some(&["mcp", "remove", "--scope", "user", "turnscope"]),
     folder_var: Some("GROK_HOME"),
     charges: true,
     session_var: None,
-    cwd_var: None,
 };
 
 /// What Grok Build adds to a message sent as the person's.
@@ -98,10 +93,7 @@ impl Agent for GrokBuild {
     fn files(&self, folder: &Path) -> Vec<PathBuf> {
         super::entries(&folder.join("sessions"))
             .flat_map(|dir| super::entries(&dir))
-            .flat_map(|session| {
-                ["summary.json", "updates.jsonl", "chat_history.jsonl"]
-                    .map(|name| session.join(name))
-            })
+            .flat_map(|session| ["summary.json", "updates.jsonl"].map(|name| session.join(name)))
             .collect()
     }
 
@@ -126,73 +118,10 @@ impl Agent for GrokBuild {
                 }
                 summary(&json, read.session(&session));
             }
-            Some("chat_history.jsonl") => history(file, &session, &mut cursor, &mut read)?,
             _ => updates(file, &session, &mut cursor, &mut read)?,
         }
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
-    }
-
-    fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        let file = files
-            .iter()
-            .find(|file| file.ends_with("chat_history.jsonl"))
-            .ok_or_else(|| Error::NotFound(INFO.session(native)))?;
-        let mut conversation = Conversation::default();
-        super::lines(file, 0, |bytes| {
-            let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
-                return;
-            };
-            let content = super::texts(&line["content"]).join("\n");
-            match line["type"].as_str() {
-                Some("user") if line["synthetic_reason"].is_null() => {
-                    let said = typed(&content);
-                    if said.is_empty() {
-                        conversation.say(Kind::System, None, &content);
-                    } else {
-                        conversation.say(Kind::User, None, &said);
-                    }
-                }
-                // What Grok Build sent as the person's.
-                Some("user") => conversation.say(Kind::System, None, &content),
-                Some("reasoning") => conversation.say(
-                    Kind::Reasoning,
-                    None,
-                    &super::texts(&line["summary"]).join("\n"),
-                ),
-                Some("assistant") => {
-                    conversation.say(Kind::Assistant, None, &content);
-                    for call in line["tool_calls"].as_array().into_iter().flatten() {
-                        let input = match &call["arguments"] {
-                            Value::String(text) => text.clone(),
-                            other => other.to_string(),
-                        };
-                        let name = call["name"].as_str().unwrap_or("tool");
-                        let file = matches!(name, "search_replace" | "write")
-                            .then(|| serde_json::from_str::<Value>(&input).ok())
-                            .flatten()
-                            .and_then(|input| input["file_path"].as_str().map(str::to_owned));
-                        conversation.call(call["id"].as_str(), None, name, input);
-                        conversation.changed(file);
-                    }
-                }
-                // Grok Build marks no failure; a command's result opens with
-                // its exit code.
-                Some("tool_result") => {
-                    if let Some(call) = line["tool_call_id"].as_str() {
-                        let exit = content.strip_prefix("exit: ").and_then(|rest| {
-                            rest.split(|c: char| !c.is_ascii_digit())
-                                .next()?
-                                .parse::<i64>()
-                                .ok()
-                        });
-                        conversation.answer(call, content, exit.is_some_and(|exit| exit != 0));
-                    }
-                }
-                _ => {}
-            }
-        })?;
-        Ok(conversation.entries)
     }
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
@@ -217,14 +146,6 @@ impl Agent for GrokBuild {
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
         super::toml_mcp_command(&folder.join("config.toml"))
     }
-
-    fn role(&self, name: &str) -> Role {
-        match name {
-            "read_file" | "grep" | "list_dir" => Role::Read,
-            "spawn_subagent" => Role::Subagent,
-            _ => Role::Work,
-        }
-    }
 }
 
 /// Note in `facts` what its session's `summary.json`, `summary`, says.
@@ -241,7 +162,6 @@ fn summary(summary: &Value, facts: &mut Session) {
             .map(str::to_owned)
     };
     facts.cwd = text(&summary["info"]["cwd"]);
-    facts.branch = text(&summary["head_branch"]);
     if let Some(title) = text(&summary["generated_title"]) {
         let kind = if summary["title_is_manual"] == true {
             Title::Named
@@ -250,35 +170,6 @@ fn summary(summary: &Value, facts: &mut Session) {
         };
         facts.title(kind, &title);
     }
-    if let Some(parent) = text(&summary["parent_session_id"]) {
-        facts.parent = Some(Parent {
-            id: INFO.session(&parent),
-            link: Link::Fork,
-        });
-    }
-}
-
-/// Read what was said in `chat_history.jsonl` past `cursor` into `read`.
-fn history(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
-    // It holds the session's conversation, which reading the
-    // session finds through it.
-    read.session(session);
-    cursor.offset = super::lines(file, cursor.offset, |bytes| {
-        let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
-            read.skipped += 1;
-            return;
-        };
-        match line["type"].as_str() {
-            Some("user") if line["synthetic_reason"].is_null() => {
-                for text in super::texts(&line["content"]) {
-                    read.say(session, &typed(text));
-                }
-            }
-            Some("assistant") => read.say(session, &super::texts(&line["content"]).join("\n")),
-            _ => {}
-        }
-    })?;
-    Ok(())
 }
 
 /// Read `updates.jsonl` past `cursor` into `read`.
@@ -302,10 +193,7 @@ fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> 
             }
             Some("subagent_spawned") => {
                 if let Some(child) = update["child_session_id"].as_str() {
-                    read.session(&INFO.session(child)).parent = Some(Parent {
-                        id: session.to_owned(),
-                        link: Link::Subagent,
-                    });
+                    read.session(&INFO.session(child)).parent = Some(session.to_owned());
                 }
             }
             Some("subagent_finished") => {
@@ -569,35 +457,10 @@ mod tests {
         assert_eq!((own.tokens.input, own.tokens.cache_read), (5000, 15000));
         assert_eq!((own.prompt, own.cost), (20000_u64.div_ceil(6), Some(3e-8)));
         assert!(later.sessions["grok-build:s1"].title.is_none());
-        assert!(
-            first.sessions["grok-build:s2"]
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent.id == "grok-build:s1" && parent.link == Link::Subagent)
+        assert_eq!(
+            first.sessions["grok-build:s2"].parent.as_deref(),
+            Some("grok-build:s1")
         );
-    }
-
-    #[test]
-    fn what_grok_build_adds_isnt_the_persons_and_its_system_prompt_isnt_shown() {
-        let dir = tempfile::tempdir().unwrap();
-        let lines = [
-            json!({"type": "system", "content": "You are Grok Build."}),
-            json!({"type": "user", "content": "<rules>Be brief.</rules><git_status>clean</git_status>"}),
-            json!({"type": "user", "content": "<user_query>Add a flag.</user_query>"}),
-        ];
-        let file = crate::agents::jsonl(
-            dir.path().join("sessions/%2Fwork/s1/chat_history.jsonl"),
-            &lines,
-        );
-        let entries = GrokBuild
-            .transcript("s1", std::slice::from_ref(&file))
-            .unwrap();
-        let kinds: Vec<Kind> = entries.iter().map(|entry| entry.kind).collect();
-        assert_eq!(kinds, [Kind::System, Kind::User]);
-        assert_eq!(entries[1].text, "Add a flag.");
-        // Read, the file is the session's, so its conversation can be found.
-        let read = GrokBuild.read(&file, "").unwrap();
-        assert!(read.sessions.contains_key("grok-build:s1"));
     }
 
     #[test]

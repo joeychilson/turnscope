@@ -63,22 +63,14 @@ pub trait Agent: Sync {
         folder.exists()
     }
 
-    /// Its history files in `folder`, in the order they're read: one that
-    /// rewinds a session, as `Read::rewound` says, after those it rewinds.
-    /// One that doesn't exist is passed over, so a file it may keep can be
-    /// listed without looking.
+    /// Its history files in `folder`, in the order they're read. One that
+    /// doesn't exist is passed over, so a file it may keep can be listed
+    /// without looking.
     fn files(&self, folder: &Path) -> Vec<PathBuf>;
 
     /// What `file` holds past `cursor`, which a read returned before; an
     /// empty cursor reads from the start.
     fn read(&self, file: &Path, cursor: &str) -> Result<Read>;
-
-    /// The conversation of the session `id` (without the agent's prefix), from
-    /// the files that hold it. `files` is never empty: a session whose files
-    /// are all gone isn't read. When none of them holds the conversation, it
-    /// fails with `Error::NotFound` naming the session, and
-    /// `sessions::transcript` says its files are gone.
-    fn transcript(&self, id: &str, files: &[PathBuf]) -> Result<Vec<Entry>>;
 
     /// What `folder` holds for each provider it signs in to. A provider it
     /// held a login for and no longer lists is taken as signed out of.
@@ -90,12 +82,6 @@ pub trait Agent: Sync {
     /// The command that `folder`'s configuration runs for Turnscope's MCP
     /// server, if any. Each of its folders keeps its own.
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
-
-    /// What a call of its tool `name` is to a handoff: work, unless the
-    /// agent's tools read, ask the person or run a subagent by that name.
-    fn role(&self, _name: &str) -> Role {
-        Role::Work
-    }
 }
 
 /// What Turnscope knows of an agent as a program.
@@ -110,8 +96,6 @@ pub struct Info {
     /// doesn't run `command`: the end of its path, as
     /// `Antigravity.app/Contents/Resources/bin/language_server`.
     pub app: Option<&'static str>,
-    /// Resumes a session, `{id}` being its id.
-    pub resume: &'static str,
     /// The arguments that add Turnscope's MCP server, before its command.
     pub mcp_add: &'static [&'static str],
     /// The arguments that remove it, where the agent has a command for that.
@@ -122,10 +106,8 @@ pub struct Info {
     pub folder_var: Option<&'static str>,
     /// The cost it records is what the provider charged, not its estimate.
     pub charges: bool,
-    /// What it sets in an MCP server it starts: its session's id, and the
-    /// folder it works in.
+    /// What it sets in an MCP server it starts: its session's id.
     pub session_var: Option<&'static str>,
-    pub cwd_var: Option<&'static str>,
 }
 
 impl Info {
@@ -140,18 +122,10 @@ impl Info {
 pub struct Read {
     /// Where the next read starts, in the reader's own terms.
     pub cursor: String,
-    /// The sessions whose conversation the file holds, with what it says of
-    /// them.
+    /// The sessions the file tells of, with what it says of them.
     pub sessions: BTreeMap<String, Session>,
     /// By id, each response's reports merged.
     pub responses: HashMap<String, Response>,
-    /// What the person and the models said, by session, for search, with
-    /// its line's ordinal where the agent numbers a session's lines.
-    pub said: Vec<(String, String, Option<i64>)>,
-    /// Sessions this file goes back to an earlier point of, with the ordinal
-    /// it goes on from: what other files said in them from there on is
-    /// taken out of search.
-    pub rewound: Vec<(String, i64)>,
     /// Lines or rows it couldn't read.
     pub skipped: u64,
 }
@@ -169,50 +143,43 @@ impl Read {
             }
         }
     }
-
-    /// Note `text` as said in `session`, for search.
-    pub fn say(&mut self, session: &str, text: &str) {
-        self.say_at(session, text, None);
-    }
-
-    /// Note `text` as said in `session` on the line numbered `ordinal`.
-    pub fn say_at(&mut self, session: &str, text: &str, ordinal: Option<i64>) {
-        let text = text.trim();
-        if !text.is_empty() {
-            self.said
-                .push((session.to_owned(), crate::redact::redact(text), ordinal));
-        }
-    }
 }
 
 /// What a file says of a session. Several files and reads add up: the
-/// earliest start, the latest activity, the best title.
+/// latest activity, the best title.
 #[derive(Default)]
 pub struct Session {
+    /// The folder it works in, which its project is found by.
     pub cwd: Option<String>,
-    pub branch: Option<String>,
     pub title: Option<(Title, String)>,
-    pub parent: Option<Parent>,
-    pub started: Option<i64>,
+    /// The session it's a subagent of, which its usage counts toward. A
+    /// fork or a continuation has none: its usage is its own.
+    pub parent: Option<String>,
     pub last: Option<i64>,
 }
 
+/// How much of a title is kept, in characters. A title is often the first
+/// thing the person asked, whole: of 13,652 titles in one database, 4,206
+/// were longer, the longest 121,215 characters, and they were 42.8 MB of
+/// the 43.4 MB all titles took (November 2026). Nothing shows more than 80.
+const TITLE: usize = 200;
+
 impl Session {
     pub fn saw(&mut self, at: i64) {
-        self.started = Some(self.started.map_or(at, |started| started.min(at)));
         self.last = Some(self.last.map_or(at, |last| last.max(at)));
     }
 
     /// Offer a title; a better kind replaces a worse, and a later one of the
-    /// same kind the earlier. Its secrets are redacted, as it's shown
-    /// wherever the session is.
+    /// same kind the earlier. It's kept on one line, cut at `TITLE`.
+    ///
+    /// It's kept as written, a key pasted into it too, over taking keys out
+    /// of it as 0.1.8 did: the person gave that text to an agent already,
+    /// and the agent's own files hold it beside this database. Of 13,652
+    /// titles in one database, at most 159 had held a key (November 2026).
     pub fn title(&mut self, kind: Title, text: &str) {
-        let text = crate::redact::redact(text)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if !text.is_empty() && self.title.as_ref().is_none_or(|(had, _)| kind >= *had) {
-            self.title = Some((kind, text));
+            self.title = Some((kind, text.chars().take(TITLE).collect()));
         }
     }
 }
@@ -228,19 +195,6 @@ pub enum Title {
     Generated,
     /// One the person gave it.
     Named,
-}
-
-pub struct Parent {
-    pub id: String,
-    pub link: Link,
-}
-
-#[derive(PartialEq, Eq)]
-pub enum Link {
-    Subagent,
-    Fork,
-    /// The session carried on in a new file.
-    Continuation,
 }
 
 /// One response's usage, as a file reports it.
@@ -314,130 +268,6 @@ pub struct Tokens {
     pub output: u64,
     /// How much of the output was reasoning.
     pub reasoning: u64,
-}
-
-/// One entry of a conversation.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Entry {
-    pub kind: Kind,
-    pub at: Option<i64>,
-    /// What was said; empty for a tool call.
-    pub text: String,
-    pub tool: Option<Tool>,
-}
-
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, clap::ValueEnum,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum Kind {
-    User,
-    Assistant,
-    Reasoning,
-    Tool,
-    /// What the agent added itself: instructions, reminders, notices.
-    System,
-    /// The summary an agent wrote when it compacted the conversation.
-    Summary,
-    /// What a subagent was asked to do, which arrives as the person's.
-    Task,
-}
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Tool {
-    pub name: String,
-    pub input: String,
-    pub output: Option<String>,
-    pub failed: bool,
-    /// The files its edits name, as the agent names them: absolute, or
-    /// within the session's folder.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub files: Vec<String>,
-    /// Whether its edits took: a call that failed made none, unless its
-    /// agent says it went on past what failed.
-    #[serde(skip)]
-    pub edited: bool,
-    /// What it is to a handoff, as its agent says (`Agent::role`).
-    #[serde(skip)]
-    pub role: Role,
-}
-
-/// What a tool call is to a handoff.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Role {
-    /// It read: a file, a search, a page. The next agent reads it again as
-    /// it needs, so it's named in a line.
-    Read,
-    /// It asked the person, whose answer is a request of theirs.
-    Ask,
-    /// It ran a subagent, whose output is its report.
-    Subagent,
-    /// Anything else, as a command or an edit: the work itself.
-    #[default]
-    Work,
-}
-
-/// A conversation as it's read: tool results are folded into their calls.
-#[derive(Default)]
-pub struct Conversation {
-    pub entries: Vec<Entry>,
-    calls: BTreeMap<String, usize>,
-}
-
-impl Conversation {
-    pub fn say(&mut self, kind: Kind, at: Option<i64>, text: &str) {
-        if !text.trim().is_empty() {
-            self.entries.push(Entry {
-                kind,
-                at,
-                text: text.to_owned(),
-                tool: None,
-            });
-        }
-    }
-
-    pub fn call(&mut self, id: Option<&str>, at: Option<i64>, name: &str, input: String) {
-        if let Some(id) = id {
-            self.calls.insert(id.to_owned(), self.entries.len());
-        }
-        self.entries.push(Entry {
-            kind: Kind::Tool,
-            at,
-            text: String::new(),
-            tool: Some(Tool {
-                name: name.to_owned(),
-                input,
-                output: None,
-                failed: false,
-                files: Vec::new(),
-                edited: true,
-                role: Role::Work,
-            }),
-        });
-    }
-
-    /// Note `files` as changed by the call made last.
-    pub fn changed(&mut self, files: impl IntoIterator<Item = String>) {
-        let last = self
-            .entries
-            .last_mut()
-            .and_then(|entry| entry.tool.as_mut());
-        if let Some(call) = last {
-            call.files
-                .extend(files.into_iter().filter(|file| !file.is_empty()));
-        }
-    }
-
-    pub fn answer(&mut self, id: &str, output: String, failed: bool) -> Option<&mut Tool> {
-        let call = self
-            .calls
-            .get(id)
-            .and_then(|&at| self.entries[at].tool.as_mut())?;
-        call.output = Some(output);
-        call.failed = failed;
-        call.edited = !failed;
-        Some(call)
-    }
 }
 
 /// What an agent folder holds for one provider.
@@ -530,28 +360,6 @@ pub fn json_file(path: &Path) -> Result<Option<Value>> {
             .map_err(|error| reading(path, error)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(reading(path, error)),
-    }
-}
-
-/// The text of `content`: a string, or its parts' text.
-pub fn texts(content: &Value) -> Vec<&str> {
-    match content {
-        Value::String(text) => vec![text],
-        Value::Array(parts) => parts
-            .iter()
-            .filter_map(|part| part["text"].as_str())
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// A field as text: a string as it is, one that isn't there as none rather
-/// than "null", anything else as JSON.
-pub fn text(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
     }
 }
 
@@ -721,26 +529,6 @@ pub fn without_tags(text: &str, tags: &[&str]) -> String {
     }
 }
 
-/// The files a patch in `text` adds, updates, deletes or moves to, as
-/// `apply_patch` names them: in a patch as written, or quoted in a script that
-/// passes one on.
-pub fn patched(text: &str) -> Vec<String> {
-    let mut files = Vec::new();
-    for head in [
-        "*** Add File: ",
-        "*** Update File: ",
-        "*** Delete File: ",
-        "*** Move to: ",
-    ] {
-        for (at, _) in text.match_indices(head) {
-            let path = &text[at + head.len()..];
-            let end = path.find(['\n', '\\', '"', '`']).unwrap_or(path.len());
-            files.push(path[..end].trim().to_owned());
-        }
-    }
-    files
-}
-
 /// The command at `pointer` in the JSON file at `path`, where Claude Code,
 /// OpenCode and Pi keep Turnscope's MCP server.
 pub fn json_mcp_command(path: &Path, pointer: &str) -> Option<String> {
@@ -766,7 +554,7 @@ pub fn toml_mcp_command(path: &Path) -> Option<String> {
 
 /// `lines` written to `file` as JSON Lines, in a folder made for it.
 #[cfg(test)]
-pub fn jsonl(file: PathBuf, lines: &[Value]) -> PathBuf {
+fn jsonl(file: PathBuf, lines: &[Value]) -> PathBuf {
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
     std::fs::write(&file, text).unwrap();
@@ -776,7 +564,7 @@ pub fn jsonl(file: PathBuf, lines: &[Value]) -> PathBuf {
 /// `login`'s credential as its provider, kind, expiry and secret, to compare
 /// in a test.
 #[cfg(test)]
-pub fn credential(login: &Login) -> Option<(&'static str, bool, Option<i64>, &str)> {
+fn credential(login: &Login) -> Option<(&'static str, bool, Option<i64>, &str)> {
     let credential = login.credential.as_ref()?;
     Some((
         credential.provider,
@@ -789,6 +577,18 @@ pub fn credential(login: &Login) -> Option<(&'static str, bool, Option<i64>, &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_is_kept_on_one_line_and_cut_at_200_characters() {
+        let mut session = Session::default();
+        session.title(Title::Prompt, &format!("Fix\n  the {}", "é".repeat(300)));
+        let (_, title) = session.title.as_ref().unwrap();
+        assert!(title.starts_with("Fix the éé"), "{title}");
+        assert_eq!(title.chars().count(), 200);
+        // A worse kind doesn't replace it, and nothing is no title.
+        session.title(Title::Named, " \n ");
+        assert_eq!(session.title.as_ref().unwrap().1.chars().count(), 200);
+    }
 
     #[test]
     fn reports_of_a_response_merge_alike_in_any_order() {
@@ -847,16 +647,6 @@ mod tests {
             ),
             (900, 70, "claude-opus-5")
         );
-    }
-
-    #[test]
-    fn a_patch_names_its_files_written_out_or_quoted() {
-        let written =
-            "*** Begin Patch\n*** Update File: src/a.rs\n@@\n*** Add File: b.md\n+x\n*** End Patch";
-        assert_eq!(patched(written), ["b.md", "src/a.rs"]);
-        let quoted =
-            r#"tools.apply_patch("*** Begin Patch\n*** Delete File: old.rs\n*** End Patch")"#;
-        assert_eq!(patched(quoted), ["old.rs"]);
     }
 
     #[test]
@@ -933,16 +723,5 @@ mod tests {
             found(ended(1, "", "")),
             Err("security gave no reason (exit status: 1)".to_owned())
         );
-    }
-
-    #[test]
-    fn a_title_is_redacted() {
-        let mut session = Session::default();
-        session.title(
-            Title::Prompt,
-            "Use ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123 here",
-        );
-        let (_, title) = session.title.unwrap();
-        assert!(!title.contains("abcdefghijklmnop"), "{title}");
     }
 }

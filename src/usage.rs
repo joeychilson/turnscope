@@ -131,8 +131,7 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
             "LEFT JOIN session s ON s.id = r.session",
         ),
         // A subagent's usage counts toward the session at the top of its
-        // tree, as finding sessions counts it. A fork's or a continuation's
-        // is its own.
+        // tree. A fork's or a continuation's is its own.
         By::Session => (
             "coalesce(t.root, r.session)",
             "s.title",
@@ -140,8 +139,8 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
         ),
     };
     let trees = match query.by {
-        By::Session => crate::sessions::trees("1"),
-        _ => String::new(),
+        By::Session => crate::sessions::TREES,
+        _ => "",
     };
     let mut filters = vec!["r.at >= ?".to_owned(), "r.at < ?".to_owned()];
     let mut values: Vec<Value> = vec![query.since.into(), query.until.into()];
@@ -326,18 +325,12 @@ pub fn text(usage: &Usage, shares: Option<(&str, &Shares)>) -> String {
     let labels: Vec<String> = rows
         .iter()
         .map(|(row, _)| {
-            // A session by the start of its agent's own id, which names it
-            // as well, and its title.
-            let label = match row.key.split_once(':') {
-                Some((_, native)) if usage.by == By::Session => {
-                    let start: String = native.chars().take(8).collect();
-                    row.name
-                        .as_ref()
-                        .map_or(start.clone(), |name| format!("{start} {name}"))
-                }
+            let label = match (&usage.by, &row.name) {
+                (By::Session, Some(name)) => format!("{} {name}", start(&row.key)),
+                (By::Session, None) => start(&row.key),
                 _ => row.label().to_owned(),
             };
-            crate::sessions::short(&label, 55)
+            short(&label, 55)
         })
         .collect();
     let wide = labels
@@ -375,7 +368,7 @@ pub fn text(usage: &Usage, shares: Option<(&str, &Shares)>) -> String {
 
 /// Usage by anything but time as a Markdown table, its rest added up in a
 /// last row. With `shares`, a limit and each row's points of it, a column
-/// more. The asking session, `yours`, is marked.
+/// more. The asking session, `yours`, is marked, where its agent names it.
 pub fn markdown(
     usage: &Usage,
     shares: Option<(&crate::status::Limit, &Shares)>,
@@ -397,8 +390,8 @@ pub fn markdown(
             // Its name is its title, which a session may not have yet.
             By::Session => format!(
                 "`{}` {}{}",
-                row.key,
-                crate::sessions::title(row.name.as_deref()),
+                start(&row.key),
+                title(row.name.as_deref()),
                 if Some(row.key.as_str()) == yours {
                     " (yours)"
                 } else {
@@ -504,6 +497,44 @@ pub fn breakdown(
         }
     });
     Ok((usage, shares))
+}
+
+/// What a row shows of the session `id`: the first 8 characters of its
+/// agent's own id, without the agent before it.
+///
+/// Its whole id was some 45 characters a row in an answer to an agent, and
+/// nothing takes one: it only tells two sessions with one title apart, which
+/// 8 characters do.
+fn start(id: &str) -> String {
+    let native = id.split_once(':').map_or(id, |(_, native)| native);
+    native.chars().take(8).collect()
+}
+
+/// `text` on one line, cut to `most` characters with an ellipsis.
+fn short(text: &str, most: usize) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= most {
+        return line;
+    }
+    let kept: String = line.chars().take(most).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// A session's title as an answer to an agent gives it: on one line, cut to
+/// about 80 characters, in double quotes as JSON writes a string. One with
+/// none is `(untitled)`.
+///
+/// A title is the session's own words, often what a person asked there, and
+/// an agent reading the answer must not take them for Turnscope's. So each
+/// is marked where it stands, over a note at the answer's top, which the
+/// reader is far past by a table's last row. Double quotes rather than
+/// backticks, since a session's id beside it is in backticks, as code.
+/// JSON's escapes, `\"` and `\\`, keep a quote inside from ending it
+/// early and leaving words outside. The quotes cost two characters a row.
+fn title(title: Option<&str>) -> String {
+    title.map_or("(untitled)".to_owned(), |title| {
+        serde_json::Value::String(short(title, 80)).to_string()
+    })
 }
 
 #[cfg(test)]

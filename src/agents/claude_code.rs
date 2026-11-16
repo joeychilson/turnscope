@@ -43,20 +43,16 @@
 //! line goes on naming the session the process began as: 120 of the 123 logs
 //! naming another session held only responses of their own. So such a line's
 //! response is its log's, as a copy: where the session it names holds it
-//! too, that session's own report wins. Resuming shows a continuation's copy,
-//! so what it says stays the new session's conversation.
+//! too, that session's own report wins.
 //!
-//! **What the person typed.** A prompt typed while the model worked is an
-//! `attachment` of type `queued_command` with `commandMode` `prompt` (178
-//! of them, beside task notifications queued the same way). A subagent's
-//! hand-back or another session's message comes as one too, marked `isMeta`
-//! (323), and isn't the person's. Pastes are
-//! marked `<pasted_content …>`, and a command of Claude Code's own, such as
-//! `/clear`, asks for no work, so it titles nothing: 30 sessions had been
-//! titled `/clear`. A log can hold a line twice, rewritten as it was.
+//! **Titles.** A session neither Claude Code nor the person named is titled
+//! by the first thing the person asked, without what Claude Code added to
+//! it. Pastes are marked `<pasted_content …>`, and a command of Claude Code's
+//! own, such as `/clear`, asks for no work, so it titles nothing: 30 sessions
+//! had been titled `/clear`.
 //!
-//! **Not read.** `cost-state` records count calls the transcript doesn't
-//! hold, about 1–2% of cost; usage is counted from the transcript alone.
+//! **Not read.** `cost-state` records count calls the log doesn't hold,
+//! about 1–2% of cost; usage is counted from the log alone.
 //! Claude Code deletes logs older than `cleanupPeriodDays`; what was read of
 //! them stays.
 
@@ -68,10 +64,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use super::{
-    Agent, Conversation, Credential, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role,
-    Secret, Title, Tokens,
-};
+use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
 use crate::{Error, Result};
 
 pub struct ClaudeCode;
@@ -81,13 +74,11 @@ static INFO: Info = Info {
     name: "Claude Code",
     command: "claude",
     app: None,
-    resume: "claude --resume {id}",
     mcp_add: &["mcp", "add", "--scope", "user", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "--scope", "user", "turnscope"]),
     folder_var: Some("CLAUDE_CONFIG_DIR"),
     charges: false,
     session_var: Some("CLAUDE_CODE_SESSION_ID"),
-    cwd_var: Some("CLAUDE_PROJECT_DIR"),
 };
 
 /// What Claude Code adds to a message sent as the person's.
@@ -101,9 +92,6 @@ const INJECTED: &[&str] = &[
     "system-reminder",
     "task-notification",
 ];
-
-/// The tools that change the file their input names.
-const EDITS: &[&str] = &["Edit", "MultiEdit", "NotebookEdit", "Write"];
 
 /// Claude Code's own commands, which ask for no work: a session they open
 /// isn't titled by them.
@@ -166,37 +154,6 @@ fn typed(text: &str) -> String {
     }
 }
 
-/// How Claude Code opens a summary of a compacted conversation, after any
-/// notice about what it restates.
-const CONTINUED: &str =
-    "This session is being continued from a previous conversation that ran out of context.";
-
-/// What follows a summary: where to read more, and to carry on.
-const AFTER_SUMMARY: &[&str] = &[
-    "\nIf you need specific details from before compaction",
-    "\nContinue the conversation from where it left off",
-];
-
-/// A compaction summary without what Claude Code wraps it in: the lines
-/// before it, and those after it telling the model to carry on.
-fn summarized(text: &str) -> &str {
-    let text = text
-        .find(CONTINUED)
-        .map_or(text, |at| &text[at + CONTINUED.len()..])
-        .trim_start();
-    let text = text
-        .strip_prefix("The summary below covers the earlier portion of the conversation.")
-        .unwrap_or(text)
-        .trim_start();
-    let text = text.strip_prefix("Summary:").unwrap_or(text);
-    let end = AFTER_SUMMARY
-        .iter()
-        .filter_map(|after| text.find(after))
-        .min()
-        .unwrap_or(text.len());
-    text[..end].trim()
-}
-
 /// Whether `typed` asks for work, so it can title a session.
 fn asks(typed: &str) -> bool {
     let command = typed.split_whitespace().next().unwrap_or_default();
@@ -237,8 +194,6 @@ struct Line<'a> {
     timestamp: Option<Cow<'a, str>>,
     #[serde(borrow)]
     cwd: Option<Cow<'a, str>>,
-    #[serde(rename = "gitBranch", borrow)]
-    git_branch: Option<Cow<'a, str>>,
     #[serde(rename = "requestId", borrow)]
     request_id: Option<Cow<'a, str>>,
     #[serde(rename = "isMeta", default)]
@@ -255,60 +210,8 @@ struct Line<'a> {
     agent_name: Option<Cow<'a, str>>,
     #[serde(rename = "customTitle", borrow)]
     custom_title: Option<Cow<'a, str>>,
-    #[serde(rename = "continuedInSessionId", borrow)]
-    continued_in: Option<Cow<'a, str>>,
     #[serde(rename = "parentSessionId", borrow)]
     parent_session_id: Option<Cow<'a, str>>,
-    #[serde(borrow)]
-    uuid: Option<Cow<'a, str>>,
-    #[serde(borrow)]
-    attachment: Option<Attachment<'a>>,
-}
-
-/// An attachment: of those, a `queued_command` holds what the person typed
-/// while the model worked, beside notifications Claude Code queued.
-#[derive(Deserialize)]
-struct Attachment<'a> {
-    #[serde(rename = "type", borrow)]
-    kind: Option<Cow<'a, str>>,
-    #[serde(rename = "commandMode", borrow)]
-    mode: Option<Cow<'a, str>>,
-    prompt: Option<Value>,
-    /// Queued by Claude Code: a subagent's hand-back, or another session's
-    /// message.
-    #[serde(rename = "isMeta", default)]
-    meta: bool,
-}
-
-impl Attachment<'_> {
-    /// A background subagent's report, if this is its hand-back: the
-    /// subagent's id and the report, as Claude Code queues it: framed by a
-    /// paragraph of its own, every line indented two spaces.
-    fn hand_back(&self) -> Option<(&str, String)> {
-        let text = self.prompt.as_ref()?.as_str()?;
-        let rest = text.strip_prefix("<agent-message from=\"")?;
-        let (id, rest) = rest.split_once("\">\n")?;
-        let (frame, report) = rest.split_once('\n')?;
-        frame.starts_with("[Subagent hand-back]").then_some(())?;
-        let report = report.trim_end().strip_suffix("</agent-message>")?;
-        let report = report
-            .lines()
-            .map(|line| line.strip_prefix("  ").unwrap_or(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Some((id, report.trim().to_owned()))
-    }
-
-    /// What was queued as a prompt while the model worked, if this holds
-    /// it, and whether the person typed it.
-    fn queued(&self) -> Option<(String, bool)> {
-        if (self.kind.as_deref(), self.mode.as_deref()) != (Some("queued_command"), Some("prompt"))
-        {
-            return None;
-        }
-        let text = super::texts(self.prompt.as_ref()?).join("\n");
-        Some((typed(&text), !self.meta)).filter(|(text, _)| !text.is_empty())
-    }
 }
 
 impl Line<'_> {
@@ -555,10 +458,7 @@ impl Agent for ClaudeCode {
             // A fork here is a subagent begun with a copy of its parent's
             // context: it's still the parent's subagent.
             let described = read.session(&own);
-            described.parent = Some(Parent {
-                id: parent,
-                link: Link::Subagent,
-            });
+            described.parent = Some(parent);
             if let Some(task) = meta.description {
                 described.title(Title::Task, &task);
             }
@@ -573,75 +473,6 @@ impl Agent for ClaudeCode {
         })?;
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
-    }
-
-    fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        let (file, (session, agent)) = files
-            .iter()
-            .find_map(|file| {
-                let named = named(file)?;
-                (named.1.as_deref().unwrap_or(&named.0) == native).then_some((file, named))
-            })
-            .ok_or_else(|| Error::NotFound(INFO.session(native)))?;
-        let mut copy = agent
-            .as_deref()
-            .and_then(|agent| meta(file, agent))
-            .and_then(|meta| meta.copy(&meta.parent(&session)));
-        let mut prompted = false;
-        let mut conversation = Conversation::default();
-        // A log can hold a line twice, rewritten as it was.
-        let mut seen = std::collections::HashSet::new();
-        super::lines(file, 0, |bytes| {
-            let Ok(line) = serde_json::from_slice::<Line>(bytes) else {
-                return;
-            };
-            if in_copy(&line, &mut copy, &mut prompted)
-                || line
-                    .uuid
-                    .as_ref()
-                    .is_some_and(|uuid| !seen.insert(uuid.to_string()))
-            {
-                return;
-            }
-            match &*line.kind {
-                "user" | "assistant" => converse(&line, agent.is_some(), &mut conversation),
-                "attachment" => {
-                    let Some(attachment) = &line.attachment else {
-                        return;
-                    };
-                    // A subagent run in the background answers its call
-                    // with word that it started; its report comes later,
-                    // and is that call's output.
-                    if let Some((id, report)) = attachment.hand_back() {
-                        let started = format!("agentId: {id}");
-                        let call = conversation
-                            .entries
-                            .iter_mut()
-                            .rev()
-                            .filter_map(|entry| entry.tool.as_mut())
-                            .find(|tool| {
-                                tool.output
-                                    .as_deref()
-                                    .is_some_and(|output| output.contains(&started))
-                            });
-                        if let Some(call) = call {
-                            call.output = Some(report);
-                            return;
-                        }
-                    }
-                    if let Some((text, typed)) = attachment.queued() {
-                        let kind = match (typed, agent.is_some()) {
-                            (false, _) => Kind::System,
-                            (true, true) => Kind::Task,
-                            (true, false) => Kind::User,
-                        };
-                        conversation.say(kind, line.at(), &text);
-                    }
-                }
-                _ => {}
-            }
-        })?;
-        Ok(conversation.entries)
     }
 
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
@@ -708,32 +539,21 @@ impl Agent for ClaudeCode {
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String> {
         super::json_mcp_command(&settings(folder, home), "/mcpServers/turnscope/command")
     }
-
-    fn role(&self, name: &str) -> Role {
-        match name {
-            "Read" | "Grep" | "Glob" | "LS" | "WebFetch" | "WebSearch" | "NotebookRead" => {
-                Role::Read
-            }
-            "AskUserQuestion" => Role::Ask,
-            "Agent" | "Task" => Role::Subagent,
-            _ => Role::Work,
-        }
-    }
 }
 
 /// Whether `line` is part of a fork's copy of its parent's history, keeping
-/// `copy` and `prompted` up to date.
-fn in_copy(line: &Line, copy: &mut Option<Copy>, prompted: &mut bool) -> bool {
-    if let Some(copying) = copy.as_ref() {
+/// the cursor's `copy` and `prompted` up to date.
+fn in_copy(line: &Line, cursor: &mut Cursor) -> bool {
+    if let Some(copying) = cursor.copy.as_ref() {
         match (&*line.kind, &copying.through) {
-            ("user", None) => *copy = None,
+            ("user", None) => cursor.copy = None,
             ("assistant", Some(call)) => {
                 if line
                     .message
                     .as_ref()
                     .is_some_and(|message| message.calls(call))
                 {
-                    *copy = None;
+                    cursor.copy = None;
                 }
                 return true;
             }
@@ -744,8 +564,8 @@ fn in_copy(line: &Line, copy: &mut Option<Copy>, prompted: &mut bool) -> bool {
     match &*line.kind {
         // A fork of the session itself, before its first prompt.
         "fork-context-ref" => {
-            if !*prompted && copy.is_none() {
-                *copy = line.parent_session_id.as_deref().map(|parent| Copy {
+            if !cursor.prompted && cursor.copy.is_none() {
+                cursor.copy = line.parent_session_id.as_deref().map(|parent| Copy {
                     parent: INFO.session(parent),
                     through: None,
                 });
@@ -753,7 +573,7 @@ fn in_copy(line: &Line, copy: &mut Option<Copy>, prompted: &mut bool) -> bool {
             true
         }
         "user" => {
-            *prompted = true;
+            cursor.prompted = true;
             false
         }
         _ => false,
@@ -761,16 +581,8 @@ fn in_copy(line: &Line, copy: &mut Option<Copy>, prompted: &mut bool) -> bool {
 }
 
 fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
-    // A fork of the session itself names the session it was forked from. A
-    // subagent's link, from its description, stays.
-    if let ("fork-context-ref", Some(parent)) = (&*line.kind, line.parent_session_id.as_deref()) {
-        read.session(own).parent.get_or_insert(Parent {
-            id: INFO.session(parent),
-            link: Link::Fork,
-        });
-    }
     let copied = cursor.copy.as_ref().map(|copy| copy.parent.clone());
-    if in_copy(line, &mut cursor.copy, &mut cursor.prompted) {
+    if in_copy(line, cursor) {
         if let (Some(parent), "assistant") = (copied, &*line.kind) {
             respond(line, &parent, true, read);
         }
@@ -784,19 +596,18 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
     };
     match &*line.kind {
         "user" => {
-            if !line.claude_codes() {
-                for text in line
+            // The first thing the person asked titles the session. Once it
+            // has, what they say isn't read.
+            if !cursor.titled && !line.claude_codes() {
+                let texts = line
                     .message
                     .as_ref()
                     .map(Message::texts)
-                    .unwrap_or_default()
-                {
-                    let text = typed(&text);
-                    read.say(&owner, &text);
-                    if !cursor.titled && asks(&text) {
-                        read.session(&owner).title(Title::Prompt, &text);
-                        cursor.titled = true;
-                    }
+                    .unwrap_or_default();
+                let asked = texts.iter().map(|text| typed(text)).find(|text| asks(text));
+                if let Some(asked) = asked {
+                    read.session(&owner).title(Title::Prompt, &asked);
+                    cursor.titled = true;
                 }
             }
         }
@@ -804,16 +615,8 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
             let named = line.named.as_deref();
             let copy = named.is_some_and(|named| Some(named) != line.session_id.as_deref());
             respond(line, &owner, copy, read);
-            if let Some(message) = line.message.as_ref().filter(|message| !message.synthetic()) {
-                read.say(&owner, &message.texts().join("\n"));
-            }
         }
-        "attachment" => {
-            if let Some((text, true)) = line.attachment.as_ref().and_then(Attachment::queued) {
-                read.say(&owner, &text);
-            }
-        }
-        "system" => {}
+        "attachment" | "system" => {}
         "ai-title" => {
             if let Some(title) = &line.ai_title {
                 read.session(&owner).title(Title::Generated, title);
@@ -826,15 +629,6 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
             }
             return;
         }
-        "continued-in" => {
-            if let Some(next) = line.continued_in.as_deref() {
-                read.session(&INFO.session(next)).parent = Some(Parent {
-                    id: owner,
-                    link: Link::Continuation,
-                });
-            }
-            return;
-        }
         _ => return,
     }
     let session = read.session(&owner);
@@ -843,14 +637,6 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
     }
     if session.cwd.is_none() {
         session.cwd = line.cwd.as_deref().map(str::to_owned);
-    }
-    // Outside a repository the branch is empty, which is none.
-    if let Some(branch) = line
-        .git_branch
-        .as_deref()
-        .filter(|branch| !branch.is_empty())
-    {
-        session.branch = Some(branch.to_owned());
     }
 }
 
@@ -923,83 +709,6 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
     });
 }
 
-/// Add a user or assistant line to a conversation. In a subagent's, what
-/// arrives as the person's is its task.
-fn converse(line: &Line, subagent: bool, conversation: &mut Conversation) {
-    let at = line.at();
-    let Some(message) = &line.message else {
-        return;
-    };
-    let content: Value = message
-        .content
-        .and_then(|content| serde_json::from_str(content.get()).ok())
-        .unwrap_or_default();
-    let blocks = content.as_array().map(Vec::as_slice).unwrap_or_default();
-    if &*line.kind == "assistant" {
-        let kind = if message.synthetic() {
-            Kind::System
-        } else {
-            Kind::Assistant
-        };
-        conversation.say(kind, at, &message.texts().join("\n"));
-        for block in blocks {
-            match block["type"].as_str() {
-                Some("thinking") => conversation.say(
-                    Kind::Reasoning,
-                    at,
-                    block["thinking"].as_str().unwrap_or_default(),
-                ),
-                Some("tool_use") => {
-                    let name = block["name"].as_str().unwrap_or("tool");
-                    conversation.call(block["id"].as_str(), at, name, block["input"].to_string());
-                    if EDITS.contains(&name) {
-                        let input = &block["input"];
-                        let file = input["file_path"]
-                            .as_str()
-                            .or(input["notebook_path"].as_str());
-                        conversation.changed(file.map(str::to_owned));
-                    }
-                }
-                _ => {}
-            }
-        }
-        return;
-    }
-    for block in blocks.iter().filter(|block| block["type"] == "tool_result") {
-        let output = super::texts(&block["content"]).join("\n");
-        // Claude Code's own note closing a command's output, not the
-        // command's.
-        let output = match output.rfind("Shell cwd was reset to ") {
-            Some(at) if !output[at..].trim_end().contains('\n') => {
-                output[..at].trim_end().to_owned()
-            }
-            _ => output,
-        };
-        if let Some(call) = block["tool_use_id"].as_str() {
-            conversation.answer(call, output, block["is_error"].as_bool().unwrap_or(false));
-        }
-    }
-    for text in message.texts() {
-        let (kind, text) = if line.is_compact_summary {
-            (Kind::Summary, summarized(&text).to_owned())
-        } else if line.claude_codes() {
-            (Kind::System, text)
-        } else {
-            let said = typed(&text);
-            if said.is_empty() {
-                (Kind::System, text)
-            } else if !asks(&said) {
-                // A command of Claude Code's own, as `/clear`, asks for
-                // nothing.
-                (Kind::System, said)
-            } else {
-                (if subagent { Kind::Task } else { Kind::User }, said)
-            }
-        };
-        conversation.say(kind, at, &text);
-    }
-}
-
 /// Whether the log at `file` was begun in the last 10 seconds.
 fn begun_lately(file: &Path) -> bool {
     std::fs::metadata(file)
@@ -1034,15 +743,14 @@ mod tests {
     #[test]
     fn a_response_written_as_it_streams_is_one_response_at_its_most() {
         let dir = tempfile::tempdir().unwrap();
-        let text = json!([{"type": "text", "text": "Done."}]);
         let file = log(
             dir.path(),
             "s1.jsonl",
             &[
                 json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z", "cwd": "/work/app",
-                "message": {"role": "user", "content": "<command-name>/review</command-name><command-args>src</command-args>"}}),
-                assistant("s1", 1, "2026-09-30T09:00:01Z", usage(5, 16), text.clone()),
-                assistant("s1", 1, "2026-09-30T09:00:02Z", usage(5, 900), text),
+                "message": {"role": "user", "content": "Review src."}}),
+                assistant("s1", 1, "2026-09-30T09:00:01Z", usage(5, 16), json!([])),
+                assistant("s1", 1, "2026-09-30T09:00:02Z", usage(5, 900), json!([])),
                 // Claude Code's own reply costs nothing.
                 json!({"type": "assistant", "sessionId": "s1", "timestamp": "2026-09-30T09:00:03Z",
                 "message": {"id": "msg_2", "model": "<synthetic>", "role": "assistant", "usage": usage(0, 0), "content": []}}),
@@ -1071,13 +779,9 @@ mod tests {
         let session = &read.sessions["claude-code:s1"];
         assert_eq!(session.title.as_ref().unwrap().1, "Review src");
         assert_eq!(session.cwd.as_deref(), Some("/work/app"));
-        assert_eq!(
-            read.said[0],
-            ("claude-code:s1".to_owned(), "/review src".to_owned(), None)
-        );
         // Read on from where it stopped, nothing is read twice.
         let again = ClaudeCode.read(&file, &read.cursor).unwrap();
-        assert!(again.responses.is_empty() && again.said.is_empty());
+        assert!(again.responses.is_empty() && again.sessions.is_empty());
     }
 
     #[test]
@@ -1128,16 +832,7 @@ mod tests {
         let own = &read.responses["msg_2:req_2"];
         assert_eq!((own.session.as_str(), own.copy), ("claude-code:f1", false));
         let fork = &read.sessions["claude-code:f1"];
-        assert!(
-            fork.parent.as_ref().is_some_and(
-                |parent| parent.id == "claude-code:s1" && parent.link == Link::Subagent
-            )
-        );
-        assert_eq!(
-            fork.started,
-            crate::time::millis("2026-09-30T09:05:00Z"),
-            "the copy's times are the parent's"
-        );
+        assert_eq!(fork.parent.as_deref(), Some("claude-code:s1"));
     }
 
     #[test]
@@ -1151,23 +846,6 @@ mod tests {
         )
         .unwrap();
         assert!(ClaudeCode.read(&file, "").is_err());
-    }
-
-    #[test]
-    fn a_fork_of_the_session_names_its_parent() {
-        let dir = tempfile::tempdir().unwrap();
-        let fork = log(
-            dir.path(),
-            "s2.jsonl",
-            &[json!({"type": "fork-context-ref", "sessionId": "s2", "parentSessionId": "s1"})],
-        );
-        let read = ClaudeCode.read(&fork, "").unwrap();
-        assert!(
-            read.sessions["claude-code:s2"]
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent.id == "claude-code:s1" && parent.link == Link::Fork)
-        );
     }
 
     #[test]
@@ -1227,21 +905,6 @@ mod tests {
     }
 
     #[test]
-    fn a_line_outside_a_repository_leaves_the_branch_as_it_was() {
-        let dir = tempfile::tempdir().unwrap();
-        let line = |branch: &str| {
-            json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
-                "gitBranch": branch, "message": {"role": "user", "content": "Go on."}})
-        };
-        let file = log(dir.path(), "s1.jsonl", &[line("main"), line("")]);
-        let read = ClaudeCode.read(&file, "").unwrap();
-        assert_eq!(
-            read.sessions["claude-code:s1"].branch.as_deref(),
-            Some("main")
-        );
-    }
-
-    #[test]
     fn a_line_naming_another_session_yields_to_its_own_report_where_there_is_one() {
         let dir = tempfile::tempdir().unwrap();
         // A continuation's copy of s1's response, and after `/clear`, a
@@ -1274,65 +937,24 @@ mod tests {
         response.merge(old.responses["msg_1:req_1"].clone());
         assert_eq!(response.session, "claude-code:s1", "s1's own report wins");
         assert_eq!(new.responses["msg_2:req_2"].session, "claude-code:s2");
-        assert!(
-            old.sessions["claude-code:s2"]
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent.link == Link::Continuation)
-        );
+        // A continuation is a session of its own.
+        assert!(!old.sessions.contains_key("claude-code:s2"));
     }
 
     #[test]
-    fn a_background_subagents_report_is_its_calls_output() {
+    fn a_command_of_claude_codes_own_titles_nothing_and_a_paste_loses_its_marks() {
         let dir = tempfile::tempdir().unwrap();
-        let hand_back = "<agent-message from=\"a7\">\n[Subagent hand-back] The text below is the final report. The report follows:\n  ## Done\n  \n  The parser is fixed.\n</agent-message>";
         let file = log(
             dir.path(),
             "s1.jsonl",
             &[
-                assistant(
-                    "s1",
-                    1,
-                    "2026-09-30T09:00:00Z",
-                    usage(10, 5),
-                    json!([{"type": "tool_use", "id": "t1", "name": "Agent", "input": {"description": "Fix the parser"}}]),
-                ),
-                json!({"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:01Z",
-                    "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
-                        "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a7 (internal ID)"}]}]}}),
-                json!({"type": "attachment", "uuid": "a1", "sessionId": "s1", "timestamp": "2026-09-30T09:05:00Z",
-                    "attachment": {"type": "queued_command", "commandMode": "prompt", "isMeta": true, "prompt": hand_back}}),
-            ],
-        );
-        let entries = ClaudeCode.transcript("s1", &[file]).unwrap();
-        assert_eq!(entries.len(), 1);
-        let call = entries[0].tool.as_ref().unwrap();
-        assert_eq!(
-            call.output.as_deref(),
-            Some("## Done\n\nThe parser is fixed.")
-        );
-    }
-
-    #[test]
-    fn what_the_person_typed_mid_turn_is_read_and_a_command_titles_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let line = json!({"type": "user", "uuid": "u2", "sessionId": "s1", "timestamp": "2026-09-30T09:00:02Z",
-            "message": {"role": "user", "content": "Fix <pasted_content id=\"a1\">the parser</pasted_content id=\"a1\">."}});
-        let file = log(
-            dir.path(),
-            "s1.jsonl",
-            &[
-                json!({"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
+                json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
                     "message": {"role": "user", "content": "<command-name>/clear</command-name><command-args></command-args>"}}),
-                line.clone(),
-                line,
-                json!({"type": "attachment", "uuid": "a1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:09Z",
-                    "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": "Also the tests."}}),
-                json!({"type": "attachment", "uuid": "a2", "sessionId": "s1", "timestamp": "2026-09-30T09:00:10Z",
-                    "attachment": {"type": "queued_command", "commandMode": "task-notification", "prompt": "<task-notification>done</task-notification>"}}),
-                json!({"type": "attachment", "uuid": "a3", "sessionId": "s1", "timestamp": "2026-09-30T09:00:11Z",
-                    "attachment": {"type": "queued_command", "commandMode": "prompt", "isMeta": true,
-                        "prompt": "<agent-message from=\"a1\">Done: the parser is fixed.</agent-message>"}}),
+                json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:02Z",
+                    "message": {"role": "user", "content": "Fix <pasted_content id=\"a1\">the parser</pasted_content id=\"a1\">."}}),
+                // The first request titles it, not one after.
+                json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:09Z",
+                    "message": {"role": "user", "content": "Also the tests."}}),
             ],
         );
         let read = ClaudeCode.read(&file, "").unwrap();
@@ -1340,96 +962,22 @@ mod tests {
             read.sessions["claude-code:s1"].title.as_ref().unwrap().1,
             "Fix the parser."
         );
-        assert!(
-            read.said
-                .iter()
-                .any(|(_, text, _)| text == "Also the tests.")
-        );
-        // A subagent's hand-back, queued as a prompt, isn't the person's.
-        assert!(
-            !read
-                .said
-                .iter()
-                .any(|(_, text, _)| text.contains("agent-message"))
-        );
-        let entries = ClaudeCode.transcript("s1", &[file]).unwrap();
-        let said: Vec<(Kind, &str)> = entries
-            .iter()
-            .map(|entry| (entry.kind, entry.text.get(..15).unwrap_or(&entry.text)))
-            .collect();
-        assert_eq!(
-            said,
-            [
-                (Kind::System, "/clear"),
-                (Kind::User, "Fix the parser."),
-                (Kind::User, "Also the tests."),
-                (Kind::System, "<agent-message ")
-            ]
-        );
+        // A command that isn't Claude Code's own asks for work, and reads as
+        // the person typed it.
+        let review = typed("<command-name>/review</command-name><command-args>src</command-args>");
+        assert_eq!(review, "/review src");
+        assert!(asks(&review));
     }
 
     #[test]
     fn a_tag_the_person_typed_is_theirs_and_claude_codes_own_are_taken_out() {
-        let dir = tempfile::tempdir().unwrap();
         let asked =
             "Wrap the note in a <system-reminder> tag, then say how a <task-notification> differs.";
-        let file = log(
-            dir.path(),
-            "s1.jsonl",
-            &[
-                json!({"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
-                    "message": {"role": "user", "content": format!("<system-reminder>be brief</system-reminder>\n{asked}")}}),
-            ],
-        );
-        let read = ClaudeCode.read(&file, "").unwrap();
         assert_eq!(
-            read.sessions["claude-code:s1"].title.as_ref().unwrap().1,
+            typed(&format!(
+                "<system-reminder>be brief</system-reminder>\n{asked}"
+            )),
             asked
-        );
-        assert_eq!(
-            read.said,
-            [("claude-code:s1".to_owned(), asked.to_owned(), None)]
-        );
-        let entries = ClaudeCode.transcript("s1", &[file]).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            (entries[0].kind, entries[0].text.as_str()),
-            (Kind::User, asked)
-        );
-    }
-
-    #[test]
-    fn a_conversation_folds_results_into_calls_and_marks_what_isnt_the_persons() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = log(
-            dir.path(),
-            "s1.jsonl",
-            &[
-                json!({"type": "user", "sessionId": "s1", "message": {"role": "user", "content": "Fix it. <system-reminder>be brief</system-reminder>"}}),
-                assistant(
-                    "s1",
-                    1,
-                    "2026-09-30T09:00:01Z",
-                    usage(5, 9),
-                    json!([{"type": "thinking", "thinking": "Run the tests."}, {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}]),
-                ),
-                json!({"type": "user", "sessionId": "s1", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "1 failed", "is_error": true}]}}),
-                json!({"type": "user", "sessionId": "s1", "isCompactSummary": true, "message": {"role": "user", "content":
-                    format!("<notice/>\nA notice.\n{CONTINUED}\n\nSummary:\nTests fail.\n\nIf you need specific details from before compaction, read it.\nContinue the conversation from where it left off.")}}),
-            ],
-        );
-        let entries = ClaudeCode.transcript("s1", &[file]).unwrap();
-        let kinds: Vec<Kind> = entries.iter().map(|entry| entry.kind).collect();
-        assert_eq!(
-            kinds,
-            [Kind::User, Kind::Reasoning, Kind::Tool, Kind::Summary]
-        );
-        assert_eq!(entries[0].text, "Fix it.");
-        assert_eq!(entries[3].text, "Tests fail.");
-        let tool = entries[2].tool.as_ref().unwrap();
-        assert_eq!(
-            (tool.name.as_str(), tool.output.as_deref(), tool.failed),
-            ("Bash", Some("1 failed"), true)
         );
     }
 }

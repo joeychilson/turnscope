@@ -15,8 +15,8 @@
 //! input, `output` includes `reasoning`, `cacheWrite1h` is the part of
 //! `cacheWrite` kept for an hour, and `cost.total` is what Pi worked out it
 //! cost. A response is its `responseId`, its model `responseModel` where the
-//! provider named one. Calls a conversation doesn't show carry usage too: a
-//! `usage` entry (keeping the cache warm), and the model call that wrote a
+//! provider named one. Calls that are no message carry usage too: a `usage`
+//! entry (keeping the cache warm), and the model call that wrote a
 //! `compaction` or `branch_summary`.
 //!
 //! **Forks.** A fork's file copies every entry of its parent's, times and
@@ -38,10 +38,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{
-    Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
-    Tokens, texts,
-};
+use super::{Agent, Info, Login, Read, Response, Title, Tokens};
 use crate::Result;
 
 pub struct Pi;
@@ -51,13 +48,11 @@ static INFO: Info = Info {
     name: "Pi",
     command: "pi",
     app: None,
-    resume: "pi --session {id}",
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),
     folder_var: None,
     charges: false,
     session_var: None,
-    cwd_var: None,
 };
 
 #[derive(Default, Serialize, Deserialize)]
@@ -105,89 +100,6 @@ impl Agent for Pi {
         Ok(read)
     }
 
-    fn transcript(&self, _native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        // One file; every branch, in the order written.
-        let file = &files[0];
-        let mut conversation = Conversation::default();
-        let mut began = None;
-        super::lines(file, 0, |bytes| {
-            let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
-                return;
-            };
-            let entry_at = line["timestamp"].as_str().and_then(crate::time::millis);
-            if line["type"] == "session" {
-                began = entry_at;
-                return;
-            }
-            // A fork's copy of its parent's entries is the parent's
-            // conversation.
-            if copied(entry_at, began) {
-                return;
-            }
-            let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
-            let message = match line["type"].as_str() {
-                Some("message") => &line["message"],
-                Some("compaction" | "branch_summary") => {
-                    return conversation.say(Kind::Summary, entry_at, &text(&line["summary"]));
-                }
-                Some("custom_message") => {
-                    let added = texts(&line["content"]).join("\n");
-                    return conversation.say(Kind::System, entry_at, &added);
-                }
-                _ => return,
-            };
-            let at = message["timestamp"].as_i64().or(entry_at);
-            let content = &message["content"];
-            match message["role"].as_str() {
-                Some("user") => conversation.say(Kind::User, at, &texts(content).join("\n")),
-                Some("assistant") => {
-                    for block in content.as_array().into_iter().flatten() {
-                        match block["type"].as_str() {
-                            Some("text") => {
-                                conversation.say(Kind::Assistant, at, &text(&block["text"]))
-                            }
-                            Some("thinking") => {
-                                conversation.say(Kind::Reasoning, at, &text(&block["thinking"]))
-                            }
-                            Some("toolCall") => {
-                                let name = block["name"].as_str().unwrap_or("tool");
-                                let input = block["arguments"].to_string();
-                                conversation.call(block["id"].as_str(), at, name, input);
-                                if matches!(name, "edit" | "write") {
-                                    let file = block["arguments"]["path"].as_str();
-                                    conversation.changed(file.map(str::to_owned));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Some("toolResult") => {
-                    if let Some(call) = message["toolCallId"].as_str() {
-                        let failed = message["isError"].as_bool().unwrap_or(false);
-                        conversation.answer(call, texts(content).join("\n"), failed);
-                    }
-                }
-                // A command the person ran with `!`.
-                Some("bashExecution") => {
-                    let id = line["id"].as_str();
-                    conversation.call(id, at, "bash", text(&message["command"]));
-                    if let Some(id) = id {
-                        let failed = message["exitCode"].as_i64().is_some_and(|exit| exit != 0)
-                            || message["cancelled"] == true;
-                        conversation.answer(id, text(&message["output"]), failed);
-                    }
-                }
-                Some("compactionSummary" | "branchSummary") => {
-                    conversation.say(Kind::Summary, at, &text(&message["summary"]))
-                }
-                Some("custom") => conversation.say(Kind::System, at, &texts(content).join("\n")),
-                _ => {}
-            }
-        })?;
-        Ok(conversation.entries)
-    }
-
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
         let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
         let logins = kept.as_object().into_iter().flatten().map(|(name, entry)| {
@@ -204,19 +116,6 @@ impl Agent for Pi {
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
         super::json_mcp_command(&folder.join("mcp.json"), "/mcpServers/turnscope/command")
     }
-
-    fn role(&self, name: &str) -> Role {
-        match name {
-            "read" | "grep" | "find" | "ls" => Role::Read,
-            _ => Role::Work,
-        }
-    }
-}
-
-/// Whether an entry stamped `at` is a fork's copy of its parent's: one from
-/// before the session began, at `began`.
-fn copied(at: Option<i64>, began: Option<i64>) -> bool {
-    at.zip(began).is_some_and(|(at, began)| at < began)
 }
 
 fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
@@ -231,14 +130,6 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
             .as_str()
             .filter(|cwd| !cwd.is_empty())
             .map(str::to_owned);
-        // The parent's file, named for its session after the time.
-        facts.parent = line["parentSession"]
-            .as_str()
-            .and_then(|file| Path::new(file).file_stem()?.to_str()?.split_once('_'))
-            .map(|(_, parent)| Parent {
-                id: INFO.session(parent),
-                link: Link::Fork,
-            });
         if let Some(at) = at {
             facts.saw(at);
         }
@@ -248,7 +139,9 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
     let Some(session) = cursor.session.clone() else {
         return;
     };
-    let copy = copied(at, cursor.began);
+    // An entry from before the session began is a fork's copy of its
+    // parent's.
+    let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
     if let (false, Some(at)) = (copy, at) {
         read.session(&session).saw(at);
     }
@@ -283,13 +176,17 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
         Some("message") => {
             let message = &line["message"];
             match message["role"].as_str() {
-                Some("user") if !copy => {
-                    for text in texts(&message["content"]) {
-                        read.say(&session, text);
-                        if !cursor.titled {
-                            read.session(&session).title(Title::Prompt, text);
-                            cursor.titled = true;
-                        }
+                // The first thing the person asked titles the session: its
+                // content as a string, or the first of its parts' text.
+                Some("user") if !copy && !cursor.titled => {
+                    let content = &message["content"];
+                    let asked = content.as_str().or_else(|| {
+                        let mut parts = content.as_array()?.iter();
+                        parts.find_map(|part| part["text"].as_str())
+                    });
+                    if let Some(asked) = asked {
+                        read.session(&session).title(Title::Prompt, asked);
+                        cursor.titled = true;
                     }
                 }
                 Some("assistant") => {
@@ -302,9 +199,6 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
                         return;
                     };
                     cursor.model = Some((provider.to_owned(), model.to_owned()));
-                    if !copy {
-                        read.say(&session, &texts(&message["content"]).join("\n"));
-                    }
                     // A copy without a response id couldn't be told
                     // from its parent's.
                     let id = message["responseId"].as_str().map(str::to_owned).or(entry);
@@ -433,10 +327,10 @@ mod tests {
                 json!({"type": "session", "id": "s1", "cwd": "/work/cli", "timestamp": "2026-09-30T09:00:00Z"}),
                 json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:01Z", "message": {"role": "user", "content": "Add a --verbose flag."}}),
                 json!({"type": "message", "id": "e2", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant", "provider": "openai-codex", "model": "gpt-5.5",
-                "responseModel": "gpt-5.5-2026-09-01", "responseId": "resp_1", "content": [{"type": "text", "text": "Added."}], "usage": usage(50, 0.01)}}),
+                "responseModel": "gpt-5.5-2026-09-01", "responseId": "resp_1", "usage": usage(50, 0.01)}}),
                 // Keeping the cache warm, and compacting, are calls too.
                 json!({"type": "usage", "id": "e3", "timestamp": "2026-09-30T09:10:00Z", "kind": "cache_warm", "provider": "openai-codex", "model": "gpt-5.5", "usage": usage(5, 0.001)}),
-                json!({"type": "compaction", "id": "e4", "timestamp": "2026-09-30T09:20:00Z", "summary": "Added the flag.", "usage": usage(900, 0.02)}),
+                json!({"type": "compaction", "id": "e4", "timestamp": "2026-09-30T09:20:00Z", "usage": usage(900, 0.02)}),
                 json!({"type": "session_info", "id": "e5", "timestamp": "2026-09-30T09:21:00Z", "name": "Verbose flag"}),
             ],
         );
@@ -467,24 +361,21 @@ mod tests {
             read.sessions["pi:s1"].title.as_ref().unwrap().1,
             "Verbose flag"
         );
-        let entries = Pi.transcript("s1", &[file]).unwrap();
-        let kinds: Vec<Kind> = entries.iter().map(|entry| entry.kind).collect();
-        assert_eq!(kinds, [Kind::User, Kind::Assistant, Kind::Summary]);
     }
 
     #[test]
     fn a_growing_file_read_on_from_its_cursor_reads_as_it_does_whole() {
         let dir = tempfile::tempdir().unwrap();
-        let reply = |entry: &str, at: &str, response: &str, text: &str| {
+        let reply = |entry: &str, at: &str, response: &str| {
             json!({"type": "message", "id": entry, "timestamp": at, "message": {"role": "assistant", "provider": "openai-codex",
-                "model": "gpt-5.5", "responseId": response, "content": [{"type": "text", "text": text}], "usage": usage(50, 0.01)}})
+                "model": "gpt-5.5", "responseId": response, "usage": usage(50, 0.01)}})
         };
         let lines = [
             json!({"type": "session", "id": "s1", "cwd": "/work/cli", "timestamp": "2026-09-30T09:00:00Z"}),
             json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:01Z", "message": {"role": "user", "content": "Add a --verbose flag."}}),
-            reply("e2", "2026-09-30T09:00:05Z", "resp_1", "Added."),
+            reply("e2", "2026-09-30T09:00:05Z", "resp_1"),
             json!({"type": "message", "id": "e3", "timestamp": "2026-09-30T09:05:00Z", "message": {"role": "user", "content": "Now document it."}}),
-            reply("e4", "2026-09-30T09:05:09Z", "resp_2", "Documented."),
+            reply("e4", "2026-09-30T09:05:09Z", "resp_2"),
         ];
         let name = "2026-09-30T09-00-00-000Z_s1.jsonl";
         let file = session(dir.path(), name, &lines[..3]);
@@ -496,14 +387,17 @@ mod tests {
         assert_eq!(later.responses.len(), 1);
         assert_eq!(later.responses["resp_2"], whole.responses["resp_2"]);
         assert!(later.sessions["pi:s1"].title.is_none());
-        assert_eq!([first.said, later.said].concat(), whole.said);
+        assert_eq!(
+            first.sessions["pi:s1"].title.as_ref().unwrap().1,
+            "Add a --verbose flag."
+        );
     }
 
     #[test]
     fn a_forks_copies_of_its_parents_entries_are_the_parents() {
         let dir = tempfile::tempdir().unwrap();
         let copied = json!({"type": "message", "id": "e2", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant",
-            "provider": "xai", "model": "grok-4.6", "responseId": "resp_1", "content": [{"type": "text", "text": "Added."}], "usage": usage(50, 0.01)}});
+            "provider": "xai", "model": "grok-4.6", "responseId": "resp_1", "usage": usage(50, 0.01)}});
         let file = session(
             dir.path(),
             "2026-09-30T10-00-00-000Z_s2.jsonl",
@@ -525,22 +419,9 @@ mod tests {
             read.sessions["pi:s2"].title.as_ref().unwrap().1,
             "Make it --quiet instead."
         );
-        assert_eq!(read.said.len(), 1);
-        // Nor are they its conversation.
-        let entries = Pi.transcript("s2", std::slice::from_ref(&file)).unwrap();
-        let said: Vec<(Kind, &str)> = entries
-            .iter()
-            .map(|entry| (entry.kind, entry.text.as_str()))
-            .collect();
-        assert_eq!(said, [(Kind::User, "Make it --quiet instead.")]);
         let copy = &read.responses["resp_1"];
         assert_eq!((copy.session.as_str(), copy.copy), ("pi:s2", true));
-        let fork = &read.sessions["pi:s2"];
-        assert!(
-            fork.parent
-                .as_ref()
-                .is_some_and(|parent| parent.id == "pi:s1" && parent.link == Link::Fork)
-        );
-        assert_eq!(fork.started, crate::time::millis("2026-09-30T10:00:00Z"));
+        // A fork is a session of its own.
+        assert!(read.sessions["pi:s2"].parent.is_none());
     }
 }

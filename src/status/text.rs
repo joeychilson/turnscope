@@ -4,8 +4,15 @@
 
 use super::{Account, Horizon, Limit, Moment, Outlook, Spread, Stale, State, Status, Unknown};
 use crate::agents;
-use crate::sessions::Cite;
 use crate::time::{self, HOUR, MINUTE};
+
+/// How a follow-up is named: as a command for a person, as a tool call for
+/// an agent.
+#[derive(Clone, Copy)]
+pub enum Cite {
+    Command,
+    Tool,
+}
 
 /// What under ten minutes of work reads as.
 const UNDER: &str = "under 10m";

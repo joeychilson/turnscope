@@ -9,14 +9,13 @@ run, and how it decides what to show. The menu bar app is in
 
 The user runs several coding agents (Claude Code, Codex, OpenCode, Pi, Grok
 Build, Antigravity) on several accounts: subscriptions whose limits reset, and API keys
-that cost money. Turnscope does four things:
+that cost money. Turnscope does three things:
 
 1. **Limits.** How much of each limit is left, when it resets, whether it
    lasts at the current pace, and how many hours of work are left.
 2. **Usage.** What was used and what it cost, by day, week, month, model,
    project, agent, account or session.
-3. **Sessions.** Find a session, read it, and hand it to another agent.
-4. **Alerts.** A limit running out, used up or back, and an account that
+3. **Alerts.** A limit running out, used up or back, and an account that
    needs signing in again.
 
 It answers through the command line ([cli.md](cli.md)), an MCP server for
@@ -38,12 +37,10 @@ formats correctly, and the forecast.
 | Outlook | Where a limit is headed by its reset: `lasts`, `runsOut`, `usedUp` or `unknown`. |
 | Pace | Percentage points of a limit used per hour of clock time in the current window. |
 | Work left | Hours of agent work a limit has left, from the points it used per hour that agents worked. |
-| Session | One conversation in an agent, with id `<agent>:<the agent's own id>`. A subagent, a fork (a conversation branched off another) or a continuation is a session with a parent. Only a subagent counts toward its parent. |
-| Entry | One item of a session's conversation: a message, reasoning, a tool call with its output, a summary, a system note or a subagent's task. |
+| Session | One conversation in an agent, with id `<agent>:<the agent's own id>`. A subagent is a session with a parent, and its usage counts toward that parent. A fork (a conversation branched off another) or a continuation is a session of its own. Turnscope keeps a session's title, project, last activity and usage, not what was said in it. |
 | Response | The usage of one model call as the agent records it: tokens, cost, and the account it drew on. Grok Build records one per model per turn. |
 | Reading | A limit as its provider reported it at one time. |
 | Sign-in | What an agent folder held for a provider from a given time. It says which account a response drew on. |
-| Handoff | Where a session stands, for another agent to finish its work ([handoff.md](handoff.md)). |
 | Data directory | Where Turnscope keeps its database, locks and socket: `~/Library/Application Support/com.joeychilson.turnscope`, or `--data`. |
 
 ## Data
@@ -61,11 +58,10 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 
 | Table | Holds |
 |---|---|
-| `file` | Each history file: its size, modification time and inode when last read, its reader's cursor, how many lines it couldn't read, why it couldn't be read the last time it failed, whether it has rows in `said`, and the reader version it was last read with |
-| `session` | Each session: agent, agent folder, working folder, project, branch, title, parent and link, first and last activity |
-| `session_file` | Which files hold each session's conversation |
+| `file` | Each history file: its size, modification time and inode when last read, its reader's cursor, how many lines it couldn't read, why it couldn't be read the last time it failed, and the reader version it was last read with |
+| `session` | Each session: agent, project, title, the session it's a subagent of, and its last activity |
+| `session_file` | Which files tell of each session |
 | `response` | One row per response: tokens, prompt size, the cost the agent recorded, its cost, its account, and the file that last reported it |
-| `said` | A full-text index (FTS5) of what the user and the models said, with the session and file each row came from, and its line's ordinal where the agent numbers them. The text is indexed, not kept. |
 | `account` | Each account: provider, kind, title, label, whether it's hidden, the last read that worked, and what went wrong with the last read |
 | `reading` | Each limit at each read: name, scope, percent used, size in dollars, the window's start and reset |
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
@@ -103,17 +99,17 @@ into another program's database.
   read with an older one is read again from the start when it's next
   found: where it was, moved, or back after it was gone. Its responses,
   the sessions only such files hold, and which sessions it holds are
-  taken out first. Whatever a file is read from the start for, what it
-  said is taken out of `said` first. A file that rewinds a session to an
-  earlier point, as a Codex rewind's rollout does, takes what the session
-  said from there on out of `said`; its agent lists it after the files it
-  rewinds, so they're read first. Responses, sessions and what was said
-  from files the agent has since deleted stay, and search still finds
-  them. An older Turnscope, such as an agent's MCP server started before
-  an update, doesn't read history a newer one read: it says to update
-  instead, as it does for a newer schema.
-- **Transcripts aren't stored.** They're read from the agent's files when
-  asked for, with secrets redacted.
+  taken out first. Responses and sessions from files the agent has since
+  deleted stay. An older Turnscope still running, such as an agent's MCP
+  server started before an update, doesn't read history a newer one read:
+  it says to update instead. Where an update changed the schema and not
+  the readers, as 0.2.0 did, its reads of history fail and it answers from
+  what it read before, where its query still fits the schema: 0.1.8's
+  usage by session doesn't fit 0.2.0's, and fails. One started after the
+  schema changed doesn't open the data, and says to update (`db::open`).
+- **What was said isn't kept.** Of a session's conversation, only its
+  title is: the one its agent or the person gave it, or else the first
+  thing asked in it, as it was written.
 
 ## Code
 
@@ -124,7 +120,7 @@ There's no engine object, store layer or view types.
 src/
   main.rs             the command line: commands, catch_up, guard, statusline, doctor, exit codes
   db.rs               the schema, opening and migrating
-  ingest.rs           agents' files → responses, sessions and search; each response's cost and account
+  ingest.rs           agents' files → responses and sessions; each response's cost and account
   limits.rs           logins → accounts, sign-ins and readings
   prices.rs           models.dev's prices over time, and what a response cost
   forecast.rs         pace, outlook, ranges and work left: pure functions over readings
@@ -132,13 +128,11 @@ src/
   status/text.rs      the status in words, for the command line and MCP
   alerts.rs           which alerts a status raises, which wait to be shown, and the settings for them
   usage.rs            usage grouped by time, model, project, agent, account or session; what used a limit
-  sessions.rs         find, show and read sessions
-  sessions/handoff.rs hand a session to another agent
-  mcp.rs              the MCP server: who is asking, the tools, the prompt, the stdio loop
+  sessions.rs         a session's tree and account, and whether it runs now
+  mcp.rs              the MCP server: who is asking, the tools, the stdio loop
   serve.rs            the app's daemon: JSON-RPC on a Unix socket, keeping the data current
   connect.rs          adding and removing the MCP server with the agent's own command, and whether it's there
   time.rs             local time as people read and write it
-  redact.rs           secrets out of transcript text
   agents/
     mod.rs            the Agent trait, agents::ALL, what readers return, shared helpers
     claude_code.rs    Claude Code
@@ -176,12 +170,11 @@ The two traits, from `src/agents/mod.rs` and `src/providers/mod.rs`:
 pub trait Agent: Sync {
     fn info(&self) -> &'static Info;
     fn folders(&self, home: &Path) -> Vec<PathBuf>;
+    fn installed(&self, folder: &Path) -> bool { folder.exists() }
     fn files(&self, folder: &Path) -> Vec<PathBuf>;
     fn read(&self, file: &Path, cursor: &str) -> Result<Read>;
-    fn transcript(&self, id: &str, files: &[PathBuf]) -> Result<Vec<Entry>>;
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>>;
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
-    fn role(&self, _name: &str) -> Role { Role::Work }
 }
 
 pub trait Provider: Sync {
@@ -211,7 +204,7 @@ limits. A provider out of reach leaves things as they were.
 | A CLI command that reports data | Before it answers. `connect`, `disconnect`, and `accounts hide` and `show` don't. |
 | `guard` | Limits only, when due. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
-| `mcp` | Before each tool call, and before the `continue` prompt. |
+| `mcp` | Before each tool call. |
 | `serve` | On a thread of its own: at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. |
 
 While `serve` runs, the other processes rarely find anything new to read.
@@ -434,16 +427,9 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
   with no window while its limit is still used up; a `reset` for a day; and
   a `signIn` for a day while its account still can't be read.
 
-## Handoff
-
-`sessions::handoff` writes where a session stands, so another agent can
-finish its work: mostly what was said, which the next agent can't recover
-from the files on disk, in at most 16,000 tokens. [handoff.md](handoff.md)
-covers what it holds, the budget, and how to test a change.
-
 ## Security
 
-- **No secret is stored.** Logins are read when needed, from the agents'
+- **No login is stored.** Logins are read when needed, from the agents'
   files or the Keychain (with `/usr/bin/security`). A `Secret` can't be
   printed, serialized or cloned. An API key is known by its fingerprint,
   the first 16 hex digits of its SHA-256.
@@ -456,17 +442,11 @@ covers what it holds, the budget, and how to test a change.
 - **Logins are only read.** Each is sent only to its own provider, and
   never once it has expired. Turnscope never refreshes a token or writes an
   agent's files. `connect` and `disconnect` run the agent's own command.
-- **Redaction.** `redact::redact` replaces keys with known prefixes, JSON
-  Web Tokens, `Bearer` tokens and private keys' PEM blocks with
-  `[redacted]`, in text before it's indexed for search and in transcripts
-  before they're shown. Each is found after a JSON string's `\n`, `\t` or
-  `\r`, as in a tool call's input, and after the `-` that starts a line a
-  diff removes, also with the line's number before it. A private key is found in a JSON string, indented, with
-  line numbers, in a diff, encrypted, and cut short with no END line.
 - **The data directory and socket** are the owner's alone: the directory
   is created 0700, and the socket is 0600.
-- **The MCP server only reads.** Its instructions tell agents that what a
-  session says is data, not instructions, and each entry's text comes
-  quoted, `> ` a line, so none of it can pass for an entry.
+- **The MCP server only reads.** A session's title is what someone asked
+  there, so its instructions tell agents to read one as data, not as an
+  instruction, and each comes in double quotes, so none of it can pass
+  for Turnscope's words.
 
 [SECURITY.md](../SECURITY.md) says how to report a vulnerability.

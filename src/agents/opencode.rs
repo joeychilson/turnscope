@@ -7,9 +7,8 @@
 //! before the latest `time_updated` seen in each table, as a row can be
 //! committed after one stamped later: OpenCode stamps a row as it makes the
 //! write, then waits up to 5 s (`busy_timeout`) for another process's write
-//! to end. Rows read again change nothing, and what they say isn't indexed
-//! again. (From OpenCode's code, `packages/core/src/database/`, read
-//! 2026-10-12.)
+//! to end. Rows read again change nothing. (From OpenCode's code,
+//! `packages/core/src/database/`, read 2026-10-12.)
 //!
 //! The latest seen is taken no later than the clock. A row stamped while the
 //! Mac's clock was ahead, as one set by hand and then put right, is later
@@ -55,10 +54,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{
-    Agent, Conversation, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role, Title,
-    Tokens, text,
-};
+use super::{Agent, Info, Login, Read, Response, Title, Tokens};
 use crate::Result;
 
 pub struct OpenCode;
@@ -68,13 +64,11 @@ static INFO: Info = Info {
     name: "OpenCode",
     command: "opencode",
     app: None,
-    resume: "opencode --session {id}",
     mcp_add: &["mcp", "add", "--global", "turnscope", "--"],
     mcp_remove: None,
     folder_var: None,
     charges: false,
     session_var: None,
-    cwd_var: None,
 };
 
 /// Whether the message `m` of the session `s` is the session's own: a fork's
@@ -87,9 +81,6 @@ struct Cursor {
     /// clock was at that read.
     sessions: i64,
     messages: i64,
-    /// The messages whose text was indexed at a time within `LATE` of
-    /// `messages`, which are read again.
-    said: Vec<String>,
 }
 
 /// How long before the latest `time_updated` seen a read starts, so a row
@@ -117,10 +108,6 @@ impl Agent for OpenCode {
 
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
         read_at(file, cursor, crate::now()).map_err(|error| super::reading(file, error))
-    }
-
-    fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        transcript(&files[0], native).map_err(|error| super::reading(&files[0], error))
     }
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
@@ -157,15 +144,6 @@ impl Agent for OpenCode {
             "/mcp/servers/turnscope/command/0",
         )
     }
-
-    fn role(&self, name: &str) -> Role {
-        match name {
-            "read" | "grep" | "glob" | "list" | "webfetch" | "websearch" => Role::Read,
-            "question" => Role::Ask,
-            "task" => Role::Subagent,
-            _ => Role::Work,
-        }
-    }
 }
 
 /// What `file` holds past `cursor`, read with the clock at `now`.
@@ -189,34 +167,24 @@ fn sessions(
     read: &mut Read,
 ) -> rusqlite::Result<()> {
     let mut sessions = db.prepare(&format!(
-        "SELECT s.id, nullif(s.parent_id, ''), nullif(s.fork_session_id, ''),
-             nullif(s.directory, ''), s.title, s.time_created, s.time_updated,
+        "SELECT s.id, nullif(s.parent_id, ''), nullif(s.directory, ''), s.title,
+             s.time_created, s.time_updated,
              (SELECT m.data FROM session_message m WHERE m.session_id = s.id
                  AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
          FROM session_v2 s WHERE s.time_updated >= ?1"
     ))?;
     let mut rows = sessions.query([cursor.sessions - LATE])?;
     while let Some(row) = rows.next()? {
-        let (native, parent, fork): (String, Option<String>, Option<String>) =
-            (row.get(0)?, row.get(1)?, row.get(2)?);
-        let (created, updated): (i64, i64) = (row.get(5)?, row.get(6)?);
+        let (native, parent): (String, Option<String>) = (row.get(0)?, row.get(1)?);
+        let (created, updated): (i64, i64) = (row.get(4)?, row.get(5)?);
         cursor.sessions = cursor.sessions.max(updated.min(now));
         let session = read.session(&INFO.session(&native));
-        session.parent = match (parent, fork) {
-            (Some(parent), _) => Some(Parent {
-                id: INFO.session(&parent),
-                link: Link::Subagent,
-            }),
-            (None, Some(fork)) => Some(Parent {
-                id: INFO.session(&fork),
-                link: Link::Fork,
-            }),
-            _ => None,
-        };
-        session.cwd = row.get(3)?;
+        // A subagent's parent. A fork is a session of its own.
+        session.parent = parent.map(|parent| INFO.session(&parent));
+        session.cwd = row.get(2)?;
         session.saw(created);
         session.saw(updated);
-        let first: Option<String> = row.get(7)?;
+        let first: Option<String> = row.get(6)?;
         if let Some(text) = first.and_then(|data| serde_json::from_str::<Value>(&data).ok()) {
             session.title(Title::Prompt, text["text"].as_str().unwrap_or_default());
         }
@@ -229,7 +197,7 @@ fn sessions(
                     .is_some()
             })
         };
-        let title: Option<String> = row.get(4)?;
+        let title: Option<String> = row.get(3)?;
         if let Some(title) = title.filter(|title| !placeholder(title)) {
             session.title(Title::Generated, &title);
         }
@@ -250,11 +218,8 @@ fn messages(
          WHERE m.time_updated >= ?1 AND m.type IN ('user', 'assistant') AND {OWN}"
     ))?;
     // A message is read again each time it changes, and while it's
-    // within `LATE` of the latest change; what it says is indexed once,
-    // when it's new or a response completes.
+    // within `LATE` of the latest change.
     let mark = cursor.messages;
-    let was_said = std::mem::take(&mut cursor.said);
-    let mut said_at = Vec::new();
     let mut rows = messages.query(params![mark - LATE])?;
     while let Some(row) = rows.next()? {
         let (message, native, kind): (String, String, String) =
@@ -267,42 +232,21 @@ fn messages(
         // last read, isn't: knowing it wasn't seen would take every bad
         // row's id in the cursor, for a count only doctor shows.
         let unseen = u64::from(updated > mark && updated <= now);
+        let session = INFO.session(&native);
+        // A prompt says when its session worked, and no more: what it holds
+        // isn't read.
+        if kind == "user" {
+            read.session(&session).saw(created);
+            continue;
+        }
         let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(5)?) else {
             read.skipped += unseen;
             continue;
         };
-        let session = INFO.session(&native);
         read.session(&session).saw(created);
         let completed = data["time"]["completed"].as_i64();
         if let Some(completed) = completed {
             read.session(&session).saw(completed);
-        }
-        // What a prompt says is final once it's made, and a reply's once it
-        // completes.
-        let final_at = match kind.as_str() {
-            "user" => Some(created),
-            _ => completed,
-        }
-        .filter(|at| *at > mark - LATE);
-        let new = final_at.is_some() && !was_said.contains(&message);
-        if let Some(at) = final_at {
-            said_at.push((message.clone(), at));
-        }
-        if kind == "user" {
-            if new {
-                read.say(&session, data["text"].as_str().unwrap_or_default());
-            }
-            continue;
-        }
-        if new {
-            for part in data["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|part| part["type"] == "text")
-            {
-                read.say(&session, part["text"].as_str().unwrap_or_default());
-            }
         }
         // A message has no tokens until its response ends.
         let tokens = &data["tokens"];
@@ -349,102 +293,7 @@ fn messages(
             cost: data["cost"].as_f64(),
         });
     }
-    cursor.said = said_at
-        .into_iter()
-        .filter(|(_, at)| *at > cursor.messages - LATE)
-        .map(|(message, _)| message)
-        .collect();
     Ok(())
-}
-
-/// The conversation of the session `native` in the database `file`.
-fn transcript(file: &Path, native: &str) -> rusqlite::Result<Vec<Entry>> {
-    let db = open(file)?;
-    let mut statement = db.prepare(&format!(
-        "SELECT m.type, m.time_created, m.data
-         FROM session_message m JOIN session_v2 s ON s.id = m.session_id
-         WHERE m.session_id = ?1 AND {OWN} ORDER BY m.seq"
-    ))?;
-    let mut rows = statement.query([native])?;
-    let mut conversation = Conversation::default();
-    while let Some(row) = rows.next()? {
-        let kind: String = row.get(0)?;
-        let at = Some(row.get::<_, i64>(1)?);
-        let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(2)?) else {
-            continue;
-        };
-        match kind.as_str() {
-            "user" => conversation.say(Kind::User, at, &text(&data["text"])),
-            "assistant" => {
-                for part in data["content"].as_array().into_iter().flatten() {
-                    match part["type"].as_str() {
-                        Some("text") => conversation.say(Kind::Assistant, at, &text(&part["text"])),
-                        Some("reasoning") => {
-                            conversation.say(Kind::Reasoning, at, &text(&part["text"]))
-                        }
-                        Some("tool") => tool(part, at, &mut conversation),
-                        _ => {}
-                    }
-                }
-            }
-            // A command the person ran with `!`.
-            "shell" => {
-                let call = data["shellID"].as_str();
-                conversation.call(call, at, "shell", text(&data["command"]));
-                if let Some(call) = call {
-                    let failed = data["exit"].as_i64().is_some_and(|exit| exit != 0);
-                    conversation.answer(call, text(&data["output"]["output"]), failed);
-                }
-            }
-            "compaction" => conversation.say(Kind::Summary, at, &text(&data["summary"])),
-            _ => conversation.say(Kind::System, at, data["text"].as_str().unwrap_or_default()),
-        }
-    }
-    Ok(conversation.entries)
-}
-
-/// Add a tool call, a part of an assistant message, with its outcome.
-fn tool(part: &Value, at: Option<i64>, conversation: &mut Conversation) {
-    let (call, name, state) = (part["id"].as_str(), part["name"].as_str(), &part["state"]);
-    let input = &state["input"];
-    conversation.call(call, at, name.unwrap_or("tool"), input.to_string());
-    // A finished call's output is its `content`, a string or a list of parts;
-    // a failed one's, its error's message.
-    let failed = state["status"] == "error"
-        || state["metadata"]["exit"]
-            .as_i64()
-            .is_some_and(|exit| exit != 0);
-    let output = if state["status"] == "error" {
-        text(state["error"].get("message").unwrap_or(&state["error"]))
-    } else {
-        match &state["content"] {
-            parts @ Value::Array(_) => super::texts(parts).join("\n"),
-            content => text(content),
-        }
-    };
-    if let Some(call) = call {
-        conversation.answer(call, output, failed);
-    }
-    if failed {
-        return;
-    }
-    // What an edit, a write or a patch changed, as its result lists them, or
-    // its input names.
-    let files = match state["metadata"]["files"].as_array() {
-        Some(listed) => listed
-            .iter()
-            .filter_map(|file| file["file"].as_str())
-            .map(str::to_owned)
-            .collect(),
-        None if matches!(name, Some("edit" | "write")) => input["filePath"]
-            .as_str()
-            .or(input["path"].as_str())
-            .map(str::to_owned)
-            .into_iter()
-            .collect(),
-        None => super::patched(input["patchText"].as_str().unwrap_or_default()),
-    };
-    conversation.changed(files);
 }
 
 #[cfg(test)]
@@ -469,9 +318,7 @@ mod tests {
         )
         .unwrap();
         let assistant = json!({"model": {"providerID": "opencode-go", "id": "glm-5.3"}, "time": {"created": 2000, "completed": 2500},
-            "tokens": {"input": 100, "output": 20, "reasoning": 5, "cache": {"read": 300, "write": 0}}, "cost": 0.002,
-            "content": [{"type": "text", "text": "Fixed."}, {"type": "tool", "id": "c1", "name": "shell",
-                "state": {"status": "completed", "input": {"command": "npm test"}, "content": [{"type": "text", "text": "ok"}], "metadata": {"exit": 0}}}]});
+            "tokens": {"input": 100, "output": 20, "reasoning": 5, "cache": {"read": 300, "write": 0}}, "cost": 0.002});
         for (id, session, kind, seq, created, data) in [
             (
                 "m1",
@@ -569,46 +416,24 @@ mod tests {
         );
         let session = &read.sessions["opencode:s1"];
         assert_eq!(session.title.as_ref().unwrap().1, "Fix the form");
-        assert_eq!((session.started, session.last), (Some(1000), Some(2500)));
-        assert!(
-            read.sessions["opencode:s2"]
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent.link == Link::Fork)
-        );
-        assert_eq!(
-            read.said.len(),
-            2,
-            "the prompt and the reply; the fork's copy isn't its own"
-        );
-        // Read on, rows within 10 s of the mark are read again, and their
-        // text isn't indexed again.
+        assert_eq!(session.last, Some(2500));
+        // A fork is a session of its own.
+        assert!(read.sessions["opencode:s2"].parent.is_none());
+        // Read on, rows within 10 s of the mark are read again, which
+        // changes nothing.
         let again = OpenCode.read(&file, &read.cursor).unwrap();
-        assert!(again.responses.contains_key("m2"));
-        assert!(again.said.is_empty());
-        let entries = OpenCode
-            .transcript("s1", std::slice::from_ref(&file))
-            .unwrap();
-        assert_eq!(
-            entries.iter().map(|entry| entry.kind).collect::<Vec<_>>(),
-            [Kind::User, Kind::Assistant, Kind::Tool]
-        );
-        assert_eq!(
-            entries[2].tool.as_ref().unwrap().output.as_deref(),
-            Some("ok")
-        );
+        assert_eq!(again.responses["m2"], read.responses["m2"]);
     }
 
     #[test]
-    fn a_reply_committed_after_a_later_one_is_read_and_indexed_once() {
+    fn a_reply_committed_after_a_later_one_is_read() {
         let dir = tempfile::tempdir().unwrap();
         let file = database(dir.path());
         let first = OpenCode.read(&file, "").unwrap();
         // Another OpenCode process stamped it at 2200, before the last read
         // saw m2's 2500, and committed it after.
         let reply = json!({"model": {"providerID": "opencode-go", "id": "glm-5.3"}, "time": {"created": 2100, "completed": 2200},
-            "tokens": {"input": 50, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}},
-            "content": [{"type": "text", "text": "Checked the email field too."}]});
+            "tokens": {"input": 50, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}}});
         Connection::open(&file)
             .unwrap()
             .execute(
@@ -618,15 +443,6 @@ mod tests {
             .unwrap();
         let later = OpenCode.read(&file, &first.cursor).unwrap();
         assert_eq!(later.responses["m4"].tokens.input, 50);
-        assert_eq!(
-            later.said,
-            [(
-                "opencode:s1".to_owned(),
-                "Checked the email field too.".to_owned(),
-                None
-            )]
-        );
-        assert!(OpenCode.read(&file, &later.cursor).unwrap().said.is_empty());
     }
 
     #[test]
@@ -659,8 +475,7 @@ mod tests {
         // it, and a row that can't be read.
         let ahead = 3_620_000;
         let reply = json!({"model": {"providerID": "opencode-go", "id": "glm-5.3"}, "time": {"created": ahead, "completed": ahead},
-            "tokens": {"input": 50, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}},
-            "content": [{"type": "text", "text": "Added a dark theme."}]});
+            "tokens": {"input": 50, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}}});
         db.execute_batch(&format!(
             "INSERT INTO session_v2 VALUES ('s3', NULL, NULL, '/work/web', 'Dark theme', {ahead}, {ahead});
              INSERT INTO session_message VALUES ('m4', 's3', 'assistant', 1, {ahead}, {ahead}, '{reply}');
@@ -668,7 +483,6 @@ mod tests {
         ))
         .unwrap();
         let first = read_at(&file, "", 20_000).unwrap();
-        assert_eq!(first.said.len(), 3);
         // The clock put right, a session and a request at 30,000.
         db.execute_batch(
             "INSERT INTO session_v2 VALUES ('s4', NULL, NULL, '/work/web', 'Footer', 30000, 30000);
@@ -676,13 +490,11 @@ mod tests {
         )
         .unwrap();
         let later = read_at(&file, &first.cursor, 31_000).unwrap();
-        assert!(later.sessions.contains_key("opencode:s4"));
-        assert_eq!(
-            later.said,
-            [("opencode:s4".to_owned(), "Add a footer.".to_owned(), None)]
-        );
+        let footer = &later.sessions["opencode:s4"];
+        assert_eq!(footer.title.as_ref().unwrap().1, "Footer");
+        assert_eq!(footer.last, Some(30_000));
         // The rows stamped ahead are read again, which changes nothing: the
-        // reply is the same response, said once.
+        // reply is the same response.
         assert_eq!(later.responses["m4"], first.responses["m4"]);
         // The row that can't be read is counted once, when the clock passes
         // it.
@@ -692,7 +504,6 @@ mod tests {
             [first.skipped, later.skipped, passed.skipped, after.skipped],
             [0, 0, 1, 0]
         );
-        assert!(passed.said.is_empty() && after.said.is_empty());
     }
 
     #[test]

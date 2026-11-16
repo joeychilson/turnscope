@@ -25,8 +25,7 @@ runs, Swift tests included.
 - **One place per rule.** An agent or provider is named only in its own
   file and its registry, `agents::ALL` or `providers::ALL`.
 - **Decisions are written where they apply:** what was chosen, over what,
-  why, and what was measured. `forecast.rs` and `sessions::handoff` show
-  how.
+  why, and what was measured. `forecast.rs` and `ingest.rs` show how.
 - **Plain wording** in everything the user reads: short sentences, no
   filler, and the same word for the same thing, as the
   [glossary](docs/architecture.md#glossary) defines it.
@@ -36,11 +35,10 @@ runs, Swift tests included.
 | When you change | Also update |
 |---|---|
 | A command or flag of the command line, or its output | `docs/cli.md`; its case in `tests/cli.rs`; the README's command line section if it's shown there |
-| An MCP tool, its description or inputs, its answer, or the prompt | `docs/mcp.md` |
+| An MCP tool, its description or inputs, or its answer | `docs/mcp.md` |
 | The status, an alert, or any `serve` message | In one commit: `contract/`, the Rust types, `Contract.swift`, `docs/protocol.md`. Anything but an added field also raises `serve::PROTOCOL` and `protocolVersion` ([how](docs/protocol.md#change-the-protocol)) |
 | An agent, or how an agent's files are read | [docs/adding-an-agent.md](docs/adding-an-agent.md), which lists the docs to update. Raise `ingest::READERS` when a reader would read a file it read before differently |
 | A provider | [docs/adding-a-provider.md](docs/adding-a-provider.md), which lists the docs to update |
-| The handoff | `docs/handoff.md`; try it on the handoff cases ([development.md](docs/development.md#handoff-cases)) |
 | The forecast | The decision written in `forecast.rs`, [architecture.md](docs/architecture.md#forecast); run the backtest |
 | The database schema | A new script at the end of `db::REVISIONS`: a shipped one is never edited. The tables in [architecture.md](docs/architecture.md#data) |
 | An alert kind or a notification setting | `alerts.rs`; the `CHECK` on `alert.kind`, in a new revision; `alerts::Notify`; the contract (above); `Words+Notes.swift`; `Settings/GeneralTab.swift`; [architecture.md](docs/architecture.md#alerts) |
