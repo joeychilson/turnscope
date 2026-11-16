@@ -276,13 +276,6 @@ pub fn open(dir: &Path) -> Result<Connection> {
     db.busy_timeout(std::time::Duration::from_secs(10))?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
     let latest = REVISIONS.len() as i64;
-    let revision = |db: &Connection| -> Result<i64> {
-        let revision: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if revision > latest {
-            return Err(newer());
-        }
-        Ok(revision)
-    };
     if revision(&db)? == latest {
         return Ok(db);
     }
@@ -316,6 +309,23 @@ pub fn lock(path: &Path) -> Result<File> {
     File::create(path)
         .and_then(|file| file.lock().map(|()| file))
         .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
+}
+
+/// The schema's revision in `db`, or the error when it's one a newer
+/// Turnscope made.
+fn revision(db: &Connection) -> Result<i64> {
+    let revision: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if revision > REVISIONS.len() as i64 {
+        return Err(newer());
+    }
+    Ok(revision)
+}
+
+/// Whether the schema is still one this Turnscope knows: the error when a
+/// newer one has changed it since `db` was opened, as under an agent's MCP
+/// server left running through an update.
+pub fn known(db: &Connection) -> Result<()> {
+    revision(db).map(|_| ())
 }
 
 /// The error when a newer Turnscope has updated the data: this one would
@@ -361,6 +371,24 @@ mod tests {
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    #[test]
+    fn a_schema_changed_by_a_newer_turnscope_since_it_was_opened_isnt_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = super::open(dir.path()).unwrap();
+        assert!(super::known(&db).is_ok());
+        let newer = rusqlite::Connection::open(dir.path().join("turnscope.sqlite")).unwrap();
+        newer
+            .pragma_update(None, "user_version", super::REVISIONS.len() as i64 + 1)
+            .unwrap();
+        let error = super::known(&db).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "a newer Turnscope has updated this data; update Turnscope"
+        );
+        // One started now doesn't open it.
+        assert_eq!(super::open(dir.path()).unwrap_err().to_string(), error);
     }
 
     /// A database as 0.1.8 left it, at revision 4, with what was said in a
