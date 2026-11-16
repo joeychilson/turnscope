@@ -393,8 +393,9 @@ mod tests {
              INSERT INTO said (session, text, file) VALUES ('grok-build:s1', 'Add a flag.', 2);",
         )
         .unwrap();
-        // A title of 300 characters, the last 100 of them not ASCII.
-        let long = "a".repeat(200) + &"é".repeat(100);
+        // A title of 300 characters and 450 bytes: cut by bytes, it would
+        // keep fewer than 200 characters.
+        let long = "é".repeat(150) + &"a".repeat(150);
         old.execute(
             "INSERT INTO session (id, agent, folder, title, title_rank) VALUES ('grok-build:s5', 'grok-build', '/home/.grok', ?1, 0)",
             [&long],
@@ -431,7 +432,7 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         let some = |text: &str| Some(text.to_owned());
-        let cut = "a".repeat(200);
+        let cut = "é".repeat(150) + &"a".repeat(50);
         assert_eq!(
             sessions,
             [

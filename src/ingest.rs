@@ -579,8 +579,8 @@ pub fn derive(db: &mut Connection, of: Of) -> Result<()> {
 
 /// Forget what an older reader made of `files`, found again, so each is
 /// read from the start: the responses it reported last, the sessions only
-/// such files hold, so what a reader now makes of their folder, project,
-/// parent or title counts, and which sessions it holds. A file read with an
+/// such files hold, so what a reader now makes of their project, parent
+/// or title counts, and which sessions it holds. A file read with an
 /// older reader that isn't found, as one its agent deleted, keeps all it
 /// made; found again, moved or back, it's read again then.
 fn read_again(db: &mut Connection, files: &[i64]) -> Result<()> {

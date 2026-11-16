@@ -97,8 +97,10 @@ static TOOLS: &[Tool] = &[
 /// Only Claude Code names its session. Another agent's was guessed, as its
 /// latest in the folder this process was started in, to mark one row of
 /// usage by session as yours; the guess is gone (0.2.0), over keeping the
-/// folder a session works in for it alone. It had marked another worktree's
-/// session, and found none where an app starts the server in `/`.
+/// folder a session works in for it alone. It took an agent's session in
+/// another worktree for the caller's until it looked in the folder before
+/// the project, and where an app starts the server in `/` it was the
+/// agent's latest anywhere.
 pub struct Caller {
     agent: Option<&'static dyn Agent>,
     /// Its own session, which usage by session marks as yours.
@@ -656,8 +658,6 @@ mod tests {
         assert_eq!(above(12345), None);
     }
 
-    /// Codex in one of two worktrees of a project, with a later session of
-    /// its own in the other.
     /// A row shows the start of its session's id, and the caller's own is
     /// marked, which only an agent that names its session has.
     #[test]

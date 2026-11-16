@@ -73,10 +73,8 @@
 //! hangs wasn't measured: none ran, and under the app were the language
 //! server and the two MCP servers it had started.
 //!
-//! The app started the server in the folder `/`, and set no variable that
-//! names the conversation or the folder it works in. So in the app the
-//! folder isn't known, and the caller's own session is Antigravity's latest
-//! anywhere, which a conversation begun with no folder can be.
+//! The app set no variable that names the conversation, so the caller's
+//! own session isn't known.
 //!
 //! **Not read.** The Antigravity IDE's history, which this Mac doesn't have.
 //!

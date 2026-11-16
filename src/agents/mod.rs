@@ -579,6 +579,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_title_is_kept_on_one_line_and_cut_at_200_characters() {
+        let mut session = Session::default();
+        session.title(Title::Prompt, &format!("Fix\n  the {}", "é".repeat(300)));
+        let (_, title) = session.title.as_ref().unwrap();
+        assert!(title.starts_with("Fix the éé"), "{title}");
+        assert_eq!(title.chars().count(), 200);
+        // A worse kind doesn't replace it, and nothing is no title.
+        session.title(Title::Named, " \n ");
+        assert_eq!(session.title.as_ref().unwrap().1.chars().count(), 200);
+    }
+
+    #[test]
     fn reports_of_a_response_merge_alike_in_any_order() {
         let report =
             |session: &str, copy: bool, output: u64, cache_read: u64, model: &str| Response {
