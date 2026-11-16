@@ -839,6 +839,16 @@ fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
         )
         .unwrap();
     assert_eq!(read, 0, "it read history into a schema it doesn't know");
+    // A query that no longer fits fails, and says why first.
+    db.execute("ALTER TABLE session RENAME COLUMN title TO name", [])
+        .unwrap();
+    let failed = usage();
+    assert!(
+        failed.starts_with(
+            "What's new couldn't be read first: a newer Turnscope has updated this data; update Turnscope. Then this failed: "
+        ),
+        "{failed}"
+    );
     drop(stdin);
     assert!(mcp.wait().unwrap().success());
 }
