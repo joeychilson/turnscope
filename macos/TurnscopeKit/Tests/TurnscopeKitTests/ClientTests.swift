@@ -58,8 +58,9 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     #expect(serve.params(of: "hello").first?["protocol"] as? Int == protocolVersion)
     #expect(store.all.count == 6)
     #expect(store.inUse.map(\.id) == ["anthropic:acct-1:org-1"])
-    // The alerts kept for a client come with the handshake.
-    #expect(alerts == [.runningOut, .usedUp, .reset, .signIn])
+    // The alerts kept for a client come with the handshake, each as an
+    // event after its status.
+    #expect(await until { alerts == [.runningOut, .usedUp, .reset, .signIn] })
     #expect(client.phase == .connected)
     // When serve goes away, the client says so and connects again. It says
     // hello again, which is all it takes to get back in sync.
