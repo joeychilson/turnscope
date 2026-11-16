@@ -747,7 +747,7 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
 /// longer fits still fails: 0.1.8's usage by session did. Reading the
 /// revision takes 2.8 µs (November 2026).
 pub fn catch_up(db: &mut rusqlite::Connection, home: &Path) -> Result<bool> {
-    db::known(db)?;
+    db::revision(db)?;
     let (priced, limits) = match online() {
         true => (
             prices::refresh(db).unwrap_or(false),

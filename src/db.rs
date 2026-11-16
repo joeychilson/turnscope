@@ -312,20 +312,14 @@ pub fn lock(path: &Path) -> Result<File> {
 }
 
 /// The schema's revision in `db`, or the error when it's one a newer
-/// Turnscope made.
-fn revision(db: &Connection) -> Result<i64> {
+/// Turnscope made: before `db` is opened, or since, as under an agent's
+/// MCP server left running through an update.
+pub fn revision(db: &Connection) -> Result<i64> {
     let revision: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if revision > REVISIONS.len() as i64 {
         return Err(newer());
     }
     Ok(revision)
-}
-
-/// Whether the schema is still one this Turnscope knows: the error when a
-/// newer one has changed it since `db` was opened, as under an agent's MCP
-/// server left running through an update.
-pub fn known(db: &Connection) -> Result<()> {
-    revision(db).map(|_| ())
 }
 
 /// The error when a newer Turnscope has updated the data: this one would
@@ -377,12 +371,12 @@ mod tests {
     fn a_schema_changed_by_a_newer_turnscope_since_it_was_opened_isnt_known() {
         let dir = tempfile::tempdir().unwrap();
         let db = super::open(dir.path()).unwrap();
-        assert!(super::known(&db).is_ok());
+        assert_eq!(super::revision(&db).unwrap(), super::REVISIONS.len() as i64);
         let newer = rusqlite::Connection::open(dir.path().join("turnscope.sqlite")).unwrap();
         newer
             .pragma_update(None, "user_version", super::REVISIONS.len() as i64 + 1)
             .unwrap();
-        let error = super::known(&db).unwrap_err().to_string();
+        let error = super::revision(&db).unwrap_err().to_string();
         assert_eq!(
             error,
             "a newer Turnscope has updated this data; update Turnscope"
