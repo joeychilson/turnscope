@@ -333,11 +333,25 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
             // Each answer is as of now: what changed since is read first.
             let caught = crate::catch_up(&mut server.db, &server.home);
-            match (tool.answer)(server, arguments).map(|text| behind(text, caught)) {
-                Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
-                Err(error) => {
-                    json!({ "content": [{ "type": "text", "text": error.to_string() }], "isError": true })
-                }
+            let (text, failed) = match ((tool.answer)(server, arguments), caught) {
+                (Ok(text), Ok(_)) => (text, false),
+                (Ok(text), Err(why)) => (
+                    format!(
+                        "{text}\n\nWhat's new couldn't be read first, so this is as of the last read: {why}"
+                    ),
+                    false,
+                ),
+                // A query may no longer fit a schema a newer Turnscope
+                // changed, so why it wasn't read comes first.
+                (Err(error), Err(why)) => (
+                    format!("What's new couldn't be read first: {why}. Then this failed: {error}"),
+                    true,
+                ),
+                (Err(error), Ok(_)) => (error.to_string(), true),
+            };
+            match failed {
+                false => json!({ "content": [{ "type": "text", "text": text }] }),
+                true => json!({ "content": [{ "type": "text", "text": text }], "isError": true }),
             }
         }
         other => {
@@ -358,15 +372,6 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
         );
     }
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
-}
-
-fn behind(text: String, caught: Result<bool>) -> String {
-    match caught {
-        Ok(_) => text,
-        Err(error) => format!(
-            "{text}\n\nWhat's new couldn't be read first, so this is as of the last read: {error}"
-        ),
-    }
 }
 
 fn input<T: for<'a> Deserialize<'a>>(arguments: Value) -> Result<T> {

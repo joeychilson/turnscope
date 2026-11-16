@@ -37,7 +37,7 @@ hands off sessions.
 - **A key in a session's title is no longer replaced with `[redacted]`.**
   The title is kept as written, and `usage --by session`, the app and
   `explain_usage` show it so. A title stored before keeps its `[redacted]`
-  until its file is read again from the start.
+  until a title for its session is read again.
 - **A Turnscope left running through an update,** such as an agent's MCP
   server, answers from what it read before until it's restarted. One from
   0.1.8 goes on until a read fails: it can't read new history into this
