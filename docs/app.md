@@ -90,10 +90,8 @@ Check it by running the app, or with `--fixture` and `--snapshot`.
 
 Swift warnings are errors. The bundle id is `com.joeychilson.turnscope`.
 The project's version is a placeholder: the scripts set `MARKETING_VERSION`
-and `CURRENT_PROJECT_VERSION` from `Cargo.toml`. `SPARKLE_PUBLIC_KEY` is
-empty in the project, and `scripts/build-release.sh` sets it
-([Updates](#updates)). The Turnscope scheme runs the app with
-`--data /tmp/turnscope-dev`.
+and `CURRENT_PROJECT_VERSION` from `Cargo.toml`. The Turnscope scheme runs
+the app with `--data /tmp/turnscope-dev`.
 
 ## How data flows
 
@@ -105,9 +103,10 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
 - **`Client`** connects to `serve` and keeps connected. It runs
   `turnscope serve --socket` once for the socket's path, starts `serve` when
   nothing listens, and says `hello` on each connection. It hands the store
-  events in order: its phase (connected, or failed and why),
-  each `hello` result, each status and each alert. A status or alert it
-  can't read drops the connection, so the store hears that it failed.
+  events in order: its phase (connected, or failed and why), then each
+  status and each alert, from `hello` on each connection and as `serve`
+  pushes them. A status or alert it can't read drops the connection, so
+  the store hears that it failed.
   `request` sends a request and waits for its result.
   [protocol.md](protocol.md#lifecycle) says how it reconnects and replaces
   another engine's `serve`.
@@ -132,7 +131,7 @@ turnscope serve ──status, alerts──▶ Client ──events──▶ Store
   to connect an agent too, since an app moved to Applications can be
   talking to the one still running from the image.
 - **Views** get the store from the SwiftUI environment, with `Navigation`,
-  `Updater` and `PanelActions` (close).
+  `Updater` and the `closePanel` environment value.
 - **`Words`** writes every figure and sentence made from the status: what's
   left, times, a limit's line, the headline, the menu bar's figures and
   notifications. Views get one from `store.words(now:)`, which uses the agent
@@ -317,15 +316,14 @@ kinds turned off and alerts for hidden accounts, so the app doesn't filter.
 
 ## Updates
 
-`Updater` uses Sparkle, pinned to 2.10.0 in the Xcode project. It reads the
-appcast at `SUFeedURL`, the latest GitHub release's `appcast.xml`, checks
-each update's signature with `SUPublicEDKey`, and asks before installing.
+`Updater` uses Sparkle. It reads the appcast at `SUFeedURL`, the latest
+GitHub release's `appcast.xml`, checks each update's signature with
+`SUPublicEDKey`, and asks before installing.
 `SUVerifyUpdateBeforeExtraction` has it check the disk image's signature
 before it mounts the image, rather than after, so a disk image that isn't
-ours is never opened. The installed copy's Info.plist is the one that
-counts, so it holds from the update after the one that adds it.
-Automatic checks are on by default (`SUEnableAutomaticChecks`), and Settings
-→ General → Check automatically turns them off.
+ours is never opened. Automatic checks are on by default
+(`SUEnableAutomaticChecks`), and Settings → General → Check automatically
+turns them off.
 
 The app has no window to bring forward, so an update found by a scheduled
 check would open behind other apps. Instead it uses Sparkle's gentle
@@ -349,13 +347,8 @@ fails, the Mac beeps.
 
 ## Logos
 
-`macos/Logos/providers/<provider id>.svg` and `agents/<agent id>.svg` are
-drawn in one color (`currentColor`), so `Logo` can tint them like icons in
-the color of the text beside them. An account uses its provider's logo,
-and an agent its own. Without one, the app draws an SF Symbol: `key.fill`
-for a provider, `terminal.fill` for an agent. Adding a logo needs no code:
-add the file, named by the id. [macos/Logos/README.md](../macos/Logos/README.md)
-says where each one comes from.
+`Logo` tints the one-color logos in `macos/Logos/` like text, or draws an
+SF Symbol where there's none ([macos/Logos/README.md](../macos/Logos/README.md)).
 
 ## Launch arguments
 
@@ -398,13 +391,11 @@ as an option's value, so `--open --data <dir>` opens nothing in the panel.
   nothing scrolled, and no sessions under an open account, since there's no
   engine to ask.
 
-| Environment variable | Does |
-|---|---|
-| `TURNSCOPE_BINARY` | In a Debug build, the `turnscope` to run instead of `Contents/Helpers/turnscope`. A release ignores it, since the engine's path is what Connect writes into agents' settings. `EngineTests.swift` reads it too |
-
-The engine the app starts inherits the app's environment, so
-`TURNSCOPE_OFFLINE` and `TURNSCOPE_NOW` reach it. A `serve` already running
-for that data directory is used as it is.
+In a Debug build, `TURNSCOPE_BINARY` names the `turnscope` to run instead
+of the bundled one ([development.md](development.md#test)). The engine the
+app starts inherits the app's environment, so `TURNSCOPE_OFFLINE` and
+`TURNSCOPE_NOW` reach it. A `serve` already running for that data
+directory is used as it is.
 
 `open` starts the app in `/`, so give it absolute paths. Running the
 executable directly keeps the shell's directory and environment:
@@ -427,28 +418,8 @@ log stream --predicate 'subsystem == "com.joeychilson.turnscope"'
 
 ## How to
 
-### Build and run
-
-```sh
-scripts/build-app.sh   # target/xcode/Build/Products/Debug/Turnscope.app
-```
-
-Or open `macos/Turnscope.xcodeproj` in Xcode and run the Turnscope scheme.
-Both build the Rust binary into the app. Use a scratch `--data`, never your
-own data directory.
-
-### Run the Swift tests
-
-```sh
-swift test --package-path macos/TurnscopeKit -Xswiftc -warnings-as-errors
-```
-
-To also run the client against the real engine:
-
-```sh
-cargo build
-TURNSCOPE_BINARY="$PWD/target/debug/turnscope" swift test --package-path macos/TurnscopeKit
-```
+[development.md](development.md) says how to build and run the app, and
+run its tests.
 
 ### Add a setting
 
@@ -481,11 +452,8 @@ switches. It's a protocol change
 
 - **A figure or sentence made from the status**, such as a limit's line, a
   time, the headline, the menu bar's figure or a notification: change it in
-  `Words`, and its test in `WordsTests.swift`. `Words.swift` holds
-  figures and times, `Words+Limits.swift` limits, rows, the headline, the
-  menu bar, the panel's folds and agents' connections, and
-  `Words+Notes.swift` notifications. Check what VoiceOver
-  says too: `spokenItem` for the menu bar, and `accessibilityLabel` in the
+  `Words`, and its test in `WordsTests.swift`. Check what VoiceOver says
+  too: `spokenItem` for the menu bar, and `accessibilityLabel` in the
   views.
 - **A fixed label**, such as a heading, a button or a setting's name: change
   it in the view that shows it.
@@ -512,17 +480,5 @@ order or a choice, make it in the engine and send the answer.
 
 ### Redraw the screenshots
 
-```sh
-scripts/screenshots.sh
-```
-
-It builds the app and draws three pairs, light and dark, into
-`.github/screenshots/` from `contract/status.notification.json`, which
-holds only made-up accounts: `panel` (an account in use, open), `idle`
-(nothing in use, from a copy of the example edited with `jq`) and `agents`
-(Settings → Agents). The README shows them. To draw one by hand:
-
-```sh
-target/xcode/Build/Products/Debug/Turnscope.app/Contents/MacOS/Turnscope \
-  --snapshot /tmp/shots --fixture contract/status.notification.json --open account
-```
+`scripts/screenshots.sh` builds the app and draws the README's
+screenshots, light and dark, from `contract/status.notification.json`.

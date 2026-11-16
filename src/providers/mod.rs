@@ -39,7 +39,6 @@ pub trait Provider: Sync {
     fn info(&self) -> &'static Info;
     /// The account `credential` is to, from the credential alone.
     fn account(&self, credential: &Credential) -> Option<Account>;
-    /// The account's limits now.
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem>;
     /// For a provider whose keys don't say which plan they're to, what
     /// tells the plan `limits` were read from apart from any other. Accounts
@@ -121,29 +120,28 @@ fn api_account(provider: &str) -> Account {
     }
 }
 
-/// The plan `provider` knows by `id`, which the person knows by `label`.
-fn subscription(provider: &str, (id, label): (String, Option<String>)) -> Account {
-    Account {
+/// The account `credential` is to: for an API key, the one every key of
+/// `provider` draws on; for a sign-in, the plan whose id and label
+/// `identity` gives.
+fn account(
+    provider: &str,
+    credential: &Credential,
+    identity: impl FnOnce() -> Option<(String, Option<String>)>,
+) -> Option<Account> {
+    if credential.key {
+        return Some(api_account(provider));
+    }
+    let (id, label) = identity()?;
+    Some(Account {
         id: format!("{provider}:{id}"),
         kind: Kind::Subscription,
         label,
-    }
+    })
 }
 
-/// Ask `url` with `credential`'s token and `headers`, for JSON. A 401 or 403
-/// is a refused login, unless it's an HTML page.
+/// Ask `url` with `credential`'s token and `headers`, for JSON.
 fn ask(url: &str, credential: &Credential, headers: &[&str]) -> Result<Value, Problem> {
-    ask_refused_by(url, credential, headers, &[401, 403])
-}
-
-/// As [`ask`], with `refused` the statuses that are a refused login.
-fn ask_refused_by(
-    url: &str,
-    credential: &Credential,
-    headers: &[&str],
-    refused: &[u16],
-) -> Result<Value, Problem> {
-    asked(url, credential, headers, None, refused, WAIT)
+    asked(url, credential, headers, None, &[401, 403], WAIT)
 }
 
 /// How long an account's limits are waited for, in seconds. Where models.dev's
@@ -152,39 +150,16 @@ fn ask_refused_by(
 /// object, not a download.
 const WAIT: u32 = 15;
 
-/// What's left of [`WAIT`] with `spent` of it gone, a second at least. A
-/// provider that asks twice shares the wait between the two, as `guard`
-/// waits on a read: its second request gets what the first left.
+/// What's left of [`WAIT`] after `spent`, for a provider's second request:
+/// `guard` waits on the whole read, not on each request.
 fn wait_left(spent: std::time::Duration) -> u32 {
     let spent = u32::try_from(spent.as_secs()).unwrap_or(WAIT);
     WAIT.saturating_sub(spent).max(1)
 }
 
-/// As [`ask`], giving up after `seconds`, for a provider's second request
-/// ([`wait_left`]).
-fn ask_within(
-    url: &str,
-    credential: &Credential,
-    headers: &[&str],
-    seconds: u32,
-) -> Result<Value, Problem> {
-    asked(url, credential, headers, None, &[401, 403], seconds)
-}
-
-/// As [`ask_refused_by`], sending `body` as JSON, for a provider that tells
-/// its limits only in answer to a POST, and giving up after `seconds`: a
-/// provider that asks twice shares [`WAIT`] between the two.
-fn ask_sending(
-    url: &str,
-    credential: &Credential,
-    headers: &[&str],
-    body: &Value,
-    refused: &[u16],
-    seconds: u32,
-) -> Result<Value, Problem> {
-    asked(url, credential, headers, Some(body), refused, seconds)
-}
-
+/// As [`ask`], with `refused` the statuses that are a refused login, giving
+/// up after `seconds`. With a `body`, a POST of it as JSON. A body goes in
+/// curl's arguments, so it must hold no secret.
 fn asked(
     url: &str,
     credential: &Credential,
@@ -206,14 +181,10 @@ fn asked(
 }
 
 /// The JSON a provider answered with `status` and `body`, or why there's
-/// none.
-///
-/// A refusal is a refused login unless its body is an HTML page: a page in
-/// front of the provider, such as a bot check's 403, is no answer about the
-/// login, and signing in again wouldn't get past it. Only a page is left out,
-/// over counting only a JSON body, because no provider's refusal body has
-/// been measured: one that refuses with plain text or nothing would read as
-/// Unavailable at every read, and "sign in again" would never be said.
+/// none. A refusal is a refused login unless its body is an HTML page, such
+/// as a bot check's 403, which signing in again wouldn't get past. Chosen
+/// over counting only a JSON body, as no provider's refusal body has been
+/// measured: one in plain text or empty would never say "sign in again".
 fn answer(status: u16, body: &[u8], refused: &[u16]) -> Result<Value, Problem> {
     match status {
         200..=299 => serde_json::from_slice(body).map_err(|_| Problem::Unavailable),
@@ -224,27 +195,21 @@ fn answer(status: u16, body: &[u8], refused: &[u16]) -> Result<Value, Problem> {
     }
 }
 
-/// GET `url` over HTTPS with `headers`, giving the status and body, or
-/// giving up after `seconds`.
-pub fn get(url: &str, headers: &[&str], seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
-    request(url, headers, None, seconds)
-}
-
 /// Ask `url` over HTTPS with `headers`, giving the status and body, or
 /// giving up after `seconds`: a GET, or a POST of `body`.
 ///
 /// Headers go to curl on standard input, so a credential among them is in
 /// no process listing; `-q` keeps a `~/.curlrc` from adding a trace. A
 /// header with a line break could add headers of its own, so none is sent.
-/// A connection not made in 5 seconds won't be: on a network that drops
-/// what's sent, curl otherwise waits out all of `seconds` (measured
-/// 2026-10-12 at an address that drops everything: 5.0 seconds with
-/// `--connect-timeout 5`, all of `--max-time` without).
+/// A connection not made in 5 s won't be: on a network that drops what's
+/// sent, curl otherwise waits out all of `seconds` (measured 2026-10-12 at
+/// an address that drops everything: 5.0 s with `--connect-timeout 5`, all
+/// of `--max-time` without).
 ///
-/// A body is an argument, over a second pipe beside the headers', so it is
-/// in a process listing: it must hold no secret. Google's, the one sent,
-/// names the kind of client asking, or the account's project.
-fn request(
+/// A body is an argument, over a second pipe beside the headers', so it
+/// shows in a process listing. Google's, the only one sent, names the kind
+/// of client asking, or the account's project.
+pub fn request(
     url: &str,
     headers: &[&str],
     body: Option<&str>,

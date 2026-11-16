@@ -4,7 +4,6 @@
   "params": {
     "account": "anthropic:acct-1:org-1",
     "accountTitle": "Claude Max (me@example.com)",
-    "at": 1791460500000,
     "id": 1,
     "kind": "runningOut",
     "limit": "five_hour",

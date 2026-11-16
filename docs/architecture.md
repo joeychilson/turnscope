@@ -37,11 +37,12 @@ formats correctly, and the forecast.
 | Outlook | Where a limit is headed by its reset: `lasts`, `runsOut`, `usedUp` or `unknown`. |
 | Pace | Percentage points of a limit used per hour of clock time in the current window. |
 | Work left | Hours of agent work a limit has left, from the points it used per hour that agents worked. |
-| Session | One conversation in an agent, with id `<agent>:<the agent's own id>`. A subagent is a session with a parent, and its usage counts toward that parent. A fork (a conversation branched off another) or a continuation is a session of its own. Turnscope keeps a session's title, project, last activity and usage, not what was said in it. |
+| Session | One conversation in an agent, with id `<agent>:<the agent's own id>`. A subagent is a session with a parent, and its usage counts toward that parent. A fork (a conversation branched off another) or a continuation is a session of its own. Turnscope keeps a session's title, project and usage, not what was said in it. |
 | Response | The usage of one model call as the agent records it: tokens, cost, and the account it drew on. Grok Build records one per model per turn. |
 | Reading | A limit as its provider reported it at one time. |
 | Sign-in | What an agent folder held for a provider from a given time. It says which account a response drew on. |
 | Data directory | Where Turnscope keeps its database, locks and socket: `~/Library/Application Support/com.joeychilson.turnscope`, or `--data`. |
+| Engine | `turnscope serve`, the daemon the app talks to. |
 
 ## Data
 
@@ -59,7 +60,7 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 | Table | Holds |
 |---|---|
 | `file` | Each history file: its size, modification time and inode when last read, its reader's cursor, how many lines it couldn't read, why it couldn't be read the last time it failed, and the reader version it was last read with |
-| `session` | Each session: agent, project, title, the session it's a subagent of, and its last activity |
+| `session` | Each session: agent, project, title, and the session it's a subagent of |
 | `session_file` | Which files tell of each session |
 | `response` | One row per response: tokens, prompt size, the cost the agent recorded, its cost, its account, and the file that last reported it |
 | `account` | Each account: provider, kind, title, label, whether it's hidden, the last read that worked, and what went wrong with the last read |
@@ -78,6 +79,9 @@ into another program's database.
 - **History is read incrementally.** Each file keeps its reader's cursor,
   so only what was appended is read, and an unchanged file is only
   stat'ed. A file that was replaced or cut short is read from the start.
+  A moved file is read on from where it was. A file is taken as moved
+  when its old path is gone and its inode turns up at a new path, as when
+  an agent archives it.
 - **A response is one row**, however many files report it: a line
   rewritten as it streams, a fork's copy, a continuation's.
   `agents::Response::merge` combines reports the same way in any order: the
@@ -91,34 +95,26 @@ into another program's database.
   sign-in to a provider changed.
 - **Some tables can't be rebuilt.** Accounts, readings, sign-ins, past
   prices, alerts and settings exist only here, so they're never deleted.
-  History can be read again. A file at a new path with the inode of one
-  read before, whose path is gone, was moved, as an agent moves a file it
-  archives: it's read on from where it was. A file replaced or cut short
-  is read again from the start. When a reader changes, `ingest::READERS`
-  is raised. Each file keeps the version it was last read with, and one
-  read with an older one is read again from the start when it's next
-  found: where it was, moved, or back after it was gone. Its responses,
-  the sessions only such files hold, and which sessions it holds are
-  taken out first. Responses and sessions from files the agent has since
-  deleted stay.
+  History can be read again.
+- **When a reader changes, `ingest::READERS` is raised.** Each file keeps
+  the version it was last read with, and one read with an older one is
+  read again from the start when it's next found: where it was, moved, or
+  back after it was gone. Its responses, the sessions only such files
+  hold, and which sessions it holds are taken out first. Responses and
+  sessions from files the agent has since deleted stay.
 - **An older Turnscope still running**, such as an agent's MCP server
   started before an update, stops reading into the data. Once a newer one
-  has raised the readers, it reads no more history (`ingest`); it still
-  reads limits and prices, which the schema holds as before. Once a newer
-  one has changed the schema, it reads nothing more: no history, limits or
-  prices (`catch_up`). Either way it answers from what it read before and
-  says to update, where its query still fits the schema. 0.1.8 checks only
-  the readers, which 0.2.0 didn't raise: its reads of history fail on the
-  changed schema, as does its usage by session. One started after the
-  schema changed doesn't open the data, and says to update (`db::open`).
-- **What was said isn't kept.** Of a session's conversation, only its
-  title is: the one its agent or the person gave it, or else the first
-  thing asked in it, as it was written.
+  has raised the readers, it reads no more history (`ingest`), but still
+  reads limits and prices. Once a newer one has changed the schema, it
+  reads nothing more (`catch_up`). Either way it answers from what it read
+  before, where its queries still fit the schema, and says to update. One
+  started after the schema changed doesn't open the data, and says to
+  update (`db::open`).
 
 ## Code
 
 One crate and one binary. Each module holds its own data, SQL and text.
-There's no engine object, store layer or view types.
+There's no central object, store layer or view types.
 
 ```
 src/
@@ -131,8 +127,7 @@ src/
   status.rs           every account and limit, as every front end shows them
   status/text.rs      the status in words, for the command line and MCP
   alerts.rs           which alerts a status raises, which wait to be shown, and the settings for them
-  usage.rs            usage grouped by time, model, project, agent, account or session; what used a limit
-  sessions.rs         a session's tree and account, and whether it runs now
+  usage.rs            usage grouped by time, model, project, agent, account or session; what used a limit; a session's account and whether it runs now
   mcp.rs              the MCP server: who is asking, the tools, the stdio loop
   serve.rs            the app's daemon: JSON-RPC on a Unix socket, keeping the data current
   connect.rs          adding and removing the MCP server with the agent's own command, and whether it's there
@@ -215,10 +210,10 @@ While `serve` runs, the other processes rarely find anything new to read.
 
 A catch-up reads all of history the first time, and again after
 `ingest::READERS` is raised. That can take minutes. A CLI command says so
-on standard error before it starts one, and says that it waits once it has
-waited a second for another process that reads history
-(`ingest::waits`). `mcp` and `serve` say nothing, since no one reads their
-standard error: a tool call waits the read out.
+on standard error, and says when it waits for another process that reads
+history (`ingest::waits`), as [cli.md](cli.md#global-options) shows. `mcp`
+and `serve` say nothing, since no one reads their standard error: a tool
+call waits the read out.
 
 ### Locks
 
@@ -281,19 +276,14 @@ megabytes.
   at most once a minute.
 - Percent left is rounded down, so it's never overstated. A limit whose
   window reset since it was read counts as full.
-- Each time to come is rounded to the minute and carries how soon it is (a
-  `Moment`): `soon` within 3 hours, `today`, `thisWeek` within 7 days, or
-  `later`.
+- Each time to come is rounded to the minute and carries how soon it is, a
+  [`Moment`](protocol.md#moment).
 - An account is **in use** when a response drew on it in the last 30
   minutes, or a limit rose between its last two readings in the last 30
   minutes, as use elsewhere makes it. It's **recent** when in use or drawn
   on in the last 7 days.
-- An account's **state** says how its limits were last read: `live`;
-  `asOf` an earlier read; or `unread`, never read. The last two say why:
-  no agent here is signed in to it (`signedOut`), its login was refused
-  (`signIn`), every login to it expired (`expired`), or it couldn't be read
-  (`readFailed`): its provider failed, or nothing has read it for 30
-  minutes.
+- An account's **state** says whether its limits were read at the last
+  try, and if not, why ([protocol.md](protocol.md#state)).
 - A limit's outlook is `unknown` (`stale`) once its latest reading is over
   30 minutes old.
 - The **deciding limit** says how an account stands. It's chosen from the
@@ -301,18 +291,21 @@ megabytes.
   all of the account's usage (not one model's or one key's) where there are
   any. The most urgent wins (used up, then running out), then the soonest
   out, then the least left (at the reset for a limit that lasts, where
-  that's forecast). Of several used up, the last back wins, since the
-  account can't be used until then; one with no reset counts as later than
-  any. When every limit reset since, it's the last to reset.
+  that's forecast, or else now). Of several used up, the last back wins,
+  since the account can't be used until then; one with no reset counts as
+  later than any. When every limit reset since, it's the last to reset.
 - **Accounts are listed** in use first (the most urgent, soonest out and
   least left first), then the rest (the most left first), then those whose
   login was refused, then those with nothing to show. Until the first read
   of history ends, every account is listed as one in use, since which are
   isn't known yet.
-- Each **agent** is `installed` when its own folder exists. Its connection
-  is `connected` when the MCP configuration of every one of its folders
-  runs this binary, `outdated` when one runs another copy, and `available`
-  otherwise.
+- A **fit** (`status --hours`, `check_limits` with `hours`) and
+  `check_limits`' verdict go by the limit on all of an account's usage
+  with the fewest likely hours of work left. A limit that reset since it
+  was read counts, with a new window's work left.
+- Each **agent** is `installed` when its own folder exists, and its
+  connection says whether each of its folders runs this binary's MCP
+  server ([protocol.md](protocol.md#agent)).
 
 ## Prices
 
@@ -326,12 +319,11 @@ A recorded cost of zero is usage a subscription covered, so it's passed
 over. A response with none of these has an unknown cost, never zero, and
 `doctor` lists its model.
 
-models.dev's catalog (`https://models.dev/api.json`) is read when six hours
-have passed since any process last did, or ten minutes after a failure. A
-catalog with fewer than 1,000 priced models is refused. A price that
-changed is kept from then on beside the one before, so each response keeps
-the price in force when it ran. Usage from before a model was first priced
-takes that first price.
+models.dev's catalog is `https://models.dev/api.json`, read as [Catching
+up](#catching-up) says. A catalog with fewer than 1,000 priced models is
+refused. A price that changed is kept from then on beside the one before,
+so each response keeps the price in force when it ran. Usage from before a
+model was first priced takes that first price.
 
 A list price is in dollars per million tokens (`prices::Prices::cost`):
 
@@ -346,49 +338,37 @@ A list price is in dollars per million tokens (`prices::Prices::cost`):
 
 ## Forecast
 
-The method was chosen by replaying this Mac's real limit history
-(`forecast::tests::backtest`; [development.md](development.md) says how to
-run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
+`forecast.rs` holds the method, and records what was chosen, over what,
+and what the backtest measured on this Mac's real limit history
+([development.md](development.md#forecast-backtest) says how to run it).
+`status.rs` applies it.
 
 - **Pace.** Points used so far divided by hours so far in the window,
   counted from the window's start, or from when use was last given back (a
   drop of more than a point, as at an early reset). Time with no new
-  reading counts as time nothing more was used. Least squares, recent 1-,
-  3- and 24-hour rates, weighted rates, blends and a duty cycle did no
-  better on windows of a day or less, and worse on longer ones, where they
-  raised false alarms.
+  reading counts as time nothing more was used.
 - **Not enough data.** The outlook is `unknown` (`notEnoughData`) when the
   window has no reading, less than a twentieth of it has passed (15 minutes
-  at least), or more than 0 but fewer than 2 points were used. Providers
-  report whole percents, so one step of rounding would read as a pace. It's
-  also `unknown` when the pace runs out more than a quarter of the window
-  from now (`forecast::told`), as after a burst at a window's start:
-  replayed on four weeks of this Mac's work, run-outs told that early came
-  true 56–76% of the time, and within a quarter 75–100%.
+  at least), or more than 0 but fewer than 2 points were used. It's also
+  `unknown` when the pace runs out more than a quarter of the window from
+  now (`forecast::told`).
 - **Outlook.** The pace is run forward to the reset.
   - `usedUp`: 100% used, with when it's back.
   - `runsOut`: it reaches 100% at least a fiftieth of the window (and at
     least 15 minutes) before the reset, and within a quarter of the window
-    from now. The time is shown to 10 minutes
-    within a day and to the hour beyond, and never before now.
+    from now. The time is shown to 10 minutes within a day and to the hour
+    beyond, and never before now.
   - `lasts`: with what will be left at the reset, as a range, or nothing
     when none of it has been used. After use was given back, with none
     since, that's what it has now.
   - `unknown`: not enough data, `stale` (read over 30 minutes ago, or the
     window reset since), `rolling` (no start to pace from) or `noReset`
     (credits).
-- **Range.** The pace is scaled by the 10th and 90th percentiles of how the
-  pace that followed compared with it in the backtest (`BANDS`), by window
-  length and the share of the window left. The ranges held 82% of the
-  time. The fast end gives the soonest run-out and the least left; the slow
-  end, the latest and the most.
-
-  | Share of the window left | Day or less | Longer |
-  |---|---|---|
-  | Under 25% | 0.05–2.5 | 0–3.4 |
-  | 25% to 50% | 0.25–1.8 | 0–3.4 |
-  | 50% or more | 0.35–1.6 | 0.7–3.4 |
-
+- **Range.** The pace is scaled by the 80% range of how the pace that
+  followed compared with it in the backtest, by window length and the
+  share of the window left (`forecast::BANDS`). The fast end gives the
+  soonest run-out and the least left; the slow end, the latest and the
+  most.
 - **Work left.** The rate is the points a limit rose per hour of work. An
   hour of work is twelve 5-minute slots that each hold a response on the
   account. The rate walks back over the limit's readings, across windows
@@ -396,13 +376,10 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
   than a day), and needs at least an hour of work and 2 points. Work counts
   only from when the account's first sign-in was read, so work on another
   account before Turnscope ran isn't taken for this one's. Hours of work
-  left are what's left divided by the rate. The rate's 80% range is 0.5 to
-  1.6 times it for windows of a day or less, and 0.4 to 2.2 for longer
-  ones. When the likely hours reach the reset, the limit lasts even with
-  work all the time, and no hours are given. Work left isn't given for a
-  rolling window. On weekly limits, the clock's pace, which counts nights
-  and breaks, understated what more hours of work use by about half; the
-  rate per hour of work showed no bias.
+  left are what's left divided by the rate, with the rate's 80% range
+  (`forecast::work_band`). When the likely hours reach the reset, the limit
+  lasts even with work all the time, and no hours are given. Work left
+  isn't given for a rolling window.
 
 ## Alerts
 
@@ -438,7 +415,7 @@ run it). Its tuning is in `forecast.rs`, and `status.rs` applies it.
   printed, serialized or cloned. An API key is known by its fingerprint,
   the first 16 hex digits of its SHA-256.
 - **One way to the network.** Every request goes through `/usr/bin/curl`
-  (`providers::get`), HTTPS only, ignoring `~/.curlrc`. Headers, with any
+  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. Headers, with any
   credential, go to curl on standard input, never in its arguments or
   environment. A header with a line break isn't sent. A request is a GET,
   but for Google's limits, which answer only a POST: its body is an

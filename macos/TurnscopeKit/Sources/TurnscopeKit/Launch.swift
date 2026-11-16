@@ -1,12 +1,4 @@
-// The options the app was started with:
-//
-// - `--data <dir>` and `--home <dir>` are passed to the engine, to keep test
-//   data apart;
-// - `--open` opens the panel once the first status arrives, and
-//   `--open <what>` also opens something in it;
-// - `--fixture <status.json>` shows a status from a file with no engine, such
-//   as `contract/status.notification.json`;
-// - `--snapshot <folder>` draws the panel as PNGs and quits.
+// The options the app was started with (docs/app.md#launch-arguments).
 
 import Foundation
 

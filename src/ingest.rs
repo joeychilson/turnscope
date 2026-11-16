@@ -1,9 +1,5 @@
-//! Reading what's new in the agents' history into the database.
-//!
-//! Each file keeps where its reader stopped, so only what was appended since
-//! is read, and an unchanged file is only stat'ed. A response reported by
-//! several files is one row, its reports merged by `Response::merge`, priced,
-//! and given the account its folder was signed into when it was made.
+//! Reading what's new in the agents' history into the database, with each
+//! response's cost and account. How history is kept: docs/architecture.md#data.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -18,59 +14,47 @@ use crate::agents::{self, Agent, Read, Response};
 use crate::prices::{History, Prices, in_force};
 use crate::{Error, Result};
 
-/// Raised when a reader would read a file it read before differently. Each
-/// file keeps the `READERS` it was last read with, and one read with an
-/// older one is read again from the start when it's next found: where it
-/// was, moved, or back after it was gone. That's over reading again, when
-/// it's raised, only the files still at their paths: a file moved since its
-/// last read, as Codex moves a thread it archives, kept what the older
-/// reader made of it. One never found again, as one its agent deleted,
-/// keeps all it made.
+/// Raised when a reader would read a file it read before differently. A
+/// file last read with an older one is read again from the start when it's
+/// next found: where it was, moved, or back after it was gone. Chosen over
+/// reading again only the files still at their paths, which kept what the
+/// older reader made of a file moved since, as Codex moves a thread it
+/// archives. A file never found again, as one its agent deleted, keeps what
+/// it made.
 ///
-/// Not raised when what was said stopped being read (November 2026): each
-/// reader makes the same sessions and responses of a file as before. Nor
-/// when keys stopped being taken out of titles: a title stored with
-/// `[redacted]` in it keeps it, over every file being read again for it.
-/// Nor when a fork or a continuation lost its parent and a title was cut:
-/// the database's revision 5 makes of the stored sessions what a read now
-/// does. Of 7,150 sessions read by 0.1.8, the 7,139 a first read now makes
-/// were the same in every column.
+/// Not raised for revision 5: the readers make what 0.1.8's did, and the
+/// revision makes of stored sessions what a read now does. Of 7,150 sessions
+/// 0.1.8 read, a first read now makes 7,139, each the same in every column.
+/// A title stored with a key `[redacted]` keeps it, over reading every file
+/// again.
 const READERS: i64 = 7;
 
 /// How long a transaction writes history before it lets the write lock go,
-/// and for how long: another process's write waits no more than `db::open`'s
-/// 10 s, and SQLite tries a waiting write again every 100 ms at most, so a
-/// pause longer than that lets it in.
+/// and for how long. A first read of 10,785 real files, 11 GB, took 18 to
+/// 30 s, longer than another process's write waits (`db::open`'s 10 s).
+/// SQLite retries a waiting write at most every 100 ms, so a longer pause
+/// lets it in.
 ///
-/// Measured on a made-up 616 MB history of 256 files, with a setting saved
-/// beside it every half second: one transaction for all 256 held the lock 6
-/// to 23 s, and a write failed after 10.4 s in 4 runs of 8. A transaction a
-/// file let it go only between commits, so a write got in by chance, after
-/// up to 4.3 s. A second and then 110 ms: no write failed or waited over
-/// 1.1 s in 6 runs, and reading took as long as before.
-///
-/// That was with a search index to write. Without one (November 2026) a
-/// first read of 10,785 real files, 11 GB, still took 18 to 30 s, longer
-/// than a write waits.
+/// Measured November 2026 on a made-up 616 MB history of 256 files, with a
+/// setting saved every half second: one transaction for all held the lock 6
+/// to 23 s, and the write failed in 4 runs of 8; one a file let a write in
+/// only by chance between commits, after up to 4.3 s; a second, then 110 ms,
+/// had no write fail or wait over 1.1 s in 6 runs, and read no slower.
 const HOLD: Duration = Duration::from_secs(1);
 const PAUSE: Duration = Duration::from_millis(110);
 
-/// Merges what a file says of a session: the latest activity, the first
-/// project and parent, and a title as good or better.
 const SESSION: &str = "
-INSERT INTO session (id, agent, project, title, title_rank, parent, last)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+INSERT INTO session (id, agent, project, title, title_rank, parent)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 ON CONFLICT (id) DO UPDATE SET
     project = coalesce(project, excluded.project),
     title = iif(excluded.title_rank >= title_rank, excluded.title, title),
     title_rank = max(title_rank, excluded.title_rank),
-    parent = coalesce(parent, excluded.parent),
-    last = coalesce(max(last, excluded.last), last, excluded.last)";
+    parent = coalesce(parent, excluded.parent)";
 
 const RESPONSE_COLUMNS: &str = "session, copy, at, provider, model, input, cache_read,
     cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches, priority, recorded, id";
 
-/// A file to read: where its last read stopped, and how it stands now.
 struct Due {
     agent: &'static dyn Agent,
     folder: PathBuf,
@@ -88,11 +72,10 @@ struct Stat {
 
 impl Stat {
     /// A SQLite database's changes reach its file only at a checkpoint, so
-    /// when its write-ahead log changed is when it did; the log's size isn't
-    /// counted, as a checkpoint shrinks it. Of the files agents list, only a
-    /// `.db` file has a log: looking beside every file cost a second stat
-    /// for each, 67M instructions of a catch-up that read nothing with 5,700
-    /// files.
+    /// its write-ahead log's time counts as its own; not the log's size,
+    /// which a checkpoint shrinks. Only a `.db` file is looked beside: of the
+    /// files agents list, only it has a log, and a second stat for every file
+    /// cost 67M instructions in a catch-up of 5,700 files that read nothing.
     fn of(path: &Path) -> Option<Stat> {
         let modified = |meta: &std::fs::Metadata| meta.mtime() * 1_000_000_000 + meta.mtime_nsec();
         let meta = std::fs::metadata(path).ok()?;
@@ -133,25 +116,21 @@ fn lock_path(db: &Connection) -> PathBuf {
     Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock")
 }
 
-/// How long a command waits for `ingest.lock` before it says so: a second,
-/// over saying so at once. Every catch-up holds the lock, one that reads
-/// nothing too, and `serve` catches up as often as every 5 s while agents
-/// work. Said at once, a command run beside the app would now and then say
-/// it waits, for a wait no one notices: over a made-up history of 5,000
-/// files, a command that found nothing new to read took 135 to 153 ms in
-/// all, the time it held the lock included.
+/// How long a command waits for `ingest.lock` before it says so, over
+/// saying so at once: `serve` catches up as often as every 5 s while agents
+/// work, holding the lock even when it reads nothing, which over a made-up
+/// history of 5,000 files took 135 to 153 ms. Said at once, a command run
+/// beside the app would now and then say it waits, for a wait no one notices.
 const QUIET: Duration = Duration::from_secs(1);
 
-/// What a catch-up is about to wait for, where that can take minutes, in
-/// words for the command line to say first: another Turnscope reading
-/// history, once the command has waited `QUIET` for it, or this one
-/// reading all of it, the first time and after `READERS` was raised.
-///
-/// Asked before the catch-up, over said from inside `ingest`, so that only
-/// the command line says it: no one reads what `serve` or the MCP server
-/// writes to standard error. The cost: a command that finds the lock held
-/// looks again every 20 ms for up to `QUIET`, and only then reads the
-/// limits and prices that are due, which it read meanwhile before.
+/// What a catch-up is about to wait for, which can take minutes, in words
+/// for the command line to say first: another Turnscope reading history,
+/// once it has waited `QUIET`, or this one reading all of it, the first time
+/// and after `READERS` was raised. Asked before the catch-up, over from
+/// inside `ingest`, so only the command line says it: no one reads what
+/// `serve` or the MCP server write to standard error. The cost: a command
+/// that finds the lock held reads the limits and prices due up to `QUIET`
+/// later.
 pub fn waits(db: &Connection) -> Option<&'static str> {
     let file = std::fs::File::create(lock_path(db)).ok()?;
     let began = Instant::now();
@@ -175,10 +154,9 @@ pub fn waits(db: &Connection) -> Option<&'static str> {
         .then_some("Reading your agents' history…")
 }
 
-/// The files under `home` to read: each one new or changed since its last
-/// read, or last read with an older reader, with where to read it from. A
-/// file read before that moved has its row moved with it, and what an older
-/// reader made of one is taken out.
+/// The files under `home` that are new, changed, or last read with an older
+/// reader, with where to read each from. A moved file's row moves with it,
+/// and what an older reader made of a file is taken out.
 fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     // By the path's bytes: a `PathBuf` hashes component by component. With
     // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
@@ -210,11 +188,10 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
             }
         }
     }
-    // A file read before at a path that's gone, by its inode: an agent that
-    // moves a file, as one it archives, moves it on the same disk, where it
-    // keeps its inode, and on one volume APFS numbers new files in order
-    // rather than reusing a number. Read on from where it was, it's not read
-    // twice.
+    // A file at a path that's gone is found again by its inode, so it's read
+    // on, not twice: an agent moves a file it archives on the same volume,
+    // where it keeps its inode, and APFS numbers new files in order rather
+    // than reusing a number.
     let listed: HashSet<&OsStr> = found.iter().map(|(.., path, _)| path.as_os_str()).collect();
     let mut moved: HashMap<i64, (OsString, Known)> = known
         .extract_if(|path, _| !listed.contains(path.as_os_str()))
@@ -238,14 +215,11 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
             },
         };
         let cursor = match &was {
-            // Read with an older reader, where it was or moved, changed or
-            // not: from the start, with what that reader made of it taken
-            // out first. Its reader is recorded when a read with this one
-            // ends, over when what it made is taken out, so a file taken
-            // out and then not read, as when the process ends between the
-            // two, is never left looking read. The cost: one that can't be
-            // read yet is taken out again at each catch-up, 23 to 25 ms
-            // among 120,000 responses (measured 2026-11-14).
+            // Its reader is recorded when the read ends, over when what it
+            // made is taken out, so a file taken out and then not read, as
+            // when the process ends between the two, never looks read. The
+            // cost: one that can't be read yet is taken out again at each
+            // catch-up, 23 to 25 ms among 120,000 responses (2026-11-14).
             Some(was) if was.readers < READERS => {
                 older.push(was.id);
                 String::new()
@@ -285,8 +259,6 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     if readers > READERS {
         return Err(crate::db::newer());
     }
-    // Each file read with an older reader is read again when it's next
-    // found (`due`).
     if readers < READERS {
         db.execute("UPDATE state SET readers = ?1", [READERS])?;
     }
@@ -403,7 +375,6 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
             facts.title.as_ref().map(|(_, title)| title),
             facts.title.as_ref().map_or(-1, |(rank, _)| *rank as i64),
             facts.parent,
-            facts.last,
         ])?;
         holds.execute(params![id, file])?;
     }
@@ -495,9 +466,7 @@ impl Derived {
         })
     }
 
-    /// The cost of `agent`'s `response` in `folder`, and the account it drew
-    /// on: the one signed in then, or before the first sign-in recorded, the
-    /// first.
+    /// The cost of `response`, and the account it drew on.
     fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<String>) {
         let account = self
             .signed
@@ -530,16 +499,14 @@ pub fn derive(db: &mut Connection, of: Of) -> Result<()> {
     }
     // Taken before what's used is looked at: a process reading history may
     // be writing a model's first responses, unpriced. The cost: a price
-    // refresh waits out another process's read of history whenever
-    // models.dev lists a model it didn't before, used here or not. `guard`
-    // refreshes no prices, so a hook never waits; a reporting command,
-    // `serve` or the MCP server that claims the six-hourly refresh mid-read
-    // does.
+    // refresh that finds a newly listed model, used here or not, waits out
+    // another process's read of history. `guard` refreshes no prices, so a
+    // hook never waits.
     let _lock = lock(db)?;
     let (filter, pairs) = match of {
         Of::Models(pairs) => {
             // Of the thousands of models a catalog lists, the few used here.
-            let used: std::collections::HashSet<(String, String)> = db
+            let used: HashSet<(String, String)> = db
                 .prepare("SELECT DISTINCT provider, model FROM response")?
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
@@ -577,18 +544,14 @@ pub fn derive(db: &mut Connection, of: Of) -> Result<()> {
     Ok(())
 }
 
-/// Forget what an older reader made of `files`, found again, so each is
-/// read from the start: the responses it reported last, the sessions only
-/// such files hold, so what a reader now makes of their project, parent
-/// or title counts, and which sessions it holds. A file read with an
-/// older reader that isn't found, as one its agent deleted, keeps all it
-/// made; found again, moved or back, it's read again then.
+/// Forget what an older reader made of `files`, so each is read from the
+/// start. The sessions only such files hold go too, as `SESSION` would keep
+/// the older reader's project, parent or title.
 fn read_again(db: &mut Connection, files: &[i64]) -> Result<()> {
-    // One transaction, not split as reading is: on the made-up 616 MB
-    // history `HOLD` was measured on, it held the lock 0.62 to 0.80 s, far
-    // under the 10 s another write waits. Deleting 123,140 responses took
-    // 0.48 to 0.64 s of it. On one of 3,000 files and 120,000 responses,
-    // it held it 0.75 to 1.24 s (measured 2026-11-14).
+    // One transaction, not split as reading is: it held the lock 0.62 to
+    // 0.80 s on the history `HOLD` was measured on, 123,140 responses, and
+    // 0.75 to 1.24 s on 3,000 files and 120,000 responses (2026-11-14), far
+    // under the 10 s another write waits.
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute("CREATE TEMP TABLE again (file INTEGER PRIMARY KEY)", [])?;
     let mut again = tx.prepare("INSERT INTO again (file) VALUES (?1)")?;
@@ -611,11 +574,10 @@ fn read_again(db: &mut Connection, files: &[i64]) -> Result<()> {
 
 /// The repository `cwd` is in, as its main working tree, so a subdirectory
 /// and a worktree belong to it; `cwd` itself when in none, or under `home`
-/// only. A worktree kept inside its repository belongs to it by its path,
-/// even once deleted, as does one an agent keeps in the repository's own
-/// hidden folder (Claude Code's `.claude/worktrees/<name>`), even once the
-/// repository's `.git` is gone.
-pub fn project(cwd: &str, home: &Path) -> String {
+/// only. A worktree an agent keeps in the repository's hidden folder, as
+/// Claude Code's `.claude/worktrees/<name>`, belongs to it by its path, even
+/// once it and the repository's `.git` are gone.
+fn project(cwd: &str, home: &Path) -> String {
     let kept = Path::new(cwd).ancestors().find(|dir| {
         dir.file_name() == Some("worktrees".as_ref())
             && dir
@@ -716,25 +678,6 @@ mod tests {
     }
 
     #[test]
-    fn history_read_by_an_older_turnscope_is_read_again_and_by_a_newer_left_alone() {
-        let (_dir, home, mut db, folder) = store();
-        let log = turn("a");
-        std::fs::write(folder.join("s1.jsonl"), log).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(made(&db), [20, 0]);
-        // Read again, it's as this reader reads it.
-        read_with_an_older_reader(&db);
-        assert_eq!(made(&db), [1020, 1]);
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(made(&db), [20, 0]);
-        assert_eq!(count(&db, "SELECT readers FROM state"), READERS);
-        db.execute("UPDATE state SET readers = ?1", [READERS + 1])
-            .unwrap();
-        assert!(ingest(&mut db, home.path()).is_err());
-        assert_eq!(count(&db, "SELECT readers FROM state"), READERS + 1);
-    }
-
-    #[test]
     fn a_deleted_file_keeps_what_it_made_and_is_read_again_once_its_back() {
         let (_dir, home, mut db, folder) = store();
         std::fs::write(folder.join("s1.jsonl"), turn("a")).unwrap();
@@ -758,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn history_read_again_comes_to_what_a_first_read_does() {
+    fn history_read_by_an_older_turnscope_comes_to_a_first_read_and_by_a_newer_is_left_alone() {
         let (_dir, home, mut db, folder) = store();
         let price = r#"INSERT INTO price VALUES ('anthropic', 'claude-opus-5', 0, '{"input":5,"output":25}', NULL)"#;
         db.execute(price, []).unwrap();
@@ -786,6 +729,7 @@ mod tests {
                 "SELECT count(*) FROM session_file",
                 "SELECT count(*) FROM session WHERE project IS NULL",
                 "SELECT min(readers) FROM file",
+                "SELECT readers FROM state",
             ]
             .map(|sql| count(db, sql))
         };
@@ -795,6 +739,11 @@ mod tests {
         ingest(&mut fresh, home.path()).unwrap();
         assert_eq!(totals(&db), totals(&fresh));
         assert_eq!(totals(&db)[0], 7);
+        // Read by a newer Turnscope, it's left alone.
+        db.execute("UPDATE state SET readers = ?1", [READERS + 1])
+            .unwrap();
+        assert!(ingest(&mut db, home.path()).is_err());
+        assert_eq!(count(&db, "SELECT readers FROM state"), READERS + 1);
     }
 
     #[test]

@@ -101,7 +101,7 @@ struct GeneralTab: View {
 /// other setting.
 private struct Updates: View {
     @Environment(Updater.self) private var updater
-    @Environment(\.panelActions) private var actions
+    @Environment(\.closePanel) private var closePanel
     @State private var automatic = false
 
     var body: some View {
@@ -110,7 +110,7 @@ private struct Updates: View {
             SettingRow(title: "Turnscope \(version ?? "")") {
                 if updater.available {
                     Button("Check now") {
-                        actions.close()
+                        closePanel()
                         updater.check()
                     }
                     .buttonStyle(PillButton())

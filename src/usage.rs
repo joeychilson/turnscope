@@ -1,14 +1,13 @@
-//! What was used and what it cost, grouped by time, model, project, agent,
-//! account or session.
+//! What was used and what it cost, and what used a limit.
 
 use std::collections::BTreeMap;
 
-use rusqlite::{Connection, params_from_iter, types::Value};
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use serde::Serialize;
 
-use crate::Result;
 use crate::agents::{self, Tokens};
 use crate::time::{self, Period};
+use crate::{Error, Result};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -24,7 +23,6 @@ pub enum By {
 }
 
 impl By {
-    /// The period, for a grouping by time.
     fn period(self) -> Option<Period> {
         match self {
             By::Day => Some(Period::Day),
@@ -84,13 +82,11 @@ pub struct Row {
     pub tokens: Tokens,
     /// Of the responses with a known price.
     pub cost_usd: f64,
-    /// Responses with no known price.
     pub unpriced: u64,
 }
 
 impl Row {
-    /// What it's called: its name, or else its key, or `(none)` for usage
-    /// with neither, as on no account or in no project.
+    /// An empty key is usage on no account, or in no project.
     pub fn label(&self) -> &str {
         match &self.name {
             Some(name) => name,
@@ -101,17 +97,20 @@ impl Row {
 
     fn add(&mut self, other: &Row) {
         self.responses += other.responses;
-        let (tokens, more) = (&mut self.tokens, &other.tokens);
-        tokens.input += more.input;
-        tokens.cache_read += more.cache_read;
-        tokens.cache_write_5m += more.cache_write_5m;
-        tokens.cache_write_1h += more.cache_write_1h;
-        tokens.output += more.output;
-        tokens.reasoning += more.reasoning;
+        self.tokens = self.tokens.zip(other.tokens, |a, b| a + b);
         self.cost_usd += other.cost_usd;
         self.unpriced += other.unpriced;
     }
 }
+
+/// A session whose parent was never read is the top of its own tree.
+const TREES: &str = "
+WITH RECURSIVE tree (root, id) AS (
+    SELECT id, id FROM session s
+    WHERE parent IS NULL OR NOT EXISTS (SELECT 1 FROM session p WHERE p.id = s.parent)
+    UNION ALL
+    SELECT tree.root, s.id FROM session s JOIN tree ON s.parent = tree.id
+)";
 
 pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     // Time is grouped by quarter hours here and into local days in Rust: every
@@ -139,7 +138,7 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
         ),
     };
     let trees = match query.by {
-        By::Session => crate::sessions::TREES,
+        By::Session => TREES,
         _ => "",
     };
     let mut filters = vec!["r.at >= ?".to_owned(), "r.at < ?".to_owned()];
@@ -178,7 +177,6 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
             unpriced: count(10)?,
         };
         let key = if let Some(period) = query.by.period() {
-            // The local date its period starts.
             time::local(time::start_of(period, row.get(0)?))
                 .date()
                 .to_string()
@@ -214,7 +212,6 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
                 .then(b.responses.cmp(&a.responses))
         });
     }
-    // Time keeps its latest rows, anything else its largest.
     let rest = (rows.len() > query.top).then(|| {
         let folded: Vec<Row> = match time {
             true => rows.drain(..rows.len() - query.top).collect(),
@@ -258,7 +255,6 @@ pub fn cost(usd: f64, unpriced_count: u64) -> String {
     dollars(usd) + &unpriced(unpriced_count)
 }
 
-/// ` (+3 unpriced)`, and with none, nothing.
 fn unpriced(n: u64) -> String {
     match n {
         0 => String::new(),
@@ -266,14 +262,12 @@ fn unpriced(n: u64) -> String {
     }
 }
 
-/// Dollars to the cent, with the thousands marked: `$31,704.31`.
 pub fn dollars(amount: f64) -> String {
     let cents = (amount.max(0.0) * 100.0).round() as u64;
     format!("${}.{:02}", count(cents / 100), cents % 100)
 }
 
-/// A row's share of a limit, to the point, as shares are approximate:
-/// `13%`, and under half a point, `<1%`.
+/// To the point, as shares are approximate.
 fn share(points: f64) -> String {
     if points < 0.5 {
         "<1%".to_owned()
@@ -291,9 +285,7 @@ pub struct Shares {
     pub rest: Option<f64>,
 }
 
-/// Usage as a table: its span and total, then a row each. With `shares`, a
-/// limit's name and each row's share of it, a column more.
-pub fn text(usage: &Usage, shares: Option<(&str, &Shares)>) -> String {
+pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>) -> String {
     let date = |at: i64| {
         let minute = (at + time::MINUTE / 2) / time::MINUTE * time::MINUTE;
         time::local(minute).strftime("%a %b %-d %H:%M").to_string()
@@ -305,8 +297,6 @@ pub fn text(usage: &Usage, shares: Option<(&str, &Shares)>) -> String {
         count(usage.total.responses),
         cost(usage.total.cost_usd, usage.total.unpriced),
     );
-    // Time's earlier rows, added up, come before it; anything else's rest
-    // after.
     let time = usage.by.period().is_some();
     let mut rows: Vec<(&Row, Option<f64>)> = usage
         .rows
@@ -341,7 +331,7 @@ pub fn text(usage: &Usage, shares: Option<(&str, &Shares)>) -> String {
         .unwrap_or_default();
     let costs: Vec<String> = rows.iter().map(|(row, _)| dollars(row.cost_usd)).collect();
     let cost_wide = costs.iter().map(String::len).max().unwrap_or(4).max(4);
-    let share_head = shares.map(|(limit, _)| format!("% of {limit}"));
+    let share_head = shares.map(|(limit, _)| format!("% of {}", limit.named()));
     out += &format!(
         "\n  {what:<wide$}  {:>9}  {:>cost_wide$}{}\n",
         "Responses",
@@ -366,9 +356,8 @@ pub fn text(usage: &Usage, shares: Option<(&str, &Shares)>) -> String {
     out + "\nCosts are at list prices: what the same tokens cost on each provider's API."
 }
 
-/// Usage by anything but time as a Markdown table, its rest added up in a
-/// last row. With `shares`, a limit and each row's points of it, a column
-/// more. The asking session, `yours`, is marked, where its agent names it.
+/// Usage by anything but time as a Markdown table. The asking session,
+/// `yours`, is marked, where its agent names it.
 pub fn markdown(
     usage: &Usage,
     shares: Option<(&crate::status::Limit, &Shares)>,
@@ -424,23 +413,22 @@ pub fn markdown(
 }
 
 /// What used a limit: `account`'s usage in `limit`'s window, or since
-/// `since`, by `by`, each row with the points of the limit it took (its share
-/// of the cost, of what's used), approximate, as providers say how much of a
+/// `since`, each row with the points of the limit it took: its share of the
+/// cost, times the points used. Approximate, as providers say how much of a
 /// limit is used but not by what. With no limit, the account's usage.
 ///
-/// A limit whose window reset since it was read is in a new window, which
-/// began at the reset or after, and how much of that one is used isn't
-/// known. So its usage counts from the reset, with no shares. Counted from
-/// the start it was read with, it listed the sessions of the window before,
-/// each at `<1%` of a limit shown as 100% left.
+/// A limit whose window reset since it was read is in a new window, and how
+/// much of that one is used isn't known. So its usage counts from the
+/// reset, with no shares, over the start it was read with, which listed the
+/// sessions of the window before, each at `<1%` of a limit shown as 100%
+/// left.
 ///
 /// Where the window's length is known, it counts from no earlier than one
-/// length back: a reset longer ago than that began a window that has ended
-/// too, as when reads failed for longer than a window while its agent
-/// worked. Chosen over the reset alone, which counted every window since:
-/// with Claude's 5 hours read 30 hours before, reset 28 hours before, `usage
-/// --limit "5 hours"` listed a session from 27 hours before. A window that
-/// rolls has no length known, and counts from the reset.
+/// length back, as a reset longer ago began a window that has ended too.
+/// Chosen over the reset alone, which counted every window since: with
+/// Claude's 5-hour limit read 30 hours before and reset 28 hours before,
+/// `usage --limit "5 hours"` listed a session from 27 hours before. A
+/// rolling window has no length known, and counts from the reset.
 pub fn breakdown(
     db: &Connection,
     account: &crate::status::Account,
@@ -499,18 +487,31 @@ pub fn breakdown(
     Ok((usage, shares))
 }
 
-/// What a row shows of the session `id`: the first 8 characters of its
-/// agent's own id, without the agent before it.
-///
-/// Its whole id was some 45 characters a row in an answer to an agent, and
-/// nothing takes one: it only tells two sessions with one title apart, which
-/// 8 characters do.
+/// The project and agent of the session `id`.
+pub fn brief(db: &Connection, id: &str) -> Result<(Option<String>, String)> {
+    db.prepare_cached("SELECT project, agent FROM session WHERE id = ?1")?
+        .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("no session is {id}")))
+}
+
+pub fn session_account(db: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT account FROM response WHERE session = ?1 AND account IS NOT NULL ORDER BY at DESC LIMIT 1",
+        [id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The first 8 characters of the agent's own id, over the whole id, some 45
+/// characters a row in an answer to an agent. Nothing takes an id: it only
+/// tells two sessions with one title apart, which 8 characters do.
 fn start(id: &str) -> String {
     let native = id.split_once(':').map_or(id, |(_, native)| native);
     native.chars().take(8).collect()
 }
 
-/// `text` on one line, cut to `most` characters with an ellipsis.
 fn short(text: &str, most: usize) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.chars().count() <= most {
@@ -520,17 +521,11 @@ fn short(text: &str, most: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
-/// A session's title as an answer to an agent gives it: on one line, cut to
-/// about 80 characters, in double quotes as JSON writes a string. One with
-/// none is `(untitled)`.
-///
 /// A title is the session's own words, often what a person asked there, and
 /// an agent reading the answer must not take them for Turnscope's. So each
-/// is marked where it stands, over a note at the answer's top, which the
-/// reader is far past by a table's last row. Double quotes rather than
-/// backticks, since a session's id beside it is in backticks, as code.
-/// JSON's escapes, `\"` and `\\`, keep a quote inside from ending it
-/// early and leaving words outside. The quotes cost two characters a row.
+/// is quoted where it stands, over one note at the top that a reader is far
+/// past by the last row. Double quotes, as the session's id beside it is in
+/// backticks; JSON's escapes keep a quote inside from ending it early.
 fn title(title: Option<&str>) -> String {
     title.map_or("(untitled)".to_owned(), |title| {
         serde_json::Value::String(short(title, 80)).to_string()
@@ -669,7 +664,7 @@ mod tests {
             (shares.rows.as_slice(), shares.rest),
             (&[30.0][..], Some(10.0))
         );
-        let text = text(&usage, Some(("Weekly", &shares)));
+        let text = text(&usage, Some((weekly, &shares)));
         assert!(
             text.contains("  2 more                 2  $1.00          10%\n"),
             "{text}"
@@ -679,5 +674,17 @@ mod tests {
             markdown.contains("| 2 more models | $1.00 | 2 | 10% |\n"),
             "{markdown}"
         );
+        let (usage, _) = breakdown(&db, account, Some(weekly), None, By::Model, 2, now).unwrap();
+        let markdown = super::markdown(&usage, None, None);
+        assert!(
+            markdown.contains("| 1 more model | $0.25 | 1 |\n"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn a_title_is_quoted_as_json_writes_a_string() {
+        assert_eq!(title(None), "(untitled)");
+        assert_eq!(title(Some("Say \"hi\"\n  now")), r#""Say \"hi\" now""#);
     }
 }

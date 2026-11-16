@@ -1,7 +1,5 @@
-// Settings, a page of the panel with three tabs: General, Agents and Accounts.
-// Each fits without scrolling. Changes take effect at once; there's no Save.
-// Settings come in titled cards (`SettingGroup`), and rows look like the
-// panel's: a logo, a name with one line under it, and a control on the right.
+// Settings, a page of the panel with three tabs. A tab taller than the screen
+// allows scrolls under its title.
 
 import SwiftUI
 import TurnscopeKit

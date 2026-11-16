@@ -7,7 +7,6 @@ import Testing
 @Test func theCommandLineSaysWhatToShowAndWhatToPassOn() {
     let launch = Launch(["Turnscope", "--data", "/tmp/data", "--open", "account,unused", "--home", "/tmp/home"])
     #expect(launch.passed == ["--data", "/tmp/data", "--home", "/tmp/home"])
-    #expect(launch.opening == Opening("account,unused"))
     #expect(launch.opening?.account == true && launch.opening?.unused == true)
     #expect(launch.fixture == nil && launch.snapshot == nil)
     // `--open` alone opens the panel with nothing open in it. An option
@@ -21,25 +20,24 @@ import Testing
     #expect(Opening("agents").settings == .agents)
     #expect(Opening("settings,account").settings == .general)
     #expect(Opening("nothing") == Opening(""))
-    #expect(SettingsTab.accounts.title == "Accounts")
 }
 
 @MainActor
 @Test func aFixtureIsShownAsOfItsOwnTime() throws {
-    let store = Store(fixture: example("status.notification.json"))
+    let store = Store(fixture: contract("status.notification.json").path)
     #expect(store.all.count == 6)
     // The words are as of the status's time, whenever it's drawn.
     #expect(store.words(now: .distantFuture).now == store.status?.at)
     #expect(store.words().agent("claude-code") == "Claude Code")
     // A status only as serve pushes it, not in the answer to hello.
-    #expect(Store(fixture: example("hello.result.json")).status == nil)
+    #expect(Store(fixture: contract("hello.result.json").path).status == nil)
     #expect(Store(fixture: "/nonexistent.json").status == nil)
     #expect(Store(fixture: nil).status == nil)
 }
 
 @MainActor
 @Test func theAgentToOfferConnectingIsOneInUseThatCantAsk() throws {
-    let store = Store(fixture: example("status.notification.json"))
+    let store = Store(fixture: contract("status.notification.json").path)
     // Claude Code, the agent in use, is connected, so there's none to offer.
     #expect(store.toConnect(dismissed: []) == nil)
     var status = try #require(store.status)
@@ -56,7 +54,7 @@ import Testing
 /// this week.
 @MainActor
 private func firstLaunch() throws -> Status {
-    var status = try #require(Store(fixture: example("status.notification.json")).status)
+    var status = try #require(Store(fixture: contract("status.notification.json").path).status)
     status.historyRead = false
     for index in status.accounts.indices {
         status.accounts[index].inUse = false

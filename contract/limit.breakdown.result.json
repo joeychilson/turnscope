@@ -6,7 +6,6 @@
       {
         "agent": "claude-code",
         "project": "app",
-        "running": true,
         "session": "claude-code:0f6e3f6a-713c",
         "sharePercent": 31.5,
         "title": "Fix the parser"

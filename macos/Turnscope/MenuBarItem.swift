@@ -1,19 +1,5 @@
-// The menu bar item: the logo of each account in use, most urgent first, and
-// beside it what the menu bar says of it (`Words.figure`):
-//
-// - what's left, "68%", in amber once it's running out;
-// - how long it has, "1h 40m", within three hours of running out;
-// - when it's back, "Back 5:40 AM", in red once used up;
-// - for a key with no limit, what it cost this month, "$84".
-//
-// With nothing in use, it shows Turnscope's logo alone. A setting can limit
-// it to the most urgent account.
-//
-// It's one image drawn by SwiftUI. While every account is fine it's a
-// template, which macOS draws in the menu bar's own color; once one needs
-// attention it's drawn in color. While serve is away, it's dimmed, since what
-// it shows is as of the last status. It's redrawn only when what it shows
-// changes.
+// The menu bar item: one image drawn by SwiftUI, redrawn only when what it
+// shows changes (docs/app.md#the-menu-bar-item).
 
 import AppKit
 import SwiftUI

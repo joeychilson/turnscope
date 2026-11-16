@@ -42,7 +42,7 @@ the command line off the network, set `TURNSCOPE_OFFLINE=1`
 
 `connect <agent>` and `disconnect` still run your agent's own command, with
 `HOME` set to the home `--home` names. Don't run them to try something out:
-that each agent keeps its settings in that home hasn't been tried.
+not every agent has been checked to keep its settings in that home.
 
 The app's other launch arguments are in
 [app.md](app.md#launch-arguments).
@@ -69,7 +69,7 @@ to see it here.
 | Tests | Where | Cover |
 |---|---|---|
 | Unit | `#[cfg(test)]` in each module | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database, prices, the forecast, each provider's answers, alerts, time, the contract's examples |
-| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `accounts`, `connect` and `doctor` by snapshot, with a session of every agent in the usage; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
+| End to end | `tests/cli.rs` | The text of `status`, `usage`, `accounts`, `connect` and `doctor`, and the `--json` of `status`, `usage`, `usage --limit`, `accounts` and `connect`, by snapshot, with a session of every agent in the usage; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
 | Swift | `macos/TurnscopeKit/Tests/` | Decoding and encoding every contract example, the client against a stand-in `serve` and a real one, launch arguments, the wording |
 
 **Fixtures.** `tests/cli.rs` reads a home (`tests/fixtures/home`) with two
@@ -96,15 +96,9 @@ so each end-to-end test runs `turnscope` under a shell named as an agent's
 command: `claude`, or another agent's in a test about that agent. The tests
 answer the same in a terminal, in CI and in any agent.
 
-**The real engine from Swift.** One Swift test runs the app's client
-against a real `turnscope serve`. It runs only when `TURNSCOPE_BINARY` is
-set, as it is in CI. The path must be absolute, because `swift test` runs
-in the package's folder:
-
-```sh
-cargo build
-TURNSCOPE_BINARY="$PWD/target/debug/turnscope" swift test --package-path macos/TurnscopeKit
-```
+**The real engine from Swift.** `EngineTests.swift` runs only with
+`TURNSCOPE_BINARY` set, to an absolute path, since `swift test` runs in the
+package's folder.
 
 **Variables.** `TURNSCOPE_NOW` and `TURNSCOPE_OFFLINE` are in
 [cli.md](cli.md#environment). These are for development only:
@@ -127,41 +121,24 @@ cp -cR ~/Library/Application\ Support/com.joeychilson.turnscope /tmp/ts-copy
 TURNSCOPE_BACKTEST=/tmp/ts-copy cargo test --release backtest -- --ignored --nocapture
 ```
 
-[architecture.md](architecture.md#forecast) says what the forecast chose
-and what it was compared with.
+`forecast.rs` records what the forecast chose and what it was compared
+with.
 
 ## Scripts
 
 | Script | Does |
 |---|---|
 | `scripts/build-app.sh` | Builds the app for this Mac into `target/xcode/Build/Products/Debug/Turnscope.app`: Debug, signed ad hoc, warnings as errors, with the version in `Cargo.toml`. Swift packages are resolved into `target/swiftpm/`. |
-| `scripts/build-cli.sh` | The Xcode project's "Build turnscope" phase. Builds `turnscope` for each architecture in `ARCHS` (release for a Release build, debug otherwise) and joins them with `lipo` into `BUILT_PRODUCTS_DIR`. Run by hand, it builds for this Mac in debug into `target/helper/`. |
+| `scripts/build-cli.sh` | The Xcode project's "Build turnscope" phase ([app.md](app.md#the-xcode-project)). Run by hand, it builds for this Mac in debug into `target/helper/`. |
 | `scripts/build-release.sh` | Builds the app for release into `target/dist/Turnscope.app`, for Apple silicon and Intel, unsigned, with `SPARKLE_PUBLIC_KEY` in it, and resolves the Xcode project's packages into `target/swiftpm/`. |
-| `scripts/sign-release.sh` | Signs the app `build-release.sh` built, notarizes it, and makes `Turnscope-<version>.dmg` and `appcast.xml` beside it, with Sparkle's `sign_update` from `target/swiftpm/`. Its environment is below. |
-| `scripts/check-app.sh [app]` | Checks that a built app runs. Its `turnscope`, off the network: `doctor` creates a database, `serve` answers a hello with a status, and `mcp` answers a handshake and a tool list with the app's version. Then the app, with no engine, draws its panel from `contract/status.notification.json`. All of it runs for each architecture this Mac can run, so on Apple silicon Intel's runs too, under Rosetta. It runs in throwaway folders, `HOME` included. The default app is `target/dist/Turnscope.app`. |
+| `scripts/sign-release.sh` | Signs the app `build-release.sh` built, notarizes it, and makes `Turnscope-<version>.dmg` and `appcast.xml` beside it, with Sparkle's `sign_update` from `target/swiftpm/`. Its header lists the environment variables it reads. |
+| `scripts/check-app.sh [app]` | Checks that a built app's `turnscope`, `serve`, `mcp` and panel work, for each architecture this Mac can run, off the network and in throwaway folders. The default app is `target/dist/Turnscope.app`. |
 | `scripts/screenshots.sh` | Builds the app with `build-app.sh`, then draws the README's screenshots, light and dark, from `contract/status.notification.json` into `.github/screenshots/`. |
 | `scripts/release-notes.sh X.Y.Z` | Prints the version's section of `CHANGELOG.md`, without its heading. Fails if the section is missing or empty. |
 
 To build and sign a release on a Mac, run `scripts/build-release.sh &&
-scripts/sign-release.sh`. `sign-release.sh` reads its settings from the
-environment, so it runs the same on a Mac and in the release workflow:
-
-| Variable | Holds |
-|---|---|
-| `SIGN_IDENTITY` | The Developer ID Application identity, by name or hash. Without it, everything is signed ad hoc and nothing is notarized: a build to try here. |
-| `NOTARY_KEY` | The path of an App Store Connect API key's `.p8` file |
-| `NOTARY_KEY_ID` | That key's ID |
-| `NOTARY_ISSUER` | That key's issuer ID |
-| `SPARKLE_PUBLIC_KEY` | The public key the app checks updates with. `build-release.sh` builds it into the app, and `sign-release.sh` checks the app carries it. |
-| `SPARKLE_PRIVATE_KEY` | Its private half, as `generate_keys -x` exports it. It signs the disk image. Without it, there's no appcast. |
-
-With `SIGN_IDENTITY` set, all the others are needed. The script signs the
-app from the inside out, the order Sparkle requires: Sparkle's helpers, its
-framework, `turnscope`, then the app. It then notarizes and staples the app
-and the disk image, and checks that the update's signature passes with
-`SPARKLE_PUBLIC_KEY`. It exits 2 when a variable it needs is missing,
-`NOTARY_KEY` names no file, there's no app, or the app's version isn't
-`X.Y.Z`.
+scripts/sign-release.sh`. Without `SIGN_IDENTITY`, `sign-release.sh` signs
+ad hoc and notarizes nothing: a build to try here.
 
 ## CI
 
@@ -179,9 +156,7 @@ run.
 | `app` | macOS 26, Xcode 26.6 | `cargo build`, then `swift test` with warnings as errors and the engine test run on that build; `scripts/build-release.sh` and `scripts/sign-release.sh` signed ad hoc, then `scripts/check-app.sh`. On a tag, only the tests: the release builds and checks its own app, signed. |
 
 The `main` ruleset (Settings → Rules) takes changes only by squashed pull
-request, once Verify's `lint`, `rust` and `app` pass. A pull request that
-doesn't run Verify never gets those checks, so the owner merges it with
-the ruleset's bypass (`gh pr merge --admin`).
+request, once Verify's `lint`, `rust` and `app` pass.
 
 A new advisory can fail `cargo deny` on a pull request that changed no
 crate. Update the crate it names.

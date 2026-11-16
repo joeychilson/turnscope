@@ -39,7 +39,7 @@ Try it by hand, with the app running or after `turnscope serve &`:
 
 ```sh
 nc -U "$(turnscope serve --socket)"
-{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":2}}
+{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":3}}
 ```
 
 ## Lifecycle
@@ -82,7 +82,7 @@ sync. Until `hello` succeeds, any other request but `shutdown` gets
 `-32002`.
 
 ```json
-{"id":1,"jsonrpc":"2.0","method":"hello","params":{"protocol":2}}
+{"id":1,"jsonrpc":"2.0","method":"hello","params":{"protocol":3}}
 ```
 
 ```json
@@ -92,7 +92,7 @@ sync. Until `hello` succeeds, any other request but `shutdown` gets
 A protocol the server doesn't speak gets `-32001` (`error.json`):
 
 ```json
-{"error":{"code":-32001,"data":{"supported":[2]},"message":"this turnscope speaks protocol 2, not 3"},"id":1,"jsonrpc":"2.0"}
+{"error":{"code":-32001,"data":{"supported":[3]},"message":"this turnscope speaks protocol 3, not 4"},"id":1,"jsonrpc":"2.0"}
 ```
 
 ## Requests
@@ -109,13 +109,11 @@ A protocol the server doesn't speak gets `-32001` (`error.json`):
 | `shutdown` | none | `{}` | Answers, then exits |
 
 - **`limit.breakdown`** takes an account's `id` and a limit's `key`. It
-  answers with up to 3 sessions that cost the most on that account since
-  the limit's window started, the most first. When its start isn't known,
-  that is since the 1st of the month for an API key and the last 7 days
-  otherwise. For a limit whose window reset since it was read, it is since
-  the reset, or since one window's length ago when that's later. It looks
-  the limit up in the status last pushed. An account or limit not in it
-  gets `-32000`.
+  answers with up to 3 sessions that cost the most on that account in the
+  limit's window, the most first, counted as `usage --limit` counts them
+  ([cli.md](cli.md#usage)). It looks the limit up in the status last
+  pushed, the one the app shows. An account or limit not in it gets
+  `-32000`.
 - **`settings.set`** takes the whole `Settings`. A field left out is set to
   its default, which turns that notification on.
 - **`agent.connect`** and **`agent.disconnect`** take an agent's `id` from
@@ -133,7 +131,7 @@ minute.
 ```
 
 ```json
-{"id":3,"jsonrpc":"2.0","result":{"sessions":[{"agent":"claude-code","project":"app","running":true,"session":"claude-code:0f6e3f6a-713c","sharePercent":31.5,"title":"Fix the parser"}]}}
+{"id":3,"jsonrpc":"2.0","result":{"sessions":[{"agent":"claude-code","project":"app","session":"claude-code:0f6e3f6a-713c","sharePercent":31.5,"title":"Fix the parser"}]}}
 ```
 
 ## Notifications
@@ -146,18 +144,10 @@ ignored.
 | `status` | `Status` | When anything in it but `at` changed |
 | `alert` | `Alert` | When an alert is raised, right after the `status` that raised it |
 
-`serve` works out the status again after a catch-up that read anything
-new, ran in a new minute, or followed another process's write to the
-database, and after a successful `settings.set`, `account.hide`,
-`agent.connect` or `agent.disconnect`. A catch-up runs when `serve` starts,
-once writes to an agent's folders have paused for 250 ms (a second at most)
-but no sooner than 5 s after the last catch-up, and every minute. When it
-starts, `serve` reads the limits first and works out the status before
-that catch-up too: on a first launch, a `status` with the accounts and
-`historyRead` false comes while all of history is read. Alerts are
-raised only when the status changed. An agent connected or disconnected
-outside the app, as with `turnscope connect` in a terminal, writes nothing
-to the database, so its `agents` entry changes within a minute.
+`serve` works out the status again after a catch-up and after a request
+that changes it ([architecture.md](architecture.md#serve) says when). An
+agent connected or disconnected outside the app, as with `turnscope
+connect`, shows in `agents` within a minute.
 
 Pushes go only to clients that have said `hello`. A client that doesn't
 take a message within 2 seconds is dropped.
@@ -175,7 +165,7 @@ take a message within 2 seconds is dropped.
 | `-32601` | No such method | `no method <method>` |
 | `-32602` | Parameters that don't fit, or an unknown agent | `parameters that don't fit: <why>`, `no agent is <id>` |
 | `-32000` | The engine couldn't do it | Why, such as `no limit <key> of <account>` |
-| `-32001` | Unsupported protocol. `data.supported` lists those spoken | `this turnscope speaks protocol 2, not <n>` |
+| `-32001` | Unsupported protocol. `data.supported` lists those spoken | `this turnscope speaks protocol 3, not <n>` |
 | `-32002` | A request before `hello` | `send hello first` |
 
 ## Conventions
@@ -194,33 +184,13 @@ take a message within 2 seconds is dropped.
 `Status` is everything the app shows, with every decision already made. The
 app only chooses words, colors and layout.
 
-The app reads only the fields it shows. It doesn't read an account's
-`usedBy`, a `live` state's `readAt`, a limit's `readAt` or `work`, a
-window's `startsAt`, the outlook's `soonest`, `latest` or `leftAtReset`, or
-an alert's `at`. The command line and MCP server use the limit's, the
-window's and the outlook's in what they say, and `turnscope status --json`
-prints the account's and the state's. No client reads an alert's `at`.
-
 | Field | Type | Holds |
 |---|---|---|
 | `at` | ms | The minute it was worked out for |
 | `historyRead` | bool | Whether the first read of the agents' history finished |
-| `accounts` | [Account] | Every account, hidden ones too, in the order to list them |
+| `accounts` | [Account] | Every account, hidden ones too, in the order to list them ([architecture.md](architecture.md#status)). Until `historyRead` is true, each is ordered as an account in use, whatever its `inUse` says |
 | `agents` | [Agent] | Every agent Turnscope reads, installed or not |
 | `settings` | Settings | The user's settings |
-
-Accounts are listed in this order:
-
-1. Accounts in use: the most urgent first (used up, then running out), then
-   the soonest to run out, then the least left.
-2. Other accounts with a limit to show, the most left first.
-3. Accounts with a refused login.
-4. Accounts with nothing to show.
-
-Until the first read of the agents' history ends (`historyRead` false),
-every account is listed as one in use is, though its `inUse` is false: on a
-first launch the limits come before any history, and which accounts are in
-use isn't known yet.
 
 ### Agent
 
@@ -254,16 +224,8 @@ use isn't known yet.
 | `hidden` | bool | The user hid it |
 | `state` | State | How its limits were last read |
 | `limits` | [Limit] | Its limits as last read, by key. Empty if never read |
-| `deciding` | string or null | The key of the limit that decides how the account stands. Null with no limits |
+| `deciding` | string or null | The key of the limit that decides how the account stands ([architecture.md](architecture.md#status)). Null with no limits |
 | `spend` | Spend or null | For an API key, this month's cost. Null for a subscription |
-
-The deciding limit is chosen from the limits not reset since they were
-read. Limits on the whole account win over a single model's or a single
-key's. Among those, the most urgent wins, then the soonest to run out, then
-the least left: at the reset for a limit that lasts, where that's
-forecast, or else now. Of several used up, the last back wins, and one
-with no reset counts as later than any. When every limit reset since it
-was read, the last to reset decides.
 
 ### State
 
@@ -433,27 +395,16 @@ A session in a `limit.breakdown` result.
 | `project` | string or null | The name of its project's folder |
 | `agent` | string | The agent's id |
 | `sharePercent` | number or null | About how many points of the limit it used: its share of the cost, times the points used. Null when the window's start isn't known, the window reset since the limit was read, or nothing used had a price |
-| `running` | bool | Whether it's running now |
 
 ## Alerts
 
-[architecture.md](architecture.md#alerts) says when each kind is raised.
-Each is raised once per account, limit, kind and window. An alert of a kind
-turned off, or for a hidden account, is recorded as acknowledged and never
-sent.
-
-An alert is sent right after the status that raised it. Until a client
-acknowledges it with `alerts.ack`, it's sent again in every `hello` result
-while it still applies: a `runningOut` or `usedUp` alert until its window
-resets, or with no window while its limit is still used up; a `reset` alert
-for a day; and a `signIn` alert for a day while its account still can't be
-read.
+[architecture.md](architecture.md#alerts) says when each kind is raised,
+and how long `hello` sends it again until a client acknowledges it.
 
 | Field | Type | Holds |
 |---|---|---|
 | `id` | integer | The id to acknowledge it by |
 | `kind` | `runningOut`, `usedUp`, `reset`, `signIn` | What happened |
-| `at` | ms | When it was raised |
 | `account` | string | The account's id |
 | `accountTitle` | string | Its title and label when raised: `Claude Max (me@example.com)` |
 | `limit` | string or null | The limit's key. Null for `signIn` |
@@ -467,7 +418,7 @@ sent, not when it was raised.
 
 ## Versioning
 
-`protocol` is an integer, now `2`: `PROTOCOL` in `src/serve.rs` and
+`protocol` is an integer, now `3`: `PROTOCOL` in `src/serve.rs` and
 `protocolVersion` in `Contract.swift`. Within a version, fields may be
 added, and clients ignore fields they don't know. Anything else needs a new
 version: a new enum value, a field removed or renamed, or a field with a

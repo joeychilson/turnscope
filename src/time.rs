@@ -31,7 +31,6 @@ pub enum Period {
     Month,
 }
 
-/// The start of the local day, week (from Monday) or month `at` is in.
 pub fn start_of(period: Period, at: i64) -> i64 {
     window(period, at, &TimeZone::system()).0
 }
@@ -62,7 +61,6 @@ fn start_of_day(day: Date, zone: &TimeZone) -> i64 {
         .unwrap_or_default()
 }
 
-/// The moment `text` names, as of `now`.
 pub fn parse(text: &str, now: i64) -> Result<i64> {
     let text = text.trim();
     // A count too large to go back is no time at all, and a negative one,
@@ -97,7 +95,6 @@ pub fn parse(text: &str, now: i64) -> Result<i64> {
     })
 }
 
-/// Whether `at` falls on the same day as `now`, here.
 pub fn today(at: i64, now: i64) -> bool {
     local(at).date() == local(now).date()
 }
@@ -126,15 +123,15 @@ pub fn ago(at: i64, now: i64) -> String {
 
 /// `at` as far off as the clocks say: from the minute `now` is in to the
 /// minute `at` is in, which its clock shows. At 12:00:40, 11:00:40 is
-/// 11:00, 1h ago. Counted from the second, it was 59m, and an answer that
-/// also said since 11:00 (1h ago) told the same time two ways.
+/// 11:00, 1h ago. Chosen over counting from the second, which said 59m in
+/// an answer that also said since 11:00 (1h ago).
 ///
-/// In now's own minute, which way it reads is the caller's, as `in_minute`
-/// says. An answer is as of the minute's start, its status's `at`, so a
-/// read at 12:00:10 asked about at 12:00:40 has gone by, while a reset at
-/// 12:00:20, rounded to 12:00, or a time a limit runs out, rounded to now,
-/// is still to come. Decided from the two times alone, one of them read
-/// wrong: the read in 0m, or the reset 0m ago.
+/// In now's own minute, the caller says which way it reads, by
+/// `in_minute`. An answer is as of the minute's start, its status's `at`,
+/// so a read at 12:00:10 asked about at 12:00:40 has gone by, while a reset
+/// at 12:00:20, rounded to 12:00, or a time a limit runs out, rounded to
+/// now, is still to come. Decided from the two times alone, one of them
+/// read wrong: the read in 0m, or the reset 0m ago.
 fn told(at: i64, now: i64, in_minute: Ordering) -> String {
     let minute = |at: i64| at.div_euclid(MINUTE) * MINUTE;
     let span = span(minute(at) - minute(now));

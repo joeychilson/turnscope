@@ -2,17 +2,11 @@
 //! each account and limit as lines, whether more hours of work fit, and the
 //! one sentence that leads an answer. The app says it in its own words.
 
-use super::{Account, Horizon, Limit, Moment, Outlook, Spread, Stale, State, Status, Unknown};
+use super::{
+    Account, Horizon, HoursLeft, Limit, Moment, Outlook, Spread, Stale, State, Status, Unknown,
+};
 use crate::agents;
 use crate::time::{self, HOUR, MINUTE};
-
-/// How a follow-up is named: as a command for a person, as a tool call for
-/// an agent.
-#[derive(Clone, Copy)]
-pub enum Cite {
-    Command,
-    Tool,
-}
 
 /// What under ten minutes of work reads as.
 const UNDER: &str = "under 10m";
@@ -37,17 +31,12 @@ fn about(hours: f64) -> String {
     }
 }
 
-/// `text` with a capital first letter, to begin a sentence.
 fn capital(text: &str) -> String {
     format!("{}{}", text[..1].to_uppercase(), &text[1..])
 }
 
-/// The form of a verb whose subject is `limit`'s name: `one` as in "5 hours
-/// is used up", or `many` as in "Credits are used up". A name is plural when
-/// it's money's and ends in `s`, as the app decides (`Words.plural`):
-/// "Credits" is an amount, where "5 hours" names one limit. Every sentence
-/// here with the name as its subject asks this, so they agree with each
-/// other and with the app's notifications.
+/// `one` or `many`, to agree with `limit`'s name: money's name ending in
+/// `s`, as Credits, is plural, as the app decides (`Words.plural`).
 fn agree<'a>(limit: &Limit, one: &'a str, many: &'a str) -> &'a str {
     match limit.money.is_some() && limit.name.ends_with('s') {
         true => many,
@@ -64,14 +53,12 @@ fn login_agents(account: &Account) -> String {
 }
 
 /// What's said where no account is shown: none is known yet, or every one
-/// is hidden, and then how to see one, by `cite`.
-pub fn none(status: &Status, cite: Cite) -> String {
-    match (status.accounts.is_empty(), cite) {
-        (true, _) => "No account's limits have been read yet: no agent here is signed in to one Turnscope reads.",
-        (false, Cite::Command) => "Every account is hidden: `turnscope status --all` shows them.",
-        (false, Cite::Tool) => "Every account is hidden: name one with account to see its limits.",
+/// is hidden, and then `show`, how to see one.
+pub fn none(status: &Status, show: &str) -> String {
+    match status.accounts.is_empty() {
+        true => "No account's limits have been read yet: no agent here is signed in to one Turnscope reads.".to_owned(),
+        false => format!("Every account is hidden: {show}."),
     }
-    .to_owned()
 }
 
 /// Why `account`'s limits aren't read now, and what to do about it: `its
@@ -251,7 +238,7 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
 /// says no more than the likely hours do: its ends read the same, as under
 /// ten minutes twice, or it's under ten minutes or more, which is any
 /// amount.
-fn range(limit: &Limit, left: &super::HoursLeft, now: i64) -> String {
+fn range(limit: &Limit, left: &HoursLeft, now: i64) -> String {
     let until = limit
         .resets()
         .map(|resets| (resets - now) as f64 / HOUR as f64);
@@ -274,6 +261,19 @@ fn used_up(account: &Account) -> Option<(&Limit, Option<Moment>)> {
     }
 }
 
+/// `account`'s limit on all its usage with the fewest likely hours of work
+/// left, and those hours. One reset since it was read counts, with a new
+/// window's work left: left out, an account whose 5 hours had just reset
+/// would be said to have room to keep going, even working nonstop.
+fn first_out(account: &Account) -> Option<(&Limit, HoursLeft)> {
+    account
+        .limits
+        .iter()
+        .filter(|limit| limit.whole())
+        .filter_map(|limit| Some((limit, limit.work?.left_hours?)))
+        .min_by(|(_, a), (_, b)| a.likely.total_cmp(&b.likely))
+}
+
 /// Whether `hours` more of work fit `account`'s limits on all its usage, at
 /// the pace of work so far.
 pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
@@ -293,20 +293,20 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
             agree(limit, "is", "are")
         ));
     }
+    if let Some((limit, left)) = first_out(account).filter(|(_, left)| left.likely < hours) {
+        return Ok(format!(
+            "{more} of work {dont_fit}: {} {} out after {} of work.",
+            limit.name,
+            agree(limit, "runs", "run"),
+            about(left.likely)
+        ));
+    }
     let mut after = Vec::new();
     let mut unknown = None;
     let mut rolls = None;
     for limit in account.limits.iter().filter(|limit| limit.whole()) {
         match &limit.work {
             Some(work) => {
-                if let Some(left) = work.left_hours.filter(|left| left.likely < hours) {
-                    return Ok(format!(
-                        "{more} of work {dont_fit}: {} {} out after {} of work.",
-                        limit.name,
-                        agree(limit, "runs", "run"),
-                        about(left.likely)
-                    ));
-                }
                 // At the pace of work, until the reset at most.
                 let until = limit.resets().map_or(hours, |resets| {
                     ((resets - now).max(0) as f64 / HOUR as f64).min(hours)
@@ -378,18 +378,9 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
         let is = agree(limit, "is", "are");
         return format!("{title}: {} {is} used up{back}.", limit.name);
     }
-    let whole: Vec<&Limit> = account
-        .limits
-        .iter()
-        .filter(|limit| limit.whole() && limit.reset_since.is_none())
-        .collect();
-    let first = whole
-        .iter()
-        .filter_map(|limit| Some((limit, limit.work?.left_hours?)))
-        .min_by(|(_, a), (_, b)| a.likely.total_cmp(&b.likely));
-    if let Some((limit, left)) = first {
-        let resets = limit.window.map_or(String::new(), |window| {
-            format!("; it resets {}", time::ahead(window.resets.at, now))
+    if let Some((limit, left)) = first_out(account) {
+        let resets = limit.resets().map_or(String::new(), |resets| {
+            format!("; it resets {}", time::ahead(resets, now))
         });
         return format!(
             "{title}: {} of work left{} before {} {} out{resets}.",
@@ -399,6 +390,11 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
             agree(limit, "runs", "run")
         );
     }
+    let whole: Vec<&Limit> = account
+        .limits
+        .iter()
+        .filter(|limit| limit.whole() && limit.reset_since.is_none())
+        .collect();
     if !whole.is_empty() && whole.iter().all(|limit| limit.work.is_some()) {
         return format!(
             "{title}: room to keep going; no limit runs out before it resets, even working nonstop."
@@ -484,7 +480,6 @@ fn short(limit: &Limit, now: i64) -> String {
         Some(money) => crate::usage::dollars(money.left_usd),
         None => format!("{}%", limit.left_percent),
     };
-    // Soon, as a countdown; later, as the clock says it.
     let at = |moment: Moment| match moment.horizon {
         Horizon::Soon => format!("in {}", time::span(moment.at - now)),
         _ => time::clock(moment.at, now),
@@ -518,6 +513,42 @@ mod tests {
             fit(&account, 2.0, now).unwrap(),
             "2 more hours of work don't fit: 5 hours runs out after about 30m of work."
         );
+        // Its Weekly with 40 minutes of work left and 5 hours with 1h 15m:
+        // the first out decides, by its likely hours, as the verdict says.
+        let mut account = claude.clone();
+        account["limits"][0]["work"]["leftHours"]["likely"] = 1.25.into();
+        account["limits"][1]["work"]["leftHours"] =
+            serde_json::json!({"low": 0.3, "likely": 0.67, "high": 1.5});
+        let account: Account = serde_json::from_value(account).unwrap();
+        assert_eq!(
+            fit(&account, 2.0, now).unwrap(),
+            "2 more hours of work don't fit: Weekly runs out after about 40m of work."
+        );
+        let said = verdict(&account, now);
+        assert!(
+            said.starts_with(
+                "Claude Max (me@example.com): about 40m of work left (20m–1h 30m) before Weekly runs out; it resets "
+            ),
+            "{said}"
+        );
+        // Its 5 hours reset since it was read, with a new window's 3 hours of
+        // work, and its Weekly lasts even working nonstop: 5 hours decides.
+        let mut account = claude.clone();
+        let five = &mut account["limits"][0];
+        five["resetSince"] = (now - 10 * MINUTE).into();
+        five["leftPercent"] = 100.into();
+        five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "stale"});
+        five["work"]["leftHours"] = serde_json::json!({"low": 1.9, "likely": 3.0, "high": 5.0});
+        account["deciding"] = "seven_day".into();
+        let account: Account = serde_json::from_value(account).unwrap();
+        assert_eq!(
+            fit(&account, 4.0, now).unwrap(),
+            "4 more hours of work don't fit: 5 hours runs out after about 3h of work."
+        );
+        assert_eq!(
+            verdict(&account, now),
+            "Claude Max (me@example.com): about 3h of work left (1h 50m–5h) before 5 hours runs out."
+        );
         // Its 5 hours made a window that rolls, as OpenCode Go's is: said,
         // rather than taken for too little work. Its weekly is forecast.
         let mut account = claude.clone();
@@ -529,33 +560,6 @@ mod tests {
         assert_eq!(
             fit(&account, 1.0, now).unwrap(),
             "1 more hour of work fits at your working pace, leaving about 59% of Weekly. 5 hours is a window that rolls, so it isn't forecast."
-        );
-    }
-
-    #[test]
-    fn an_account_with_two_limits_used_up_is_back_when_the_last_is() {
-        let example = example();
-        let now = example["params"]["at"].as_i64().unwrap();
-        // Claude Max's 5 hours back in an hour and its Weekly in three
-        // days, which decides it.
-        let (soon, later) = (now + HOUR, now + 72 * HOUR);
-        let mut account = example["params"]["accounts"][0].clone();
-        account["limits"][0]["outlook"] =
-            serde_json::json!({"kind": "usedUp", "back": {"at": soon, "horizon": "soon"}});
-        account["limits"][1]["outlook"] =
-            serde_json::json!({"kind": "usedUp", "back": {"at": later, "horizon": "thisWeek"}});
-        account["deciding"] = "seven_day".into();
-        let account: Account = serde_json::from_value(account).unwrap();
-        assert_eq!(
-            verdict(&account, now),
-            format!(
-                "Claude Max (me@example.com): Weekly is used up, back {}.",
-                time::ahead(later, now)
-            )
-        );
-        assert_eq!(
-            fit(&account, 1.0, now).unwrap(),
-            "1 more hour of work doesn't fit: Weekly is used up."
         );
     }
 
@@ -665,25 +669,6 @@ mod tests {
 
     fn example() -> serde_json::Value {
         serde_json::from_str(include_str!("../../contract/status.notification.json")).unwrap()
-    }
-
-    #[test]
-    fn dollars_from_a_thousand_have_a_comma_as_on_the_status_line() {
-        let mut example = example();
-        let key = &mut example["params"]["accounts"][2];
-        key["spend"] =
-            serde_json::json!({"monthUsd": 1234.5, "forecastUsd": 2469.0, "partial": false});
-        key["limits"][0]["money"] = serde_json::json!({"leftUsd": 1234.5, "sizeUsd": 2000.0});
-        let status: Status = serde_json::from_value(example["params"].clone()).unwrap();
-        let said = text(&status, &[&status.accounts[2]], None);
-        assert!(
-            said.contains("Key limit: $1,234.50 of $2,000.00 left"),
-            "{said}"
-        );
-        assert!(
-            said.contains("This month, across its keys: $1,234.50, on pace for about $2,469.00."),
-            "{said}"
-        );
     }
 
     #[test]

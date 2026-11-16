@@ -21,7 +21,7 @@ private func serve(at path: String = socketPath(),
 /// defaults to the engine named in the contract's `hello`.
 @MainActor
 private func store(over serve: FakeServe, version: String? = nil) throws -> (Client, Store) {
-    let client = Client(binary: try binary(socket: serve.path, started: marker(), version: version))
+    let client = Client(binary: try binary(socket: serve.path, version: version))
     return (client, Store(client: client))
 }
 
@@ -84,7 +84,8 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     status["accounts"] = []
     serve.push("status", status)
     #expect(await until { store.all.isEmpty })
-    let alert = try JSONSerialization.jsonObject(with: contract("alert.notification.json")) as? [String: Any]
+    let alert = try JSONSerialization.jsonObject(with: Data(contentsOf: contract("alert.notification.json")))
+        as? [String: Any]
     var pushed = alert?["params"] as? [String: Any] ?? [:]
     pushed["id"] = 42
     serve.push("alert", pushed)
@@ -115,15 +116,37 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     client.stop()
 }
 
+/// How a serve of this app's engine fails to answer hello.
+enum FailedHello: CaseIterable {
+    /// It doesn't answer, as when it's stuck.
+    case silence
+    /// Its answer can't be read.
+    case unreadable
+
+    var hello: Reply {
+        get throws { self == .silence ? .silence : .of(["server": try engine()]) }
+    }
+
+    /// What the store says, or how it starts.
+    var why: String {
+        self == .silence ? "Turnscope's engine didn't answer" : "Turnscope couldn't read what its engine sent"
+    }
+}
+
 @MainActor
-@Test func aServeThatDoesntAnswerHelloIsSaidAndTriedAgain() async throws {
-    let serve = FakeServe { _, _, _ in .silence }
+@Test(arguments: FailedHello.allCases)
+func aHelloThatFailsIsSaidAndTriedAgain(_ failed: FailedHello) async throws {
+    let hello = try failed.hello
+    let serve = FakeServe { method, _, _ in method == "hello" ? hello : .done }
     defer { serve.close() }
     let (client, store) = try store(over: serve)
     client.helloWait = .milliseconds(300)
     client.start()
     await until { store.failure != nil }
-    #expect(store.failure == "Turnscope's engine didn't answer")
+    #expect(store.failure?.hasPrefix(failed.why) == true)
+    #expect(store.status == nil)
+    #expect(!serve.methods.contains("shutdown"))
+    // It connects again on its own and says hello again.
     #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 2 })
     client.stop()
 }
@@ -195,42 +218,35 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
 }
 
 @MainActor
-@Test func whatUsedALimitIsAskedOnlyForTheAccountOpen() async throws {
+@Test func whatUsedEachAccountListedIsAskedAsThePanelOpens() async throws {
     let used = Reply.of(["sessions": [["session": "claude-code:s", "title": "Fix it", "project": "app",
-                                       "agent": "claude-code", "sharePercent": 31.5, "running": true]]])
+                                       "agent": "claude-code", "sharePercent": 31.5]]])
     let serve = try serve { method, _, _ in method == "limit.breakdown" ? used : .done }
     defer { serve.close() }
     let (client, store) = try await connected(to: serve)
     #expect(!serve.methods.contains("limit.breakdown"))
-    let claude = try #require(store.all.first { $0.id == "anthropic:acct-1:org-1" })
-    store.askWhatUsed(claude.id)
-    await until { !store.usedMost(claude).isEmpty }
-    let asked = serve.params(of: "limit.breakdown")
-    #expect(asked.allSatisfy { $0["account"] as? String == claude.id })
-    #expect(asked.first?["limit"] as? String == "five_hour")
-    #expect(store.usedMost(claude).first?.sharePercent == 31.5)
-    // They're for its deciding limit. Once another limit decides it, they
-    // aren't shown until they're asked for again.
-    var decided = claude
-    decided.deciding = "seven_day"
-    #expect(store.usedMost(decided).isEmpty)
-    // An account not in use is asked about the same way, once it's open.
-    let chatgpt = try #require(store.all.first { $0.id == "openai:acct-2" })
-    store.askWhatUsed(chatgpt.id)
-    await until { !store.usedMost(chatgpt).isEmpty }
-    #expect(serve.params(of: "limit.breakdown").last?["limit"] as? String == "secondary")
-    client.stop()
-}
-
-@MainActor
-@Test func whatUsedEachAccountListedIsAskedAsThePanelOpens() async throws {
-    let serve = try serve { method, _, _ in method == "limit.breakdown" ? .of(["sessions": []]) : .done }
-    defer { serve.close() }
-    let (client, store) = try await connected(to: serve)
     store.askWhatUsedEach()
     let listed = Set(store.all.filter { !$0.hidden && $0.deciding != nil }.map(\.id))
     await until { serve.params(of: "limit.breakdown").count == listed.count }
-    #expect(Set(serve.params(of: "limit.breakdown").compactMap { $0["account"] as? String }) == listed)
+    // Each about its deciding limit, in use or not.
+    var asked: [String: String] = [:]
+    for params in serve.params(of: "limit.breakdown") {
+        asked[params["account"] as? String ?? ""] = params["limit"] as? String
+    }
+    #expect(Set(asked.keys) == listed)
+    #expect(asked["anthropic:acct-1:org-1"] == "five_hour" && asked["openai:acct-2"] == "secondary")
+    let claude = try #require(store.all.first { $0.id == "anthropic:acct-1:org-1" })
+    await until { !store.usedMost(claude).isEmpty }
+    #expect(store.usedMost(claude).first?.sharePercent == 31.5)
+    // Once another limit decides it, they aren't shown until they're asked
+    // for again.
+    var decided = claude
+    decided.deciding = "seven_day"
+    #expect(store.usedMost(decided).isEmpty)
+    // The account open is asked about again, and only it.
+    store.askWhatUsed(claude.id)
+    await until { serve.params(of: "limit.breakdown").count == listed.count + 1 }
+    #expect(serve.params(of: "limit.breakdown").last?["account"] as? String == claude.id)
     client.stop()
 }
 
@@ -255,7 +271,7 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     // As when a newer Turnscope has updated the data: serve says so on
     // standard error and exits.
     let why = "turnscope: a newer Turnscope has updated this data; update Turnscope"
-    let client = Client(binary: try binary(socket: socketPath(), started: marker(), fails: why))
+    let client = Client(binary: try binary(socket: socketPath(), fails: why))
     let store = Store(client: client)
     client.start()
     await until { store.failure != nil }
@@ -358,22 +374,6 @@ func aServeNotThisAppsIsAskedToExitOnceAndTheNextKept(_ other: OtherServe) async
     backoff.ended(after: .seconds(31))
     #expect(backoff.next() == .milliseconds(500))
     #expect(backoff.next() == .seconds(1))
-}
-
-@MainActor
-@Test func aHelloOfItsOwnEngineItCantReadIsSaidAndTriedAgain() async throws {
-    let unreadable = Reply.of(["server": try engine()])
-    let serve = FakeServe { method, _, _ in method == "hello" ? unreadable : .done }
-    defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await until { store.failure != nil }
-    #expect(store.failure?.hasPrefix("Turnscope couldn't read what its engine sent") == true)
-    #expect(store.status == nil)
-    #expect(!serve.methods.contains("shutdown"))
-    // It connects again on its own and says hello again.
-    #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 2 })
-    client.stop()
 }
 
 @MainActor

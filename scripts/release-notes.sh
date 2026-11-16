@@ -14,9 +14,7 @@ version=${1:?usage: scripts/release-notes.sh X.Y.Z}
 notes=$(awk -v version="$version" '
   /^## / {
     if (inside) exit
-    heading = $2
-    gsub(/[][]/, "", heading)
-    inside = (heading == version)
+    inside = ($2 == version)
     next
   }
   inside && (started || NF) { started = 1; print }

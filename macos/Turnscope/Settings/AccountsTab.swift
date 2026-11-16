@@ -1,6 +1,3 @@
-// Settings → Accounts: every account found, subscriptions first and API keys
-// after, each with a switch to show or hide it.
-
 import SwiftUI
 import TurnscopeKit
 

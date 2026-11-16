@@ -1,12 +1,4 @@
-// The panel's first page, Turnscope as you see it, from the top:
-//
-// - the one thing to know, large: whether you can keep going;
-// - each account in use, most urgent first;
-// - the accounts used this week, most left first;
-// - the rest, folded into one line;
-// - the footer: Settings and Quit.
-//
-// One account at a time opens in place, wherever it's listed.
+// The panel's first page (docs/app.md#the-panel).
 
 import SwiftUI
 import TurnscopeKit
@@ -74,15 +66,12 @@ private struct ConnectNudge: View {
         if let agent = store.toConnect(dismissed: away) {
             HStack(spacing: Row.gap) {
                 Logo(agent: agent, size: Row.logo).foregroundStyle(.secondary)
-                // If connecting failed, say why instead of asking: that can be
-                // selected, to copy it.
-                if let error = store.agentErrors[agent.id] {
-                    Text(error).font(.line).foregroundStyle(.secondary)
+                // If connecting failed, it says why instead, which can be
+                // selected to copy it.
+                if let note = store.agentErrors[agent.id] ?? store.words().connection(agent, named: true) {
+                    Text(note).font(.line).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                } else if let unconnected = store.words().connection(agent, named: true) {
-                    Text(unconnected).font(.line).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
                 ConnectButton(agent: agent)
@@ -102,8 +91,7 @@ private struct ConnectNudge: View {
 }
 
 /// Connects `agent`, or points it back at this copy, depending on its
-/// status. Its help says what went wrong if connecting failed. A spinner
-/// shows while it works.
+/// status. A spinner shows while it works.
 private struct ConnectButton: View {
     @Environment(Store.self) private var store
     var agent: AgentStatus
@@ -116,9 +104,9 @@ private struct ConnectButton: View {
             Button(outdated ? "Update" : "Connect") { store.connect(agent.id) }
                 .buttonStyle(PillButton())
                 .accessibilityLabel("\(outdated ? "Update" : "Connect") \(agent.name)")
-                .help(store.agentErrors[agent.id] ?? (outdated
+                .help(outdated
                     ? "Points \(agent.name) at this copy of Turnscope"
-                    : "Adds Turnscope to \(agent.name)'s MCP servers, so it can pace itself"))
+                    : "Adds Turnscope to \(agent.name)'s MCP servers, so it can pace itself")
         }
     }
 }
@@ -181,7 +169,7 @@ private struct Footer: View {
     @Environment(Store.self) private var store
     @Environment(Navigation.self) private var navigation
     @Environment(Updater.self) private var updater
-    @Environment(\.panelActions) private var actions
+    @Environment(\.closePanel) private var closePanel
 
     var body: some View {
         HStack(spacing: 2) {
@@ -211,14 +199,14 @@ private struct Footer: View {
             Spacer()
             // Escape closes the panel from its first page. Its other pages
             // use it to go back.
-            Button("Close", action: actions.close)
+            Button("Close", action: closePanel)
                 .keyboardShortcut(.cancelAction)
                 .frame(width: 0, height: 0)
                 .opacity(0)
                 .accessibilityHidden(true)
             if updater.waiting {
                 Button("Update available") {
-                    actions.close()
+                    closePanel()
                     updater.check()
                 }
                 .buttonStyle(PillButton())

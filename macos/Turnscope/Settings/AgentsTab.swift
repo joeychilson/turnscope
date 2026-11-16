@@ -9,7 +9,7 @@ struct AgentsTab: View {
 
     var body: some View {
         if store.agents.isEmpty {
-            Text("No agent Turnscope serves is installed.")
+            Text("No agent Turnscope reads is installed.")
                 .font(.line).foregroundStyle(.secondary).padding(.horizontal, 12)
         } else {
             let title = store.fromDiskImage

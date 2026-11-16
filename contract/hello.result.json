@@ -6,7 +6,6 @@
       {
         "account": "anthropic:acct-1:org-1",
         "accountTitle": "Claude Max (me@example.com)",
-        "at": 1791460500000,
         "id": 1,
         "kind": "runningOut",
         "limit": "five_hour",
@@ -24,7 +23,6 @@
       {
         "account": "anthropic:acct-1:org-1",
         "accountTitle": "Claude Max (me@example.com)",
-        "at": 1791460500000,
         "id": 2,
         "kind": "usedUp",
         "limit": "seven_day_opus",
@@ -39,7 +37,6 @@
       {
         "account": "anthropic:acct-1:org-1",
         "accountTitle": "Claude Max (me@example.com)",
-        "at": 1791460500000,
         "id": 3,
         "kind": "reset",
         "limit": "seven_day",
@@ -54,7 +51,6 @@
       {
         "account": "anthropic:acct-1:org-1",
         "accountTitle": "Claude Max (me@example.com)",
-        "at": 1791460500000,
         "id": 4,
         "kind": "signIn",
         "limit": null,

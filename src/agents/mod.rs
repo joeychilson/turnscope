@@ -34,7 +34,6 @@ pub fn by_id(id: &str) -> Option<&'static dyn Agent> {
     ALL.iter().copied().find(|agent| agent.info().id == id)
 }
 
-/// The agent with id `id`, or an error naming the agents there are.
 pub fn find(id: &str) -> crate::Result<&'static dyn Agent> {
     by_id(id).ok_or_else(|| {
         let ids: Vec<&str> = ALL.iter().map(|agent| agent.info().id).collect();
@@ -42,12 +41,10 @@ pub fn find(id: &str) -> crate::Result<&'static dyn Agent> {
     })
 }
 
-/// The agent's name, from its id; the id for one Turnscope doesn't read.
 pub fn name(id: &str) -> &str {
     by_id(id).map_or(id, |agent| agent.info().name)
 }
 
-/// A coding agent whose history and logins Turnscope reads.
 pub trait Agent: Sync {
     fn info(&self) -> &'static Info;
 
@@ -111,7 +108,6 @@ pub struct Info {
 }
 
 impl Info {
-    /// The id of its session `native`, as stored: `claude-code:<native>`.
     pub fn session(&self, native: &str) -> String {
         format!("{}:{native}", self.id)
     }
@@ -122,7 +118,6 @@ impl Info {
 pub struct Read {
     /// Where the next read starts, in the reader's own terms.
     pub cursor: String,
-    /// The sessions the file tells of, with what it says of them.
     pub sessions: BTreeMap<String, Session>,
     /// By id, each response's reports merged.
     pub responses: HashMap<String, Response>,
@@ -135,7 +130,12 @@ impl Read {
         self.sessions.entry(id.to_owned()).or_default()
     }
 
+    /// Take in a response, and its session as one this file tells of.
     pub fn respond(&mut self, response: Response) {
+        if !self.sessions.contains_key(&response.session) {
+            self.sessions
+                .insert(response.session.clone(), Session::default());
+        }
         match self.responses.get_mut(&response.id) {
             Some(known) => known.merge(response),
             None => {
@@ -145,8 +145,8 @@ impl Read {
     }
 }
 
-/// What a file says of a session. Several files and reads add up: the
-/// latest activity, the best title.
+/// What a file says of a session. Several files and reads add up to the
+/// best title.
 #[derive(Default)]
 pub struct Session {
     /// The folder it works in, which its project is found by.
@@ -155,7 +155,6 @@ pub struct Session {
     /// The session it's a subagent of, which its usage counts toward. A
     /// fork or a continuation has none: its usage is its own.
     pub parent: Option<String>,
-    pub last: Option<i64>,
 }
 
 /// How much of a title is kept, in characters. A title is often the first
@@ -165,17 +164,13 @@ pub struct Session {
 const TITLE: usize = 200;
 
 impl Session {
-    pub fn saw(&mut self, at: i64) {
-        self.last = Some(self.last.map_or(at, |last| last.max(at)));
-    }
-
     /// Offer a title; a better kind replaces a worse, and a later one of the
-    /// same kind the earlier. It's kept on one line, cut at `TITLE`.
+    /// same kind the earlier.
     ///
-    /// It's kept as written, a key pasted into it too, over taking keys out
-    /// of it as 0.1.8 did: the person gave that text to an agent already,
-    /// and the agent's own files hold it beside this database. Of 13,652
-    /// titles in one database, at most 159 had held a key (November 2026).
+    /// It's kept as written, a key pasted into it too, over taking keys out:
+    /// the person gave that text to an agent already, and the agent's own
+    /// files hold it beside this database. Of 13,652 titles in one database,
+    /// at most 159 had held a key (November 2026).
     pub fn title(&mut self, kind: Title, text: &str) {
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if !text.is_empty() && self.title.as_ref().is_none_or(|(had, _)| kind >= *had) {
@@ -224,25 +219,21 @@ pub struct Response {
 
 impl Response {
     /// Fold in another report of the same response, as a line written as it
-    /// streamed, or a copy in another file: the most of each count, the
-    /// latest time, the greater model and provider by name, and as its
-    /// session, its own report's over a copy's, then the lesser id. Every
-    /// choice is the same in any order, so files read in any order agree.
+    /// streamed, or a copy in another file. Every choice is the same in any
+    /// order, so files read in any order agree.
     pub fn merge(&mut self, other: Response) {
         if (other.copy, &other.session) < (self.copy, &self.session) {
             self.copy = other.copy;
             self.session = other.session;
         }
         self.at = self.at.max(other.at);
-        self.provider = self.provider.clone().max(other.provider);
-        self.model = self.model.clone().max(other.model);
-        let (tokens, more) = (&mut self.tokens, other.tokens);
-        tokens.input = tokens.input.max(more.input);
-        tokens.cache_read = tokens.cache_read.max(more.cache_read);
-        tokens.cache_write_5m = tokens.cache_write_5m.max(more.cache_write_5m);
-        tokens.cache_write_1h = tokens.cache_write_1h.max(more.cache_write_1h);
-        tokens.output = tokens.output.max(more.output);
-        tokens.reasoning = tokens.reasoning.max(more.reasoning);
+        if other.provider > self.provider {
+            self.provider = other.provider;
+        }
+        if other.model > self.model {
+            self.model = other.model;
+        }
+        self.tokens = self.tokens.zip(other.tokens, u64::max);
         self.prompt = self.prompt.max(other.prompt);
         self.web_searches = self.web_searches.max(other.web_searches);
         self.priority |= other.priority;
@@ -264,10 +255,21 @@ pub struct Tokens {
     /// its only kind.
     pub cache_write_5m: u64,
     pub cache_write_1h: u64,
-    /// Output, reasoning included.
     pub output: u64,
-    /// How much of the output was reasoning.
     pub reasoning: u64,
+}
+
+impl Tokens {
+    pub fn zip(self, other: Tokens, f: fn(u64, u64) -> u64) -> Tokens {
+        Tokens {
+            input: f(self.input, other.input),
+            cache_read: f(self.cache_read, other.cache_read),
+            cache_write_5m: f(self.cache_write_5m, other.cache_write_5m),
+            cache_write_1h: f(self.cache_write_1h, other.cache_write_1h),
+            output: f(self.output, other.output),
+            reasoning: f(self.reasoning, other.reasoning),
+        }
+    }
 }
 
 /// What an agent folder holds for one provider.
@@ -315,7 +317,6 @@ impl Secret {
     }
 }
 
-/// That `path` couldn't be read, and why.
 pub fn reading(path: &Path, error: impl Display) -> Error {
     Error::Failed(format!("reading {}: {error}", path.display()))
 }
@@ -352,7 +353,6 @@ pub fn entries(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
         .map(|entry| entry.path())
 }
 
-/// The JSON file at `path`, or `None` when there is none.
 pub fn json_file(path: &Path) -> Result<Option<Value>> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
@@ -393,12 +393,18 @@ pub fn kept_login(
 }
 
 /// What the Keychain item with `service`, and with `account` where its agent
-/// keeps several under one service, holds. `None` when there's no such item.
+/// keeps several under one service, holds, as `parse` reads it. `None` when
+/// there's no such item.
 ///
 /// Read with `/usr/bin/security`, the tool Claude Code and Antigravity write
 /// theirs with, so no permission prompt appears; it finds the Keychain under
 /// `home`.
-pub fn keychain(home: &Path, service: &str, account: Option<&str>) -> Result<Option<Vec<u8>>> {
+pub fn keychain<T>(
+    home: &Path,
+    service: &str,
+    account: Option<&str>,
+    parse: impl FnOnce(&[u8]) -> std::result::Result<T, String>,
+) -> Result<Option<T>> {
     let failed = |why: String| Error::Failed(format!("reading the Keychain item {service}: {why}"));
     let mut security = std::process::Command::new("/usr/bin/security");
     security.args(["find-generic-password", "-s", service]);
@@ -408,7 +414,8 @@ pub fn keychain(home: &Path, service: &str, account: Option<&str>) -> Result<Opt
     security.arg("-w").env("HOME", home);
     let output = crate::output_within(&mut security, std::time::Duration::from_secs(20))
         .map_err(|error| failed(error.to_string()))?;
-    found(output).map_err(failed)
+    let kept = found(output).map_err(failed)?;
+    kept.map(|kept| parse(&kept)).transpose().map_err(failed)
 }
 
 /// What `security` found, by how it ended: the item's value, or `None` when
@@ -498,13 +505,12 @@ pub fn inner<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 ///
 /// An opening tag with no closing one is the agent's only where the text,
 /// its blocks taken out, opens with it, as Codex writes an image's
-/// `<image name=[Image #1]>` in a part of its own: all that text is the
-/// agent's. Further in, it's a word the person typed, as in `Add a <skill>
-/// element to the schema`, and what follows it is theirs too. Taken out to
-/// the end of the text wherever it was, it cut such a message at the tag.
-/// A mention before a block of the same tag still loses the words between
-/// them: tags alone don't tell the two apart. (Not measured: no real
-/// message was read for it.)
+/// `<image name=[Image #1]>` in a part of its own. Further in, it's a word
+/// the person typed, as in `Add a <skill> element to the schema`, and what
+/// follows it is theirs too: chosen over taking it out to the end of the
+/// text, which cut such a message at the tag. A mention before a block of
+/// the same tag still loses the words between them: tags alone don't tell
+/// the two apart. (Not measured: no real message was read for it.)
 pub fn without_tags(text: &str, tags: &[&str]) -> String {
     let mut text = text.to_owned();
     for tag in tags {
@@ -585,7 +591,6 @@ mod tests {
         let (_, title) = session.title.as_ref().unwrap();
         assert!(title.starts_with("Fix the éé"), "{title}");
         assert_eq!(title.chars().count(), 200);
-        // A worse kind doesn't replace it, and nothing is no title.
         session.title(Title::Named, " \n ");
         assert_eq!(session.title.as_ref().unwrap().1.chars().count(), 200);
     }
@@ -634,7 +639,6 @@ mod tests {
             })
             .collect();
         assert!(merged.iter().all(|response| *response == merged[0]));
-        // The own report's session, and the most of each count.
         assert_eq!(
             (merged[0].session.as_str(), merged[0].copy),
             ("claude-code:own", false)
@@ -647,58 +651,57 @@ mod tests {
             ),
             (900, 70, "claude-opus-5")
         );
+        // A read takes each report in, and each session a report names.
+        let mut read = Read::default();
+        for report in reports {
+            read.respond(report);
+        }
+        assert_eq!(read.responses["r"], merged[0]);
+        assert!(
+            read.sessions
+                .keys()
+                .eq(["claude-code:fork", "claude-code:own"])
+        );
     }
 
     #[test]
     fn what_agents_add_is_taken_out_of_what_the_person_typed() {
-        assert_eq!(
-            without_tags(
+        let tags = ["system-reminder", "goal", "image", "skill"];
+        for (text, kept) in [
+            (
                 "<system-reminder>hi</system-reminder>Fix it.<x>y",
-                &["system-reminder"]
+                "Fix it.<x>y",
             ),
-            "Fix it.<x>y"
-        );
-        assert_eq!(
-            without_tags(
+            (
                 "<goal source=\"thread\">Go on.</goal> Add tests. <goalpost>kept</goalpost>",
-                &["goal"]
+                "Add tests. <goalpost>kept</goalpost>",
             ),
-            "Add tests. <goalpost>kept</goalpost>"
-        );
+            // A tag with no closing one, as Codex writes an image's two, each
+            // in a part of its own.
+            ("<image name=[Image #1]>", ""),
+            ("</image>", ""),
+            // After a block of the agent's, whichever tag is listed first.
+            ("<skill>Write plainly.</skill>\n<image name=[Image #1]>", ""),
+            // Further in, it's a word the person typed, and so is what follows.
+            (
+                "Add a <skill> element to the manifest schema and document it.",
+                "Add a <skill> element to the manifest schema and document it.",
+            ),
+            (
+                "Replace the <image href=\"a.png\"/> in logo.svg with a path, then run the tests.",
+                "Replace the <image href=\"a.png\"/> in logo.svg with a path, then run the tests.",
+            ),
+            // A block of the agent's after one is still taken out.
+            (
+                "Document <skill> in the schema.<image name=x>y</image>",
+                "Document <skill> in the schema.",
+            ),
+        ] {
+            assert_eq!(without_tags(text, &tags), kept, "{text}");
+        }
         assert_eq!(
             inner("a <user_query>Do it.</user_query> b", "user_query"),
             Some("Do it.")
-        );
-    }
-
-    #[test]
-    fn a_tag_with_no_closing_one_is_the_agents_only_where_it_opens_the_text() {
-        let tags = ["image", "skill"];
-        // As Codex writes an image's two, each in a part of its own.
-        assert_eq!(without_tags("<image name=[Image #1]>", &tags), "");
-        assert_eq!(without_tags("</image>", &tags), "");
-        // After a block of the agent's, whichever tag is listed first.
-        assert_eq!(
-            without_tags(
-                "<skill>Write plainly.</skill>\n<image name=[Image #1]>",
-                &tags
-            ),
-            ""
-        );
-        // Further in, it's a word the person typed, and so is what follows.
-        for typed in [
-            "Add a <skill> element to the manifest schema and document it.",
-            "Replace the <image href=\"a.png\"/> in logo.svg with a path, then run the tests.",
-        ] {
-            assert_eq!(without_tags(typed, &tags), typed);
-        }
-        // A block of the agent's after one is still taken out.
-        assert_eq!(
-            without_tags(
-                "Document <skill> in the schema.<image name=x>y</image>",
-                &tags
-            ),
-            "Document <skill> in the schema."
         );
     }
 

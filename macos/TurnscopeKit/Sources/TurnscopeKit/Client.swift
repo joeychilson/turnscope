@@ -1,23 +1,6 @@
 // The app's connection to `turnscope serve`: JSON-RPC 2.0 over a Unix socket,
-// one message per line (docs/protocol.md).
-//
-// Serve gives the socket path (`turnscope serve --socket`); the app never
-// works it out. When nothing is listening, the client starts `turnscope
-// serve`. Serve outlives the app and exits a minute after its last client
-// leaves, so a restarted app finds it still running. Each connection starts
-// with `hello`, which returns the whole status and the alerts not yet
-// acknowledged, so a new connection is in sync at once. After that, serve
-// pushes `status` and `alert`.
-//
-// The app only talks to the engine it ships with. After an update, the old
-// serve may still be running, with another engine, protocol or status format.
-// `hello` names the engine first; if it isn't this app's, the client asks it
-// to exit, once, and starts this app's own.
-//
-// A dropped connection is made again after half a second, then twice as long
-// each time up to thirty. The wait goes back to half a second only after a
-// connection has held for thirty seconds, so an engine that keeps dropping
-// isn't started twice a second.
+// one message per line. docs/protocol.md#lifecycle says how it starts serve,
+// reconnects and replaces another engine's.
 
 import Darwin
 import Foundation
@@ -35,12 +18,9 @@ public final class Client {
     public enum Event: Sendable {
         /// It entered a phase.
         case phase(Phase)
-        /// `hello`'s answer, on every connection: its status and alerts
-        /// handled as one.
-        case hello(HelloResult)
-        /// A status serve pushed.
+        /// A status, from `hello` on each connection or pushed after.
         case status(Status)
-        /// An alert serve pushed.
+        /// An alert, from `hello` on each connection or pushed after.
         case alert(Alert)
     }
 
@@ -185,7 +165,8 @@ public final class Client {
             return .replaced
         }
         phase = .connected
-        emit.yield(.hello(hello))
+        emit.yield(.status(hello.status))
+        for alert in hello.alerts { emit.yield(.alert(alert)) }
         let unread = await listening.value
         return .dropped(why: unread?.description ?? "Turnscope's engine stopped")
     }
@@ -222,11 +203,14 @@ public final class Client {
     }
 }
 
-/// How long to wait before connecting again, as the top of this file says.
+/// How long to wait before connecting again: half a second, then twice as
+/// long each time, up to thirty seconds.
 struct Backoff {
     private var wait = Duration.milliseconds(500)
 
-    /// A connection ended after it held for `held`.
+    /// A connection ended after it held for `held`. The wait goes back to
+    /// half a second only if it held for thirty seconds, so an engine that
+    /// keeps dropping isn't started twice a second.
     mutating func ended(after held: Duration) {
         if held > .seconds(30) { wait = .milliseconds(500) }
     }
@@ -320,7 +304,8 @@ private final class Channel {
         for await line in lines {
             guard let header = try? Contract.decoder.decode(Header.self, from: line) else { continue }
             switch (header.method, header.id) {
-            // Those after it are dropped with the connection.
+            // After a push it can't read, the rest are dropped with the
+            // connection.
             case (let method?, nil) where unread == nil:
                 do throws(ClientError) {
                     try pushed(method, line)

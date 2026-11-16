@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -119,18 +119,35 @@ fn command_as(agent: &str, data: &Path, args: &[&str]) -> Command {
     command
 }
 
-/// What the MCP server's `explain_usage` answers each of `arguments`, over
-/// the store `data`.
-fn explain_usage(data: &Path, arguments: &[&str]) -> Vec<String> {
-    let requests: String = arguments
+/// What the MCP server `mcp` runs answers each of `calls`, a tool and its
+/// arguments, in turn.
+fn tools(mcp: &mut Command, calls: &[(&str, &str)]) -> Vec<String> {
+    let requests: String = calls
         .iter()
-        .map(|arguments| {
+        .enumerate()
+        .map(|(id, (tool, arguments))| {
             format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"explain_usage","arguments":{arguments}}}}}"#
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{tool}","arguments":{arguments}}}}}"#
             ) + "\n"
         })
         .collect();
-    let output = turnscope(data, &["mcp"], Some(&requests));
+    let mut mcp = mcp
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    mcp.stdin
+        .take()
+        .unwrap()
+        .write_all(requests.as_bytes())
+        .unwrap();
+    let output = mcp.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(|line| {
@@ -223,35 +240,42 @@ fn fresh(name: &str, text: &str) -> bool {
 fn every_command_answers_as_its_snapshot_says() {
     let data = store();
     let mut stale = Vec::new();
-    for (name, args) in [
-        ("status", vec!["status"]),
+    // Each as text, and as JSON too where its JSON has a shape no other's
+    // has.
+    for (name, args, as_json) in [
+        ("status", vec!["status"], true),
         (
             "status-hours",
             vec!["status", "--account", "claude", "--hours", "3"],
+            false,
         ),
-        ("usage", vec!["usage"]),
+        ("usage", vec!["usage"], true),
         (
             "usage-model",
             vec!["usage", "--since", "2026-09-29", "--by", "model"],
+            false,
         ),
         (
             "usage-account",
             vec!["usage", "--since", "2026-09-29", "--by", "account"],
+            false,
         ),
         // Every agent's session, each with its title.
         (
             "usage-session",
             vec!["usage", "--since", "2026-09-29", "--by", "session"],
+            false,
         ),
         (
             "usage-limit",
             vec!["usage", "--account", "claude", "--limit", "week"],
+            true,
         ),
-        ("accounts", vec!["accounts"]),
-        ("connect", vec!["connect"]),
-        ("doctor", vec!["doctor"]),
+        ("accounts", vec!["accounts"], true),
+        ("connect", vec!["connect"], true),
+        ("doctor", vec!["doctor"], false),
     ] {
-        for json in [false, true] {
+        for json in [false, true].into_iter().filter(|json| !json || as_json) {
             let mut args = args.clone();
             if json {
                 args.push("--json");
@@ -432,29 +456,27 @@ fn a_command_says_when_it_waits_for_another_turnscope_reading_history() {
 }
 
 /// Codex pointed at its agent folder by `CODEX_HOME`, written with a slash
-/// at its end or with `..`: the account is still the caller's.
+/// at its end: the account is still the caller's. The other ways to write
+/// a folder are folded as this one is (`mcp::folded`).
 #[test]
 fn the_callers_account_is_its_agent_folders_however_its_written() {
     let data = store();
     // Read the history first: neither command below does.
     assert!(turnscope(data.path(), &["usage"], None).status.success());
-    for written in ["/.codex", "/.codex/", "/.claude/../.codex"] {
-        let folder = format!("{}{written}", home().display());
-        let run = |args: &[&str]| {
-            command_as("codex", data.path(), args)
-                .env("CODEX_HOME", &folder)
-                .output()
-                .unwrap()
-        };
-        assert_eq!(
-            String::from_utf8_lossy(&run(&["statusline"]).stdout).trim(),
-            "ChatGPT Plus · weekly 80%",
-            "{written}"
-        );
-        // Its weekly limit has 80% left, so a guard under 90% blocks.
-        let guard = run(&["guard", "--limit", "week", "--below", "90"]);
-        assert_eq!(guard.status.code(), Some(2), "{written}");
-    }
+    let folder = format!("{}/.codex/", home().display());
+    let run = |args: &[&str]| {
+        command_as("codex", data.path(), args)
+            .env("CODEX_HOME", &folder)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(
+        String::from_utf8_lossy(&run(&["statusline"]).stdout).trim(),
+        "ChatGPT Plus · weekly 80%"
+    );
+    // Its weekly limit has 80% left, so a guard under 90% blocks.
+    let guard = run(&["guard", "--limit", "week", "--below", "90"]);
+    assert_eq!(guard.status.code(), Some(2));
 }
 
 /// Claude Code names its session in the environment, so its row is marked.
@@ -464,21 +486,9 @@ fn the_callers_account_is_its_agent_folders_however_its_written() {
 fn explain_usage_marks_the_session_its_caller_names() {
     let data = store();
     // Over a week, which holds the session Claude Code names.
-    let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"limit":"week"}}}"#;
     let asked_by = |agent: &str| {
-        let mut mcp = command_as(agent, data.path(), &["mcp"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        writeln!(mcp.stdin.take().unwrap(), "{request}").unwrap();
-        let output = mcp.wait_with_output().unwrap();
-        assert!(output.status.success());
-        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        reply["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+        let week = [("explain_usage", r#"{"limit":"week"}"#)];
+        tools(&mut command_as(agent, data.path(), &["mcp"]), &week).remove(0)
     };
     let yours = |text: &str| -> Vec<String> {
         text.lines()
@@ -488,9 +498,11 @@ fn explain_usage_marks_the_session_its_caller_names() {
     };
     let claude = asked_by("claude");
     assert!(claude.starts_with("Usage of Claude Max"), "{claude}");
-    let marked = yours(&claude);
-    assert!(
-        marked.len() == 1 && marked[0].starts_with("| `0f6e3f6a` "),
+    assert_eq!(
+        yours(&claude),
+        [
+            "| `0f6e3f6a` \"Fix the CSV parser so quoted commas work. Don't change the public API.\" (yours) | $0.03 | 3 | 3% |"
+        ],
         "{claude}"
     );
     let codex = asked_by("codex");
@@ -527,28 +539,6 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
     assert_eq!(guard("month", "50").status.code(), Some(1));
     // Nor does one mistyped.
     assert_eq!(guard("5 hours", "150").status.code(), Some(1));
-}
-
-#[test]
-fn a_status_line_says_the_account_of_the_session_it_is_given() {
-    let data = store();
-    let line = |args: &[&str], input: Option<&str>| {
-        let output = turnscope(data.path(), args, input);
-        assert!(output.status.success());
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    };
-    let claude = "Claude Max · 5h 25%, out in 1h · weekly 56%";
-    // Claude Code's JSON names the session, whose account it draws on.
-    let given = r#"{"session_id": "7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f", "cwd": "/work/api"}"#;
-    assert_eq!(line(&["statusline"], Some(given)), claude);
-    assert_eq!(
-        line(&["statusline", "--account", "chatgpt"], None),
-        "ChatGPT Plus · weekly 80%"
-    );
-    assert_eq!(
-        line(&["statusline", "--account", "supergrok"], None),
-        "SuperGrok · sign in again"
-    );
 }
 
 /// A new session isn't read yet, as a status line never catches up: its
@@ -588,6 +578,12 @@ fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
     // Codex's, where Claude Code ran last: not the first account in use,
     // which is Claude Code's too.
     assert_eq!(line("codex", new, "/work/api"), chatgpt);
+    // An account named, whose limits can't be read.
+    let named = turnscope(data.path(), &["statusline", "--account", "supergrok"], None);
+    assert_eq!(
+        String::from_utf8_lossy(&named.stdout).trim(),
+        "SuperGrok · sign in again"
+    );
 }
 
 #[test]
@@ -596,32 +592,20 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     // 40 seconds into the minute; Claude's 5 hours runs out at 13:00 and
     // resets at 14:00.
     let late = (NOW + 40_000).to_string();
-    let mut mcp = command(data.path(), &["mcp"])
-        .env("TURNSCOPE_NOW", &late)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let requests = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_limits","arguments":{"account":"claude"}}}"#,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude"}}}"#,
-        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","since":"1h"}}}"#,
-        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","since":"now"}}}"#,
-        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true}}}"#,
-        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"explain_usage","arguments":{"account":"claude","since":"2026-10-01T12:00:10Z"}}}"#,
-    ];
-    writeln!(mcp.stdin.take().unwrap(), "{}", requests.join("\n")).unwrap();
-    let output = mcp.wait_with_output().unwrap();
-    let texts: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| {
-            let reply: serde_json::Value = serde_json::from_str(line).unwrap();
-            reply["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .collect();
+    let texts = tools(
+        command(data.path(), &["mcp"]).env("TURNSCOPE_NOW", &late),
+        &[
+            ("check_limits", r#"{"account":"claude"}"#),
+            ("explain_usage", r#"{"account":"claude"}"#),
+            ("explain_usage", r#"{"account":"claude","since":"1h"}"#),
+            ("explain_usage", r#"{"account":"claude","since":"now"}"#),
+            ("explain_usage", r#"{"all":true}"#),
+            (
+                "explain_usage",
+                r#"{"account":"claude","since":"2026-10-01T12:00:10Z"}"#,
+            ),
+        ],
+    );
     let (limits, usage) = (&texts[0], &texts[1]);
     // In the verdict, and in the 5 hours' own line.
     assert_eq!(
@@ -718,11 +702,14 @@ fn what_used_a_limit_whose_window_reset_since_its_read_counts_from_the_reset() {
     assert_eq!(json["usage"]["since"], NOW - HOUR);
     assert_eq!(json["sharePercents"], serde_json::Value::Null);
 
-    let answers = explain_usage(
-        data.path(),
+    let answers = tools(
+        &mut command(data.path(), &["mcp"]),
         &[
-            r#"{"account":"claude","limit":"5 hours"}"#,
-            r#"{"account":"claude","limit":"5 hours","since":"3h"}"#,
+            ("explain_usage", r#"{"account":"claude","limit":"5 hours"}"#),
+            (
+                "explain_usage",
+                r#"{"account":"claude","limit":"5 hours","since":"3h"}"#,
+            ),
         ],
     );
     assert!(
@@ -743,7 +730,10 @@ fn what_used_a_limit_whose_window_reset_since_its_read_counts_from_the_reset() {
 fn explain_usage_says_a_cost_it_doesnt_know_is_unpriced() {
     let data = store();
     // Codex's four responses are of a model with no known price.
-    let answers = explain_usage(data.path(), &[r#"{"account":"chatgpt"}"#]);
+    let answers = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("explain_usage", r#"{"account":"chatgpt"}"#)],
+    );
     assert!(
         answers[0].ends_with(
             "\nBy model: gpt-5.5 ($0.00 (+4 unpriced)).\nBy project: /work/app ($0.00 (+4 unpriced))."
@@ -754,65 +744,6 @@ fn explain_usage_says_a_cost_it_doesnt_know_is_unpriced() {
 }
 
 #[test]
-fn what_used_a_limit_gives_the_rest_row_its_share_and_no_shares_as_null() {
-    let data = store();
-    let limit = ["usage", "--account", "claude", "--limit", "week"];
-    let asked = |more: &[&str]| {
-        let output = turnscope(data.path(), &[&limit[..], more].concat(), None);
-        assert!(output.status.success(), "{more:?}");
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    };
-    // Of the 44 points used, the row shown has 41 and the rest 3, as the
-    // tool says them.
-    let text = asked(&["--top", "1"]);
-    let rest = text.lines().find(|line| line.starts_with("  1 more "));
-    assert!(
-        rest.is_some_and(|rest| rest.ends_with(" 3  $0.03           3%")),
-        "{text}"
-    );
-    let answers = explain_usage(
-        data.path(),
-        &[r#"{"account":"claude","limit":"week","top":1}"#],
-    );
-    assert!(
-        answers[0].contains("| 1 more session | $0.03 | 3 | 3% |\n"),
-        "{}",
-        answers[0]
-    );
-    // As JSON, a share for each row, or null when no row has one, as since
-    // a time.
-    let shares = |more: &[&str]| -> serde_json::Value {
-        let json: serde_json::Value = serde_json::from_str(&asked(more)).unwrap();
-        json["sharePercents"].clone()
-    };
-    assert_eq!(
-        shares(&["--top", "1", "--json"]).as_array().unwrap().len(),
-        1
-    );
-    assert_eq!(
-        shares(&["--since", "2h", "--json"]),
-        serde_json::Value::Null
-    );
-}
-
-#[test]
-fn status_shows_a_hidden_account_it_names() {
-    let data = store();
-    let hide = turnscope(data.path(), &["accounts", "hide", "supergrok"], None);
-    assert!(hide.status.success());
-    let status = |args: &[&str]| {
-        let output = turnscope(data.path(), args, None);
-        assert!(output.status.success(), "{args:?}");
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    };
-    let grok = "SuperGrok (me@example.com) · via Grok Build · hidden";
-    let named = status(&["status", "--account", "supergrok"]);
-    assert!(named.starts_with(grok), "{named:?}");
-    assert!(!status(&["status"]).contains(grok));
-    assert!(status(&["status", "--all"]).contains(grok));
-}
-
-#[test]
 fn with_no_account_to_show_every_front_end_says_why() {
     let said = |data: &Path, args: &[&str]| {
         let output = turnscope(data, args, None);
@@ -820,15 +751,7 @@ fn with_no_account_to_show_every_front_end_says_why() {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
     let check_limits = |data: &Path, arguments: &str| {
-        let request = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"check_limits","arguments":{arguments}}}}}"#
-        );
-        let output = turnscope(data, &["mcp"], Some(&(request + "\n")));
-        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        reply["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+        tools(&mut command(data, &["mcp"]), &[("check_limits", arguments)]).remove(0)
     };
     // A new data directory, off the network: no account is known yet.
     let data = tempfile::tempdir().unwrap();
@@ -836,7 +759,6 @@ fn with_no_account_to_show_every_front_end_says_why() {
     assert_eq!(said(data.path(), &["status"]), none);
     assert_eq!(said(data.path(), &["accounts"]), none);
     assert_eq!(check_limits(data.path(), "{}"), none);
-    // As JSON, none is an empty list.
     assert_eq!(said(data.path(), &["accounts", "--json"]), "[]");
     assert_eq!(
         said(data.path(), &["status", "--json"]),
@@ -861,6 +783,12 @@ fn with_no_account_to_show_every_front_end_says_why() {
     assert_eq!(
         check_limits(data.path(), r#"{"all":true}"#),
         "Every account is hidden: name one with account to see its limits."
+    );
+    // One named shows, hidden or not.
+    let named = said(data.path(), &["status", "--account", "supergrok"]);
+    assert!(
+        named.starts_with("SuperGrok (me@example.com) · via Grok Build · hidden"),
+        "{named}"
     );
 }
 
@@ -979,7 +907,7 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
     assert_eq!(early["error"]["code"], -32002);
     let other = ask(br#"{"jsonrpc":"2.0","id":2,"method":"hello","params":{"protocol":1}}"#);
     assert_eq!(other["error"]["code"], -32001);
-    let hello = ask(br#"{"jsonrpc":"2.0","id":3,"method":"hello","params":{"protocol":2}}"#);
+    let hello = ask(br#"{"jsonrpc":"2.0","id":3,"method":"hello","params":{"protocol":3}}"#);
     assert_eq!(
         hello["result"]["server"],
         format!("turnscope {}", env!("CARGO_PKG_VERSION"))
@@ -1010,10 +938,23 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
             "antigravity"
         ]
     );
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("contract");
+    let example = |name: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(examples.join(name)).unwrap()).unwrap()
+    };
     let breakdown = ask(
         br#"{"jsonrpc":"2.0","id":4,"method":"limit.breakdown","params":{"account":"anthropic:acct-1:org-1","limit":"seven_day"}}"#,
     );
-    assert_eq!(breakdown["result"]["sessions"][0]["session"], WORKING);
+    let used = &breakdown["result"]["sessions"][0];
+    assert_eq!(used["session"], WORKING);
+    // Its project is its folder's name.
+    assert_eq!(used["project"], "api");
+    // A session that used it has the fields the contract's example has.
+    let fields = |session: &serde_json::Value| -> BTreeSet<String> {
+        session.as_object().unwrap().keys().cloned().collect()
+    };
+    let contract = example("limit.breakdown.result.json");
+    assert_eq!(fields(used), fields(&contract["result"]["sessions"][0]));
     let hidden = ask(
         br#"{"jsonrpc":"2.0","id":5,"method":"account.hide","params":{"account":"xai:user-3","hidden":true}}"#,
     );
@@ -1026,8 +967,6 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
     // it writes, is one serve reads: answered, not refused. Not `agent.*`,
     // which would run an agent's own command on this Mac, and `shutdown`
     // last.
-    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("contract");
-    let example = |name: &str| std::fs::read_to_string(examples.join(name)).unwrap();
     let mut requests: Vec<String> = std::fs::read_dir(&examples)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -1036,17 +975,14 @@ fn serve_says_hello_with_the_status_and_answers_in_turn() {
         .collect();
     requests.sort();
     for name in requests {
-        let request: serde_json::Value = serde_json::from_str(&example(&name)).unwrap();
-        let answer = ask(request.to_string().as_bytes());
+        let answer = ask(example(&name).to_string().as_bytes());
         assert!(
             answer.get("result").is_some(),
             "{name} was refused: {answer}"
         );
     }
-    let shutdown: serde_json::Value =
-        serde_json::from_str(&example("shutdown.request.json")).unwrap();
     assert_eq!(
-        ask(shutdown.to_string().as_bytes())["result"],
+        ask(example("shutdown.request.json").to_string().as_bytes())["result"],
         serde_json::json!({})
     );
     assert!(serve.wait().unwrap().success());

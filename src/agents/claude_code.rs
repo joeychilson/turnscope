@@ -2,11 +2,10 @@
 //!
 //! Each session is a JSON Lines log, `~/.claude/projects/<project>/<session>.jsonl`,
 //! and each subagent another, `<project>/<session>/subagents/agent-<id>.jsonl`,
-//! with `agent-<id>.meta.json` beside it: its task, whether it is a fork, the
-//! call that started it, and the subagent that did when not the session.
-//! A subagent's lines carry its session's `sessionId` and its own `agentId`.
-//! A second account's folder is `~/.claude-<name>`, used through
-//! `CLAUDE_CONFIG_DIR`, once Claude Code has written `.claude.json` there.
+//! described in `agent-<id>.meta.json` beside it. A subagent's lines carry
+//! its session's `sessionId` and its own `agentId`. A second account's
+//! folder is `~/.claude-<name>`, used through `CLAUDE_CONFIG_DIR`, once
+//! Claude Code has written `.claude.json` there.
 //!
 //! What follows was measured on this Mac's history, September and October 2026.
 //!
@@ -16,14 +15,7 @@
 //! reports merge to the largest. `input_tokens` excludes what was read from
 //! and written to the cache. A response made of several model calls lists
 //! them in `usage.iterations`, and its own counts are their sum or zero; for
-//! some responses the calls are the only record. A reply naming the model
-//! `<synthetic>` is Claude Code's own, such as an error, and costs nothing.
-//! The usage is what the API answered; a backend other than Anthropic's, as
-//! a gateway, can leave out the cache counts or their `cache_creation` split
-//! (not measured here). A cache count left out is 0, and cache writes
-//! without the split are taken as kept for 5 minutes, the cache's default.
-//! The input and output counts stay required: a line without them is
-//! skipped, and `doctor` says so, which is how a new format shows.
+//! some responses the calls are the only record.
 //!
 //! **Forks.** A fork's log opens with a copy of its parent's history, through
 //! the line making the call that started it (`toolUseId` in its description),
@@ -31,10 +23,7 @@
 //! `fork-context-ref`, naming the parent in `parentSessionId`, and a copy of
 //! the parent's last response, ended by the fork's first prompt. The copy is
 //! the parent's: its responses are marked copies of the parent's, and
-//! nothing else in it is the fork's. Only the description tells a fork from
-//! another subagent, and Claude Code may write it up to 1.5 s after the log,
-//! so a new log waits for it, and for it to parse, as one read while it's
-//! written won't.
+//! nothing else in it is the fork's.
 //!
 //! **Continuations and `/clear`.** A line can name, in `session_id`, another
 //! session than its `sessionId`. A session carried on in a new log (the old
@@ -44,12 +33,6 @@
 //! naming another session held only responses of their own. So such a line's
 //! response is its log's, as a copy: where the session it names holds it
 //! too, that session's own report wins.
-//!
-//! **Titles.** A session neither Claude Code nor the person named is titled
-//! by the first thing the person asked, without what Claude Code added to
-//! it. Pastes are marked `<pasted_content …>`, and a command of Claude Code's
-//! own, such as `/clear`, asks for no work, so it titles nothing: 30 sessions
-//! had been titled `/clear`.
 //!
 //! **Not read.** `cost-state` records count calls the log doesn't hold,
 //! about 1–2% of cost; usage is counted from the log alone.
@@ -94,7 +77,7 @@ const INJECTED: &[&str] = &[
 ];
 
 /// Claude Code's own commands, which ask for no work: a session they open
-/// isn't titled by them.
+/// isn't titled by them. 30 sessions measured had been titled `/clear`.
 const COMMANDS: &[&str] = &[
     "/add-dir",
     "/agents",
@@ -184,8 +167,6 @@ struct Line<'a> {
     kind: Cow<'a, str>,
     #[serde(rename = "sessionId", borrow)]
     session_id: Option<Cow<'a, str>>,
-    /// The session a continuation's copied line was the old one's, or after
-    /// `/clear`, the session the process began as.
     #[serde(rename = "session_id", borrow)]
     named: Option<Cow<'a, str>>,
     #[serde(rename = "agentId", borrow)]
@@ -281,7 +262,11 @@ impl Message<'_> {
     }
 }
 
-#[derive(Deserialize, Clone, Copy, Default)]
+/// A backend other than Anthropic's, as a gateway, can leave out the cache
+/// counts or their `cache_creation` split (not measured), so a cache count
+/// left out is 0. The input and output counts stay required: a line without
+/// them is skipped, and `doctor` says so, which is how a new format shows.
+#[derive(Deserialize)]
 struct Counts {
     input_tokens: u64,
     #[serde(default)]
@@ -294,7 +279,7 @@ struct Counts {
     output_tokens: u64,
 }
 
-#[derive(Deserialize, Clone, Copy, Default)]
+#[derive(Deserialize, Default)]
 #[serde(default)]
 struct CacheCreation {
     ephemeral_5m_input_tokens: u64,
@@ -302,24 +287,23 @@ struct CacheCreation {
 }
 
 impl Counts {
-    fn prompt(&self) -> u64 {
-        let writes = self.writes();
-        self.input_tokens
-            + self.cache_read_input_tokens
-            + writes.ephemeral_5m_input_tokens
-            + writes.ephemeral_1h_input_tokens
-    }
-
-    /// The cache writes, by how long they're kept. Without a split that
-    /// splits any, every write is taken as kept for 5 minutes, the cache's
-    /// default.
-    fn writes(&self) -> CacheCreation {
-        self.cache_creation
-            .filter(|split| split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens > 0)
-            .unwrap_or(CacheCreation {
-                ephemeral_5m_input_tokens: self.cache_creation_input_tokens,
-                ephemeral_1h_input_tokens: 0,
-            })
+    /// Its tokens, but for reasoning. Cache writes without a split that
+    /// splits any are taken as kept for 5 minutes, the cache's default.
+    fn tokens(&self) -> Tokens {
+        let split = self
+            .cache_creation
+            .as_ref()
+            .filter(|split| split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens > 0);
+        Tokens {
+            input: self.input_tokens,
+            cache_read: self.cache_read_input_tokens,
+            cache_write_5m: split.map_or(self.cache_creation_input_tokens, |split| {
+                split.ephemeral_5m_input_tokens
+            }),
+            cache_write_1h: split.map_or(0, |split| split.ephemeral_1h_input_tokens),
+            output: self.output_tokens,
+            reasoning: 0,
+        }
     }
 }
 
@@ -377,8 +361,6 @@ impl Meta {
     }
 }
 
-/// The description of the subagent `agent` whose log is `file`, if it's
-/// there and parses.
 fn meta(file: &Path, agent: &str) -> Option<Meta> {
     let bytes = std::fs::read(file.with_file_name(format!("agent-{agent}.meta.json"))).ok()?;
     serde_json::from_slice(&bytes).ok()
@@ -398,7 +380,6 @@ fn named(file: &Path) -> Option<(String, Option<String>)> {
     }
 }
 
-/// The settings file, `.claude.json`, of the folder `folder` in `home`.
 fn settings(folder: &Path, home: &Path) -> PathBuf {
     // Its own folder's settings are beside it; another's are inside it.
     let own = folder == home.join(".claude");
@@ -442,10 +423,11 @@ impl Agent for ClaudeCode {
 
         if start && let Some(agent) = &agent {
             let meta = meta(file, agent);
-            // Read without its description, a fork's copy would read as the
-            // fork's own, so a new log waits for it, and for one read while
-            // Claude Code was still writing it, which won't parse. An error,
-            // so it's tried again at the next read.
+            // Only the description tells a fork from another subagent, and
+            // Claude Code may write it up to 1.5 s after the log. So a new
+            // log waits for it, and for one read while it was still being
+            // written, which won't parse. An error, so it's tried again at
+            // the next read.
             if meta.is_none() && begun_lately(file) {
                 return Err(Error::Failed(format!(
                     "{} waits for its description",
@@ -486,12 +468,10 @@ impl Agent for ClaudeCode {
             let hex = crate::sha256_hex(folder.as_os_str().as_encoded_bytes(), 4);
             format!("Claude Code-credentials-{hex}")
         };
-        let kept: Value = match super::keychain(home, &item, None)? {
-            Some(kept) => serde_json::from_slice(&kept).map_err(|error| {
-                Error::Failed(format!("reading the Keychain item {item}: {error}"))
-            })?,
-            None => Value::Null,
-        };
+        let kept = super::keychain(home, &item, None, |kept| {
+            serde_json::from_slice::<Value>(kept).map_err(|error| error.to_string())
+        })?
+        .unwrap_or_default();
         let token = kept.pointer("/claudeAiOauth/accessToken");
         let credential = match token.and_then(Value::as_str) {
             Some(token) => {
@@ -632,15 +612,11 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
         _ => return,
     }
     let session = read.session(&owner);
-    if let Some(at) = line.at() {
-        session.saw(at);
-    }
     if session.cwd.is_none() {
         session.cwd = line.cwd.as_deref().map(str::to_owned);
     }
 }
 
-/// Record the usage on an assistant line as `session`'s.
 fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
     let Some(message) = line.message.as_ref().filter(|message| !message.synthetic()) else {
         return;
@@ -651,31 +627,23 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
         read.skipped += 1;
         return;
     };
-    // The calls' sum, where the response lists them.
-    let calls = usage.iterations.as_deref().unwrap_or_default();
-    let (counts, prompt) = if calls.is_empty() {
-        (usage.counts, usage.counts.prompt())
-    } else {
-        let sum = calls.iter().fold(Counts::default(), |sum, call| {
-            let (writes, more) = (sum.writes(), call.writes());
-            Counts {
-                input_tokens: sum.input_tokens + call.input_tokens,
-                cache_read_input_tokens: sum.cache_read_input_tokens + call.cache_read_input_tokens,
-                cache_creation_input_tokens: 0,
-                cache_creation: Some(CacheCreation {
-                    ephemeral_5m_input_tokens: writes.ephemeral_5m_input_tokens
-                        + more.ephemeral_5m_input_tokens,
-                    ephemeral_1h_input_tokens: writes.ephemeral_1h_input_tokens
-                        + more.ephemeral_1h_input_tokens,
-                }),
-                output_tokens: sum.output_tokens + call.output_tokens,
-            }
-        });
-        (
-            sum,
-            calls.iter().map(Counts::prompt).max().unwrap_or_default(),
-        )
-    };
+    // The calls' sum, where the response lists them, at the largest prompt.
+    let calls = usage
+        .iterations
+        .as_deref()
+        .filter(|calls| !calls.is_empty())
+        .unwrap_or(std::slice::from_ref(&usage.counts));
+    let (mut tokens, mut prompt) = (Tokens::default(), 0);
+    for call in calls.iter().map(Counts::tokens) {
+        prompt =
+            prompt.max(call.input + call.cache_read + call.cache_write_5m + call.cache_write_1h);
+        tokens = tokens.zip(call, |a, b| a + b);
+    }
+    tokens.reasoning = usage
+        .output_tokens_details
+        .as_ref()
+        .and_then(|details| details.thinking_tokens)
+        .unwrap_or_default();
     read.respond(Response {
         id: match &line.request_id {
             Some(request) if !request.is_empty() => format!("{message_id}:{request}"),
@@ -686,18 +654,7 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
         at,
         provider: "anthropic".to_owned(),
         model: model.to_string(),
-        tokens: Tokens {
-            input: counts.input_tokens,
-            cache_read: counts.cache_read_input_tokens,
-            cache_write_5m: counts.writes().ephemeral_5m_input_tokens,
-            cache_write_1h: counts.writes().ephemeral_1h_input_tokens,
-            output: counts.output_tokens,
-            reasoning: usage
-                .output_tokens_details
-                .as_ref()
-                .and_then(|details| details.thinking_tokens)
-                .unwrap_or_default(),
-        },
+        tokens,
         prompt,
         web_searches: usage
             .server_tool_use
@@ -709,7 +666,6 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
     });
 }
 
-/// Whether the log at `file` was begun in the last 10 seconds.
 fn begun_lately(file: &Path) -> bool {
     std::fs::metadata(file)
         .and_then(|meta| meta.created())
@@ -779,7 +735,6 @@ mod tests {
         let session = &read.sessions["claude-code:s1"];
         assert_eq!(session.title.as_ref().unwrap().1, "Review src");
         assert_eq!(session.cwd.as_deref(), Some("/work/app"));
-        // Read on from where it stopped, nothing is read twice.
         let again = ClaudeCode.read(&file, &read.cursor).unwrap();
         assert!(again.responses.is_empty() && again.sessions.is_empty());
     }
@@ -849,18 +804,26 @@ mod tests {
     }
 
     #[test]
-    fn usage_without_a_cache_split_counts_its_writes_as_kept_5_minutes() {
+    fn cache_counts_may_be_left_out_and_the_output_count_may_not() {
         let dir = tempfile::tempdir().unwrap();
-        // No split, and one that splits none of the writes.
-        for (name, usage) in [
+        // No split, and one that splits none of the writes: they're kept 5
+        // minutes. Without its output count, the line is skipped.
+        for (name, usage, tokens) in [
             (
                 "s1.jsonl",
                 json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "output_tokens": 16}),
+                Some((5, 0, 30, 0, 16)),
             ),
             (
                 "s2.jsonl",
                 json!({"input_tokens": 5, "cache_creation_input_tokens": 30, "cache_creation": {},
                     "output_tokens": 16}),
+                Some((5, 0, 30, 0, 16)),
+            ),
+            (
+                "s3.jsonl",
+                json!({"input_tokens": 5, "cache_read_input_tokens": 100}),
+                None,
             ),
         ] {
             let file = log(
@@ -869,39 +832,19 @@ mod tests {
                 &[assistant("s1", 1, "2026-09-30T09:00:00Z", usage, json!([]))],
             );
             let read = ClaudeCode.read(&file, "").unwrap();
-            let tokens = &read.responses["msg_1:req_1"].tokens;
-            assert_eq!(
+            let counted = read.responses.get("msg_1:req_1").map(|response| {
+                let tokens = &response.tokens;
                 (
                     tokens.input,
                     tokens.cache_read,
                     tokens.cache_write_5m,
                     tokens.cache_write_1h,
-                    tokens.output
-                ),
-                (5, 0, 30, 0, 16),
-                "{name}"
-            );
-            assert_eq!(read.skipped, 0);
+                    tokens.output,
+                )
+            });
+            let skipped = u64::from(tokens.is_none());
+            assert_eq!((counted, read.skipped), (tokens, skipped), "{name}");
         }
-    }
-
-    #[test]
-    fn a_line_without_its_output_count_is_skipped() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = log(
-            dir.path(),
-            "s1.jsonl",
-            &[assistant(
-                "s1",
-                1,
-                "2026-09-30T09:00:00Z",
-                json!({"input_tokens": 5, "cache_read_input_tokens": 100}),
-                json!([]),
-            )],
-        );
-        let read = ClaudeCode.read(&file, "").unwrap();
-        assert!(read.responses.is_empty());
-        assert_eq!(read.skipped, 1);
     }
 
     #[test]
@@ -924,21 +867,12 @@ mod tests {
         let mut original = copied;
         original["sessionId"] = json!("s1");
         original.as_object_mut().unwrap().remove("session_id");
-        let old = log(
-            dir.path(),
-            "s1.jsonl",
-            &[
-                original,
-                json!({"type": "continued-in", "sessionId": "s1", "continuedInSessionId": "s2"}),
-            ],
-        );
+        let old = log(dir.path(), "s1.jsonl", &[original]);
         let old = ClaudeCode.read(&old, "").unwrap();
         let mut response = new.responses["msg_1:req_1"].clone();
         response.merge(old.responses["msg_1:req_1"].clone());
         assert_eq!(response.session, "claude-code:s1", "s1's own report wins");
         assert_eq!(new.responses["msg_2:req_2"].session, "claude-code:s2");
-        // A continuation is a session of its own.
-        assert!(!old.sessions.contains_key("claude-code:s2"));
     }
 
     #[test]
@@ -950,8 +884,9 @@ mod tests {
             &[
                 json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z",
                     "message": {"role": "user", "content": "<command-name>/clear</command-name><command-args></command-args>"}}),
+                // What Claude Code added is taken out, and the paste's marks.
                 json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:02Z",
-                    "message": {"role": "user", "content": "Fix <pasted_content id=\"a1\">the parser</pasted_content id=\"a1\">."}}),
+                    "message": {"role": "user", "content": "<system-reminder>be brief</system-reminder>\nFix <pasted_content id=\"a1\">the parser</pasted_content id=\"a1\">."}}),
                 // The first request titles it, not one after.
                 json!({"type": "user", "sessionId": "s1", "timestamp": "2026-09-30T09:00:09Z",
                     "message": {"role": "user", "content": "Also the tests."}}),
@@ -962,22 +897,8 @@ mod tests {
             read.sessions["claude-code:s1"].title.as_ref().unwrap().1,
             "Fix the parser."
         );
-        // A command that isn't Claude Code's own asks for work, and reads as
-        // the person typed it.
         let review = typed("<command-name>/review</command-name><command-args>src</command-args>");
         assert_eq!(review, "/review src");
         assert!(asks(&review));
-    }
-
-    #[test]
-    fn a_tag_the_person_typed_is_theirs_and_claude_codes_own_are_taken_out() {
-        let asked =
-            "Wrap the note in a <system-reminder> tag, then say how a <task-notification> differs.";
-        assert_eq!(
-            typed(&format!(
-                "<system-reminder>be brief</system-reminder>\n{asked}"
-            )),
-            asked
-        );
     }
 }

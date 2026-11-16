@@ -58,7 +58,10 @@ wait for it, and after a second they say
   message lists them.
 - **Limits** are named by part of a name as shown or of a key, in any
   case: `week` names Weekly (`seven_day`), `"5 hours"` names 5 hours, and
-  `opus` names Weekly (Opus).
+  `opus` names Weekly (Opus). A model's limit takes its model after its
+  name, as `status` shows it, or before it, as the app does:
+  `"weekly (opus)"` or `"opus weekly"`. A name that fits several limits
+  names the first by key.
 - **Agents** are named by id: `claude-code`, `codex`, `opencode`, `pi`,
   `grok-build`, `antigravity`.
 
@@ -217,12 +220,6 @@ how much of the new window is used isn't known. With `--json`,
 `sharePercents` holds each row's share in the rows' order, or `null` when
 rows get none.
 
-A limit is named by part of its name or of its key, in any case: `week`,
-`"5 hours"`. A model's limit takes its model after its name, as `status`
-shows it, or before it, as the app does: `"weekly (opus)"` or
-`"opus weekly"`. When the name fits several limits, the first by key is
-taken.
-
 ```console
 $ turnscope usage --account claude --limit week
 Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
@@ -337,7 +334,7 @@ turnscope guard --limit <name> --below <percent> [--account <name>] [--say <text
 
 | Flag | Default | |
 |---|---|---|
-| `--limit <name>` | required | The limit, named as for [`usage --limit`](#usage): `week`, `"5 hours"` or `"opus weekly"`. |
+| `--limit <name>` | required | The limit, such as `week`, `"5 hours"` or `"opus weekly"` ([Names](#names)). |
 | `--below <percent>` | required | Block when the limit has less than this percent left, 0 to 100. |
 | `--account <name>` | The calling agent's | The account. The name must match one account. |
 | `--say <text>` | The reason | What to print on standard error when it blocks. |

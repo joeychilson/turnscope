@@ -6,10 +6,6 @@
 // as tall as the screen allows, and the panel draws itself at the top, so its
 // height follows what's in it. A click on the transparent part goes through to
 // whatever is underneath and closes the panel, like a click anywhere else.
-//
-// The engine is the `turnscope` binary in Contents/Helpers, or in a Debug
-// build the one named by `TURNSCOPE_BINARY`. Launch options such as
-// `--data <dir>` are read by `Launch`.
 
 import AppKit
 import SwiftUI
@@ -210,12 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: The panel
 
     private func makePanel() -> PanelWindow {
-        let actions = PanelActions(close: { [weak self] in self?.close() })
         let root = Floating()
             .environment(store)
             .environment(navigation)
             .environment(updater)
-            .environment(\.panelActions, actions)
+            .environment(\.closePanel, { [weak self] in self?.close() })
         let host = NSHostingView(rootView: root)
         host.wantsLayer = true
         host.layer?.backgroundColor = .clear
