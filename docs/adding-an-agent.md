@@ -16,7 +16,7 @@ The steps use an agent called Acme, with id `acme`. Pi
 | [4. Register it](#4-register-it) | `src/agents/mod.rs` |
 | [5. Test it](#5-test-it) | `src/agents/acme.rs`, `tests/fixtures/home/`, `tests/cli.rs`, `tests/snapshots/` |
 | [6. Add its logo](#6-add-its-logo) | `macos/Logos/agents/acme.svg`, `macos/Logos/README.md` |
-| [7. Update the docs](#7-update-the-docs) | `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`, `docs/handoff.md`, `CHANGELOG.md` |
+| [7. Update the docs](#7-update-the-docs) | `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`, `CHANGELOG.md` |
 
 ## 1. Measure the agent's files
 
@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Agent, Credential, Entry, Info, Login, Read, Secret};
+use super::{Agent, Credential, Info, Login, Read, Secret};
 use crate::Result;
 
 pub struct Acme;
@@ -48,13 +48,11 @@ static INFO: Info = Info {
     name: "Acme",
     command: "acme",
     app: None,
-    resume: "acme --resume {id}",
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),
     folder_var: Some("ACME_HOME"),
     charges: false,
     session_var: None,
-    cwd_var: None,
 };
 ```
 
@@ -64,13 +62,11 @@ static INFO: Info = Info {
 | `name` | `&'static str` | The agent's name as people know it. |
 | `command` | `&'static str` | The program `connect` runs. The MCP server also finds the agent calling it by this name among its parent processes: `acme`, `acme-<anything>` for a versioned build, or a script of that name run by `node`, `bun`, `deno`, `python` or `python3`. |
 | `app` | `Option<&'static str>` | The program in its app that starts an MCP server, as the end of its path, when the app doesn't run `command`: Antigravity's is `Antigravity.app/Contents/Resources/bin/language_server`. Name that program and not the app, or a person's shell in a terminal the app holds counts as the agent. Check with the agent connected: start a session in its app and look at the server's parents with `ps`. `None` for an agent whose app runs `command`, or that has no app. |
-| `resume` | `&'static str` | The command that resumes a session, `{id}` being the agent's own id. `sessions show` puts `cd <folder> &&` before it, and `folder_var` for a session in a second account's folder. |
 | `mcp_add` | `&'static [&'static str]` | The arguments to `command` that add an MCP server. `connect` runs `<command> <mcp_add> <path to turnscope> mcp`, with `HOME` set to the home Turnscope was given. |
 | `mcp_remove` | `Option<&'static [&'static str]>` | The arguments that remove it, if the agent has a command for that. `connect` runs them first, so a refused add can put back the server that was there. With `None`, `disconnect` tells the user to remove it by hand. |
 | `folder_var` | `Option<&'static str>` | The environment variable that points the agent at a folder other than its own, such as `CODEX_HOME`. Needed when `folders` can find more than one. |
 | `charges` | `bool` | The cost the agent records is what the provider charged, so it's used before list prices. `false` when it's the agent's estimate. |
-| `session_var` | `Option<&'static str>` | The variable holding its session's id that it sets in an MCP server it starts. With it, the MCP server knows the calling session; without it, the calling session is taken to be the agent's latest in the folder. |
-| `cwd_var` | `Option<&'static str>` | The variable holding the folder it works in, set the same way. |
+| `session_var` | `Option<&'static str>` | The variable holding its session's id that it sets in an MCP server it starts. With it, the MCP server knows the calling session: its account is the caller's, and `explain_usage` marks it. `None` for an agent that sets none. |
 
 ## 3. Implement `Agent`
 
@@ -88,8 +84,6 @@ impl Agent for Acme {
 
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> { … }
 
-    fn transcript(&self, id: &str, files: &[PathBuf]) -> Result<Vec<Entry>> { … }
-
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> { … }
 
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
@@ -98,19 +92,18 @@ impl Agent for Acme {
 }
 ```
 
-`Result` is `crate::Result`. Its errors are `Error::Failed` and
-`Error::NotFound`, each with a message saying what went wrong.
+`Result` is `crate::Result`. Its error here is `Error::Failed`, with a
+message saying what went wrong.
 `reading(path, error)` is the `Error::Failed` of a file that couldn't be
 read.
 
 | Method | Returns |
 |---|---|
 | `info` | `&INFO`. |
-| `folders` | The folders the agent keeps history and logins in under `home`, its own first. The first is taken as its own: `installed` is asked of it, and `resume` adds `folder_var` for the others. `own_and_found(home, own, prefix, signed)` gives `home/own`, then each folder beside it whose name starts with `prefix` and that holds the file `signed`, such as `~/.acme-work/auth.json`: how a second account's folder is kept. |
+| `folders` | The folders the agent keeps history and logins in under `home`, its own first. The first is taken as its own: `installed` is asked of it, and it's the agent folder of a caller that names none. `own_and_found(home, own, prefix, signed)` gives `home/own`, then each folder beside it whose name starts with `prefix` and that holds the file `signed`, such as `~/.acme-work/auth.json`: how a second account's folder is kept. |
 | `installed` | Whether the agent is on this Mac, by its own folder. By default, that the folder exists. Say otherwise when another program keeps a folder of that name: the Gemini command line keeps `~/.gemini`, so Antigravity is installed when one of its own two folders is in it. |
 | `files` | Its history files in a folder. It runs at every catch-up, so it lists and doesn't read. A file that doesn't exist is passed over, so one the agent may keep can be listed without looking. `entries(dir)` lists what a folder holds, and nothing when it can't be read. |
 | `read` | What a file holds past `cursor` (empty: from the start), and the cursor to read on from ([below](#reading-history)). An error leaves the cursor as it was, so the file is tried again at the next catch-up. |
-| `transcript` | The conversation of the session `id`, the agent's own id without `acme:`, from the files that hold it, of which there's always at least one ([below](#transcripts)). |
 | `logins` | One `Login` per provider the agent signs in to ([below](#logins)). |
 | `mcp_command` | The command that the configuration `folder` uses runs for the `turnscope` MCP server, if any. An agent with `folder_var` keeps a configuration per folder: `connect` runs its command once for each folder, pointed at it with `folder_var`, so read the file that command writes for that folder. `json_mcp_command(path, pointer)` reads it at a JSON pointer in a JSON file; `toml_mcp_command(path)` reads `command` under `[mcp_servers.turnscope]` in a TOML file. The status compares it with this binary to show the agent as connected, outdated or available. |
 
@@ -121,9 +114,7 @@ struct as JSON. For a JSON Lines file, `lines(path, from, visit)` passes
 each complete line from byte `from` to `visit`, and returns where the next
 read starts: past the last line that ends with a newline, since one
 without is still being written. `INFO.session(native)` is a session's id
-as stored, `acme:<native>`, and `texts(content)` a message's text: a
-string, or its parts' `text`. `text(value)` is a field as text: a string
-as it is, nothing for null, anything else as JSON.
+as stored, `acme:<native>`.
 
 ```rust
 #[derive(Default, Serialize, Deserialize)]
@@ -139,7 +130,7 @@ fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
             read.skipped += 1;
             return;
         };
-        // What `line` says: read.session(…), read.respond(…), read.say(…).
+        // What `line` says: read.session(…), read.respond(…).
     })?;
     read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
     Ok(read)
@@ -150,8 +141,7 @@ An agent that keeps a SQLite database, as OpenCode does, is opened read-only
 and read on from a little before the latest `time_updated` seen, since a
 row can be committed after one stamped later, and from no later than now,
 since a row can be stamped ahead of the clock (`src/agents/opencode.rs`).
-Rows read again are reported again, which changes nothing, but what they
-say is indexed only once. `Stat::of` in `src/ingest.rs` looks for a
+Rows read again are reported again, which changes nothing. `Stat::of` in `src/ingest.rs` looks for a
 write-ahead log only beside a file whose name ends in `.db`, as OpenCode's
 does. For a database named otherwise, add its ending there: until a
 checkpoint, new rows are only in the log, and the file itself doesn't
@@ -161,17 +151,15 @@ What a read returns, in `Read`:
 
 | Field or method | What it's for |
 |---|---|
-| `read.session(id)` | The `Session` for a session id, `acme:<its own id>`: its `cwd`, `branch` and `parent`. `saw(at)` notes a time it was active. `title(kind, text)` offers a title. |
+| `read.session(id)` | The `Session` for a session id, `acme:<its own id>`: its `cwd`, the folder it works in, and its `parent`. `saw(at)` notes a time it was active. `title(kind, text)` offers a title, kept to its first 200 characters. |
 | `read.respond(response)` | Adds a report of a response, merged with any other report of it by `Response::merge`. |
-| `read.say(session, text)` | Notes what the user typed or a model replied, for search. It redacts secrets. |
 | `read.skipped` | How many lines or rows couldn't be read. `doctor` names files with any. |
 | `read.cursor` | Where the next read starts. |
 
-A session's `parent` is a `Parent { id, link }`, `link` being
-`Link::Subagent` (counted in its parent's usage and listed under it),
-`Link::Fork` (the conversation branched off by the user: its handoff names
-the parent as holding what came before) or
-`Link::Continuation` (the same conversation carried on in a new session). A better kind of
+A session's `parent` is the id of the session it's a subagent of, whose
+usage it counts toward. Leave it unset for a fork (the conversation
+branched off by the user) and for a continuation (the same conversation
+carried on in a new session): each is a session of its own. A better kind of
 title replaces a worse one, and a later one of the same kind an earlier
 one. From worst to best, a `Title` is `Prompt` (the user's first real
 request), `Task` (a subagent's task, as its parent described it),
@@ -204,63 +192,20 @@ Rules:
   continuation's. Give every report the same `id` and pass each to
   `read.respond`. Set `copy` on a report that may be another session's. A
   report that isn't a copy decides which session owns the response.
-- **Text said.** Pass `read.say` only what the user typed and what the
-  model replied, not what the agent adds itself. `without_tags(text, tags)`
+- **Titles.** A session the agent or the user named takes that title.
+  Otherwise offer the first thing the user asked, as `Title::Prompt`, and
+  read no more of what was said: Turnscope keeps none of it. Offer what
+  the user typed, not what the agent adds itself. `without_tags(text, tags)`
   takes the agent's blocks out of a message sent as the user's, and
   `inner(text, tag)` gives what one tag holds. A tag with no closing one is
   taken as the agent's only where the text opens with it: further in, the
   user typed it, and what follows is theirs. A command of the agent's
-  own, such as `/clear`, asks for no work, so it's no title. If the agent
-  numbers a session's lines and can rewind a session to an earlier line,
-  pass each line's number to `read.say_at`, push the session and the number
-  a rewind goes on from to `read.rewound`, and list a rewind's file after
-  the files it rewinds.
+  own, such as `/clear`, asks for no work, so it's no title.
 - **Growing files.** Reading a file in two parts, the second from the
-  cursor the first returned, gives what reading it whole does, and says
-  nothing twice.
+  cursor the first returned, gives what reading it whole does.
 - **Changing a reader later.** If a change would read a file already read
   differently, raise `READERS` in `src/ingest.rs`, so every file is read
   again.
-
-### Transcripts
-
-`transcript` builds the conversation with a `Conversation` and returns its
-`entries`:
-
-- `say(kind, at, text)` adds an entry. Empty text is passed over.
-- `call(id, at, name, input)` adds a tool call, and `answer(id, output,
-  failed)` puts its result in it.
-- `changed(files)` notes the files the call made last changed, as the agent
-  names them: absolute, or within the session's folder. `patched(text)`
-  gives the files of an `apply_patch` patch. Handoffs list these files.
-
-When none of `files` holds the conversation, as when the agent deleted the
-file that does and another still names the session, return
-`Error::NotFound(INFO.session(id))`. Turnscope then says the session's
-files are gone, as it does for a session with no file left.
-
-| `Kind` | For |
-|---|---|
-| `User` | What the user typed |
-| `Assistant` | What the model said |
-| `Reasoning` | The model's reasoning |
-| `Tool` | A tool call, from `call` |
-| `System` | What the agent added itself: instructions, reminders, notices |
-| `Summary` | The summary the agent wrote when it compacted the conversation |
-| `Task` | What a subagent was asked to do, which arrives as the user's |
-
-Handoffs depend on these kinds: every request is a `User` entry, and the
-latest `Summary` stands for everything before it. They also show a tool
-call by what it does: implement `role(name)` to say which of the agent's
-tools read (`Role::Read`), ask the user (`Role::Ask`) or run a subagent
-(`Role::Subagent`); any other is `Role::Work`. A handoff also reads a
-call's input for the command it ran, the file it named and what it was
-for. Where the agent's tools name one of those under a key no other
-agent's do, as Antigravity's name a command `CommandLine`, add the key to
-`COMMANDS`, `PATHS` or `gist` in `src/sessions/handoff.rs`, and hand off a
-session that stops mid-work to see its calls read as they should.
-`transcript` doesn't redact: Turnscope redacts what it returns before
-showing it.
 
 ### Logins
 
@@ -337,9 +282,8 @@ totals worked out by hand. Use no real session text, ids, emails or
 secrets. Cover:
 
 - each record that carries usage, with its tokens and cost;
-- each rule above: merged reports, copies, titles, text said;
+- each rule above: merged reports, copies, titles;
 - reading a growing file on from its cursor, which reads nothing twice;
-- the transcript's kinds, tool output and changed files;
 - logins signed in and signed out.
 
 Run what CI runs ([development.md](development.md)):
@@ -351,19 +295,17 @@ cargo test --locked
 ```
 
 Then add a session of Acme's to the fixture home, `tests/fixtures/home`,
-where the agent keeps it (`.acme/…`) and in its format: a request, a reply
-or two with usage, and a tool call, made up as the unit tests' are. Date it
-on Sep 30, a day before the tests' clock, as the other agents' sessions are,
-in a folder no other fixture session uses, so the handoffs and searches by
-folder stay as they are. An agent whose history is a database, as OpenCode's
+where the agent keeps it (`.acme/…`) and in its format: a request, and a
+reply or two with usage, made up as the unit tests' are. Date it on Sep 30,
+a day before the tests' clock, as the other agents' sessions are. An agent whose history is a database, as OpenCode's
 is, gets the SQL that builds it beside where the database goes, named as the
 database with `.sql` for `.db`: `home()` in `tests/cli.rs` builds each, as
 it does `opencode.db` from `opencode.sql`. In `tests/cli.rs`, add the
-session's id as a constant, and a `sessions show` and a `sessions read` case
-for it in `every_command_answers_as_its_snapshot_says`.
+agent's id to the ids `serve_says_hello_with_the_status_and_answers_in_turn`
+expects.
 
 The new agent and its session change the snapshots that list every agent or
-session, such as `connect`, `sessions`, `usage-model`, `status.json` and
+its usage, such as `connect`, `usage`, `usage-model`, `status.json` and
 `mcp.json` (the MCP server's instructions). `cargo test` names them as
 stale. Rewrite them, and check that the new agent and its session are the
 only change:
@@ -387,24 +329,21 @@ Name the agent in:
   such as the `connect` output, copied from `tests/snapshots/connect.txt`.
 - `docs/mcp.md`: the table of `connect` commands, the `connect` output,
   the agents' folders and configuration files, the commands "Who is
-  asking" looks for and any `session_var`, `cwd_var` or `folder_var`, and
-  the agent ids `find_sessions` takes.
+  asking" looks for and any `session_var` or `folder_var`.
 - `docs/architecture.md`: the agent list, the glossary and the code map.
-- `docs/handoff.md`: the agents' table, with its summary, its task list
-  and what else differs.
 - `CHANGELOG.md`.
 
 ## Done when
 
 - [ ] `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`
   and `cargo test --locked` pass.
-- [ ] The fixture home holds a session of the agent's, which the CLI
-  snapshots list, show and read.
+- [ ] The fixture home holds a session of the agent's, whose usage the CLI
+  snapshots count.
 - [ ] The rewritten snapshots differ only by the new agent and its session.
 - [ ] `macos/Logos/agents/acme.svg` exists, and `macos/Logos/README.md`
   says where it came from.
-- [ ] `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`,
-  `docs/handoff.md` and `CHANGELOG.md` name the agent.
-- [ ] On a Mac with the agent, `turnscope sessions --agent acme` lists its
-  sessions, `turnscope sessions read` reads one, and `turnscope doctor`
-  reports nothing about it.
+- [ ] `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`
+  and `CHANGELOG.md` name the agent.
+- [ ] On a Mac with the agent, `turnscope usage --agent acme --by session`
+  lists its sessions with their usage, and `turnscope doctor` reports
+  nothing about it.

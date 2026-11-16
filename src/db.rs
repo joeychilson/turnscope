@@ -2,7 +2,7 @@
 //! Each module writes its own SQL against this schema.
 //!
 //! Times are UTC milliseconds and money is dollars. History read from the
-//! agents' files (`file`, `session`, `response`, `said`) can be read again;
+//! agents' files (`file`, `session`, `response`) can be read again;
 //! accounts, readings, sign-ins, prices as they were, alerts and settings
 //! exist nowhere else.
 
@@ -207,12 +207,54 @@ UPDATE state SET readers = 0;
 ALTER TABLE file ADD COLUMN readers INTEGER NOT NULL DEFAULT 0;
 UPDATE file SET readers = (SELECT readers FROM state);
 "#,
-];
+    r#"
+-- What was said in sessions is no longer kept: Turnscope stopped searching
+-- and reading them (0.2.0). The search index goes, and with it the mark of
+-- the files that had rows in it.
+--
+-- The file is left the size it was, over giving the index's pages back with
+-- VACUUM: they're used again as history grows. On a database of 484 MB, with
+-- 467,000 responses and 13,800 sessions, the index was 57 MB and dropping
+-- it took 1.0 s; VACUUM then took 7.8 s, to 370 MB, holding the write lock
+-- all the while (measured 2026-11-16). Whichever command opens the database
+-- first runs this, and an agent's hook is one: it can't wait that long.
+DROP TABLE said;
+DROP TABLE IF EXISTS said_content;
+ALTER TABLE file DROP COLUMN indexed;
+-- `chat_history.jsonl` was read only for what it said, and no reader lists
+-- it now. Its row goes too, so a session it held is held only by files
+-- still read: `ingest::read_again` keeps a session that a file not read
+-- again holds.
+DELETE FROM session_file
+WHERE file IN (SELECT id FROM file WHERE path LIKE '%/chat\_history.jsonl' ESCAPE '\');
+DELETE FROM file WHERE path LIKE '%/chat\_history.jsonl' ESCAPE '\';
 
-/// How `said` splits text into words and folds them, as its latest revision
-/// makes it. The message a search quotes is found by indexing a session's
-/// messages again the same way.
-pub const TOKENIZE: &str = "unicode61 remove_diacritics 2";
+-- Of a session, what usage reads stays: its agent, its project, its title,
+-- the session it's a subagent of, and when it was last active. Its agent
+-- folder, the folder it worked in, its branch, when it started, and the
+-- session a fork or a continuation came from were read only to list, show
+-- and hand off sessions, as was a file's agent folder.
+--
+-- A fork or a continuation was a session of its own already. Now it has no
+-- parent, so a parent is a subagent's alone and `link` goes. On that
+-- database this and the titles below took 1.1 s more, and usage by session
+-- of 10,311 sessions came out the same but for 3,793 titles cut.
+DROP INDEX session_last;
+DROP INDEX session_folder;
+UPDATE session SET parent = NULL WHERE link IS NOT 'subagent';
+ALTER TABLE session DROP COLUMN link;
+ALTER TABLE session DROP COLUMN branch;
+ALTER TABLE session DROP COLUMN started;
+ALTER TABLE session DROP COLUMN folder;
+ALTER TABLE session DROP COLUMN cwd;
+ALTER TABLE file DROP COLUMN folder;
+
+-- A title is kept to its first 200 characters, as `agents::Session::title`
+-- cuts one read from now on: 4,206 of 13,795 were longer, and the titles
+-- went from 43.4 MB to 1.5 MB.
+UPDATE session SET title = substr(title, 1, 200) WHERE length(title) > 200;
+"#,
+];
 
 /// "TRNS", in the header, so a file that isn't Turnscope's is never written.
 const APPLICATION_ID: i32 = 0x5452_4E53;
@@ -223,7 +265,7 @@ const APPLICATION_ID: i32 = 0x5452_4E53;
 /// beside it: turning on write-ahead logging, which a new database needs,
 /// can't wait for another connection as a query does, and fails at once.
 pub fn open(dir: &Path) -> Result<Connection> {
-    // The owner's alone: it holds what was said in every session.
+    // The owner's alone: it holds what each session cost and was asked.
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -321,20 +363,123 @@ mod tests {
         assert_eq!(mode, "wal");
     }
 
+    /// A database as 0.1.8 left it, at revision 4, with what was said in a
+    /// session indexed.
     #[test]
-    fn said_is_made_with_the_tokenizer_named() {
+    fn the_search_index_goes_and_what_usage_reads_stays() {
         let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("turnscope.sqlite");
+        let old = rusqlite::Connection::open(&path).unwrap();
+        for script in &super::REVISIONS[..4] {
+            old.execute_batch(script).unwrap();
+        }
+        old.execute_batch(
+            "PRAGMA user_version = 4;
+             INSERT INTO file (id, path, agent, folder, size, modified, inode, cursor, indexed) VALUES
+                 (1, '/home/.grok/sessions/a/s1/updates.jsonl', 'grok-build', '/home/.grok', 1, 1, 1, '', 0),
+                 (2, '/home/.grok/sessions/a/s1/chat_history.jsonl', 'grok-build', '/home/.grok', 1, 1, 2, '', 1),
+                 (3, '/home/.grok/sessions/a/s1/chatXhistory.jsonl', 'grok-build', '/home/.grok', 1, 1, 3, '', 0);
+             INSERT INTO session (id, agent, folder, cwd, project, branch, title, title_rank, parent, link,
+                 started, last) VALUES
+                 ('grok-build:s1', 'grok-build', '/home/.grok', '/work/app', '/work/app', 'main',
+                     'Add a flag.', 0, NULL, NULL, 1000, 2000),
+                 ('grok-build:s2', 'grok-build', '/home/.grok', NULL, NULL, NULL, NULL, -1,
+                     'grok-build:s1', 'subagent', 1500, 1800),
+                 ('grok-build:s3', 'grok-build', '/home/.grok', NULL, NULL, NULL, NULL, -1,
+                     'grok-build:s1', 'fork', 3000, 3000),
+                 ('grok-build:s4', 'grok-build', '/home/.grok', NULL, NULL, NULL, NULL, -1,
+                     'grok-build:s1', 'continuation', 4000, 4000);
+             INSERT INTO session_file (session, file) VALUES ('grok-build:s1', 1), ('grok-build:s1', 2);
+             INSERT INTO said (session, text, file) VALUES ('grok-build:s1', 'Add a flag.', 2);",
+        )
+        .unwrap();
+        // A title of 300 characters, the last 100 of them not ASCII.
+        let long = "a".repeat(200) + &"é".repeat(100);
+        old.execute(
+            "INSERT INTO session (id, agent, folder, title, title_rank) VALUES ('grok-build:s5', 'grok-build', '/home/.grok', ?1, 0)",
+            [&long],
+        )
+        .unwrap();
+        drop(old);
+
         let db = super::open(dir.path()).unwrap();
-        let made: String = db
-            .query_row(
-                "SELECT sql FROM sqlite_schema WHERE name = 'said'",
-                [],
-                |row| row.get(0),
-            )
+        let count = |sql: &str| -> i64 { db.query_row(sql, [], |row| row.get(0)).unwrap() };
+        assert_eq!(
+            count("SELECT count(*) FROM sqlite_schema WHERE name LIKE 'said%'"),
+            0
+        );
+        // The file read only for what it said is forgotten, and no other.
+        let files: Vec<i64> = db
+            .prepare("SELECT id FROM file ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert!(
-            made.contains(&format!("tokenize = '{}'", super::TOKENIZE)),
-            "{made}"
+        assert_eq!(files, [1, 3]);
+        assert_eq!(count("SELECT count(*) FROM session_file"), 1);
+        // A session keeps what usage reads, and only a subagent a parent.
+        let sessions: Vec<[Option<String>; 5]> = db
+            .prepare(
+                "SELECT id, project, title, parent, CAST(last AS TEXT) FROM session ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok([0, 1, 2, 3, 4].map(|column| row.get(column).unwrap()))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let some = |text: &str| Some(text.to_owned());
+        let cut = "a".repeat(200);
+        assert_eq!(
+            sessions,
+            [
+                [
+                    some("grok-build:s1"),
+                    some("/work/app"),
+                    some("Add a flag."),
+                    None,
+                    some("2000")
+                ],
+                [
+                    some("grok-build:s2"),
+                    None,
+                    None,
+                    some("grok-build:s1"),
+                    some("1800")
+                ],
+                [some("grok-build:s3"), None, None, None, some("3000")],
+                [some("grok-build:s4"), None, None, None, some("4000")],
+                [some("grok-build:s5"), None, some(&cut), None, None],
+            ]
+        );
+        let columns = |table: &str| -> Vec<String> {
+            db.prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            columns("session"),
+            [
+                "id",
+                "agent",
+                "project",
+                "title",
+                "title_rank",
+                "parent",
+                "last"
+            ]
+        );
+        assert_eq!(
+            columns("file"),
+            [
+                "id", "path", "agent", "size", "modified", "inode", "cursor", "skipped", "failed",
+                "readers"
+            ]
         );
     }
 }

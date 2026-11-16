@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.2.0
+
+Turnscope is now about limits and usage alone. It no longer finds, reads or
+hands off sessions.
+
+- **Removed: `turnscope sessions`,** with `sessions show` and
+  `sessions read`, **and `turnscope handoff`.** A script that runs one now
+  fails with exit code 2.
+- **Removed: the MCP tools `find_sessions`, `handoff` and `read_session`,
+  and the `continue` prompt.** The server has two tools, `check_limits`
+  and `explain_usage`. An agent that calls a removed tool is told it's
+  unknown. Start a new session in each connected agent to get the new
+  list.
+- **What was said in a session is no longer kept.** The search index is
+  deleted from Turnscope's database the first time this version opens it,
+  which takes a few seconds. The file keeps its size, and the space is
+  used again as history is read. Of what was said, Turnscope keeps only
+  the title: the one you or the agent gave it, or else the first thing you
+  asked. It no longer reads Grok Build's `chat_history.jsonl`.
+- **Less is kept of each session:** its agent, project and title, the
+  session it's a subagent of, and when it was last active. Its folder, its
+  branch, when it started and the session it was forked or continued from
+  are deleted in that first open, as only the removed commands showed
+  them.
+- **A title is kept to its first 200 characters,** and longer ones stored
+  before are cut in that first open. A title is often your whole first
+  request. No list shows more than 80 characters of one;
+  `usage --by session --json` gave it whole in `name`, and now gives 200.
+- **`explain_usage` shows a session by the first 8 characters of its id,**
+  as `usage --by session` does: `` `7c1d2e3f` "Add retries" ``. It showed
+  the whole id, about 45 characters a row, for the tools that took one.
+- **`explain_usage` marks a session `(yours)` only where the agent names
+  its session,** which Claude Code does. For Codex, OpenCode, Pi, Grok
+  Build and Antigravity it was a guess, the agent's latest session in the
+  folder, and that guess is gone. Each still gets its own account.
+- **A key in a session's title is no longer replaced with `[redacted]`.**
+  The title is kept as written, and `usage --by session`, the app and
+  `explain_usage` show it so. A title stored before keeps its `[redacted]`
+  until its file is read again from the start.
+- **What used a limit is listed as before:** `usage --limit` and
+  `explain_usage` list its sessions, each with its title, cost and share,
+  and the app the three that used it most. `usage --by session` still
+  lists sessions with their cost.
+- An older Turnscope still running, such as an agent's MCP server started
+  before the update, can't read new history into the changed database.
+  Until that agent's session is restarted, its `check_limits` answers from
+  what's known and says why, and its `explain_usage` fails when it lists
+  sessions, which it does unless asked for `by` something else.
+
 ## 0.1.8
 
 - **A key that starts a line a diff removes,** as after deleting a file

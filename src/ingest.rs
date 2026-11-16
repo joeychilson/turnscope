@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
-use crate::agents::{self, Agent, Link, Read, Response};
+use crate::agents::{self, Agent, Read, Response};
 use crate::prices::{History, Prices, in_force};
 use crate::{Error, Result};
 
@@ -22,11 +22,19 @@ use crate::{Error, Result};
 /// file keeps the `READERS` it was last read with, and one read with an
 /// older one is read again from the start when it's next found: where it
 /// was, moved, or back after it was gone. That's over reading again, when
-/// it's raised, only the files still at their paths and emptying the search
-/// index: a file moved since its last read, as Codex moves a thread it
-/// archives, kept what the older reader made of it, and no search found it
-/// again. One never found again, as one its agent deleted, keeps all it
-/// made, and search still finds it.
+/// it's raised, only the files still at their paths: a file moved since its
+/// last read, as Codex moves a thread it archives, kept what the older
+/// reader made of it. One never found again, as one its agent deleted,
+/// keeps all it made.
+///
+/// Not raised when what was said stopped being read (November 2026): each
+/// reader makes the same sessions and responses of a file as before. Nor
+/// when keys stopped being taken out of titles: a title stored with
+/// `[redacted]` in it keeps it, over every file being read again for it.
+/// Nor when a fork or a continuation lost its parent and a title was cut:
+/// the database's revision 5 makes of the stored sessions what a read now
+/// does. Of 7,150 sessions read by 0.1.8, the 7,139 a first read now makes
+/// were the same in every column.
 const READERS: i64 = 7;
 
 /// How long a transaction writes history before it lets the write lock go,
@@ -40,24 +48,23 @@ const READERS: i64 = 7;
 /// file let it go only between commits, so a write got in by chance, after
 /// up to 4.3 s. A second and then 110 ms: no write failed or waited over
 /// 1.1 s in 6 runs, and reading took as long as before.
+///
+/// That was with a search index to write. Without one (November 2026) a
+/// first read of 10,785 real files, 11 GB, still took 18 to 30 s, longer
+/// than a write waits.
 const HOLD: Duration = Duration::from_secs(1);
 const PAUSE: Duration = Duration::from_millis(110);
 
-/// Merges what a file says of a session: the earliest start, the latest
-/// activity and branch, the first folder, and a title as good or better.
+/// Merges what a file says of a session: the latest activity, the first
+/// project and parent, and a title as good or better.
 const SESSION: &str = "
-INSERT INTO session (id, agent, folder, cwd, project, branch, title, title_rank, parent, link,
-    started, last)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+INSERT INTO session (id, agent, project, title, title_rank, parent, last)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ON CONFLICT (id) DO UPDATE SET
-    cwd = coalesce(cwd, excluded.cwd),
     project = coalesce(project, excluded.project),
-    branch = coalesce(excluded.branch, branch),
     title = iif(excluded.title_rank >= title_rank, excluded.title, title),
     title_rank = max(title_rank, excluded.title_rank),
     parent = coalesce(parent, excluded.parent),
-    link = coalesce(link, excluded.link),
-    started = coalesce(min(started, excluded.started), started, excluded.started),
     last = coalesce(max(last, excluded.last), last, excluded.last)";
 
 const RESPONSE_COLUMNS: &str = "session, copy, at, provider, model, input, cache_read,
@@ -111,8 +118,6 @@ struct Known {
     agent: String,
     stat: Stat,
     cursor: String,
-    /// Whether it has rows in `said`.
-    indexed: bool,
     /// The `READERS` it was last read with.
     readers: i64,
 }
@@ -172,15 +177,13 @@ pub fn waits(db: &Connection) -> Option<&'static str> {
 
 /// The files under `home` to read: each one new or changed since its last
 /// read, or last read with an older reader, with where to read it from. A
-/// file read before that moved has its row moved with it, and what one read
-/// from the start made before is taken out.
+/// file read before that moved has its row moved with it, and what an older
+/// reader made of one is taken out.
 fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     // By the path's bytes: a `PathBuf` hashes component by component. With
     // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
     let mut known: HashMap<OsString, Known> = db
-        .prepare(
-            "SELECT path, agent, size, modified, inode, cursor, id, indexed, readers FROM file",
-        )?
+        .prepare("SELECT path, agent, size, modified, inode, cursor, id, readers FROM file")?
         .query_map([], |row| {
             let known = Known {
                 id: row.get(6)?,
@@ -191,8 +194,7 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
                     inode: row.get(4)?,
                 },
                 cursor: row.get(5)?,
-                indexed: row.get(7)?,
-                readers: row.get(8)?,
+                readers: row.get(7)?,
             };
             Ok((OsString::from(row.get::<_, String>(0)?), known))
         })?
@@ -220,7 +222,7 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
         .collect();
 
     let mut due = Vec::new();
-    let (mut again, mut older) = (Vec::new(), Vec::new());
+    let mut older = Vec::new();
     for (agent, folder, path, stat) in found {
         let was = match known.remove(path.as_os_str()) {
             Some(was) => Some(was),
@@ -255,15 +257,6 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
             // A file replaced or cut short is read from the start.
             Some(_) | None => String::new(),
         };
-        // What a file read from the start said before is taken out first,
-        // whatever it's read from the start for, so nothing it says is
-        // indexed twice.
-        if let Some(was) = was
-            && was.indexed
-            && cursor.is_empty()
-        {
-            again.push(was.id);
-        }
         due.push(Due {
             agent,
             folder,
@@ -274,39 +267,6 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     }
     if !older.is_empty() {
         read_again(db, &older)?;
-    }
-    // What the files read from the start said is taken out here, before
-    // any is read again, in one statement for them all, over one for each
-    // as it's written: taking rows out by file scans the table. Only for
-    // files whose reads were indexed. They're unmarked first, and `said`
-    // holds rows of no other file not marked. With every file of a
-    // made-up history replaced at once, as when a home is restored from a
-    // backup (3,000 files, 240,000 rows), the catch-up took 167 to 249 s
-    // with a statement for each and 12 to 14 s with one, where the first
-    // read took 12 to 13 s (measured 2026-11-14). The cost: one transaction
-    // holds the write lock for it, 0.8 to 1 s there, and what they said
-    // isn't found until they're read again.
-    //
-    // After `READERS` is raised, it's taken out by file too, over emptying
-    // the index with `delete-all` (37 to 48 ms) as before: that took what
-    // deleted files said out with the rest, and search no longer found
-    // their sessions, as Claude Code's once it deletes their logs. On that
-    // history, with 300 of its files deleted, taking 216,000 rows out held
-    // the lock 0.81 to 0.97 s, and with none, 240,000 rows, 0.86 to 1.22 s.
-    // It's a transaction apart from `read_again`'s, so neither holds the
-    // lock much over a second: the longest another write waited was 0.76
-    // to 1.15 s, and 0.67 to 1.16 s when one transaction did both with
-    // `delete-all` (measured 2026-11-14, load 5 to 6).
-    if !again.is_empty() {
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for id in again {
-            tx.execute("UPDATE file SET indexed = 0 WHERE id = ?1", [id])?;
-        }
-        tx.execute(
-            "DELETE FROM said WHERE file IN (SELECT id FROM file WHERE NOT indexed)",
-            [],
-        )?;
-        tx.commit()?;
     }
     Ok(due)
 }
@@ -393,13 +353,12 @@ pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
 /// was: its row keeps its cursor and what it was, and says why for doctor.
 fn failed(tx: &Transaction, due: &Due, error: &Error) -> Result<()> {
     tx.execute(
-        "INSERT INTO file (path, agent, folder, size, modified, inode, cursor, failed, readers)
-         VALUES (?1, ?2, ?3, -1, 0, ?4, '', ?5, ?6)
+        "INSERT INTO file (path, agent, size, modified, inode, cursor, failed, readers)
+         VALUES (?1, ?2, -1, 0, ?3, '', ?4, ?5)
          ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
         params![
             due.path.to_string_lossy(),
             due.agent.info().id,
-            due.folder.to_string_lossy(),
             due.stat.inode,
             error.to_string(),
             READERS,
@@ -411,18 +370,17 @@ fn failed(tx: &Transaction, due: &Due, error: &Error) -> Result<()> {
 fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived) -> Result<()> {
     let agent = due.agent.info().id;
     let folder = due.folder.to_string_lossy();
-    let (file, indexed): (i64, bool) = tx.query_row(
-        "INSERT INTO file (path, agent, folder, size, modified, inode, cursor, skipped, readers)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10)
+    let file: i64 = tx.query_row(
+        "INSERT INTO file (path, agent, size, modified, inode, cursor, skipped, readers)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9)
          ON CONFLICT (path) DO UPDATE SET size = excluded.size, modified = excluded.modified,
              inode = excluded.inode, cursor = excluded.cursor, failed = NULL,
-             skipped = iif(?9, excluded.skipped, skipped + excluded.skipped),
+             skipped = iif(?8, excluded.skipped, skipped + excluded.skipped),
              readers = excluded.readers
-         RETURNING id, indexed",
+         RETURNING id",
         params![
             due.path.to_string_lossy(),
             agent,
-            folder,
             due.stat.size,
             due.stat.modified,
             due.stat.inode,
@@ -431,31 +389,20 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
             due.cursor.is_empty(),
             READERS,
         ],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| row.get(0),
     )?;
 
     let mut session = tx.prepare_cached(SESSION)?;
     let mut holds =
         tx.prepare_cached("INSERT OR IGNORE INTO session_file (session, file) VALUES (?1, ?2)")?;
     for (id, facts) in &read.sessions {
-        let link = facts.parent.as_ref().map(|parent| match parent.link {
-            Link::Subagent => "subagent",
-            Link::Fork => "fork",
-            Link::Continuation => "continuation",
-        });
         session.execute(params![
             id,
             agent,
-            folder,
-            facts.cwd,
             facts.cwd.as_deref().map(|cwd| project(cwd, home)),
-            // A detached head is on no branch.
-            facts.branch.as_deref().filter(|branch| *branch != "HEAD"),
             facts.title.as_ref().map(|(_, title)| title),
             facts.title.as_ref().map_or(-1, |(rank, _)| *rank as i64),
-            facts.parent.as_ref().map(|parent| &parent.id),
-            link,
-            facts.started,
+            facts.parent,
             facts.last,
         ])?;
         holds.execute(params![id, file])?;
@@ -500,27 +447,6 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
             response.cost,
             response.id,
         ])?;
-    }
-
-    // A rewind takes out what its session said from where it went back to,
-    // before this file's own rows, which are past that, go in. Files are
-    // written in the order their agent lists them, so what it rewinds is in
-    // already. This scans the table: 0.2 to 0.35 s on a made-up index of
-    // 250,000 rows, once for each rewind.
-    for (session, from) in &read.rewound {
-        tx.execute(
-            "DELETE FROM said WHERE session = ?1 AND ordinal >= ?2",
-            params![session, from],
-        )?;
-    }
-    let mut said = tx.prepare_cached(
-        "INSERT INTO said (session, text, file, ordinal) VALUES (?1, ?2, ?3, ?4)",
-    )?;
-    for (session, text, ordinal) in &read.said {
-        said.execute(params![session, text, file, ordinal])?;
-    }
-    if !indexed && !read.said.is_empty() {
-        tx.execute("UPDATE file SET indexed = 1 WHERE id = ?1", [file])?;
     }
     Ok(())
 }
@@ -654,11 +580,9 @@ pub fn derive(db: &mut Connection, of: Of) -> Result<()> {
 /// Forget what an older reader made of `files`, found again, so each is
 /// read from the start: the responses it reported last, the sessions only
 /// such files hold, so what a reader now makes of their folder, project,
-/// parent or title counts, and which sessions it holds. What it said is
-/// taken out with every file read from the start (`due`). A file read with
-/// an older reader that isn't found, as one its agent deleted, keeps all it
-/// made, and search still finds what it said; found again, moved or back,
-/// it's read again then.
+/// parent or title counts, and which sessions it holds. A file read with an
+/// older reader that isn't found, as one its agent deleted, keeps all it
+/// made; found again, moved or back, it's read again then.
 fn read_again(db: &mut Connection, files: &[i64]) -> Result<()> {
     // One transaction, not split as reading is: on the made-up 616 MB
     // history `HOLD` was measured on, it held the lock 0.62 to 0.80 s, far
@@ -745,21 +669,20 @@ mod tests {
         (dir, home, db, folder)
     }
 
-    /// A user line of `text`, as Claude Code logs it.
-    fn line(text: &str) -> String {
+    /// A request, as Claude Code logs it.
+    fn line() -> String {
         let line = serde_json::json!({"type": "user", "sessionId": "s1",
-            "timestamp": "2026-09-30T09:00:00Z", "message": {"role": "user", "content": text}});
+            "timestamp": "2026-09-30T09:00:00Z", "message": {"role": "user", "content": "Fix the parser."}});
         format!("{line}\n")
     }
 
-    /// A turn as Claude Code logs it: a request of `text`, and a reply `id`
-    /// with its usage.
-    fn turn(text: &str, id: &str) -> String {
+    /// A turn as Claude Code logs it: a request, and a reply `id` with its
+    /// usage.
+    fn turn(id: &str) -> String {
         let reply = serde_json::json!({"type": "assistant", "sessionId": "s1", "requestId": format!("req_{id}"),
             "timestamp": "2026-09-30T09:00:05Z", "message": {"id": format!("msg_{id}"), "model": "claude-opus-5",
-                "role": "assistant", "content": [{"type": "text", "text": "Done."}],
-                "usage": {"input_tokens": 100, "output_tokens": 20}}});
-        format!("{}{reply}\n", line(text))
+                "role": "assistant", "content": [], "usage": {"input_tokens": 100, "output_tokens": 20}}});
+        format!("{}{reply}\n", line())
     }
 
     fn count(db: &Connection, sql: &str) -> i64 {
@@ -767,37 +690,43 @@ mod tests {
     }
 
     /// As if the history had been read with the reader before this one,
-    /// which made something else of each file: more output, and a word
-    /// said that isn't.
+    /// which made something else of each file: more output, and another
+    /// project for its session.
     fn read_with_an_older_reader(db: &Connection) {
         db.execute_batch(&format!(
             "UPDATE state SET readers = {older};
              UPDATE file SET readers = {older};
              UPDATE response SET output = output + 1000;
-             INSERT INTO said (session, text, file) SELECT session, 'misread', file FROM session_file;",
+             UPDATE session SET project = '/misread';",
             older = READERS - 1
         ))
         .unwrap();
     }
 
-    /// How many rows of `said` say `word`.
-    fn found(db: &Connection, word: &str) -> i64 {
-        count(
-            db,
-            &format!("SELECT count(*) FROM said WHERE said MATCH '{word}'"),
-        )
+    /// The output counted, and how many sessions are as the older reader
+    /// made them.
+    fn made(db: &Connection) -> [i64; 2] {
+        [
+            count(db, "SELECT coalesce(sum(output), 0) FROM response"),
+            count(
+                db,
+                "SELECT count(*) FROM session WHERE project = '/misread'",
+            ),
+        ]
     }
 
     #[test]
     fn history_read_by_an_older_turnscope_is_read_again_and_by_a_newer_left_alone() {
         let (_dir, home, mut db, folder) = store();
-        std::fs::write(folder.join("s1.jsonl"), line("Quote fields with commas.")).unwrap();
+        let log = turn("a");
+        std::fs::write(folder.join("s1.jsonl"), log).unwrap();
         ingest(&mut db, home.path()).unwrap();
-        assert_eq!(found(&db, "commas"), 1);
-        // Read again, it's searched once, as this reader reads it.
+        assert_eq!(made(&db), [20, 0]);
+        // Read again, it's as this reader reads it.
         read_with_an_older_reader(&db);
+        assert_eq!(made(&db), [1020, 1]);
         ingest(&mut db, home.path()).unwrap();
-        assert_eq!([found(&db, "commas"), found(&db, "misread")], [1, 0]);
+        assert_eq!(made(&db), [20, 0]);
         assert_eq!(count(&db, "SELECT readers FROM state"), READERS);
         db.execute("UPDATE state SET readers = ?1", [READERS + 1])
             .unwrap();
@@ -806,39 +735,26 @@ mod tests {
     }
 
     #[test]
-    fn a_file_moved_since_its_last_read_is_read_again_and_searched_once() {
+    fn a_deleted_file_keeps_what_it_made_and_is_read_again_once_its_back() {
         let (_dir, home, mut db, folder) = store();
-        let file = folder.join("s1.jsonl");
-        std::fs::write(&file, line("Quote fields with commas.")).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        read_with_an_older_reader(&db);
-        // Moved before the next catch-up, as Codex archives a thread.
-        let archived = folder.with_file_name("-work-b");
-        std::fs::create_dir_all(&archived).unwrap();
-        std::fs::rename(&file, archived.join("s1.jsonl")).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!([found(&db, "commas"), found(&db, "misread")], [1, 0]);
-        assert_eq!(count(&db, "SELECT readers FROM file"), READERS);
-    }
-
-    #[test]
-    fn a_deleted_files_words_are_still_found_and_read_again_once_its_back() {
-        let (_dir, home, mut db, folder) = store();
-        std::fs::write(folder.join("s1.jsonl"), line("Quote the commas.")).unwrap();
+        std::fs::write(folder.join("s1.jsonl"), turn("a")).unwrap();
         let file = folder.join("s2.jsonl");
-        std::fs::write(&file, line("Escape the tabs.")).unwrap();
+        // A session of its own, which no other file holds.
+        let log = turn("b").replace(r#""s1""#, r#""s2""#);
+        std::fs::write(&file, log).unwrap();
         ingest(&mut db, home.path()).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM session"), 2);
         read_with_an_older_reader(&db);
-        // Gone when history is read again: what it said is still found.
+        // Gone when history is read again: what the older reader made of it
+        // stays.
         let away = home.path().join("s2.jsonl");
         std::fs::rename(&file, &away).unwrap();
         ingest(&mut db, home.path()).unwrap();
-        assert_eq!([found(&db, "commas"), found(&db, "tabs")], [1, 1]);
-        assert_eq!(found(&db, "misread"), 1);
-        // Back as it was: read again then, and still found once.
+        assert_eq!(made(&db), [20 + 1020, 1]);
+        // Back as it was: read again then.
         std::fs::rename(&away, &file).unwrap();
         ingest(&mut db, home.path()).unwrap();
-        assert_eq!([found(&db, "tabs"), found(&db, "misread")], [1, 0]);
+        assert_eq!(made(&db), [40, 0]);
     }
 
     #[test]
@@ -847,7 +763,7 @@ mod tests {
         let price = r#"INSERT INTO price VALUES ('anthropic', 'claude-opus-5', 0, '{"input":5,"output":25}', NULL)"#;
         db.execute(price, []).unwrap();
         for (name, id) in [("s1", "a"), ("s2", "b"), ("s3", "c")] {
-            let log = turn("Quote the commas.", id) + &turn("Escape the tabs.", &format!("{id}2"));
+            let log = turn(id) + &turn(&format!("{id}2"));
             std::fs::write(folder.join(name).with_extension("jsonl"), log).unwrap();
         }
         ingest(&mut db, home.path()).unwrap();
@@ -857,7 +773,7 @@ mod tests {
         std::fs::create_dir_all(&moved).unwrap();
         std::fs::rename(folder.join("s1.jsonl"), moved.join("s1.jsonl")).unwrap();
         let grown = folder.join("s2.jsonl");
-        let log = std::fs::read_to_string(&grown).unwrap() + &turn("Trim the spaces.", "b3");
+        let log = std::fs::read_to_string(&grown).unwrap() + &turn("b3");
         std::fs::write(&grown, log).unwrap();
         ingest(&mut db, home.path()).unwrap();
 
@@ -868,7 +784,8 @@ mod tests {
                 "SELECT CAST(round(sum(cost) * 1e6) AS INTEGER) FROM response",
                 "SELECT count(*) FROM session",
                 "SELECT count(*) FROM session_file",
-                "SELECT count(*) FROM said",
+                "SELECT count(*) FROM session WHERE project IS NULL",
+                "SELECT min(readers) FROM file",
             ]
             .map(|sql| count(db, sql))
         };
@@ -903,30 +820,34 @@ mod tests {
         let second = first.with_file_name("-work-b");
         std::fs::create_dir_all(&second).unwrap();
         let file = first.join("s1.jsonl");
-        std::fs::write(&file, line("Fix the parser.") + "not a line\n").unwrap();
+        std::fs::write(&file, turn("a") + "not a line\n").unwrap();
         ingest(&mut db, home.path()).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM said"), 1);
+        let cursor = |db: &Connection| -> String {
+            db.query_row("SELECT cursor FROM file", [], |row| row.get(0))
+                .unwrap()
+        };
+        let read_to = cursor(&db);
 
-        // Moved, as an agent moves a file it archives: read on from where it
-        // was, not again.
+        // Moved, as an agent moves a file it archives: its row moves with
+        // it, and it's read on from where it was, not again.
         let moved = second.join("s1.jsonl");
         std::fs::rename(&file, &moved).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM said"), 1);
-        assert_eq!(count(&db, "SELECT count(*) FROM file"), 1);
+        assert!(!ingest(&mut db, home.path()).unwrap());
+        assert_eq!(cursor(&db), read_to);
+        let path: String = db
+            .query_row("SELECT path FROM file", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(Path::new(&path), moved);
 
-        // Replaced, and replaced again: read from the start each time, what
-        // it said and couldn't read counted once.
+        // Replaced, and replaced again: read from the start each time, its
+        // responses and what it couldn't read counted once.
         for _ in 0..2 {
             let new = second.join("s1.new");
-            std::fs::write(
-                &new,
-                line("Fix the parser.") + "not a line\n" + &line("And the tests."),
-            )
-            .unwrap();
+            std::fs::write(&new, turn("a") + "not a line\n" + &turn("b")).unwrap();
             std::fs::rename(&new, &moved).unwrap();
             ingest(&mut db, home.path()).unwrap();
-            assert_eq!(count(&db, "SELECT count(*) FROM said"), 2);
+            assert_eq!(made(&db), [40, 0]);
+            assert_eq!(count(&db, "SELECT count(*) FROM response"), 2);
             assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
         }
 
@@ -943,42 +864,13 @@ mod tests {
     }
 
     #[test]
-    fn files_replaced_at_once_are_each_searched_once() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let (_dir, home, mut db, folder) = store();
-        // How many rows say each of the two words.
-        let found = |db: &Connection| ["commas", "tabs"].map(|word| found(db, word));
-        let log = |name: &str| folder.join(name).with_extension("jsonl");
-        for name in ["s1", "s2", "s3", "s4"] {
-            std::fs::write(log(name), line("Quote the commas.")).unwrap();
-        }
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(found(&db), [4, 0]);
-        // Three replaced, as a home restored from a backup is, and one left.
-        for name in ["s1", "s2", "s3"] {
-            let new = folder.join(name).with_extension("new");
-            std::fs::write(&new, line("Escape the tabs.")).unwrap();
-            std::fs::rename(&new, log(name)).unwrap();
-        }
-        // One can't be read yet: what it said before is out all the same.
-        let locked = std::fs::Permissions::from_mode(0o000);
-        std::fs::set_permissions(log("s3"), locked).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(found(&db), [1, 2]);
-        let unlocked = std::fs::Permissions::from_mode(0o644);
-        std::fs::set_permissions(log("s3"), unlocked).unwrap();
-        ingest(&mut db, home.path()).unwrap();
-        assert_eq!(found(&db), [1, 3]);
-    }
-
-    #[test]
     fn a_file_that_cant_be_read_says_why_until_it_can() {
         let (_dir, home, mut db, folder) = store();
-        std::fs::write(folder.join("s1.jsonl"), line("Fix the parser.")).unwrap();
+        std::fs::write(folder.join("s1.jsonl"), line()).unwrap();
         // A subagent's log whose description isn't written yet waits.
         let subagents = folder.join("s1/subagents");
         std::fs::create_dir_all(&subagents).unwrap();
-        std::fs::write(subagents.join("agent-x.jsonl"), line("Look.")).unwrap();
+        std::fs::write(subagents.join("agent-x.jsonl"), line()).unwrap();
         ingest(&mut db, home.path()).unwrap();
         let why: String = db
             .query_row(
@@ -1006,34 +898,16 @@ mod tests {
 
         let (_dir, home, mut db, folder) = store();
         let log = folder.join("s1.jsonl");
-        let user = |at: &str, text: &str| {
-            serde_json::json!({"type": "user", "sessionId": "s1", "timestamp": at, "cwd": "/work/app",
-                "message": {"role": "user", "content": text}})
-        };
-        let reply = |at: &str, n: u8, output: u64, block: serde_json::Value| {
+        let reply = |at: &str, n: u8, output: u64| {
             serde_json::json!({"type": "assistant", "sessionId": "s1", "requestId": format!("req_{n}"), "timestamp": at,
-                "message": {"id": format!("msg_{n}"), "model": "claude-opus-5", "role": "assistant", "content": [block],
-                    "usage": {"input_tokens": 100, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
-                        "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}, "output_tokens": output}}})
+                "message": {"id": format!("msg_{n}"), "model": "claude-opus-5", "role": "assistant", "content": [],
+                    "usage": {"input_tokens": 100, "output_tokens": output}}})
         };
-        let text = |text: &str| serde_json::json!({"type": "text", "text": text});
         let lines = [
-            user("2026-09-30T09:00:00Z", "Fix the parser."),
-            reply(
-                "2026-09-30T09:00:05Z",
-                1,
-                16,
-                text("Looking at the parser."),
-            ),
+            reply("2026-09-30T09:00:05Z", 1, 16),
             // The same response's next block, its usage grown.
-            reply(
-                "2026-09-30T09:00:09Z",
-                1,
-                900,
-                serde_json::json!({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}),
-            ),
-            user("2026-09-30T09:01:00Z", "Add a test too."),
-            reply("2026-09-30T09:01:30Z", 2, 40, text("Added one.")),
+            reply("2026-09-30T09:00:09Z", 1, 900),
+            reply("2026-09-30T09:01:30Z", 2, 40),
         ];
         let write = |lines: &[serde_json::Value]| {
             let mut file = std::fs::OpenOptions::new()
@@ -1045,9 +919,9 @@ mod tests {
                 writeln!(file, "{line}").unwrap();
             }
         };
-        write(&lines[..2]);
+        write(&lines[..1]);
         ingest(&mut db, home.path()).unwrap();
-        write(&lines[2..]);
+        write(&lines[1..]);
         ingest(&mut db, home.path()).unwrap();
         let responses: Vec<(String, i64)> = db
             .prepare("SELECT id, output FROM response ORDER BY id")
@@ -1063,28 +937,18 @@ mod tests {
                 ("msg_2:req_2".to_owned(), 40)
             ]
         );
-        // Each of the four messages indexed once.
-        assert_eq!(count(&db, "SELECT count(*) FROM said"), 4);
     }
 
     #[test]
     fn a_long_history_read_lets_other_writes_in() {
+        const TURNS: usize = 1500;
         let (dir, home, mut db, folder) = store();
         // Seconds of writing, in one share of files.
-        let texts: Vec<String> = (0..100)
-            .map(|text| {
-                let words: Vec<String> = (0..200)
-                    .map(|word| format!("w{}", text * 7 + word))
-                    .collect();
-                words.join(" ")
-            })
-            .collect();
         for file in 0..200 {
             let mut log = String::new();
-            for (turn, said) in texts.iter().enumerate() {
+            for turn in 0..TURNS {
                 log += &format!(
-                    r#"{{"type":"user","sessionId":"s{file}","timestamp":"2026-09-30T09:00:00Z","cwd":"/work/app","message":{{"role":"user","content":"{said}"}}}}
-{{"type":"assistant","sessionId":"s{file}","timestamp":"2026-09-30T09:00:01Z","requestId":"r{turn}","message":{{"id":"m{file}-{turn}","model":"claude-opus-5","role":"assistant","usage":{{"input_tokens":10,"output_tokens":10}},"content":[{{"type":"text","text":"{said}"}}]}}}}
+                    r#"{{"type":"assistant","sessionId":"s{file}","timestamp":"2026-09-30T09:00:01Z","requestId":"r{turn}","message":{{"id":"m{file}-{turn}","model":"claude-opus-5","role":"assistant","usage":{{"input_tokens":10,"output_tokens":10}},"content":[]}}}}
 "#
                 );
             }
@@ -1168,7 +1032,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let (dir, home, mut db, folder) = store();
         let log = folder.join("s1.jsonl");
-        std::fs::write(&log, line("Fix the parser.")).unwrap();
+        std::fs::write(&log, line()).unwrap();
         let unread = "SELECT history_at IS NULL FROM state";
         assert_eq!(count(&db, unread), 1);
         assert!(ingest(&mut db, home.path()).unwrap());
@@ -1181,11 +1045,11 @@ mod tests {
         std::fs::write(home.path().join(".claude/debug.txt"), "").unwrap();
         assert!(!ingest(&mut db, home.path()).unwrap());
         assert_eq!(count(&other, "PRAGMA data_version"), before);
-        std::fs::write(&log, line("Fix the parser.").repeat(2)).unwrap();
+        std::fs::write(&log, line().repeat(2)).unwrap();
         assert!(ingest(&mut db, home.path()).unwrap());
         // One that can't be read is tried again each time, and reads nothing.
         let locked = folder.join("s2.jsonl");
-        std::fs::write(&locked, line("Fix the parser.")).unwrap();
+        std::fs::write(&locked, line()).unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
         assert!(!ingest(&mut db, home.path()).unwrap());
         assert!(!ingest(&mut db, home.path()).unwrap());

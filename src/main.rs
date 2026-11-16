@@ -1,6 +1,6 @@
-//! Turnscope: the limits, usage and sessions of the coding agents on this
-//! Mac. One binary: the CLI, the MCP server agents ask (`mcp`), and the
-//! daemon the menu bar app talks to (`serve`). See docs/architecture.md.
+//! Turnscope: the limits and usage of the coding agents on this Mac. One
+//! binary: the CLI, the MCP server agents ask (`mcp`), and the daemon the
+//! menu bar app talks to (`serve`). See docs/architecture.md.
 
 mod agents;
 mod alerts;
@@ -12,7 +12,6 @@ mod limits;
 mod mcp;
 mod prices;
 mod providers;
-mod redact;
 mod serve;
 mod sessions;
 mod status;
@@ -80,7 +79,7 @@ pub fn sha256_hex(data: &[u8], bytes: usize) -> String {
 #[command(
     name = "turnscope",
     version,
-    about = "The limits, usage and sessions of the coding agents on this Mac",
+    about = "The limits and usage of the coding agents on this Mac",
     after_help = "Commands that print data take --json.\n\
         Exit codes: 0 done, 1 failed (the message says how to fix it), 2 bad usage, 3 what you named doesn't exist.",
     next_help_heading = "Global options"
@@ -124,7 +123,7 @@ enum Command {
         /// How to group the rows [default: day, or session with --limit]
         #[arg(long, value_enum)]
         by: Option<usage::By>,
-        /// Only this agent's: the id session ids begin with, such as claude-code
+        /// Only this agent's: its id, as `connect` lists them, such as claude-code
         #[arg(long)]
         agent: Option<String>,
         /// Only this account's: an id, or part of a title or label
@@ -136,45 +135,6 @@ enum Command {
         /// How many rows to show; the rest are added up
         #[arg(long, default_value_t = 20)]
         top: usize,
-    },
-    /// Find sessions, most recently active first, or show or read one
-    Sessions {
-        #[command(subcommand)]
-        action: Option<SessionAction>,
-        /// All these words said in it
-        #[arg(long)]
-        search: Option<String>,
-        /// Of this folder's project, or run in or under it
-        #[arg(long)]
-        folder: Option<PathBuf>,
-        /// Only this agent's
-        #[arg(long)]
-        agent: Option<String>,
-        /// Active since: today, 24h, 7d, a date, or an RFC 3339 time
-        #[arg(long)]
-        since: Option<String>,
-        /// Only those running now
-        #[arg(long)]
-        running: bool,
-        /// How many, up to 100
-        #[arg(
-            long,
-            short = 'n',
-            default_value_t = 20,
-            value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=sessions::MOST as u64)
-        )]
-        count: usize,
-        /// The cursor the page before gave, for the next page
-        #[arg(long)]
-        cursor: Option<String>,
-    },
-    /// Where a session stands, for another agent to pick up from
-    Handoff {
-        /// Its id, or a unique start of it [default: the latest other session in the folder]
-        session: Option<String>,
-        /// The folder to take the latest session of [default: this one]
-        #[arg(long)]
-        folder: Option<PathBuf>,
     },
     /// List accounts, or hide or show one
     Accounts {
@@ -221,22 +181,6 @@ enum Command {
         /// The account [default: the calling agent's, or the first in use]
         #[arg(long)]
         account: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum SessionAction {
-    /// One session in full, with how to resume it
-    Show {
-        /// The session's id, or a unique start of it, as `turnscope sessions` lists them
-        session: String,
-    },
-    /// A session's conversation, a page at a time
-    Read {
-        /// The session's id, or a unique start of it, as `turnscope sessions` lists them
-        session: String,
-        #[command(flatten)]
-        reading: sessions::Reading,
     },
 }
 
@@ -325,37 +269,6 @@ fn absolute(path: PathBuf) -> PathBuf {
     std::path::absolute(&path).unwrap_or(path)
 }
 
-/// `given`, a folder as a person, an agent or a variable gives it, in the
-/// form sessions and responses hold theirs: absolute, with `.` and `..`
-/// folded and no slash at its end. A relative one is in the current folder.
-/// As it is when it can't be made absolute.
-///
-/// A session is found by its folder, and the caller's account by its agent
-/// folder, as text. `std::path::absolute` alone, which `--folder` took,
-/// drops `.` and keeps `..` and a slash at the end, so `--folder ..` looked
-/// for `/work/app/..` and found nothing.
-///
-/// Folded by the path's text, over asking the disk as `canonicalize` does.
-/// A folder that's gone, as a worktree deleted since, still names its
-/// sessions, where the disk has nothing to resolve. A link isn't followed
-/// either: a session's folder is kept as its agent wrote it, link or not.
-pub fn folded(given: &Path) -> PathBuf {
-    let Ok(absolute) = std::path::absolute(given) else {
-        return given.to_path_buf();
-    };
-    let mut folded = PathBuf::new();
-    for part in absolute.components() {
-        match part {
-            // Above the root is the root, where there's nothing to drop.
-            std::path::Component::ParentDir => {
-                folded.pop();
-            }
-            part => folded.push(part),
-        }
-    }
-    folded
-}
-
 /// A command's answer, as text or JSON. Those that report data catch up
 /// first, and say so on standard error when that can take long; those that
 /// change a setting don't wait for it.
@@ -414,7 +327,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 _ => None,
             };
             let text = match shown.is_empty() {
-                true => status::none(&status, sessions::Cite::Command),
+                true => status::none(&status, status::Cite::Command),
                 false => status::text(&status, &shown, None),
             };
             let text = match &fit {
@@ -465,8 +378,8 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             limit: None,
             top,
         } => {
-            // As `sessions` refuses an agent there isn't. Taken, it said
-            // nothing was used.
+            // An agent there isn't is refused. Taken, it said nothing was
+            // used.
             if let Some(agent) = &agent {
                 agents::find(agent)?;
             }
@@ -494,85 +407,6 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             let usage = usage::usage(&db, &query)?;
             print(json!(usage), usage::text(&usage, None))
         }
-        Command::Sessions {
-            action: Some(SessionAction::Show { session }),
-            ..
-        } => {
-            let session = sessions::resolve(&db, &session)?;
-            let detail = sessions::show(&db, home, &session, now)?;
-            print(json!(detail), sessions::detail_text(&detail, now))
-        }
-        Command::Sessions {
-            action: Some(SessionAction::Read { session, reading }),
-            ..
-        } => {
-            let session = sessions::resolve(&db, &session)?;
-            let entries = sessions::transcript(&db, &session)?;
-            let (shown, next) = sessions::page(&entries, &reading);
-            let listed: Vec<_> = shown
-                .iter()
-                .map(|(at, entry)| json!({ "index": at, "entry": entry }))
-                .collect();
-            let value = json!({ "session": session, "entries": listed, "total": entries.len(), "next": next });
-            print(
-                value,
-                sessions::page_text(
-                    &session,
-                    &entries,
-                    &shown,
-                    next,
-                    &reading,
-                    sessions::Cite::Command,
-                    now,
-                ),
-            )
-        }
-        Command::Sessions {
-            action: None,
-            search,
-            folder,
-            agent,
-            since: from,
-            running,
-            count,
-            cursor,
-        } => {
-            let query = sessions::Query {
-                search,
-                folder: folder.as_deref().map(folded),
-                agent,
-                since: time_of(&from)?,
-                running,
-                count,
-                cursor,
-                ..sessions::Query::default()
-            };
-            let page = sessions::find(&db, home, &query, now)?;
-            let caller = mcp::Caller::detect();
-            let own = caller.own_session(&db, home)?;
-            print(
-                json!(page),
-                sessions::text(&page, sessions::Cite::Command, own.as_deref(), now),
-            )
-        }
-        Command::Handoff { session, folder } => {
-            let folder = match folder {
-                Some(given) => folded(&given),
-                None => std::env::current_dir().unwrap_or_default(),
-            };
-            // Run by an agent, not the session it's run from.
-            let (session, others) = mcp::Caller::detect().session_to_hand_off(
-                &db,
-                home,
-                session.as_deref(),
-                Some(folder),
-            )?;
-            let handoff = sessions::handoff(&db, &session, sessions::Cite::Command, now)?;
-            print(
-                json!({ "session": session, "others": others, "handoff": handoff }),
-                sessions::also_here(&others, now) + &handoff,
-            )
-        }
         Command::Accounts { action } => {
             if let Some(AccountAction::Hide { account } | AccountAction::Show { account }) = &action
             {
@@ -593,7 +427,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 })
                 .unzip();
             let text = match lines.is_empty() {
-                true => status::none(&status, sessions::Cite::Command),
+                true => status::none(&status, status::Cite::Command),
                 false => lines.join("\n"),
             };
             print(json!(listed), text)
@@ -887,11 +721,12 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
     });
     let text = receive.recv_timeout(Duration::from_millis(300)).ok()?;
     let given: serde_json::Value = serde_json::from_str(&text).ok()?;
-    // The agent names its session by its own id.
-    given["session_id"]
-        .as_str()
-        .and_then(|session| sessions::resolve(db, session).ok())
-        .and_then(|session| sessions::account(db, &session).ok().flatten())
+    // The agent names its session by its own id, whichever agent's it is.
+    let native = given["session_id"].as_str()?;
+    agents::ALL.iter().find_map(|agent| {
+        let session = agent.info().session(native);
+        sessions::account(db, &session).ok().flatten()
+    })
 }
 
 /// Bring the database up to date: prices and limits when due, then what's
@@ -992,35 +827,6 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// None of these folders is on the disk.
-    #[test]
-    fn a_folder_is_folded_by_its_text() {
-        for (given, kept) in [
-            ("/work/app", "/work/app"),
-            ("/work/app/", "/work/app"),
-            ("/work/app/.", "/work/app"),
-            ("/work/./app", "/work/app"),
-            ("/work//app", "/work/app"),
-            ("/work/app/..", "/work"),
-            ("/work/app/../api/", "/work/api"),
-            ("/work/app/src/../../api", "/work/api"),
-            ("/..", "/"),
-            ("/", "/"),
-        ] {
-            // As text, which is how it's compared: two paths are equal with
-            // or without a slash at the end.
-            assert_eq!(folded(Path::new(given)).to_str(), Some(kept), "{given}");
-        }
-        // A relative one is in the current folder.
-        let here = std::env::current_dir().unwrap();
-        for (given, kept) in [
-            ("gone/../app/", here.join("app")),
-            ("..", here.parent().unwrap().to_path_buf()),
-        ] {
-            assert_eq!(folded(Path::new(given)).to_str(), kept.to_str(), "{given}");
-        }
-    }
 
     /// Eleven files that can't be read, one more than doctor names.
     #[test]

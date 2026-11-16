@@ -1,0 +1,12 @@
+Tue Sep 29 00:00 to Thu Oct 1 12:00: 38 responses, $0.53 (+6 unpriced)
+
+  Session                                                   Responses   Cost
+  7c1d2e3f Add retries with backoff to the HTTP client.            24  $0.47
+  0f6e3f6a Fix the CSV parser so quoted commas work. Don'…          3  $0.03
+  8d9e0f1a Fix the broken links in the guide                        1  $0.02
+  ses_2f9a Show signup errors inline                                2  $0.01
+  5e6f7a8b Add a --quiet flag that hides the progress bar…          2  $0.00
+  019a2b3c Skip blank lines in the importer                         4  $0.00 (+4 unpriced)
+  4c5d6e7f Sorting the notes by date                                2  $0.00 (+2 unpriced)
+
+Costs are at list prices: what the same tokens cost on each provider's API.

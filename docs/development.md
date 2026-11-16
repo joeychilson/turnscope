@@ -68,8 +68,8 @@ to see it here.
 
 | Tests | Where | Cover |
 |---|---|---|
-| Unit | `#[cfg(test)]` in each module | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database, prices, the forecast, each provider's answers, alerts, time, redaction, the contract's examples |
-| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `sessions`, `handoff`, `accounts`, `connect` and `doctor` by snapshot, with a session of every agent listed, shown and read; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
+| Unit | `#[cfg(test)]` in each module | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database, prices, the forecast, each provider's answers, alerts, time, the contract's examples |
+| End to end | `tests/cli.rs` | The text and `--json` of `status`, `usage`, `accounts`, `connect` and `doctor` by snapshot, with a session of every agent in the usage; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
 | Swift | `macos/TurnscopeKit/Tests/` | Decoding and encoding every contract example, the client against a stand-in `serve` and a real one, launch arguments, the wording |
 
 **Fixtures.** `tests/cli.rs` reads a home (`tests/fixtures/home`) with two
@@ -114,9 +114,6 @@ TURNSCOPE_BINARY="$PWD/target/debug/turnscope" swift test --package-path macos/T
 | `TURNSCOPE_BLESS` | Writes the snapshots instead of comparing them |
 | `TURNSCOPE_BINARY` | The `turnscope` that the Swift engine test and a Debug build of the app run, instead of the bundled one |
 | `TURNSCOPE_BACKTEST` | The copy of a data directory the forecast backtest replays |
-| `TURNSCOPE_HANDOFF_CASES` | The folder of handoff cases |
-| `TURNSCOPE_HANDOFF_LABEL` | The name of the version being tested, in each handoff's file name |
-| `TURNSCOPE_HANDOFF_BUDGET` | The handoff's budget in tokens (default 16,000) |
 
 ## Forecast backtest
 
@@ -132,19 +129,6 @@ TURNSCOPE_BACKTEST=/tmp/ts-copy cargo test --release backtest -- --ignored --noc
 
 [architecture.md](architecture.md#forecast) says what the forecast chose
 and what it was compared with.
-
-## Handoff cases
-
-`sessions::handoff::handoff_cases::hand_off_each_case` writes the handoff
-of each case in `<dir>/cut/`, a real session stopped part way, to
-`<dir>/cases/<case>/handoff-<label>.md`:
-
-```sh
-TURNSCOPE_HANDOFF_CASES=<dir> TURNSCOPE_HANDOFF_LABEL=new cargo test hand_off_each_case -- --ignored
-```
-
-[handoff.md](handoff.md) says how the cases are made and how to compare two
-versions.
 
 ## Scripts
 

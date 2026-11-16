@@ -32,15 +32,10 @@
 //! `turn_context`'s or `thread_settings_applied`'s, with its service tier. A
 //! response before any model is named waits, in the cursor, for the first.
 //!
-//! **Conversations.** A message sent as the person's comes in parts, its
-//! context (`AGENTS.md`, the environment, a goal carried on) in parts of
-//! their own, some tags with attributes. Nearly every tool call is `exec`, a
-//! script calling Codex's tools (`tools.apply_patch`, `tools.exec_command`),
-//! whose patches name the files they change; a script that failed says so
-//! as its output opens.
-//!
-//! **Not shown.** Codex encrypts a compaction's summary, so its
-//! conversations have none.
+//! **Titles.** A thread Codex didn't name is titled by the first thing the
+//! person asked. A message sent as the person's comes in parts, its context
+//! (`AGENTS.md`, the environment, a goal carried on) in parts of their own,
+//! some tags with attributes: the title is without them.
 //!
 //! What follows is from Codex's code (openai/codex at `a9b0815`, read
 //! 2026-10-12), not measured.
@@ -50,11 +45,11 @@
 //! `rollout-<time>-<thread>_<rollout id>.jsonl`, whose `session_meta` has a
 //! `history_base`: an earlier rollout, kept below `end_ordinal_exclusive`
 //! (`thread-store/src/local/revert_thread.rs`). The new rollout's ordinals
-//! go on from there (`rollout_lineage.rs`), so a rollout is read below the
-//! least that any later one keeps, and reading a rewind takes the thread's
-//! words from its `end_ordinal_exclusive` on out of search. A name starts
-//! with the time its rollout was made, so names sort oldest first, and
-//! rollouts are listed in that order.
+//! go on from there (`rollout_lineage.rs`). It doesn't hold the thread's
+//! first request, so it titles nothing. The responses a rewind went back
+//! past were made, and stay counted. A name starts with the time its rollout
+//! was made, so names sort oldest first, and rollouts are listed in that
+//! order.
 //!
 //! **Forks.** A fork of a paginated thread points at its parent's history
 //! with `history_base` and copies none of it. Its own history starts at
@@ -74,19 +69,14 @@
 //! ends at `subagent_history_start_ordinal`.
 
 use std::borrow::Cow;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use super::{
-    Agent, Conversation, Credential, Entry, Info, Kind, Link, Login, Parent, Read, Response,
-    Secret, Title, Tokens,
-};
-use crate::{Error, Result};
+use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
+use crate::Result;
 
 pub struct Codex;
 
@@ -95,13 +85,11 @@ static INFO: Info = Info {
     name: "Codex",
     command: "codex",
     app: None,
-    resume: "codex resume {id}",
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),
     folder_var: Some("CODEX_HOME"),
     charges: false,
     session_var: None,
-    cwd_var: None,
 };
 
 /// What Codex puts in a message sent as the person's: its context, a
@@ -256,8 +244,6 @@ struct Payload<'a> {
     // session_meta
     id: Option<String>,
     cwd: Option<String>,
-    #[serde(borrow)]
-    git: Option<&'a RawValue>,
     model_provider: Option<String>,
     parent_thread_id: Option<String>,
     forked_from_id: Option<String>,
@@ -383,7 +369,8 @@ impl Agent for Codex {
         let mut files = Vec::new();
         rollouts(&folder.join("sessions"), &mut files);
         rollouts(&folder.join("archived_sessions"), &mut files);
-        // Oldest first, so a rewind is read after what it goes on from.
+        // Oldest first, so a thread's first rollout, which holds its first
+        // request and the folder it began in, is read before a rewind's.
         files.sort_by(|one, other| one.file_name().cmp(&other.file_name()));
         files.insert(0, folder.join("session_index.jsonl"));
         files
@@ -423,47 +410,6 @@ impl Agent for Codex {
         }
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
-    }
-
-    fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        let thread = INFO.session(native);
-        // A thread's rollouts, oldest first by the time in their names.
-        let mut rollouts: Vec<&PathBuf> = files
-            .iter()
-            .filter(|file| {
-                file.file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with("rollout-"))
-            })
-            .collect();
-        rollouts.sort_by_key(|file| file.file_name());
-        if rollouts.is_empty() {
-            return Err(Error::NotFound(thread));
-        }
-        let kept: Vec<Option<i64>> = rollouts.iter().map(|rollout| rewound_to(rollout)).collect();
-        let mut conversation = Conversation::default();
-        for (index, rollout) in rollouts.into_iter().enumerate() {
-            let rewound = kept[index + 1..].iter().flatten().min().copied();
-            let mut opened = false;
-            let mut copy = Copy::default();
-            super::lines(rollout, 0, |bytes| {
-                let Ok(line) = serde_json::from_slice::<Line>(bytes) else {
-                    return;
-                };
-                if line.kind == "session_meta" && !opened {
-                    opened = true;
-                    copy = line.payload.as_ref().map(Copy::of).unwrap_or_default();
-                    return;
-                }
-                if copy.holds(&line, &thread)
-                    || line.kind != "response_item"
-                    || line.ordinal.zip(rewound).is_some_and(|(at, end)| at >= end)
-                {
-                    return;
-                }
-                converse(&line, bytes, &mut conversation);
-            })?;
-        }
-        Ok(conversation.entries)
     }
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
@@ -553,37 +499,25 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
                 read,
             );
         }
-        ("response_item", Some("message")) if !copied => match payload.role.as_deref() {
-            Some("user") => {
-                for text in texts(payload.content) {
-                    let text = typed(&text);
-                    read.say_at(&thread, &text, line.ordinal);
-                    if !cursor.titled && !text.is_empty() {
-                        read.session(&thread).title(Title::Prompt, &text);
-                        cursor.titled = true;
-                    }
-                }
+        // The first thing the person asked titles the thread. Once it has,
+        // what they say isn't read.
+        ("response_item", Some("message"))
+            if !copied && !cursor.titled && payload.role.as_deref() == Some("user") =>
+        {
+            let asked = texts(payload.content)
+                .iter()
+                .map(|text| typed(text))
+                .find(|text| !text.is_empty());
+            if let Some(asked) = asked {
+                read.session(&thread).title(Title::Prompt, &asked);
+                cursor.titled = true;
             }
-            Some("assistant") => {
-                read.say_at(&thread, &texts(payload.content).join("\n"), line.ordinal)
-            }
-            _ => {}
-        },
+        }
         _ => {}
     }
     if let (false, Some(at)) = (copied, line.at()) {
         read.session(&thread).saw(at);
     }
-}
-
-/// Where the history that `rollout` goes on from ends: from its first line,
-/// its `session_meta`.
-fn rewound_to(rollout: &Path) -> Option<i64> {
-    let mut first = Vec::new();
-    BufReader::new(File::open(rollout).ok()?)
-        .read_until(b'\n', &mut first)
-        .ok()?;
-    serde_json::from_slice::<Line>(&first).ok()?.payload?.base()
 }
 
 /// Whether `line`, in a legacy fork's rollout of `thread`, is of its copy of
@@ -619,40 +553,25 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
     cursor.provider = meta.model_provider.clone();
     cursor.copy = Copy::of(meta);
     let session = read.session(&thread);
-    session.parent = match (&meta.parent_thread_id, &meta.forked_from_id) {
-        (Some(parent), _) => Some(Parent {
-            id: INFO.session(parent),
-            link: Link::Subagent,
-        }),
-        (None, Some(fork)) if fork != native => Some(Parent {
-            id: INFO.session(fork),
-            link: Link::Fork,
-        }),
-        _ => None,
-    };
+    // A subagent's parent. A fork names the thread it was forked from, and
+    // is a thread of its own.
+    session.parent = meta
+        .parent_thread_id
+        .as_deref()
+        .map(|parent| INFO.session(parent));
     if let Some(at) = at {
         session.saw(at);
     }
     session.cwd = meta.cwd.clone();
-    #[derive(Deserialize)]
-    struct Git {
-        branch: Option<String>,
-    }
-    session.branch = parsed::<Git>(meta.git).and_then(|git| git.branch);
     if let Some(nickname) = &meta.agent_nickname {
         session.title(Title::Task, nickname);
     }
     // A rollout that goes on from the thread's own history, as a rewind's
-    // does, doesn't hold its first request, and takes what was said past
-    // where it goes on from out of search. A fork's own history starts after
-    // its parent's.
-    let rewound = meta
+    // does, doesn't hold its first request, so it titles nothing. A fork's
+    // own history starts after its parent's.
+    cursor.titled = meta
         .base()
-        .filter(|end| *end > meta.forked_from_ordinal_exclusive.unwrap_or(0));
-    if let Some(end) = rewound {
-        read.rewound.push((thread.clone(), end));
-    }
-    cursor.titled = rewound.is_some();
+        .is_some_and(|end| end > meta.forked_from_ordinal_exclusive.unwrap_or(0));
     cursor.thread = Some(thread);
 }
 
@@ -763,175 +682,6 @@ fn respond(
     read.respond(response);
 }
 
-fn converse(line: &Line, bytes: &[u8], conversation: &mut Conversation) {
-    #[derive(Deserialize)]
-    struct Full {
-        #[serde(rename = "type")]
-        kind: Option<String>,
-        role: Option<String>,
-        content: Option<Value>,
-        summary: Option<Value>,
-        name: Option<String>,
-        namespace: Option<String>,
-        input: Option<Value>,
-        arguments: Option<Value>,
-        call_id: Option<String>,
-        output: Option<Value>,
-    }
-    #[derive(Deserialize)]
-    struct Whole {
-        payload: Full,
-    }
-    let Ok(Whole { payload: item }) = serde_json::from_slice::<Whole>(bytes) else {
-        return;
-    };
-    let at = line.at();
-    // A string, a list of parts with text, or an output's `{content}`.
-    let text = |value: &Option<Value>| match value {
-        Some(Value::String(text)) => text.clone(),
-        Some(parts @ Value::Array(_)) => super::texts(parts).join("\n"),
-        Some(Value::Object(fields)) => match fields.get("content") {
-            Some(Value::String(text)) => text.clone(),
-            Some(content) => content.to_string(),
-            None => Value::Object(fields.clone()).to_string(),
-        },
-        Some(other) => other.to_string(),
-        None => String::new(),
-    };
-    match (item.kind.as_deref(), item.role.as_deref()) {
-        // What the person typed, part by part, as Codex sends its context in
-        // parts of its own beside theirs.
-        (Some("message"), Some("user")) => {
-            let parts = match &item.content {
-                Some(Value::Array(parts)) => parts
-                    .iter()
-                    .filter_map(|part| part["text"].as_str())
-                    .map(typed)
-                    .collect(),
-                content => vec![typed(&text(content))],
-            };
-            let said: Vec<String> = parts.into_iter().filter(|part| !part.is_empty()).collect();
-            if said.is_empty() {
-                conversation.say(Kind::System, at, &text(&item.content));
-            } else {
-                conversation.say(Kind::User, at, &said.join("\n"));
-            }
-        }
-        (Some("message"), Some("assistant")) => {
-            conversation.say(Kind::Assistant, at, &text(&item.content))
-        }
-        (Some("message" | "agent_message"), _) => {
-            conversation.say(Kind::System, at, &text(&item.content))
-        }
-        // Only the readable summary; the rest is encrypted.
-        (Some("reasoning"), _) => conversation.say(Kind::Reasoning, at, &text(&item.summary)),
-        (Some("function_call" | "custom_tool_call"), _) => {
-            let input = super::text(&item.input.or(item.arguments).unwrap_or_default());
-            let name = match (&item.namespace, &item.name) {
-                (Some(namespace), Some(name)) => format!("{namespace}.{name}"),
-                // A script that calls Codex's tools, named by those it calls:
-                // each `tools.<name>(` outside its strings, since a command or
-                // patch in a string may name a tool, as `rg tools.apply_patch
-                // src` does. Strings in "" or ``, not '': a ' outside a string
-                // may be an apostrophe in a comment, and taking it for a
-                // string would hide the calls after it.
-                (_, Some(name)) if name == "exec" => {
-                    let mut called: Vec<&str> = Vec::new();
-                    let mut quote = None;
-                    let mut escaped = false;
-                    for (at, char) in input.char_indices() {
-                        if let Some(open) = quote {
-                            if char == open && !escaped {
-                                quote = None;
-                            }
-                            escaped = char == '\\' && !escaped;
-                        } else if matches!(char, '"' | '`') {
-                            quote = Some(char);
-                        } else if let Some(rest) = input[at..].strip_prefix("tools.") {
-                            let end = rest
-                                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                                .unwrap_or(rest.len());
-                            if end > 0
-                                && rest[end..].starts_with('(')
-                                && !called.contains(&&rest[..end])
-                            {
-                                called.push(&rest[..end]);
-                            }
-                        }
-                    }
-                    if called.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("exec: {}", called.join(", "))
-                    }
-                }
-                (_, name) => name.clone().unwrap_or("tool".to_owned()),
-            };
-            let files = super::patched(&input);
-            conversation.call(item.call_id.as_deref(), at, &name, input);
-            conversation.changed(files);
-        }
-        (Some("function_call_output" | "custom_tool_call_output"), _) => {
-            if let Some(call) = &item.call_id {
-                let (output, failed, stopped) = script(&text(&item.output));
-                if let Some(call) = conversation.answer(call, output, failed) {
-                    // A script that ran to its end made its patches,
-                    // though a command in it failed.
-                    call.edited = !stopped;
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// What a tool's output says, without the wrapper of an `exec` script's:
-/// each command's own output, as it printed it; whether the script or a
-/// command in it failed; and whether it stopped, failing or with a call to
-/// one of Codex's tools rejected, so that its patches may not have been
-/// made. Codex marks no other failure. A script's output opens with a
-/// header, then a JSON chunk a command, its output escaped, or the outcome
-/// of a promise holding one (measured 2026-10-09).
-fn script(output: &str) -> (String, bool, bool) {
-    let mut stopped = output.starts_with("Script failed") || output.starts_with("aborted by user");
-    let mut failed = false;
-    let mut said = Vec::new();
-    for line in output.lines() {
-        if line.starts_with("Script completed")
-            || line.starts_with("Wall time")
-            || line == "Output:"
-        {
-            continue;
-        }
-        let parsed: Option<Value> = serde_json::from_str(line).ok();
-        stopped |= parsed
-            .as_ref()
-            .is_some_and(|value| value["status"] == "rejected");
-        let chunk = parsed
-            .as_ref()
-            .and_then(|value| match value.get("chunk_id") {
-                Some(_) => Some(value),
-                None => value
-                    .get("value")
-                    .filter(|value| value.get("chunk_id").is_some()),
-            });
-        let Some(chunk) = chunk else {
-            said.push(line.to_owned());
-            continue;
-        };
-        let printed = chunk["output"].as_str().unwrap_or_default().trim_end();
-        match chunk["exit_code"].as_i64() {
-            Some(code) if code != 0 => {
-                failed = true;
-                said.push(format!("exit {code}:\n{printed}"));
-            }
-            _ if !printed.is_empty() => said.push(printed.to_owned()),
-            _ => {}
-        }
-    }
-    (said.join("\n"), failed || stopped, stopped)
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
@@ -964,39 +714,6 @@ mod tests {
         json!({"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]})
     }
 
-    /// Thread t1's first rollout: two requests and their replies.
-    fn first(dir: &Path) -> PathBuf {
-        rollout(
-            dir,
-            "2026-09-30T09-00-00-t1",
-            &[
-                line(
-                    0,
-                    "session_meta",
-                    json!({"id": "t1", "history_mode": "paginated"}),
-                ),
-                line(1, "response_item", message("user", "Add a retry.")),
-                line(2, "response_item", message("assistant", "Added one.")),
-                line(
-                    3,
-                    "response_item",
-                    message("user", "Make it five attempts."),
-                ),
-                line(4, "response_item", message("assistant", "Five now.")),
-            ],
-        )
-    }
-
-    /// The `session_meta` of a rewind of t1 to ordinal `at` of the rollout `base`.
-    fn rewind(at: i64, base: &str) -> Value {
-        line(
-            at,
-            "session_meta",
-            json!({"id": "t1", "history_mode": "paginated",
-                "history_base": {"thread_id": base, "end_ordinal_exclusive": at, "end_byte_offset": 0}}),
-        )
-    }
-
     #[test]
     fn records_are_counted_and_totals_only_beyond_them() {
         let dir = tempfile::tempdir().unwrap();
@@ -1004,11 +721,7 @@ mod tests {
             dir.path(),
             "t1",
             &[
-                line(
-                    0,
-                    "session_meta",
-                    json!({"id": "t1", "cwd": "/work/api", "git": {"branch": "main"}}),
-                ),
+                line(0, "session_meta", json!({"id": "t1", "cwd": "/work/api"})),
                 line(
                     1,
                     "turn_context",
@@ -1053,10 +766,7 @@ mod tests {
             ("gpt-5.5", true, "codex:t1")
         );
         let session = &read.sessions["codex:t1"];
-        assert_eq!(
-            (session.cwd.as_deref(), session.branch.as_deref()),
-            (Some("/work/api"), Some("main"))
-        );
+        assert_eq!(session.cwd.as_deref(), Some("/work/api"));
         assert_eq!(session.title.as_ref().unwrap().1, "Add retries.");
     }
 
@@ -1163,31 +873,12 @@ mod tests {
                 ("resp_2", "codex:t2", "gpt-5.5")
             ]
         );
-        assert!(copy.said.is_empty());
-        assert_eq!(
-            own.said,
-            [(
-                "codex:t2".to_owned(),
-                "Try it on staging.".to_owned(),
-                Some(10)
-            )]
-        );
+        // The parent's request, in the copy, doesn't title the fork.
+        assert!(copy.sessions["codex:t2"].title.is_none());
         let fork = &own.sessions["codex:t2"];
         assert_eq!(fork.title.as_ref().unwrap().1, "Try it on staging.");
-        assert!(
-            copy.sessions["codex:t2"]
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent.id == "codex:t1" && parent.link == Link::Fork)
-        );
-        let entries = Codex.transcript("t2", &[file]).unwrap();
-        assert_eq!(
-            entries
-                .iter()
-                .map(|entry| (entry.kind, entry.text.as_str()))
-                .collect::<Vec<_>>(),
-            [(Kind::User, "Try it on staging.")]
-        );
+        // A fork is a thread of its own.
+        assert!(copy.sessions["codex:t2"].parent.is_none());
     }
 
     #[test]
@@ -1224,141 +915,20 @@ mod tests {
             .map(|response| (response.tokens.input, response.model.as_str()))
             .collect();
         assert_eq!(counted, [(500, "gpt-5.5")]);
-        assert!(
-            read.sessions["codex:t2"]
-                .parent
-                .as_ref()
-                .is_some_and(|parent| parent.id == "codex:t1" && parent.link == Link::Subagent)
-        );
         assert_eq!(
-            read.said,
-            [(
-                "codex:t2".to_owned(),
-                "Check the indexes.".to_owned(),
-                Some(6)
-            )]
+            read.sessions["codex:t2"].parent.as_deref(),
+            Some("codex:t1")
         );
         assert_eq!(
             read.sessions["codex:t2"].title.as_ref().unwrap().1,
             "Check the indexes."
         );
-        let entries = Codex.transcript("t2", &[file]).unwrap();
-        assert_eq!(
-            entries
-                .iter()
-                .map(|entry| (entry.kind, entry.text.as_str()))
-                .collect::<Vec<_>>(),
-            [(Kind::User, "Check the indexes.")]
-        );
     }
 
     #[test]
-    fn a_rewind_keeps_the_history_before_it_below_its_ordinal() {
+    fn a_paginated_fork_is_titled_by_its_own_request_and_a_rewind_by_none() {
         let dir = tempfile::tempdir().unwrap();
-        let said = |files: &[PathBuf]| {
-            Codex
-                .transcript("t1", files)
-                .unwrap()
-                .into_iter()
-                .map(|entry| entry.text)
-                .collect::<Vec<_>>()
-        };
-        let mut files = vec![
-            first(dir.path()),
-            // Rewound to before "Make it five attempts."
-            rollout(
-                dir.path(),
-                "2026-09-30T09-05-00-t1_r2",
-                &[
-                    rewind(3, "t1"),
-                    line(4, "response_item", message("user", "Log each retry.")),
-                    line(5, "response_item", message("assistant", "Each logs.")),
-                    line(6, "response_item", message("user", "Cap the wait.")),
-                    line(7, "response_item", message("assistant", "Capped.")),
-                ],
-            ),
-            // Then to before "Cap the wait."
-            rollout(
-                dir.path(),
-                "2026-09-30T09-09-00-t1_r3",
-                &[
-                    rewind(6, "r2"),
-                    line(7, "response_item", message("user", "Cap it at a minute.")),
-                ],
-            ),
-        ];
-        assert_eq!(
-            said(&files),
-            [
-                "Add a retry.",
-                "Added one.",
-                "Log each retry.",
-                "Each logs.",
-                "Cap it at a minute."
-            ]
-        );
-        // Then back past the second rollout, to before "Make it five attempts."
-        files.push(rollout(
-            dir.path(),
-            "2026-09-30T09-12-00-t1_r4",
-            &[
-                rewind(3, "t1"),
-                line(4, "response_item", message("user", "Undo the retry.")),
-            ],
-        ));
-        assert_eq!(
-            said(&files),
-            ["Add a retry.", "Added one.", "Undo the retry."]
-        );
-    }
-
-    #[test]
-    fn a_rewind_takes_what_it_went_back_past_out_of_search() {
-        let home = tempfile::tempdir().unwrap();
-        let folder = home.path().join(".codex");
-        let first = first(&folder);
-        // After reading what's new, how many messages hold each word.
-        let found = |db: &mut rusqlite::Connection| -> Vec<i64> {
-            crate::ingest::ingest(db, home.path()).unwrap();
-            ["added", "five", "logs"]
-                .iter()
-                .map(|word| {
-                    db.query_row(
-                        "SELECT count(*) FROM said WHERE said MATCH ?1",
-                        [word],
-                        |row| row.get(0),
-                    )
-                    .unwrap()
-                })
-                .collect()
-        };
-        let data = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(data.path()).unwrap();
-        assert_eq!(found(&mut db), [1, 2, 0]);
-        // Rewound to before "Make it five attempts."
-        rollout(
-            &folder,
-            "2026-09-30T09-05-00-t1_r2",
-            &[
-                rewind(3, "t1"),
-                line(4, "response_item", message("user", "Log each retry.")),
-                line(5, "response_item", message("assistant", "Each logs.")),
-            ],
-        );
-        assert_eq!(found(&mut db), [1, 0, 1]);
-        // Archived, the first rollout is found after the rewind, and still
-        // read before it.
-        let archived = folder.join("archived_sessions");
-        std::fs::create_dir_all(&archived).unwrap();
-        std::fs::rename(&first, archived.join(first.file_name().unwrap())).unwrap();
-        let data = tempfile::tempdir().unwrap();
-        assert_eq!(found(&mut crate::db::open(data.path()).unwrap()), [1, 0, 1]);
-    }
-
-    #[test]
-    fn a_paginated_fork_is_titled_by_its_own_request_and_only_a_rewind_takes_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let read = |name: &str, meta: Value| {
+        let title = |name: &str, meta: Value| {
             let file = rollout(
                 dir.path(),
                 name,
@@ -1368,43 +938,34 @@ mod tests {
                 ],
             );
             let read = Codex.read(&file, "").unwrap();
-            let title = read
-                .sessions
+            read.sessions
                 .into_values()
                 .find_map(|session| session.title)
-                .map(|(_, title)| title);
-            (title, read.rewound)
+                .map(|(_, title)| title)
         };
         let base = |rollout: &str| json!({"thread_id": rollout, "end_ordinal_exclusive": 5, "end_byte_offset": 0});
         assert_eq!(
-            read(
+            title(
                 "t1_r2",
                 json!({"id": "t1", "history_mode": "paginated", "history_base": base("t1")})
             ),
-            (None, vec![("codex:t1".to_owned(), 5)])
+            None
         );
         let fork = |rollout: &str, forked_at: i64| {
             json!({"id": "t2", "forked_from_id": "t1", "forked_from_ordinal_exclusive": forked_at,
                 "history_mode": "paginated", "history_base": base(rollout)})
         };
         assert_eq!(
-            read("t2", fork("t1", 5)),
-            (Some("Try it on staging.".to_owned()), vec![])
+            title("t2", fork("t1", 5)).as_deref(),
+            Some("Try it on staging.")
         );
         // A rewind of the fork that keeps some of its own history.
-        assert_eq!(
-            read("t2_r2", fork("t2", 3)),
-            (None, vec![("codex:t2".to_owned(), 5)])
-        );
+        assert_eq!(title("t2_r2", fork("t2", 3)), None);
     }
 
     #[test]
-    fn a_conversation_keeps_the_persons_words_and_names_what_a_script_did() {
+    fn a_title_is_the_persons_first_request_without_codexs_context() {
         let dir = tempfile::tempdir().unwrap();
-        let script = "await tools.apply_patch(\"*** Begin Patch\\n*** Update File: src/lib.rs\\n*** End Patch\"); await tools.exec_command({cmd: \"cargo test\"});";
-        let output = "Script completed\nWall time 0.4 seconds\nOutput:\n\
-            {\"chunk_id\":\"a1\",\"wall_time_seconds\":0.1,\"exit_code\":0,\"original_token_count\":3,\"output\":\"src/lib.rs\\n\"}\n\
-            {\"i\":1,\"status\":\"fulfilled\",\"value\":{\"chunk_id\":\"b2\",\"exit_code\":101,\"output\":\"test failed\\n\"}}";
         let file = rollout(
             dir.path(),
             "t1",
@@ -1418,68 +979,15 @@ mod tests {
                         {"type": "input_text", "text": "<environment_context>x</environment_context>"},
                         {"type": "input_text", "text": "Fix the parser."}]}),
                 ),
-                line(
-                    2,
-                    "response_item",
-                    json!({"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": script}),
-                ),
-                line(
-                    3,
-                    "response_item",
-                    json!({"type": "custom_tool_call_output", "call_id": "c1", "output": "Script failed: exit 101"}),
-                ),
-                line(
-                    4,
-                    "response_item",
-                    json!({"type": "custom_tool_call", "name": "exec", "call_id": "c2", "input": script}),
-                ),
-                line(
-                    5,
-                    "response_item",
-                    json!({"type": "custom_tool_call_output", "call_id": "c2", "output": output}),
-                ),
+                line(2, "response_item", message("assistant", "Fixed.")),
+                // The first request titles it, not one after.
+                line(3, "response_item", message("user", "Now the tests.")),
             ],
         );
-        let entries = Codex.transcript("t1", &[file]).unwrap();
+        let read = Codex.read(&file, "").unwrap();
         assert_eq!(
-            (entries[0].kind, entries[0].text.as_str()),
-            (Kind::User, "Fix the parser.")
-        );
-        // The script that failed may have stopped before its patch; the one
-        // that went on to its end made it, though its tests then failed. A
-        // script's output is what its commands printed.
-        let calls: Vec<_> = entries[1..]
-            .iter()
-            .filter_map(|entry| entry.tool.as_ref())
-            .map(|tool| {
-                (
-                    tool.name.as_str(),
-                    tool.output.as_deref(),
-                    tool.failed,
-                    tool.edited,
-                    tool.files.as_slice(),
-                )
-            })
-            .collect();
-        let patched = ["src/lib.rs".to_owned()];
-        assert_eq!(
-            calls,
-            [
-                (
-                    "exec: apply_patch, exec_command",
-                    Some("Script failed: exit 101"),
-                    true,
-                    false,
-                    patched.as_slice()
-                ),
-                (
-                    "exec: apply_patch, exec_command",
-                    Some("src/lib.rs\nexit 101:\ntest failed"),
-                    true,
-                    true,
-                    patched.as_slice()
-                )
-            ]
+            read.sessions["codex:t1"].title.as_ref().unwrap().1,
+            "Fix the parser."
         );
     }
 
@@ -1508,50 +1016,6 @@ mod tests {
         );
         let read = Codex.read(&file, "").unwrap();
         assert_eq!(read.sessions["codex:t1"].title.as_ref().unwrap().1, asked);
-        assert_eq!(
-            read.said,
-            [("codex:t1".to_owned(), asked.to_owned(), Some(1))]
-        );
-        let entries = Codex.transcript("t1", &[file]).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            (entries[0].kind, entries[0].text.as_str()),
-            (Kind::User, asked)
-        );
-    }
-
-    #[test]
-    fn a_script_is_named_by_the_tools_it_calls_not_those_its_strings_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let scripts = [
-            r#"await tools.exec_command({cmd: "rg -n tools.apply_patch src"});"#,
-            r#"await tools.apply_patch(`*** Begin Patch\n*** Update File: run.js\n+await tools.view_image({path});\n*** End Patch`);"#,
-            r#"await tools.exec_command({cmd: "rg -F \"tools.view_image(\" src"}); await tools.apply_patch("*** Begin Patch\n*** End Patch");"#,
-        ];
-        let mut lines = vec![line(0, "session_meta", json!({"id": "t1"}))];
-        for (at, script) in (1..).zip(scripts) {
-            lines.push(line(
-                at,
-                "response_item",
-                json!({"type": "custom_tool_call", "name": "exec", "call_id": format!("c{at}"), "input": script}),
-            ));
-        }
-        let file = rollout(dir.path(), "t1", &lines);
-        let names: Vec<String> = Codex
-            .transcript("t1", &[file])
-            .unwrap()
-            .into_iter()
-            .filter_map(|entry| entry.tool)
-            .map(|tool| tool.name)
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "exec: exec_command",
-                "exec: apply_patch",
-                "exec: exec_command, apply_patch"
-            ]
-        );
     }
 
     #[test]

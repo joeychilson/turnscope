@@ -52,34 +52,12 @@
 //! Claude and GPT models from the same plan. None was on this Mac to
 //! measure, so they're `google`'s too, where they have no price.
 //!
-//! **Transcripts.** A line's `type` says what its step is:
-//!
-//! - `USER_INPUT`, from `USER_EXPLICIT`: what the person typed, in
-//!   `<USER_REQUEST>`, then the blocks Antigravity adds, as
-//!   `<ADDITIONAL_METADATA>`.
-//! - `PLANNER_RESPONSE`: a model's `thinking`, its reply `content`, and its
-//!   `tool_calls`, each a `name` and `args`.
-//! - `GENERIC`: a tool's output. No line names the call it answers. The
-//!   call numbered n of the response at step k is answered by step
-//!   k + 1 + n: so were 198 of the 199 calls, and the other's step was in no
-//!   transcript.
-//! - `CHECKPOINT`: the summary Antigravity wrote when it cut a long
-//!   conversation short, after its number, `{{ CHECKPOINT 0 }}`, and a line
-//!   saying what it is, and before an instruction to the model not to
-//!   answer it. The one here was so.
-//! - `SYSTEM_MESSAGE`: what Antigravity told the model itself.
-//!
-//! A line is written once: the 4 of a command left running in the
-//! background stayed `RUNNING`, with what it had printed by then.
-//!
-//! **Tools.** `agy` and the app name theirs differently. The 288 calls
-//! measured later that day were to `run_command` (173), `view_file` (36),
-//! `search_web` (25), `write_file` (24), `replace_file_content` (15),
-//! `read_file` (5), `list_dir` (3), `manage_task` (2), `edit_file` (2),
-//! `write_to_file`, `schedule` and `ask_question` (1 each). A call that
-//! writes a file names it in `TargetFile` (`replace_file_content`,
-//! `write_to_file`) or in `Path` (`write_file`, `edit_file`), always in
-//! full. `args` is an object.
+//! **Titles.** A conversation Antigravity gave no title is titled by the
+//! first thing the person asked: the first `USER_INPUT` line of its
+//! transcript from `USER_EXPLICIT`, which holds what they typed in
+//! `<USER_REQUEST>`, then the blocks Antigravity adds, as
+//! `<ADDITIONAL_METADATA>`. A line is written once. Of the transcript, only
+//! that request and each line's time are read.
 //!
 //! **Subagents.** `conversation_summaries.parent_conversation_id` names a
 //! conversation's parent. That is from the column's name: no conversation
@@ -130,10 +108,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{
-    Agent, Conversation, Credential, Entry, Info, Kind, Link, Login, Parent, Read, Response, Role,
-    Secret, Title, Tokens,
-};
+use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
 use crate::{Error, Result};
 
 pub struct Antigravity;
@@ -143,13 +118,11 @@ static INFO: Info = Info {
     name: "Antigravity",
     command: "agy",
     app: Some("Antigravity.app/Contents/Resources/bin/language_server"),
-    resume: "agy --conversation {id}",
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),
     folder_var: None,
     charges: false,
     session_var: None,
-    cwd_var: None,
 };
 
 /// The folders of `~/.gemini` that keep history: the app's, and `agy`'s.
@@ -273,62 +246,9 @@ impl Agent for Antigravity {
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
         match file.file_name().and_then(|name| name.to_str()) {
             Some(TITLES) => titles(file),
-            Some(TRANSCRIPT) => said(file, cursor),
+            Some(TRANSCRIPT) => transcript(file, cursor),
             _ => conversation(file, cursor),
         }
-    }
-
-    fn transcript(&self, native: &str, files: &[PathBuf]) -> Result<Vec<Entry>> {
-        let mut conversation = Conversation::default();
-        // Its database and its folder's titles hold nothing that was said.
-        let file = files
-            .iter()
-            .find(|file| file.file_name().is_some_and(|name| name == TRANSCRIPT))
-            .ok_or_else(|| Error::NotFound(INFO.session(native)))?;
-        super::lines(file, 0, |bytes| {
-            let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
-                return;
-            };
-            let at = line["created_at"].as_str().and_then(crate::time::millis);
-            let step = line["step_index"].as_i64();
-            let held = |field: &str| line[field].as_str().unwrap_or_default();
-            match line["type"].as_str() {
-                Some("USER_INPUT") if line["source"] == "USER_EXPLICIT" => {
-                    conversation.say(Kind::User, at, &request(held("content")));
-                }
-                Some("PLANNER_RESPONSE") => {
-                    conversation.say(Kind::Reasoning, at, held("thinking"));
-                    conversation.say(Kind::Assistant, at, held("content"));
-                    let calls = line["tool_calls"].as_array().into_iter().flatten();
-                    for (n, call) in calls.enumerate() {
-                        let name = call["name"].as_str().unwrap_or("tool");
-                        // The step that answers it, which is all that ties
-                        // the two.
-                        let answered = step.map(|step| (step + 1 + n as i64).to_string());
-                        conversation.call(answered.as_deref(), at, name, call["args"].to_string());
-                        // Where a tool that writes a file names it.
-                        let named = match name {
-                            "replace_file_content" | "write_to_file" => "TargetFile",
-                            "write_file" | "edit_file" => "Path",
-                            _ => continue,
-                        };
-                        let file = call["args"][named].as_str();
-                        conversation.changed(file.map(str::to_owned));
-                    }
-                }
-                Some("GENERIC") => {
-                    if let Some(step) = step {
-                        let failed = line["status"] == "ERROR";
-                        conversation.answer(&step.to_string(), held("content").to_owned(), failed);
-                    }
-                }
-                Some("CHECKPOINT") => {
-                    conversation.say(Kind::Summary, at, summarized(held("content")));
-                }
-                _ => conversation.say(Kind::System, at, held("content")),
-            }
-        })?;
-        Ok(conversation.entries)
     }
 
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
@@ -357,14 +277,6 @@ impl Agent for Antigravity {
             return None;
         }
         Some(server["command"].as_str()?.to_owned())
-    }
-
-    fn role(&self, name: &str) -> Role {
-        match name {
-            "view_file" | "read_file" | "list_dir" | "search_web" => Role::Read,
-            "ask_question" => Role::Ask,
-            _ => Role::Work,
-        }
     }
 }
 
@@ -408,28 +320,6 @@ fn request(content: &str) -> String {
         Some(request) => request.trim().to_owned(),
         None => super::without_tags(content, &["ADDITIONAL_METADATA", "USER_SETTINGS_CHANGE"]),
     }
-}
-
-/// How Antigravity opens a checkpoint's summary, after its number, and what
-/// it tells its model after one.
-const BEFORE_SUMMARY: &str = "**The earlier parts of this conversation have been truncated";
-const AFTER_SUMMARY: &str = "**IMPORTANT: this summary is just for your reference.";
-
-/// A checkpoint's summary without what Antigravity wraps it in: its number,
-/// the line saying what it is, and the instruction that ends it.
-fn summarized(content: &str) -> &str {
-    let mut text = content.trim();
-    if let Some((_, numbered)) = text
-        .strip_prefix("{{ CHECKPOINT")
-        .and_then(|rest| rest.split_once("}}"))
-    {
-        text = numbered.trim_start();
-    }
-    if text.starts_with(BEFORE_SUMMARY) {
-        text = text.split_once('\n').map_or("", |(_, summary)| summary);
-    }
-    let end = text.find(AFTER_SUMMARY).unwrap_or(text.len());
-    text[..end].trim()
 }
 
 /// Read a conversation's database on from `cursor`: when it worked, where,
@@ -551,9 +441,9 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Resu
     Ok(read)
 }
 
-/// Read a transcript on from `cursor`: what the person and the models said,
-/// and the session's first request as its title.
-fn said(file: &Path, cursor: &str) -> Result<Read> {
+/// Read a transcript on from `cursor`: when the session worked, and its
+/// first request as its title.
+fn transcript(file: &Path, cursor: &str) -> Result<Read> {
     let mut cursor: Lines = serde_json::from_str(cursor).unwrap_or_default();
     let mut read = Read::default();
     // `brain/<id>/.system_generated/logs/transcript_full.jsonl`.
@@ -575,18 +465,12 @@ fn said(file: &Path, cursor: &str) -> Result<Read> {
         if let Some(at) = line["created_at"].as_str().and_then(crate::time::millis) {
             facts.saw(at);
         }
-        let content = line["content"].as_str().unwrap_or_default();
-        match line["type"].as_str() {
-            Some("USER_INPUT") if line["source"] == "USER_EXPLICIT" => {
-                let request = request(content);
-                if !cursor.titled && !request.is_empty() {
-                    facts.title(Title::Prompt, &request);
-                    cursor.titled = true;
-                }
-                read.say(&session, &request);
+        if !cursor.titled && line["type"] == "USER_INPUT" && line["source"] == "USER_EXPLICIT" {
+            let request = request(line["content"].as_str().unwrap_or_default());
+            if !request.is_empty() {
+                facts.title(Title::Prompt, &request);
+                cursor.titled = true;
             }
-            Some("PLANNER_RESPONSE") => read.say(&session, content),
-            _ => {}
         }
     })?;
     read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
@@ -640,10 +524,7 @@ fn titles_in(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
         let facts = read.session(&INFO.session(&native));
         facts.title(Title::Generated, &title);
         if !parent.is_empty() {
-            facts.parent = Some(Parent {
-                id: INFO.session(&parent),
-                link: Link::Subagent,
-            });
+            facts.parent = Some(INFO.session(&parent));
         }
     }
     Ok(read)
@@ -887,83 +768,31 @@ mod tests {
     }
 
     /// A transcript's lines: the four of `c1`, then three a longer
-    /// conversation would add.
+    /// conversation would add. The reader takes each line's time, and what a
+    /// request holds.
     fn lines() -> Vec<Value> {
-        let line = |step: u64, source: &str, kind: &str, status: &str, more: Value| {
-            let mut line = json!({"step_index": step, "source": source, "type": kind,
-                "status": status, "created_at": format!("1970-01-01T00:16:{}Z", 40 + step)});
-            line.as_object_mut()
-                .unwrap()
-                .extend(more.as_object().unwrap().clone());
-            line
+        let line = |step: u64, source: &str, kind: &str, content: &str| {
+            json!({"step_index": step, "source": source, "type": kind, "content": content,
+                "created_at": format!("1970-01-01T00:16:{}Z", 40 + step)})
         };
         vec![
             line(
                 0,
                 "USER_EXPLICIT",
                 "USER_INPUT",
-                "DONE",
-                json!({"content": "<USER_REQUEST>\nFix the form's validation.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 1970-01-01T00:16:40Z.\n</ADDITIONAL_METADATA>"}),
+                "<USER_REQUEST>\nFix the form's validation.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 1970-01-01T00:16:40Z.\n</ADDITIONAL_METADATA>",
             ),
-            line(
-                1,
-                "MODEL",
-                "PLANNER_RESPONSE",
-                "DONE",
-                json!({"thinking": "The check runs before the field is filled.",
-                    "tool_calls": [
-                        {"name": "write_to_file", "args": {"TargetFile": "/work/my app/form.ts", "CodeContent": "check()"}},
-                        {"name": "run_command", "args": {"CommandLine": "npm test"}}]}),
-            ),
-            line(
-                2,
-                "MODEL",
-                "GENERIC",
-                "DONE",
-                json!({"content": "Created file."}),
-            ),
-            line(
-                4,
-                "MODEL",
-                "PLANNER_RESPONSE",
-                "DONE",
-                json!({"content": "Fixed: the check runs on submit."}),
-            ),
+            line(1, "MODEL", "PLANNER_RESPONSE", ""),
+            line(2, "MODEL", "GENERIC", "Created file."),
+            line(4, "MODEL", "PLANNER_RESPONSE", "Fixed."),
             line(
                 5,
                 "USER_EXPLICIT",
                 "USER_INPUT",
-                "DONE",
-                json!({"content": "<USER_REQUEST>\nRun the tests.\n</USER_REQUEST>"}),
+                "<USER_REQUEST>\nRun the tests.\n</USER_REQUEST>",
             ),
-            line(
-                6,
-                "MODEL",
-                "PLANNER_RESPONSE",
-                "DONE",
-                json!({"tool_calls": [{"name": "run_command", "args": {"CommandLine": "npm test"}}]}),
-            ),
-            line(
-                7,
-                "MODEL",
-                "GENERIC",
-                "ERROR",
-                json!({"error": "exit 1", "content": "1 test failed."}),
-            ),
-            line(
-                8,
-                "SYSTEM",
-                "CHECKPOINT",
-                "DONE",
-                json!({"content": "{{ CHECKPOINT 0 }}\n **The earlier parts of this conversation have been truncated due to its long length. The following content summarizes the truncated context so that you may continue your work. **\n\n\n# User Requests\n1. Fix the form's validation.\n\n**IMPORTANT: this summary is just for your reference. DO NOT ACKNOWLEDGE THIS CHECKPOINT MESSAGE.**"}),
-            ),
-            line(
-                9,
-                "SYSTEM",
-                "SYSTEM_MESSAGE",
-                "DONE",
-                json!({"content": "A background task ended."}),
-            ),
+            line(8, "MODEL", "PLANNER_RESPONSE", "They pass."),
+            line(9, "SYSTEM", "SYSTEM_MESSAGE", "A background task ended."),
         ]
     }
 
@@ -1008,29 +837,11 @@ mod tests {
         );
         let session = &read.sessions["antigravity:c1"];
         assert_eq!(session.cwd.as_deref(), Some("/work/my app"));
-        assert_eq!(
-            (session.started, session.last),
-            (Some(990_000), Some(1_010_500))
-        );
+        assert_eq!(session.last, Some(1_010_500));
 
-        let said = Antigravity.read(&transcript, "").unwrap();
-        assert_eq!(
-            said.said,
-            [
-                (
-                    "antigravity:c1".to_owned(),
-                    "Fix the form's validation.".to_owned(),
-                    None
-                ),
-                (
-                    "antigravity:c1".to_owned(),
-                    "Fixed: the check runs on submit.".to_owned(),
-                    None
-                ),
-            ]
-        );
+        let asked = Antigravity.read(&transcript, "").unwrap();
         let title = |read: &Read| read.sessions["antigravity:c1"].title.clone().unwrap();
-        assert!(title(&said) == (Title::Prompt, "Fix the form's validation.".to_owned()));
+        assert!(title(&asked) == (Title::Prompt, "Fix the form's validation.".to_owned()));
         // Antigravity's own title is the better; one it never used has none.
         let titled = Antigravity.read(&titles, "").unwrap();
         assert!(title(&titled) == (Title::Generated, "Fix the form".to_owned()));
@@ -1158,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transcript_read_in_two_parts_says_nothing_twice() {
+    fn a_transcript_read_in_two_parts_is_titled_by_its_first_request_alone() {
         let home = tempfile::tempdir().unwrap();
         let (_, transcript, _) = kept(home.path());
         let first = Antigravity.read(&transcript, "").unwrap();
@@ -1168,61 +979,16 @@ mod tests {
         text.push_str(&more.join("\n"));
         std::fs::write(&transcript, &text).unwrap();
         let later = Antigravity.read(&transcript, &first.cursor).unwrap();
-        // The later part's request is said, and isn't the session's title.
-        assert_eq!(later.said.len(), 1);
-        assert_eq!(later.said[0].1, "Run the tests.");
-        assert!(later.sessions["antigravity:c1"].title.is_none());
+        // The later part's request isn't the session's title, and its lines
+        // say when the session last worked: all but the last, not yet ended.
+        let session = &later.sessions["antigravity:c1"];
+        assert!(session.title.is_none());
+        assert_eq!(session.last, Some(1_008_000));
         text.push('\n');
         std::fs::write(&transcript, &text).unwrap();
-        let whole = Antigravity.read(&transcript, "").unwrap();
-        assert_eq!([first.said, later.said].concat(), whole.said);
         let last = Antigravity.read(&transcript, &later.cursor).unwrap();
-        assert!(last.said.is_empty() && last.skipped == 0);
-    }
-
-    #[test]
-    fn a_transcript_puts_each_output_in_the_call_its_step_answers() {
-        let home = tempfile::tempdir().unwrap();
-        let (database, transcript, titles) = kept(home.path());
-        super::super::jsonl(transcript.clone(), &lines());
-        // Whichever of a session's files come, and in any order.
-        let entries = Antigravity
-            .transcript("c1", &[database, titles, transcript])
-            .unwrap();
-        assert_eq!(
-            entries.iter().map(|entry| entry.kind).collect::<Vec<_>>(),
-            [
-                Kind::User,
-                Kind::Reasoning,
-                Kind::Tool,
-                Kind::Tool,
-                Kind::Assistant,
-                Kind::User,
-                Kind::Tool,
-                Kind::Summary,
-                Kind::System
-            ]
-        );
-        assert_eq!(entries[0].text, "Fix the form's validation.");
-        // The summary, without what Antigravity wraps it in.
-        assert_eq!(
-            entries[7].text,
-            "# User Requests\n1. Fix the form's validation."
-        );
-        assert_eq!(summarized("Moved the check."), "Moved the check.");
-        assert_eq!(entries[0].at, Some(1_000_000));
-        let tool = |at: usize| entries[at].tool.as_ref().unwrap();
-        assert_eq!(
-            (tool(2).name.as_str(), tool(2).output.as_deref()),
-            ("write_to_file", Some("Created file."))
-        );
-        assert_eq!(tool(2).files, ["/work/my app/form.ts"]);
-        // The second call's step, 3, is in no line.
-        assert_eq!(tool(3).output, None);
-        assert_eq!(
-            (tool(6).output.as_deref(), tool(6).failed, tool(6).edited),
-            (Some("1 test failed."), true, false)
-        );
+        assert_eq!(last.sessions["antigravity:c1"].last, Some(1_009_000));
+        assert_eq!(last.skipped, 0);
     }
 
     #[test]
@@ -1242,53 +1008,6 @@ mod tests {
                 "<USER_SETTINGS_CHANGE>\nThe model is now Gemini 3.8 Flash.\n</USER_SETTINGS_CHANGE>\n{added}"
             )),
             ""
-        );
-    }
-
-    #[test]
-    fn a_file_is_changed_by_either_name_its_tools_give_it() {
-        let home = tempfile::tempdir().unwrap();
-        let (_, transcript, _) = kept(home.path());
-        let call = |name: &str, args: Value| json!({"name": name, "args": args});
-        let response = json!({
-            "step_index": 1,
-            "source": "MODEL",
-            "type": "PLANNER_RESPONSE",
-            "status": "DONE",
-            "created_at": "1970-01-01T00:16:40Z",
-            "tool_calls": [
-                call("write_file", json!({"Path": "/work/a.md", "Content": "a"})),
-                call("edit_file", json!({"Path": "/work/b.md", "Target": "a", "Replacement": "b"})),
-                call("replace_file_content", json!({"TargetFile": "/work/c.md"})),
-                call("read_file", json!({"Path": "/work/d.md"})),
-            ],
-        });
-        super::super::jsonl(transcript.clone(), &[response]);
-        let entries = Antigravity.transcript("c1", &[transcript]).unwrap();
-        let changed: Vec<String> = entries
-            .iter()
-            .filter_map(|entry| entry.tool.as_ref())
-            .map(|tool| tool.files.join(" "))
-            .collect();
-        assert_eq!(changed, ["/work/a.md", "/work/b.md", "/work/c.md", ""]);
-        for (name, role) in [
-            ("read_file", Role::Read),
-            ("ask_question", Role::Ask),
-            ("write_file", Role::Work),
-        ] {
-            assert_eq!(Antigravity.role(name), role);
-        }
-    }
-
-    #[test]
-    fn a_conversation_whose_transcript_is_gone_cant_be_read() {
-        let home = tempfile::tempdir().unwrap();
-        let (database, _, titles) = kept(home.path());
-        let gone = Antigravity.transcript("c1", &[database, titles]);
-        assert!(
-            matches!(&gone, Err(Error::NotFound(session)) if session == "antigravity:c1"),
-            "{:?}",
-            gone.map(|entries| entries.len())
         );
     }
 
@@ -1321,8 +1040,10 @@ mod tests {
             )
             .unwrap();
         let read = Antigravity.read(&titles, "").unwrap();
-        let parent = read.sessions["antigravity:c3"].parent.as_ref().unwrap();
-        assert!(parent.id == "antigravity:c1" && parent.link == Link::Subagent);
+        assert_eq!(
+            read.sessions["antigravity:c3"].parent.as_deref(),
+            Some("antigravity:c1")
+        );
         assert!(read.sessions["antigravity:c3"].title.is_none());
         assert!(!read.sessions.contains_key("antigravity:c4"));
     }

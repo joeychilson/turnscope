@@ -656,8 +656,8 @@ mod tests {
             ("codex:after", "Add a flag", now - hour / 2),
         ] {
             db.execute(
-                "INSERT INTO session (id, agent, folder, cwd, project, title, started, last)
-                 VALUES (?1, 'codex', 'f', '/work/app', '/work/app', ?2, ?3, ?3)",
+                "INSERT INTO session (id, agent, project, title, last)
+                 VALUES (?1, 'codex', '/work/app', ?2, ?3)",
                 rusqlite::params![id, title, at],
             )
             .unwrap();

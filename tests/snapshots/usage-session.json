@@ -1,0 +1,128 @@
+{
+  "by": "session",
+  "rest": null,
+  "rows": [
+    {
+      "costUsd": 0.46799999999999997,
+      "key": "claude-code:7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
+      "name": "Add retries with backoff to the HTTP client.",
+      "responses": 24,
+      "tokens": {
+        "cacheRead": 480000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 9600,
+        "output": 7200,
+        "reasoning": 0
+      },
+      "unpriced": 0
+    },
+    {
+      "costUsd": 0.030199999999999998,
+      "key": "claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60",
+      "name": "Fix the CSV parser so quoted commas work. Don't change the public API.",
+      "responses": 3,
+      "tokens": {
+        "cacheRead": 2900,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 2500,
+        "output": 650,
+        "reasoning": 0
+      },
+      "unpriced": 0
+    },
+    {
+      "costUsd": 0.021,
+      "key": "grok-build:8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a",
+      "name": "Fix the broken links in the guide",
+      "responses": 1,
+      "tokens": {
+        "cacheRead": 16000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 8000,
+        "output": 700,
+        "reasoning": 300
+      },
+      "unpriced": 0
+    },
+    {
+      "costUsd": 0.005,
+      "key": "opencode:ses_2f9a8b7c6d5e4f3a2b1c0d9e8f",
+      "name": "Show signup errors inline",
+      "responses": 2,
+      "tokens": {
+        "cacheRead": 12000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 2200,
+        "output": 480,
+        "reasoning": 100
+      },
+      "unpriced": 0
+    },
+    {
+      "costUsd": 0.0015999999999999999,
+      "key": "pi:5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+      "name": "Add a --quiet flag that hides the progress bar.",
+      "responses": 2,
+      "tokens": {
+        "cacheRead": 3000,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 3300,
+        "output": 310,
+        "reasoning": 0
+      },
+      "unpriced": 0
+    },
+    {
+      "costUsd": 0.0,
+      "key": "codex:019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
+      "name": "Skip blank lines in the importer",
+      "responses": 4,
+      "tokens": {
+        "cacheRead": 32400,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 4100,
+        "output": 710,
+        "reasoning": 240
+      },
+      "unpriced": 4
+    },
+    {
+      "costUsd": 0.0,
+      "key": "antigravity:4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f",
+      "name": "Sorting the notes by date",
+      "responses": 2,
+      "tokens": {
+        "cacheRead": 4200,
+        "cacheWrite1h": 0,
+        "cacheWrite5m": 0,
+        "input": 2200,
+        "output": 320,
+        "reasoning": 110
+      },
+      "unpriced": 2
+    }
+  ],
+  "since": 1790640000000,
+  "total": {
+    "costUsd": 0.5258,
+    "key": "total",
+    "name": null,
+    "responses": 38,
+    "tokens": {
+      "cacheRead": 550500,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 0,
+      "input": 31900,
+      "output": 10370,
+      "reasoning": 750
+    },
+    "unpriced": 6
+  },
+  "until": 1790856000000
+}

@@ -32,7 +32,6 @@ nothing to sign in to.
 - Notifies you when a limit is about to run out, runs out or is back.
 - Shows what used your limits and what it cost, by session, project,
   model, agent or account.
-- Writes a handoff, so another agent can finish a session's work.
 - Lets your agents check their own limits before a long task.
 
 ## Install
@@ -58,7 +57,6 @@ turnscope status                # every limit, when it resets, and the work left
 turnscope status --hours 3      # whether 3 more hours of work fit
 turnscope usage --by model      # the last 30 days by model, at list prices
 turnscope usage --limit week    # what used your weekly limit
-turnscope handoff               # a handoff of the latest session in this folder
 turnscope doctor                # what can't be read, and how to fix it
 ```
 
@@ -76,8 +74,8 @@ agent's own command.
   <img alt="Connecting agents in Turnscope's settings" src=".github/screenshots/agents-light.png" width="420">
 </picture>
 
-A connected agent can see how much work its limit has left, what used it,
-and where another session stopped. See [docs/mcp.md](docs/mcp.md).
+A connected agent can see how much work its limit has left and what used
+it. See [docs/mcp.md](docs/mcp.md).
 
 For Claude Code, [`guard`](docs/cli.md#guard) stops subagents from
 starting when a limit is low, and [`statusline`](docs/cli.md#status-line)
@@ -89,7 +87,9 @@ shows your limits under the prompt.
   it makes is adding or removing its MCP server when you ask, with the
   agent's own command.
 - Each login is sent only to its own provider, to read your limits.
-  Turnscope stores no secrets.
+  Turnscope stores no logins.
+- Of what's said in a session, it keeps only the title: the one you or the
+  agent gave it, or else the first thing you asked.
 - It also downloads model prices from [models.dev](https://models.dev) and
   updates from GitHub. There is no telemetry.
 
@@ -110,7 +110,6 @@ defaults delete com.joeychilson.turnscope
 
 - [Command line](docs/cli.md)
 - [MCP server](docs/mcp.md)
-- [Handoffs](docs/handoff.md)
 
 To work on Turnscope:
 
