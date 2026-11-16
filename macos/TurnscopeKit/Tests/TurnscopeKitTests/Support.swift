@@ -12,20 +12,16 @@ let root = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent()
 
 /// The file `name` in the repository's `contract/` folder.
-func contract(_ name: String) throws -> Data {
-    try Data(contentsOf: root.appending(path: "contract/\(name)"))
-}
-
-/// The path of the contract's example `name`.
-func example(_ name: String) -> String {
-    root.appending(path: "contract/\(name)").path
+func contract(_ name: String) -> URL {
+    root.appending(path: "contract/\(name)")
 }
 
 /// The `result` of the contract's `hello` answer, as JSON, with the whole
 /// status of the contract's `status` notification.
 func helloResult() throws -> [String: Any] {
-    let hello = try JSONSerialization.jsonObject(with: contract("hello.result.json")) as? [String: Any]
-    let pushed = try JSONSerialization.jsonObject(with: contract("status.notification.json")) as? [String: Any]
+    let hello = try JSONSerialization.jsonObject(with: Data(contentsOf: contract("hello.result.json"))) as? [String: Any]
+    let pushed = try JSONSerialization.jsonObject(with: Data(contentsOf: contract("status.notification.json")))
+        as? [String: Any]
     return (hello?["result"] as? [String: Any] ?? [:]).merging(["status": pushed?["params"] ?? [String: Any]()]) { $1 }
 }
 
@@ -60,10 +56,10 @@ func marker() -> URL {
 
 /// A stand-in for the `turnscope` binary. `serve --socket` prints `socket`.
 /// `--version` prints `version`, which defaults to the engine named in the
-/// contract's `hello`. `serve` touches `started`, which a test watches for.
+/// contract's `hello`. `serve` touches `started`, which a test can watch for.
 /// With `fails`, it then says that on standard error and exits 1, as a serve
 /// that can't start does.
-func binary(socket: String, started: URL, version: String? = nil, fails: String? = nil) throws -> URL {
+func binary(socket: String, started: URL = marker(), version: String? = nil, fails: String? = nil) throws -> URL {
     let folder = scratch.appending(path: "engine-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     let url = folder.appending(path: "turnscope")

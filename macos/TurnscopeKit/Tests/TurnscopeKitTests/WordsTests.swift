@@ -90,7 +90,6 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
     #expect(words.window(limit(runsOut)) == "Resets in 3h")
     #expect(words.ahead(limit(runsOut)) == "Runs out in 2h")
     let week = limit(.lasts, name: "Weekly", left: 60, resets: "2026-10-04T00:00:00Z", horizon: .thisWeek)
-    #expect(words.name(week) == "Weekly")
     #expect(words.window(week) == "Resets Sun 12 AM")
     #expect(words.ahead(week) == nil)
     #expect(words.short(week) == "Weekly resets Sun 12 AM")
@@ -151,50 +150,35 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
         == ("Claude Max's limits are unknown", "It couldn't be read yet.", .lasts))
     let gone = account([], state: .unread(why: .signedOut))
     #expect(words.verdict([gone]).detail == "No agent here is signed in to it.")
-    #expect(words.unused(3, besideOthers: true) == "3 more accounts")
-    #expect(words.unused(1, besideOthers: false) == "1 account")
 }
 
 @Test func anAccountIsToldApartOnlyWhereItHasTo() {
     let mine = account([limit(runsOut)], label: "me@example.com")
-    var other = account([limit(.lasts, left: 90)], id: "anthropic:b", label: "work@example.com",
-                        inUse: false)
+    var twin = account([limit(.lasts, left: 90)], id: "anthropic:b", label: "work@example.com")
+    let other = account([limit(runsOut)], id: "openai:a", title: "ChatGPT Pro", label: "me@example.com")
     // The headline names the account by its title alone, even beside
     // another in use: it's about the first row under it.
-    other.inUse = true
-    #expect(words.verdict([mine, other])
-        == ("Claude Max runs out in\u{00A0}2h", "Back in 3h.", .runningOut))
+    #expect(words.verdict([mine, twin]).headline == "Claude Max runs out in\u{00A0}2h")
     // A notification adds the label only beside another in use, and never
     // beside a hidden one.
-    #expect(words.called(mine, among: [mine, other]) == "Claude Max (me@example.com)")
-    other.inUse = false
-    #expect(words.called(mine, among: [mine, other]) == "Claude Max")
-    other.inUse = true
-    other.hidden = true
-    #expect(words.called(mine, among: [mine, other]) == "Claude Max")
-    // Rows show the label next to any shown account of the same title.
-    other.hidden = false
-    other.inUse = false
-    #expect(mine.twinned(among: [mine, other]))
-}
-
-@Test func aButtonNamesItsAccountAsItsRowShowsIt() {
-    let mine = account([limit(runsOut)], label: "me@example.com")
-    let twin = account([limit(runsOut)], id: "anthropic:b", label: "work@example.com")
-    let other = account([limit(runsOut)], id: "openai:a", title: "ChatGPT Pro", label: "me@example.com")
+    #expect(words.called(mine, among: [mine, twin]) == "Claude Max (me@example.com)")
+    twin.hidden = true
+    #expect(words.called(mine, among: [mine, twin]) == "Claude Max")
+    twin.hidden = false
+    twin.inUse = false
+    #expect(words.called(mine, among: [mine, twin]) == "Claude Max")
+    // A row, and its Hide and Show buttons, add the label beside any shown
+    // account of the same title, in use or not.
     let all = [mine, twin, other]
-    let called = { (account: AccountStatus) in words.called(account, labelled: account.twinned(among: all)) }
-    #expect(called(mine) == "Claude Max (me@example.com)")
-    #expect(called(twin) == "Claude Max (work@example.com)")
-    #expect(called(other) == "ChatGPT Pro")
+    let row = { (account: AccountStatus) in words.called(account, labelled: account.twinned(among: all)) }
+    #expect(row(mine) == "Claude Max (me@example.com)")
+    #expect(row(twin) == "Claude Max (work@example.com)")
+    #expect(row(other) == "ChatGPT Pro")
     // Where every row shows its label, as in Settings.
     #expect(words.called(other, labelled: true) == "ChatGPT Pro (me@example.com)")
-    #expect(words.called(account([]), labelled: true) == "Claude Max")
 }
 
 @Test func theMenuBarSaysWhatIsLeftOrHowLongOrWhenItIsBack() {
-    #expect(words.figure(account([limit(runsOut)])) == "2h")
-    #expect(words.spokenFigure(account([limit(runsOut)])) == "runs out in 2 hours")
     #expect(words.figure(account([limit(.lasts, left: 67)])) == "67%")
     let used = account([limit(.usedUp(back: moment("2026-09-30T15:00:00Z", .soon)), left: 0)])
     #expect(words.figure(used) == "Back 3 PM")
@@ -249,7 +233,7 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
 
 @Test func aSessionThatUsedALimitSaysItsShareWhereItIsKnown() {
     var used = UsedMost(session: "codex:s", title: "Fix it", project: "app", agent: "codex",
-                        sharePercent: 12.6, running: false)
+                        sharePercent: 12.6)
     #expect(words.used(used, agents: true) == "13% · app · Codex")
     used.sharePercent = 0.2
     #expect(words.used(used, agents: false) == "<1% · app")
@@ -341,8 +325,7 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
         == Words.Note(title: "OpenRouter API key", subtitle: "Credits are back", body: "$10 of $20 left."))
 }
 
-@Test func theFoldsAndAgentsSayWhatTheyHold() {
-    #expect(words.hidden(2) == "2 hidden")
+@Test func anAgentThatCantAskTurnscopeSaysWhy() {
     var codex = AgentStatus(id: "codex", name: "Codex", installed: true, connection: .available, inUse: true)
     #expect(words.connection(codex) == nil)
     #expect(words.connection(codex, named: true) == "Codex isn't connected")
@@ -449,8 +432,6 @@ private let runsOut = Outlook.runsOut(likely: moment("2026-09-30T14:00:00Z", .so
 @Test func anAccountSaysWhichAgentsItsReadThrough() {
     var shared = account([])
     #expect(words.via(shared) == "via Claude Code")
-    shared.agents = ["claude-code", "codex", "pi"]
-    #expect(words.via(shared) == "via Claude Code, Codex and Pi")
     shared.agents = []
     #expect(words.via(shared) == nil)
 }

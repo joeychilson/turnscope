@@ -23,11 +23,6 @@
 //! same models: in every one of 13 cases, the parent's own model calls and
 //! its finished subagents' added up to its turn's. So a parent's turn is
 //! counted less what those subagents' turns counted.
-//!
-//! **Titles.** A session Grok Build gave no title is titled by the first
-//! thing the person asked, its first `user_message_chunk`. Their words are
-//! in `<user_query>`, beside context Grok Build adds (its rules, the git
-//! status, the folder).
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{Agent, Credential, Info, Login, Read, Response, Secret, Session, Title, Tokens};
-use crate::{Error, Result};
+use crate::Result;
 
 pub struct GrokBuild;
 
@@ -98,16 +93,16 @@ impl Agent for GrokBuild {
     }
 
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
+        let mut read = Read::default();
         let native = file
             .parent()
             .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                Error::Failed(format!("{} isn't a Grok Build session's", file.display()))
-            })?;
+            .and_then(|name| name.to_str());
+        let Some(native) = native else {
+            return Ok(read);
+        };
         let session = INFO.session(native);
         let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
-        let mut read = Read::default();
         match file.file_name().and_then(|name| name.to_str()) {
             // Rewritten whole.
             Some("summary.json") => {
@@ -148,13 +143,7 @@ impl Agent for GrokBuild {
     }
 }
 
-/// Note in `facts` what its session's `summary.json`, `summary`, says.
 fn summary(summary: &Value, facts: &mut Session) {
-    for at in ["created_at", "updated_at", "last_active_at"] {
-        if let Some(at) = summary[at].as_str().and_then(crate::time::millis) {
-            facts.saw(at);
-        }
-    }
     let text = |field: &Value| {
         field
             .as_str()
@@ -172,7 +161,6 @@ fn summary(summary: &Value, facts: &mut Session) {
     }
 }
 
-/// Read `updates.jsonl` past `cursor` into `read`.
 fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
     let sessions = file.ancestors().nth(3);
     cursor.offset = super::lines(file, cursor.offset, |bytes| {
@@ -181,9 +169,6 @@ fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> 
             return;
         };
         let at = line["timestamp"].as_i64().map(|seconds| seconds * 1000);
-        if let Some(at) = at {
-            read.session(session).saw(at);
-        }
         let update = &line["params"]["update"];
         match update["sessionUpdate"].as_str() {
             Some("turn_completed") => {
@@ -464,18 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_the_person_typed_is_theirs_and_grok_builds_own_are_taken_out() {
-        let asked = "Give each <agent> its own <dir>, then list the <rules> it reads.";
-        // In their query, and in a message with none.
-        for sent in [
-            format!("<user_info>macOS</user_info><user_query>{asked}</user_query>"),
-            format!("<git_status>clean</git_status>{asked}"),
-        ] {
-            assert_eq!(typed(&sent), asked);
-        }
+    fn a_message_with_no_query_loses_what_grok_build_added() {
         assert_eq!(
-            typed("<rules>Be brief.</rules><git_status>clean</git_status>"),
-            ""
+            typed("<rules>Be brief.</rules><git_status>clean</git_status>Speed up the build."),
+            "Speed up the build."
         );
     }
 }

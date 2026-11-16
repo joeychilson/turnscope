@@ -2,13 +2,10 @@
 //! draw on.
 //!
 //! Codex, OpenCode and Pi sign in with the same OpenAI client, so a token
-//! from any of them reads the same usage. The token is a JWT naming the
-//! workspace it was issued for and its owner's email; one person can be in
-//! several workspaces, so the request names the token's. Each limit is a
-//! window of `limit_window_seconds`, with `used_percent` and `reset_at`;
-//! limits on particular models come in `additional_rate_limits`, each named.
-//! An API key carries no limit an agent's key can read: OpenAI tells usage
-//! only to an admin key.
+//! from any of them reads the same usage. The token names the workspace it
+//! was issued for; one person can be in several workspaces, so the request
+//! names the token's. An API key carries no limit an agent's key can read:
+//! OpenAI tells usage only to an admin key.
 
 use serde_json::Value;
 
@@ -29,10 +26,7 @@ impl Provider for OpenAi {
     }
 
     fn account(&self, credential: &Credential) -> Option<Account> {
-        if credential.key {
-            return Some(super::api_account(INFO.id));
-        }
-        Some(super::subscription(INFO.id, workspace(credential)?))
+        super::account(INFO.id, credential, || workspace(credential))
     }
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
@@ -74,7 +68,6 @@ fn parse(answer: &Value, now: i64) -> Option<Limits> {
         }
     }
     Some(Limits {
-        // `prolite` is Pro Lite.
         plan: answer["plan_type"]
             .as_str()
             .map(|plan| plan.replace("prolite", "pro lite")),

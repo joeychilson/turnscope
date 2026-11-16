@@ -2,14 +2,9 @@
 //! account its keys spend.
 //!
 //! Which key a response used isn't recorded, so every key is one account,
-//! `openrouter:api`. `GET /api/v1/key` answers for the key: `limit` in
-//! dollars or null, `limit_remaining`, `limit_reset` (`daily`, `weekly` or
-//! `monthly` by UTC days, weeks from Monday and months; null for never), and
-//! what it used in all and this day, week and month. A key's limit is keyed
-//! `key-` and its fingerprint, as the key is never kept. `GET
-//! /api/v1/credits` gives the account's `total_credits` and `total_usage`; a
-//! key without access to credits still reports its own limit. A limit of 0
-//! or less is no limit.
+//! `openrouter:api`. A key's limit is keyed by the key's fingerprint, as the
+//! key is never kept. A key without access to credits still reports its own
+//! limit.
 //!
 //! `total_credits` is taken for all the account ever bought and
 //! `total_usage` for all it ever used, as they're named: no purchase was
@@ -44,8 +39,6 @@ impl Provider for OpenRouter {
     }
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {
-        // Both within the time one request gets elsewhere, as `guard` waits
-        // on a read.
         let began = std::time::Instant::now();
         let key = super::ask("https://openrouter.ai/api/v1/key", credential, &[])?;
         let name = format!("key-{}", credential.secret.fingerprint());
@@ -53,12 +46,13 @@ impl Provider for OpenRouter {
             .ok_or(Problem::Unavailable)?
             .into_iter()
             .collect();
-        let left = super::wait_left(began.elapsed());
-        match super::ask_within(
+        match super::asked(
             "https://openrouter.ai/api/v1/credits",
             credential,
             &[],
-            left,
+            None,
+            &[401, 403],
+            super::wait_left(began.elapsed()),
         ) {
             Ok(answer) => readings.extend(credits(&answer).ok_or(Problem::Unavailable)?),
             Err(Problem::SignIn) => {}

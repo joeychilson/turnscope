@@ -1,21 +1,5 @@
 //! `turnscope serve`: the daemon the menu bar app talks to, over JSON-RPC
 //! 2.0 on a Unix socket, one message a line (docs/protocol.md).
-//!
-//! The socket is `serve.sock` in the data directory, or for a path past the
-//! 103 bytes macOS allows, `$TMPDIR/turnscope-<hash>.sock`. It's the owner's
-//! alone (0600, in a 0700 directory). One serve runs per data directory
-//! (`serve.lock`); it exits a minute after its last client leaves, so an app
-//! restart reconnects without reading anything again.
-//!
-//! One thread answers requests. Another keeps the data current: it reads
-//! what changed 250 ms after the agents' folders do, no sooner than 5 s
-//! after it last did, and each minute reads history, limits when due and
-//! prices when due. After each that read anything new, ran in a new minute
-//! or followed another process's write, serve pushes the status, if what it
-//! shows changed, with the alerts it raised. At start it reads the limits
-//! before anything else and pushes the status then too, so a first launch
-//! shows them while all of history is read. Should that thread stop, serve
-//! stops too, so the app starts one that keeps it.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -34,8 +18,9 @@ use serde_json::{Value, json};
 use crate::{Error, Result, agents, alerts, status, usage};
 
 /// The protocol spoken, raised for any change a client can't ignore.
-pub const PROTOCOL: u64 = 2;
+pub const PROTOCOL: u64 = 3;
 
+/// macOS allows a socket path of 103 bytes at most.
 pub fn socket_path(data: &Path) -> PathBuf {
     let path = data.join("serve.sock");
     if path.as_os_str().len() <= 103 {
@@ -52,8 +37,7 @@ enum Message {
     /// The limits were read at start, or the data was brought up to date:
     /// it may show something new.
     Kept,
-    /// Keeping the data current stopped, and why: serve stops with it, so
-    /// the app starts one that can.
+    /// Keeping the data current stopped, and why.
     Stopped(String),
     /// A request answered off the loop, and whether it changed the status.
     Answered(u64, Value, bool),
@@ -64,7 +48,6 @@ struct Client {
     greeted: bool,
 }
 
-/// The status as the app is sent it: with the agents (`status::agents`).
 #[derive(Serialize, Deserialize)]
 struct AppStatus {
     #[serde(flatten)]
@@ -86,8 +69,7 @@ struct Server {
     db: Connection,
     home: PathBuf,
     clients: HashMap<u64, Client>,
-    /// The status last pushed, and what it shows: it less when it was
-    /// worked out.
+    /// The status last pushed, and what it shows: all of it but `at`.
     sent: Option<(status::Status, Value)>,
     sender: Sender<Message>,
 }
@@ -220,31 +202,26 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
 
 /// The least time from one catch-up's end to the next one's start, while
 /// agents write in their folders: 5 s, over catching up as soon as writes
-/// settle, a second at most. Many agents at work at once, as in an eval
-/// run, never let writes settle, so serve caught up all the while: each
-/// catch-up looks at every history file, and works out the status when it
-/// read something. Over 5,000 sessions, with a stand-in agent writing ten
-/// of them ten times a second for 30 s, serve ran 9.8G instructions without
-/// the gap and 3.2G with it. The cost: the panel shows what an agent wrote
-/// up to 5 s late.
+/// settle. Many agents at work at once never let writes settle, and each
+/// catch-up looks at every history file. Over 5,000 sessions, with a
+/// stand-in agent writing ten of them ten times a second for 30 s, serve ran
+/// 9.8G instructions without the gap and 3.2G with it. The cost: the panel
+/// shows what an agent wrote up to 5 s late.
 const GAP: Duration = Duration::from_secs(5);
 
-/// Keep the data current: the limits at start, then a catch-up, and one
-/// 250 ms after the agents' folders change, no sooner than `GAP` after the
-/// last catch-up, and each minute, as horizons and outlooks move with the
-/// clock.
+/// Catches up when the agents' folders change, and each minute, as horizons
+/// and outlooks move with the clock.
 fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
     let mut db = crate::db::open(data)?;
     let (changed, changes) = mpsc::channel();
     // Any write, not only to history: macOS reports a write when its file
     // is closed, and Codex keeps a session's file open, and OpenCode its
     // database, while they work. Their other writes are what show it.
-    // But for a SQLite database's `-shm` file, which whoever opens the
-    // database writes, Turnscope too: counted, a database that fails every
-    // read, with a log left beside it, started a catch-up every 5 seconds
-    // for good, each opening it again (21 in 100 s on a made-up one,
-    // measured 2026-11-11). What an agent writes to its database is in the
-    // `-wal` file.
+    // But not a SQLite database's `-shm` file, which Turnscope writes too
+    // when it opens the database: counted, a database that fails every read,
+    // with a log left beside it, started a catch-up every 5 s for good (21 in
+    // 100 s, measured 2026-11-11). An agent's writes to its database are in
+    // the `-wal` file.
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let ours = event.is_ok_and(|event| {
             !event.paths.is_empty()
@@ -270,24 +247,21 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
             let _ = watcher.watch(folder, notify::RecursiveMode::Recursive);
         }
     }
-    // When the status was last pushed: the minute, and SQLite's
-    // `data_version`, which moves when another connection writes, as an
-    // agent's MCP server reading history first does. A catch-up that read
-    // nothing new, in the same minute, with no one else's write since, would
-    // push the same status: as when an agent writes in its folder anything
-    // but its history. With a stand-in agent doing that three times a second
-    // for 30 s, serve ran 11.3G instructions pushing after every catch-up,
-    // and 0.4G with this. The cost: an agent's MCP settings changed outside
-    // the app show at the next minute.
+    // The minute and SQLite's `data_version` when the status was last
+    // pushed. `data_version` moves when another connection writes, as an
+    // agent's MCP server does. A catch-up that read nothing new, in the same
+    // minute, with no other write since, doesn't push: as when an agent
+    // writes anything but history in its folder. Chosen over pushing after
+    // every catch-up: with a stand-in agent writing so three times a second
+    // for 30 s, serve ran 11.3G instructions that way and 0.4G with this.
+    // The cost: an agent's MCP settings changed outside the app show at the
+    // next minute.
     let mut pushed = None;
-    // The limits first, and the main thread told, before the first
-    // catch-up: over telling it only once a catch-up is done, as every
-    // later one does. On a first launch that catch-up reads all of history
-    // (12 s for a made-up one of 5,000 files, 176 MB), and until it ended
-    // the app showed no account, though the limits were read before it
-    // began. The catch-up then finds the limits read, and reads prices and
-    // history. Offline, or with limits read in the last five minutes,
-    // nothing is told here.
+    // The limits first, and the main thread told, over telling it only once
+    // the first catch-up is done: on a first launch that reads all of
+    // history (12 s for a made-up one of 5,000 files, 176 MB), and the app
+    // showed no account until it ended. The catch-up then finds the limits
+    // read.
     if crate::online() {
         let read = crate::limits::refresh(&mut db, home).unwrap_or_else(|error| {
             eprintln!("turnscope serve: {error}");
@@ -332,8 +306,6 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
 }
 
 impl Server {
-    /// Push the status to every client, if what it shows changed, with the
-    /// alerts it raised.
     fn push(&mut self) {
         let app = match AppStatus::of(&self.db, &self.home, crate::now()) {
             Ok(app) => app,
@@ -542,8 +514,7 @@ impl Server {
         true
     }
 
-    /// The sessions that used most of a limit in its window, with the points
-    /// of it each took, of the status last pushed.
+    /// From the status last pushed: the one the app shows.
     fn breakdown(&self, account: &str, limit: &str, now: i64) -> Result<Vec<UsedMost>> {
         let status = match &self.sent {
             Some((status, _)) => Cow::Borrowed(status),
@@ -571,7 +542,7 @@ impl Server {
         )?;
         let mut sessions = Vec::new();
         for (at, row) in used.rows.iter().enumerate() {
-            let (project, agent, running) = crate::sessions::brief(&self.db, &row.key, now)?;
+            let (project, agent) = usage::brief(&self.db, &row.key)?;
             sessions.push(UsedMost {
                 session: row.key.clone(),
                 project: project
@@ -582,7 +553,6 @@ impl Server {
                 title: row.name.clone(),
                 agent,
                 share_percent: shares.as_ref().map(|shares| shares.rows[at]),
-                running,
             });
         }
         Ok(sessions)
@@ -598,11 +568,8 @@ struct UsedMost {
     /// Its folder's name.
     project: Option<String>,
     agent: String,
-    /// Points of the limit it took; `None` where the window's start isn't
-    /// known, as of credits or a window that rolls, where the window reset
-    /// since the limit was read, or where nothing used had a price.
+    /// Points of the limit it took.
     share_percent: Option<f64>,
-    running: bool,
 }
 
 #[cfg(test)]
@@ -629,68 +596,6 @@ mod tests {
         for each in hello["result"]["alerts"].as_array().unwrap() {
             again::<crate::alerts::Alert>(each);
         }
-    }
-
-    /// An account read two hours ago, an hour before its week ended: its one
-    /// limit reset since, so it decides the account and the app asks what
-    /// used it.
-    #[test]
-    fn what_used_a_limit_that_reset_since_its_read_is_the_sessions_since_with_no_share() {
-        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let db = crate::db::open(data.path()).unwrap();
-        let (now, hour) = (crate::now(), crate::time::HOUR);
-        db.execute(
-            "INSERT INTO account (id, provider, kind, title, read_at)
-             VALUES ('openai:a', 'openai', 'subscription', 'ChatGPT Plus', ?1)",
-            [now - 2 * hour],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
-             VALUES ('openai:a', 'weekly', ?1, 'Weekly', 40, ?2, ?3)",
-            [now - 2 * hour, now - 169 * hour, now - hour],
-        )
-        .unwrap();
-        for (id, title, at) in [
-            ("codex:before", "Fix the parser", now - 3 * hour),
-            ("codex:after", "Add a flag", now - hour / 2),
-        ] {
-            db.execute(
-                "INSERT INTO session (id, agent, project, title, last)
-                 VALUES (?1, 'codex', '/work/app', ?2, ?3)",
-                rusqlite::params![id, title, at],
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model, input,
-                     cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches,
-                     priority, cost, account)
-                 VALUES ('codex', ?1, ?1, 0, 1, 'f', ?2, 'openai', 'gpt-5', 1, 0, 0, 0, 1, 0, 1, 0, 0, 1.0, 'openai:a')",
-                rusqlite::params![id, at],
-            )
-            .unwrap();
-        }
-        let server = super::Server {
-            db,
-            home: home.path().to_path_buf(),
-            clients: super::HashMap::new(),
-            sent: None,
-            sender: std::sync::mpsc::channel().0,
-        };
-        let sessions = server.breakdown("openai:a", "weekly", now).unwrap();
-        // The one before used the week that ended, and no points of this
-        // one are known to be used.
-        assert_eq!(
-            serde_json::to_value(sessions).unwrap(),
-            serde_json::json!([{
-                "session": "codex:after",
-                "title": "Add a flag",
-                "project": "app",
-                "agent": "codex",
-                "sharePercent": null,
-                "running": false,
-            }])
-        );
     }
 
     /// The main thread is told once the limits are read, before the first
@@ -732,7 +637,6 @@ mod tests {
         let (limits, history) = told();
         assert!(limits.is_some() && !history);
         drop(reading);
-        // The catch-up finds the limits read, and reads the history.
         assert_eq!(told(), (limits, true));
     }
 

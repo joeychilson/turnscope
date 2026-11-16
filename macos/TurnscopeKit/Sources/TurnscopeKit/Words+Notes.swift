@@ -1,7 +1,3 @@
-// Notifications in words: the account as the title, what happened as the
-// subtitle, and when it's back or what to do as the body. Times are clock
-// times, since a notification stays on screen.
-
 import Foundation
 
 extension Words {

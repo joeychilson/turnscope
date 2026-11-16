@@ -13,7 +13,6 @@ mod mcp;
 mod prices;
 mod providers;
 mod serve;
-mod sessions;
 mod status;
 mod time;
 mod usage;
@@ -66,7 +65,6 @@ pub fn now() -> i64 {
         .unwrap_or_else(|| jiff::Timestamp::now().as_millisecond())
 }
 
-/// The first `bytes` bytes of the SHA-256 of `data`, in hex.
 pub fn sha256_hex(data: &[u8], bytes: usize) -> String {
     use sha2::Digest as _;
     sha2::Sha256::digest(data)[..bytes]
@@ -218,7 +216,6 @@ fn main() -> ExitCode {
         Command::Mcp => mcp::run(&home, &data).map(|()| String::new()),
         Command::Serve { socket: true } => Ok(serve::socket_path(&data).display().to_string()),
         Command::Serve { socket: false } => serve::run(&home, &data).map(|()| String::new()),
-        // A hook reads its exit code, so a guard that can't tell blocks nothing.
         Command::Guard {
             limit,
             below,
@@ -264,14 +261,12 @@ fn main() -> ExitCode {
     }
 }
 
-/// `path` made absolute, or as it is when it can't be.
 fn absolute(path: PathBuf) -> PathBuf {
     std::path::absolute(&path).unwrap_or(path)
 }
 
-/// A command's answer, as text or JSON. Those that report data catch up
-/// first, and say so on standard error when that can take long; those that
-/// change a setting don't wait for it.
+/// Commands that report data catch up first; those that change a setting
+/// don't wait for it.
 fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<String> {
     let mut db = db::open(data)?;
     let reports = match &command {
@@ -280,13 +275,9 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         _ => true,
     };
     if reports {
-        // Said before a wait that can take minutes, not left to a blank
-        // terminal.
         if let Some(wait) = ingest::waits(&db) {
             eprintln!("{wait}");
         }
-        // What's in the database still answers when what's new can't be
-        // read.
         if let Err(error) = catch_up(&mut db, home) {
             eprintln!(
                 "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
@@ -327,7 +318,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 _ => None,
             };
             let text = match shown.is_empty() {
-                true => status::none(&status, status::Cite::Command),
+                true => status::none(&status, "`turnscope status --all` shows them"),
                 false => status::text(&status, &shown, None),
             };
             let text = match &fit {
@@ -348,7 +339,6 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             let (account, limit) = limit_of(&db, home, &status, account.as_deref(), &name)?;
             let by = by.unwrap_or(usage::By::Session);
             let since = time_of(&from)?;
-            // As `explain_usage` refuses it. Taken, the span ran backwards.
             if since.is_some_and(|since| since >= now) {
                 return Err(Error::Usage(
                     "--since is now or later, so there's no usage after it: give an earlier --since"
@@ -361,10 +351,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 account.full_title(),
                 status::limit_text(limit, status.at)
             );
-            let named = limit.named();
-            let column = shares.as_ref().map(|shares| (named.as_str(), shares));
-            let text = heading + &usage::text(&used, column);
-            // Each row's share, in the rows' order, or null with none.
+            let text = heading + &usage::text(&used, shares.as_ref().map(|shares| (limit, shares)));
             let shares = shares.map(|shares| shares.rows);
             let value = json!({ "account": account.id, "limit": limit.key, "usage": used, "sharePercents": shares });
             print(value, text)
@@ -378,8 +365,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             limit: None,
             top,
         } => {
-            // An agent there isn't is refused. Taken, it said nothing was
-            // used.
+            // Refused, as an unknown agent would show nothing used.
             if let Some(agent) = &agent {
                 agents::find(agent)?;
             }
@@ -408,14 +394,16 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             print(json!(usage), usage::text(&usage, None))
         }
         Command::Accounts { action } => {
+            let mut status = status::status(&db, now)?;
             if let Some(AccountAction::Hide { account } | AccountAction::Show { account }) = &action
             {
-                let status = status::status(&db, now)?;
-                let found = one_account(&status, account)?;
+                let id = one_account(&status, account)?.id.clone();
                 let hidden = matches!(action, Some(AccountAction::Hide { .. }));
-                status::hide(&db, &found.id, hidden)?;
+                status::hide(&db, &id, hidden)?;
+                if let Some(found) = status.accounts.iter_mut().find(|found| found.id == id) {
+                    found.hidden = hidden;
+                }
             }
-            let status = status::status(&db, now)?;
             let (lines, listed): (Vec<String>, Vec<_>) = status
                 .accounts
                 .iter()
@@ -427,7 +415,7 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
                 })
                 .unzip();
             let text = match lines.is_empty() {
-                true => status::none(&status, status::Cite::Command),
+                true => status::none(&status, "`turnscope status --all` shows them"),
                 false => lines.join("\n"),
             };
             print(json!(listed), text)
@@ -480,7 +468,6 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
     })
 }
 
-/// The one account `name` names; when it names several, which they are.
 pub fn one_account<'a>(status: &'a status::Status, name: &str) -> Result<&'a status::Account> {
     match status::named(status, name)?.as_slice() {
         [one] => Ok(one),
@@ -495,9 +482,6 @@ pub fn one_account<'a>(status: &'a status::Status, name: &str) -> Result<&'a sta
     }
 }
 
-/// The limit `name` names, of the account `account` names, or else the
-/// calling agent's account, or else the first account that has one so
-/// named.
 fn limit_of<'a>(
     db: &rusqlite::Connection,
     home: &Path,
@@ -524,7 +508,6 @@ fn limit_of<'a>(
     Ok((account, account.limit(name)?))
 }
 
-/// What can't be read, and how to fix it.
 fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Result<Vec<String>> {
     let mut notes = Vec::new();
     for agent in agents::ALL {
@@ -613,8 +596,7 @@ fn doctor(db: &rusqlite::Connection, home: &Path, data: &Path, now: i64) -> Resu
     Ok(notes)
 }
 
-/// Why the caller's account's `limit` blocks, when under `below` percent
-/// left: `None` when there's room, or the standing isn't known.
+/// `None` when there's room, or the standing isn't known.
 ///
 /// A hook waits for it, so it reads no history and no prices: only limits,
 /// when five minutes have passed since any process read them. While the
@@ -673,40 +655,34 @@ fn guard(
     }))
 }
 
-/// One line for an agent's status line: the account it draws on, by
-/// `account`, the session the harness names on standard input, or the
-/// calling agent; else the first account in use. From the database alone,
-/// so it's quick; none when nothing's known.
+/// From the database alone, so it's quick.
 fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String> {
     let db = db::open(data).ok()?;
     let status = status::status(&db, now()).ok()?;
-    let id = match account {
+    let account = match account {
         // A line is better than none: of several named, the first.
-        Some(name) => Some(status::named(&status, name).ok()?.first()?.id.clone()),
-        None => harness(&db).or_else(|| {
-            let yours = mcp::Caller::detect().account(&db, home, &status).ok()?;
-            yours.map(|account| account.id.clone())
-        }),
-    };
-    let account = match id {
-        Some(id) => status.accounts.iter().find(|account| account.id == id)?,
-        None => status
-            .accounts
-            .iter()
-            .find(|account| account.in_use && !account.hidden)?,
+        Some(name) => *status::named(&status, name).ok()?.first()?,
+        None => harness(&db)
+            .and_then(|id| status.accounts.iter().find(|account| account.id == id))
+            .or_else(|| mcp::Caller::detect().account(&db, home, &status).ok()?)
+            .or_else(|| {
+                status
+                    .accounts
+                    .iter()
+                    .find(|account| account.in_use && !account.hidden)
+            })?,
     };
     Some(status::line(account, status.at))
 }
 
-/// The account of the session a harness names in the JSON it writes to a
-/// status line's standard input, as Claude Code does, by its `session_id`.
-/// None for a session not read yet, as a new one, since a status line never
-/// catches up, or one with no response on an account yet.
+/// The account of the session a harness names by `session_id` in the JSON
+/// it writes to a status line's standard input, as Claude Code does. None
+/// for a session not read yet, as a status line never catches up.
 ///
-/// The calling agent's own account answers then, over the account of the
-/// latest response in the session's folder, which answered before. That one
-/// could be another agent's: after Codex ran last in a folder, a new Claude
-/// Code session's status line showed the Codex account's limits.
+/// The calling agent's account answers then, over the account of the latest
+/// response in the session's folder, which can be another agent's: after
+/// Codex ran last in a folder, a new Claude Code session showed the Codex
+/// account's limits.
 fn harness(db: &rusqlite::Connection) -> Option<String> {
     use std::io::IsTerminal as _;
     if std::io::stdin().is_terminal() {
@@ -725,7 +701,7 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
     let native = given["session_id"].as_str()?;
     agents::ALL.iter().find_map(|agent| {
         let session = agent.info().session(native);
-        sessions::account(db, &session).ok().flatten()
+        usage::session_account(db, &session).ok().flatten()
     })
 }
 
@@ -759,8 +735,6 @@ pub fn catch_up(db: &mut rusqlite::Connection, home: &Path) -> Result<bool> {
     Ok(limits? | priced | read)
 }
 
-/// Whether providers and models.dev may be asked: `TURNSCOPE_OFFLINE` works
-/// from the database alone.
 fn online() -> bool {
     std::env::var_os("TURNSCOPE_OFFLINE").is_none_or(|offline| offline == "0")
 }
@@ -806,19 +780,15 @@ pub fn output_within(command: &mut Process, wait: Duration) -> std::io::Result<O
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    // What it wrote before it ended is read at once. A process it leaves
-    // running, as a login shell's background job, can hold the pipes open
-    // after that, writing nothing and closing nothing, so each pipe is read
-    // until it closes or nothing new comes for `QUIET`. Chosen over reading
-    // to the deadline, which waited all of it for such a child: 10 s for a
-    // login shell's `PATH`, 60 s for an agent's command. The cost: the end
-    // of what a child wrote is lost if the thread reading it waits longer
-    // than `QUIET` for a processor. Measured on 2026-11-14, at a load of 7
-    // on 8 cores: `sleep 4 & echo said` given 4 s came back in 0.22 s,
-    // where it took the 4 s; and 300 children that wrote 1 MB to each pipe
-    // gave all of it, none waited on more than 0.3 ms for what came next.
-    // Never read past the deadline, but that the child may have ended just
-    // as it passed.
+    // A child can leave a process holding its pipes open, as a login
+    // shell's background job does, so each pipe is read until it closes or
+    // is quiet for `QUIET`: until the deadline, or `QUIET` past it for a
+    // child that ended just before. Chosen over reading to the deadline,
+    // which waited all of it: 10 s for a login shell's `PATH`. The cost:
+    // output is lost if its reader waits longer than `QUIET` for a
+    // processor. Measured 2026-11-14 at a load of 7 on 8 cores: `sleep 4 &
+    // echo said` came back in 0.22 s, not 4 s, and 300 children writing
+    // 1 MB per pipe lost nothing.
     const QUIET: Duration = Duration::from_millis(100);
     let until = deadline.max(Instant::now() + QUIET);
     let collect = |read: std::sync::mpsc::Receiver<Vec<u8>>| {

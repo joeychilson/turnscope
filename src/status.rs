@@ -1,12 +1,6 @@
 //! How every account stands: its limits, where each is headed, how much
 //! work each has left, and the limit that decides it. The app, the CLI and
 //! the MCP server all show this one answer.
-//!
-//! Every decision is made here, as shown: percent left is rounded down so
-//! it's never overstated; each time to come is rounded to the minute and
-//! carries how soon it is (a [`Moment`]); a limit whose window reset since it
-//! was read is full, as far as this Mac can tell. A status is worked out as
-//! of the minute, so between readings it changes at most once a minute.
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -22,7 +16,7 @@ use crate::time::{self, DAY, HOUR, MINUTE};
 use crate::{Result, agents};
 
 mod text;
-pub use text::{Cite, fit, limit_text, line, none, stale, text, verdict};
+pub use text::{fit, limit_text, line, none, stale, text, verdict};
 
 /// How recently a response must have drawn on an account for it to be in use.
 const IN_USE: i64 = 30 * MINUTE;
@@ -80,11 +74,9 @@ pub struct Account {
     pub label: Option<String>,
     /// The agents signed into it now.
     pub agents: Vec<String>,
-    /// The agents whose responses drew on it in the last half hour, the
-    /// latest first.
+    /// The agents that drew on it in the last half hour, the latest first.
     pub used_by: Vec<String>,
-    /// Used in the last half hour, or its limits rose at the last read, as
-    /// use elsewhere makes them.
+    /// Drawn on in the last half hour, or a limit rose at its last read.
     pub in_use: bool,
     /// In use, or drawn on in the last 7 days: one the person uses.
     pub recent: bool,
@@ -195,8 +187,7 @@ pub struct Limit {
     /// For one API key's own limit, the agents holding the key.
     pub held_by: Vec<String>,
     pub outlook: Outlook,
-    /// How much work is left at the pace of work; none until an hour of it
-    /// has been measured, or for a window that rolls.
+    /// None until an hour of work is measured, and for a window that rolls.
     pub work: Option<Work>,
 }
 
@@ -233,6 +224,17 @@ impl Limit {
         self.window
             .filter(|_| self.reset_since.is_none())
             .map(|window| window.resets.at)
+    }
+
+    /// The hours until its window resets, as its work left counts them.
+    pub fn hours_to_reset(&self, now: i64) -> Option<f64> {
+        let window = self.window?;
+        hours_to_reset(
+            window.starts_at,
+            window.resets.at,
+            self.reset_since.is_some(),
+            now,
+        )
     }
 
     /// When its window started, unless it has reset since it was read: the
@@ -343,8 +345,7 @@ pub struct Money {
 pub struct Work {
     /// Points an hour of work uses, to a tenth.
     pub rate_per_hour: f64,
-    /// Hours of work left at that pace, as an 80% range; none when it lasts
-    /// until its reset even with work all the while.
+    /// None when it lasts until its reset even with work all the while.
     pub left_hours: Option<HoursLeft>,
 }
 
@@ -420,6 +421,7 @@ pub fn hide(db: &rusqlite::Connection, account: &str, hidden: bool) -> Result<()
 
 /// How every account stands at `now`.
 pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
+    // As of the minute: between readings it changes at most once a minute.
     let now = now.div_euclid(MINUTE) * MINUTE;
     // Which agents each account's logins are in now, and each key's holders.
     let mut signed: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -451,16 +453,16 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
         let (account, agent): (String, String) = row?;
         used.entry(account).or_default().push(agent);
     }
-    let recent: std::collections::BTreeSet<String> = db
-        .prepare("SELECT DISTINCT account FROM response WHERE at >= ?1 AND account IS NOT NULL")?
-        .query_map([now - RECENT], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
 
     let mut accounts = Vec::new();
+    // Whether each was drawn on in the last 7 days: one seek in
+    // `response_account` per account.
     let mut rows = db.prepare(
-        "SELECT id, provider, kind, title, label, hidden, read_at, problem FROM account",
+        "SELECT id, provider, kind, title, label, hidden, read_at, problem,
+             EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?1)
+         FROM account a",
     )?;
-    let mut rows = rows.query([])?;
+    let mut rows = rows.query([now - RECENT])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let read_at: Option<i64> = row.get(6)?;
@@ -499,7 +501,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
                 .transpose()?,
             deciding: deciding(&limits).map(|limit| limit.key.clone()),
             in_use: !used_by.is_empty() || rose,
-            recent: !used_by.is_empty() || rose || recent.contains(&id),
+            recent: !used_by.is_empty() || rose || row.get(8)?,
             provider: row.get(1)?,
             title: row.get(3)?,
             label: row.get(4)?,
@@ -524,14 +526,11 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
     })
 }
 
-/// Every agent: whether it's installed, whether it runs this Turnscope's MCP
-/// server, and whether it drew on any of `accounts` in the last half hour.
-///
-/// Apart from `status`, as only the app and `turnscope connect` show it,
-/// and it reads each agent's MCP settings: Claude Code's `~/.claude.json`
-/// can be megabytes. With a made-up one of 5.8 MB, `statusline` ran 183M
-/// instructions and peaked at 38 MB when `status` worked this out, and 42M
-/// and 8 MB once it didn't.
+/// Every agent, apart from `status`: only the app and `turnscope connect`
+/// show it, and it reads each agent's MCP settings, where Claude Code's
+/// `~/.claude.json` can be megabytes. With a made-up one of 5.8 MB,
+/// `statusline` ran 183M instructions and peaked at 38 MB when `status`
+/// worked this out, and 42M and 8 MB once it didn't.
 pub fn agents(home: &Path, accounts: &[Account]) -> Vec<Agent> {
     agents::ALL
         .iter()
@@ -557,6 +556,17 @@ pub fn agents(home: &Path, accounts: &[Account]) -> Vec<Agent> {
 /// for the pace of work.
 const WORKED: i64 = 14 * DAY;
 
+/// The hours from `now` until a window resets. One that reset since it was
+/// read is a new one, as long: its start isn't known, and is taken as now.
+fn hours_to_reset(starts: Option<i64>, resets: i64, reset: bool, now: i64) -> Option<f64> {
+    let until = if reset {
+        resets - starts?
+    } else {
+        resets - now
+    };
+    Some(until.max(0) as f64 / HOUR as f64)
+}
+
 /// An account's limits as last read, at `read_at`, and whether any rose
 /// between its last two reads within the half hour, as use elsewhere makes
 /// them.
@@ -569,10 +579,9 @@ fn limits(
 ) -> Result<(Vec<Limit>, bool)> {
     // The start of each slot of work on the account: one seek in
     // `response_account` per slot, over grouping every response. With a
-    // made-up account of 233,000 responses in the last two weeks, grouping
-    // took 80 ms of CPU and seeking 12 ms, each time serve pushed. The cost:
-    // an account with 2,000 responses spread over 1,194 slots took 4.3 ms,
-    // not 1.5 ms.
+    // made-up 233,000 responses in two weeks, each push took 80 ms of CPU
+    // grouping and 12 ms seeking. The cost: 2,000 responses over 1,194 slots
+    // took 4.3 ms, not 1.5 ms.
     let worked: Vec<i64> = db
         .prepare_cached(
             "WITH RECURSIVE slot (at) AS (
@@ -585,12 +594,39 @@ fn limits(
         )?
         .query_map(params![account, now - WORKED, forecast::SLOT], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    // From when whose work it is was known: the account's first sign-in read.
     let known: Option<i64> = db.query_row(
         "SELECT min(since) FROM sign_in WHERE account = ?1",
         [account],
         |row| row.get(0),
     )?;
+    // Every limit's readings at once, from its earliest window's start or
+    // two weeks back, whichever is earlier: each limit needs its window's
+    // and its last two weeks'. Chosen over a query per limit: the key is
+    // last in `reading`'s primary key, so each such query reads every
+    // limit's rows. With five limits read every 5 minutes for 30 days, made
+    // up, that took 6.6 ms an account, and this 2.7 ms.
+    let from: Option<i64> = db.query_row(
+        "SELECT min(coalesce(starts, ?2 - ?3)) FROM reading WHERE account = ?1 AND at = ?2",
+        params![account, read_at, DAY],
+        |row| row.get(0),
+    )?;
+    let mut histories: BTreeMap<String, Vec<forecast::Reading>> = BTreeMap::new();
+    let mut rows = db.prepare_cached(
+        "SELECT limit_key, at, used, starts, resets FROM reading
+         WHERE account = ?1 AND at >= ?2 ORDER BY at",
+    )?;
+    let mut rows = rows.query(params![account, from.unwrap_or(now).min(now - WORKED)])?;
+    while let Some(row) = rows.next()? {
+        histories
+            .entry(row.get(0)?)
+            .or_default()
+            .push(forecast::Reading {
+                at: row.get(1)?,
+                used: row.get(2)?,
+                starts: row.get(3)?,
+                resets: row.get(4)?,
+            });
+    }
     let mut latest = db.prepare(
         "SELECT limit_key, name, scope, used, size, starts, resets FROM reading
          WHERE account = ?1 AND at = ?2 ORDER BY limit_key",
@@ -603,23 +639,7 @@ fn limits(
             (row.get(0)?, row.get(1)?, row.get(2)?);
         let (used, size): (f64, Option<f64>) = (row.get(3)?, row.get(4)?);
         let (starts, resets): (Option<i64>, Option<i64>) = (row.get(5)?, row.get(6)?);
-        // Its readings, oldest first: back to its window's start, and to
-        // two weeks of work.
-        let since = starts.unwrap_or(read_at - DAY).min(now - WORKED);
-        let history: Vec<forecast::Reading> = db
-            .prepare_cached(
-                "SELECT at, used, starts, resets FROM reading
-                 WHERE account = ?1 AND at >= ?2 AND limit_key = ?3 ORDER BY at",
-            )?
-            .query_map(params![account, since, key], |row| {
-                Ok(forecast::Reading {
-                    at: row.get(0)?,
-                    used: row.get(1)?,
-                    starts: row.get(2)?,
-                    resets: row.get(3)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+        let history = histories.get(&key).map_or(&[][..], Vec::as_slice);
         // Its current window's: those that reset with it.
         let readings: Vec<(i64, f64)> = history
             .iter()
@@ -663,24 +683,15 @@ fn limits(
         };
         let length = starts.zip(resets).map(|(starts, resets)| resets - starts);
         let rolling = starts.is_none() && resets.is_some();
-        let enough = if length.is_some_and(|length| length <= DAY) {
-            3.0
-        } else {
-            5.0
-        };
         // Work is known only for the last two weeks: a rise before then
         // would count with no hours of work beside it.
         let walked = &history[history.partition_point(|reading| reading.at < now - WORKED)..];
-        let work = forecast::work_rate(walked, &worked, known, enough)
+        let work = forecast::work_rate(walked, &worked, known, forecast::enough_work(length))
             .filter(|_| !rolling)
             .map(|rate| {
                 let tenths = |value: f64| (value * 10.0).round() / 10.0;
-                // A window that reset since is a new one, as long.
-                let until = match reset_since {
-                    Some(_) => length,
-                    None => resets.map(|resets| resets - now),
-                };
-                let until = until.map(|until| until.max(0) as f64 / HOUR as f64);
+                let until = resets
+                    .and_then(|resets| hours_to_reset(starts, resets, reset_since.is_some(), now));
                 let left_hours =
                     forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
                         .map(|(low, likely, high)| HoursLeft {
@@ -719,7 +730,6 @@ fn limits(
     Ok((limits, rose))
 }
 
-/// A window's outlook as of `now`.
 fn outlook(window: &Window, now: i64) -> Outlook {
     let Some(projection) = forecast::project(window, now) else {
         return Outlook::Unknown {
@@ -755,11 +765,11 @@ fn outlook(window: &Window, now: i64) -> Outlook {
         };
     }
     // Nothing is said of the reset only for a limit with nothing used. One
-    // whose use was given back, with none since, has a pace of none too,
-    // and lasts with what it has now. That was chosen over not enough
-    // data: no use for a twentieth of the window is a pace, as it is before
-    // any use. Taken for a limit with nothing used, one 40% used said "No
-    // use shows in its reading yet" beside 60% left.
+    // whose use was given back, with none since, has a pace of none and
+    // lasts with what it has now, over not enough data: no use for a
+    // twentieth of the window is a pace, as before any use. Taken for one
+    // with nothing used, a limit 40% used said "No use shows in its reading
+    // yet" beside 60% left.
     if projection.used <= 0.0 {
         return Outlook::Lasts {
             left_at_reset: None,
@@ -777,14 +787,10 @@ fn outlook(window: &Window, now: i64) -> Outlook {
     }
 }
 
-/// The limit that decides how an account stands: of those not reset since
-/// read, on all its usage where any is, the most urgent, then the soonest
-/// out, then the least left. When every one reset since, the last to.
-///
-/// Of several used up, the last back decides, over the first listed: the
-/// account can't be used until every one is back. With 5 hours back in an
-/// hour and Weekly in three days, the first listed was 5 hours, and the
-/// account said it was back in an hour.
+/// The limit that decides how an account stands. Of several used up, the
+/// last back decides, over the first listed: the account can't be used
+/// until every one is back. With 5 hours back in an hour and Weekly in
+/// three days, the first listed said the account was back in an hour.
 fn deciding(limits: &[Limit]) -> Option<&Limit> {
     limits
         .iter()
@@ -807,18 +813,14 @@ fn deciding(limits: &[Limit]) -> Option<&Limit> {
         .or_else(|| limits.iter().max_by_key(|limit| limit.reset_since))
 }
 
-/// The order every front-end lists accounts in: those in use, the most
-/// urgent and soonest out first, then the least left; then the rest, the
-/// most left first; then those whose login was refused; then those with
-/// nothing to show.
+/// The order every front end lists accounts in.
 ///
-/// Until the first read of history ends (`history_read` false), every
-/// account is ranked as one in use. Which are in use isn't known yet: on a
-/// first launch the limits are read and pushed before any history
-/// (`serve::keep`), so none is. Ranked as accounts not in use, the most
+/// Until the first read of history ends, every account is ranked as one in
+/// use: on a first launch the limits are pushed before any history
+/// (`serve::keep`), so none is known to be. Ranked as not in use, the most
 /// left came first, and the app, which shows every account as in use until
-/// then, would have headlined the account least used. `in_use` itself
-/// stays as measured, so no alert is raised on a guess.
+/// then, would have headlined the account least used. `in_use` itself stays
+/// as measured, so no alert is raised on a guess.
 fn rank(accounts: &mut [Account], history_read: bool) {
     accounts.sort_by_cached_key(|account| {
         let in_use = account.in_use || !history_read;
@@ -942,6 +944,18 @@ mod tests {
         // can't be used until Weekly is.
         (account.limits[0].outlook, account.limits[1].outlook) = (back(1), back(72));
         assert_eq!(decides(&account), "seven_day");
+        account.deciding = Some(decides(&account));
+        assert_eq!(
+            verdict(&account, now),
+            format!(
+                "Claude Max (me@example.com): Weekly is used up, back {}.",
+                time::ahead(now + 72 * HOUR, now)
+            )
+        );
+        assert_eq!(
+            fit(&account, 1.0, now).unwrap(),
+            "1 more hour of work doesn't fit: Weekly is used up."
+        );
         // One with no reset is back at no known time, wherever it's listed.
         account.limits[1].outlook = never.clone();
         assert_eq!(decides(&account), "seven_day");
@@ -1071,6 +1085,18 @@ mod tests {
         let said = text(&status, &[account], None);
         assert!(
             said.ends_with("This month, across its keys: $0.00."),
+            "{said}"
+        );
+        // From a thousand, dollars have a comma, as on the status line.
+        let mut account = account.clone();
+        account.spend = Some(Spend {
+            month_usd: 1234.5,
+            forecast_usd: Some(2469.0),
+            partial: false,
+        });
+        let said = text(&status, &[&account], None);
+        assert!(
+            said.ends_with("This month, across its keys: $1,234.50, on pace for about $2,469.00."),
             "{said}"
         );
     }

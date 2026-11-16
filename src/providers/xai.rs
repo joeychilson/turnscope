@@ -1,8 +1,7 @@
 //! xAI: the usage pool of a SuperGrok plan, shared by every Grok product.
 //!
 //! Grok Build, OpenCode and Pi sign in with the Grok CLI's client, so a token
-//! from any of them reads the same pool. The token is a JWT whose `sub` is
-//! the account. The billing endpoint belongs to the proxy the Grok CLI talks
+//! from any of them reads the same pool. The billing endpoint belongs to the proxy the Grok CLI talks
 //! to, which refuses a request not naming a CLI client and version. Answers
 //! are protocol buffers as JSON, which leave out a zero: a pool with none
 //! used comes with its `currentPeriod` and no `creditUsagePercent`. The pool
@@ -28,19 +27,16 @@ impl Provider for Xai {
     }
 
     fn account(&self, credential: &Credential) -> Option<Account> {
-        if credential.key {
-            return Some(super::api_account(INFO.id));
-        }
-        let identity = match &credential.identity {
-            Some(identity) => identity.clone(),
-            None => (
-                claims(credential.secret.expose())["sub"]
-                    .as_str()?
-                    .to_owned(),
-                None,
-            ),
-        };
-        Some(super::subscription(INFO.id, identity))
+        super::account(INFO.id, credential, || {
+            if let Some(identity) = &credential.identity {
+                return Some(identity.clone());
+            }
+            // Where the agent's files don't say, the token's `sub`.
+            let sub = claims(credential.secret.expose())["sub"]
+                .as_str()?
+                .to_owned();
+            Some((sub, None))
+        })
     }
 
     fn limits(&self, credential: &Credential, _now: i64) -> Result<Limits, Problem> {
@@ -49,7 +45,7 @@ impl Provider for Xai {
         }
         // Only a 401 is a refused login: the proxy may answer 403 to a client
         // version it no longer takes, which signing in again wouldn't fix.
-        let answer = super::ask_refused_by(
+        let answer = super::asked(
             "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
             credential,
             &[
@@ -58,7 +54,9 @@ impl Provider for Xai {
                 "x-grok-client-version: 1.0.30",
                 "User-Agent: xai-grok-cli",
             ],
+            None,
             &[401],
+            super::WAIT,
         )?;
         Ok(Limits {
             plan: None,

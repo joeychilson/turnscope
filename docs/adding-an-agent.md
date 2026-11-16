@@ -8,25 +8,15 @@ the agent's name from the status.
 The steps use an agent called Acme, with id `acme`. Pi
 (`src/agents/pi.rs`) is the shortest complete agent to read alongside.
 
-| Step | File |
-|---|---|
-| [1. Measure the agent's files](#1-measure-the-agents-files) | The module comment of `src/agents/acme.rs` |
-| [2. Describe it in `Info`](#2-describe-it-in-info) | `src/agents/acme.rs` |
-| [3. Implement `Agent`](#3-implement-agent) | `src/agents/acme.rs` |
-| [4. Register it](#4-register-it) | `src/agents/mod.rs` |
-| [5. Test it](#5-test-it) | `src/agents/acme.rs`, `tests/fixtures/home/`, `tests/cli.rs`, `tests/snapshots/` |
-| [6. Add its logo](#6-add-its-logo) | `macos/Logos/agents/acme.svg`, `macos/Logos/README.md` |
-| [7. Update the docs](#7-update-the-docs) | `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`, `CHANGELOG.md` |
-
 ## 1. Measure the agent's files
 
 Before writing code, look at real history: where the files are, what each
 record holds, and how usage, sessions, subagents, forks and logins are
 written. Read only what the agent writes today.
 
-Write what you measured, with numbers and dates, in the module comment at
-the top of `src/agents/acme.rs`, as the other agents do. The reader's rules
-rest on it.
+The module comment of `src/agents/acme.rs` says what the agent's files are.
+Each decision you measured goes on the code it applies to, with its
+numbers and dates.
 
 ## 2. Describe it in `Info`
 
@@ -56,17 +46,20 @@ static INFO: Info = Info {
 };
 ```
 
-| Field | Type | What it is |
-|---|---|---|
-| `id` | `&'static str` | The agent's id: as stored, as `--agent` takes it, as the logo's file name, and at the start of its session ids, `acme:<its own id>`. |
-| `name` | `&'static str` | The agent's name as people know it. |
-| `command` | `&'static str` | The program `connect` runs. The MCP server also finds the agent calling it by this name among its parent processes: `acme`, `acme-<anything>` for a versioned build, or a script of that name run by `node`, `bun`, `deno`, `python` or `python3`. |
-| `app` | `Option<&'static str>` | The program in its app that starts an MCP server, as the end of its path, when the app doesn't run `command`: Antigravity's is `Antigravity.app/Contents/Resources/bin/language_server`. Name that program and not the app, or a person's shell in a terminal the app holds counts as the agent. Check with the agent connected: start a session in its app and look at the server's parents with `ps`. `None` for an agent whose app runs `command`, or that has no app. |
-| `mcp_add` | `&'static [&'static str]` | The arguments to `command` that add an MCP server. `connect` runs `<command> <mcp_add> <path to turnscope> mcp`, with `HOME` set to the home Turnscope was given. |
-| `mcp_remove` | `Option<&'static [&'static str]>` | The arguments that remove it, if the agent has a command for that. `connect` runs them first, so a refused add can put back the server that was there. With `None`, `disconnect` tells the user to remove it by hand. |
-| `folder_var` | `Option<&'static str>` | The environment variable that points the agent at a folder other than its own, such as `CODEX_HOME`. Needed when `folders` can find more than one. |
-| `charges` | `bool` | The cost the agent records is what the provider charged, so it's used before list prices. `false` when it's the agent's estimate. |
-| `session_var` | `Option<&'static str>` | The variable holding its session's id that it sets in an MCP server it starts. With it, the MCP server knows the calling session: its account is the caller's, and `explain_usage` marks it. `None` for an agent that sets none. |
+Each field's doc comment in `src/agents/mod.rs` says what it is. Beyond
+those:
+
+- `connect` runs `<command> <mcp_add> <path to turnscope> mcp`, with
+  `HOME` set to the home Turnscope was given. With no `mcp_remove`,
+  `disconnect` tells the user to remove the server by hand.
+- `app` names the program in the app that starts an MCP server, not the
+  app: otherwise a person's shell in a terminal the app holds counts as
+  the agent. To find it, connect the agent, start a session in its app,
+  and look at the server's parents with `ps`. It's `None` for an agent
+  whose app runs `command`, or that has no app.
+- `folder_var` is needed when `folders` can find more than one folder.
+- [mcp.md](mcp.md#who-is-asking) says how `command`, `app` and
+  `session_var` tell the MCP server which agent and session call it.
 
 ## 3. Implement `Agent`
 
@@ -93,19 +86,22 @@ impl Agent for Acme {
 ```
 
 `Result` is `crate::Result`. Its error here is `Error::Failed`, with a
-message saying what went wrong.
-`reading(path, error)` is the `Error::Failed` of a file that couldn't be
-read.
+message saying what went wrong. `reading(path, error)` is the
+`Error::Failed` of a file that couldn't be read.
 
-| Method | Returns |
-|---|---|
-| `info` | `&INFO`. |
-| `folders` | The folders the agent keeps history and logins in under `home`, its own first. The first is taken as its own: `installed` is asked of it, and it's the agent folder of a caller that names none. `own_and_found(home, own, prefix, signed)` gives `home/own`, then each folder beside it whose name starts with `prefix` and that holds the file `signed`, such as `~/.acme-work/auth.json`: how a second account's folder is kept. |
-| `installed` | Whether the agent is on this Mac, by its own folder. By default, that the folder exists. Say otherwise when another program keeps a folder of that name: the Gemini command line keeps `~/.gemini`, so Antigravity is installed when one of its own two folders is in it. |
-| `files` | Its history files in a folder. It runs at every catch-up, so it lists and doesn't read. A file that doesn't exist is passed over, so one the agent may keep can be listed without looking. `entries(dir)` lists what a folder holds, and nothing when it can't be read. |
-| `read` | What a file holds past `cursor` (empty: from the start), and the cursor to read on from ([below](#reading-history)). An error leaves the cursor as it was, so the file is tried again at the next catch-up. |
-| `logins` | One `Login` per provider the agent signs in to ([below](#logins)). |
-| `mcp_command` | The command that the configuration `folder` uses runs for the `turnscope` MCP server, if any. An agent with `folder_var` keeps a configuration per folder: `connect` runs its command once for each folder, pointed at it with `folder_var`, so read the file that command writes for that folder. `json_mcp_command(path, pointer)` reads it at a JSON pointer in a JSON file; `toml_mcp_command(path)` reads `command` under `[mcp_servers.turnscope]` in a TOML file. The status compares it with this binary to show the agent as connected, outdated or available. |
+Each method's doc comment on the `Agent` trait says what it returns. The
+helpers `own_and_found`, `entries`, `json_mcp_command` and
+`toml_mcp_command` in `src/agents/mod.rs` do what most agents need.
+Beyond those:
+
+- `folders` lists the agent's own folder first: `installed` is asked of
+  it, and it's the agent folder of a caller that names none.
+- `files` runs at every catch-up, so it lists and doesn't read.
+- An error from `read` leaves the cursor as it was, so the file is tried
+  again at the next catch-up.
+- An agent with `folder_var` keeps a configuration per folder: `connect`
+  runs its command once for each folder, pointed at it with `folder_var`.
+  So `mcp_command` reads the file that command writes for that folder.
 
 ### Reading history
 
@@ -141,45 +137,16 @@ An agent that keeps a SQLite database, as OpenCode does, is opened read-only
 and read on from a little before the latest `time_updated` seen, since a
 row can be committed after one stamped later, and from no later than now,
 since a row can be stamped ahead of the clock (`src/agents/opencode.rs`).
-Rows read again are reported again, which changes nothing. `Stat::of` in `src/ingest.rs` looks for a
-write-ahead log only beside a file whose name ends in `.db`, as OpenCode's
-does. For a database named otherwise, add its ending there: until a
-checkpoint, new rows are only in the log, and the file itself doesn't
-change.
+Rows read again are reported again, which changes nothing. `Stat::of` in
+`src/ingest.rs` looks for a write-ahead log only beside a file whose name
+ends in `.db`, as OpenCode's does. For a database named otherwise, add its
+ending there: until a checkpoint, new rows are only in the log, and the
+file itself doesn't change.
 
-What a read returns, in `Read`:
-
-| Field or method | What it's for |
-|---|---|
-| `read.session(id)` | The `Session` for a session id, `acme:<its own id>`: its `cwd`, the folder it works in, and its `parent`. `saw(at)` notes a time it was active. `title(kind, text)` offers a title, kept to its first 200 characters. |
-| `read.respond(response)` | Adds a report of a response, merged with any other report of it by `Response::merge`. |
-| `read.skipped` | How many lines or rows couldn't be read. `doctor` names files with any. |
-| `read.cursor` | Where the next read starts. |
-
-A session's `parent` is the id of the session it's a subagent of, whose
-usage it counts toward. Leave it unset for a fork (the conversation
-branched off by the user) and for a continuation (the same conversation
-carried on in a new session): each is a session of its own. A better kind of
-title replaces a worse one, and a later one of the same kind an earlier
-one. From worst to best, a `Title` is `Prompt` (the user's first real
-request), `Task` (a subagent's task, as its parent described it),
-`Generated` (the agent's) or `Named` (the user's).
-
-A `Response`:
-
-| Field | What it is |
-|---|---|
-| `id` | Unique within the agent, and the same in every report of the response. |
-| `session` | The id of the session that made it. |
-| `copy` | The report may be of another session's response, as a fork's copy of its parent's history. |
-| `at` | When it was made, in Unix milliseconds. |
-| `provider` | The provider as the agent names it. It's matched with the agent folder's sign-in to find the account, and with models.dev's provider ids for the price. |
-| `model` | The model as the agent names it. |
-| `tokens` | Its `Tokens`: `input` (neither read from the cache nor written to it), `cache_read`, `cache_write_5m` (kept five minutes, or a provider's only kind), `cache_write_1h`, `output` (reasoning included) and `reasoning`. |
-| `prompt` | The largest prompt of the model calls it covers: input with cache reads and writes. It sets the price tier where long prompts cost more. |
-| `web_searches` | How many web searches it made. |
-| `priority` | It was served at a faster, dearer tier, as fast mode is. |
-| `cost` | What the agent says it cost, if it says. |
+The doc comments of `Read`, `Session`, `Title`, `Response` and `Tokens` in
+`src/agents/mod.rs` say what each field holds. A response's `at` is in Unix
+milliseconds. Its `provider` is matched with the agent folder's sign-in to
+find the account, and with models.dev's provider ids for the price.
 
 Rules:
 
@@ -210,9 +177,7 @@ Rules:
 ### Logins
 
 `logins(folder, home)` returns a `Login` for each provider the folder
-holds a login for; one with no credential, or none at all, is signed out
-of. It fails when a place that keeps logins can't be read, such as a file
-being written: taking that for no login would sign its accounts out.
+holds a login for, and fails as its doc comment says:
 
 ```rust
 fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
@@ -234,30 +199,20 @@ fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
 }
 ```
 
-- `Login.provider` is the provider as the agent's responses name it. It
-  must match `Response.provider` for usage to count toward the account.
-- `Credential.provider` is the id of the provider that reads it, from
-  `providers::ALL`. `secret` is a `Secret`, which can't be printed,
-  serialized or cloned. `key` is true for an API key, false for a sign-in's
-  token. `expires` is when the token expires, in Unix milliseconds: an
-  expired token is never sent. `identity` is the account's id and label
-  (such as an email), and `plan` the plan, where the agent's files say.
-- `json_file(path)` reads a JSON file: `Ok(None)` when there's none, an
-  error when it doesn't parse. `keychain(home, service, account)` reads a
-  Keychain item with `/usr/bin/security`, as Claude Code's and
-  Antigravity's readers do: `Ok(None)` when there's no such item.
-  `crate::output_within(command, wait)` runs a command with nothing on its
-  standard input and stops it after `wait`. `claims(token)` reads a JSON
-  Web Token's claims, such as its expiry. `kept_login(provider, reads,
-  kept, key_type)` reads a login kept as Pi and OpenCode keep theirs:
-  `{type: "oauth", access, expires}` for a sign-in, or `{type, key}` for a
-  key.
-- A provider the folder held a login for and no longer lists is taken as
-  signed out of, so `logins` only lists what the folder holds.
-- A folder that held a login and that `folders` no longer lists is signed
-  out of too, as one deleted. So `folders` lists a folder for as long as
-  the agent may be signed in there, by what's on disk alone: not by an
-  environment variable or a running process, which come and go.
+The doc comments of `Login` and `Credential` say what each field holds.
+`Login.provider` must match `Response.provider` for usage to count toward
+the account.
+
+The helpers `json_file`, `kept_login` and `claims` in `src/agents/mod.rs`,
+and `crate::output_within`, read what agents keep. `keychain(home, service,
+account, parse)` reads a Keychain item with `/usr/bin/security`, as Claude
+Code's and Antigravity's readers do. `parse` reads the item's bytes and
+returns why it couldn't. Its error names the item, and it's `Ok(None)`
+when there's no such item.
+
+A folder that `folders` no longer lists is signed out of, so `folders`
+lists a folder by what's on disk alone: not by an environment variable or
+a running process, which come and go.
 
 ## 4. Register it
 
@@ -286,23 +241,17 @@ secrets. Cover:
 - reading a growing file on from its cursor, which reads nothing twice;
 - logins signed in and signed out.
 
-Run what CI runs ([development.md](development.md)):
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-```
+Run what CI runs ([development.md](development.md#test)).
 
 Then add a session of Acme's to the fixture home, `tests/fixtures/home`,
 where the agent keeps it (`.acme/…`) and in its format: a request, and a
 reply or two with usage, made up as the unit tests' are. Date it on Sep 30,
-a day before the tests' clock, as the other agents' sessions are. An agent whose history is a database, as OpenCode's
-is, gets the SQL that builds it beside where the database goes, named as the
-database with `.sql` for `.db`: `home()` in `tests/cli.rs` builds each, as
-it does `opencode.db` from `opencode.sql`. In `tests/cli.rs`, add the
-agent's id to the ids `serve_says_hello_with_the_status_and_answers_in_turn`
-expects.
+a day before the tests' clock, as the other agents' sessions are. An agent
+whose history is a database, as OpenCode's is, gets the SQL that builds it
+beside where the database goes, named as the database with `.sql` for
+`.db`: `home()` in `tests/cli.rs` builds each, as it does `opencode.db`
+from `opencode.sql`. In `tests/cli.rs`, add the agent's id to the ids
+`serve_says_hello_with_the_status_and_answers_in_turn` expects.
 
 The new agent and its session change the snapshots that list every agent or
 its usage, such as `connect`, `usage`, `usage-model`, `status.json` and
@@ -325,25 +274,18 @@ draws a generic mark.
 Name the agent in:
 
 - `README.md`: the supported agents.
-- `docs/cli.md`: the agent ids, and the examples whose snapshots changed,
-  such as the `connect` output, copied from `tests/snapshots/connect.txt`.
-- `docs/mcp.md`: the table of `connect` commands, the `connect` output,
-  the agents' folders and configuration files, the commands "Who is
-  asking" looks for and any `session_var` or `folder_var`.
+- `docs/cli.md`: the agent ids, any `folder_var` or `session_var` in
+  [Environment](cli.md#environment), and the examples whose snapshots
+  changed, such as the `connect` output, copied from
+  `tests/snapshots/connect.txt`.
+- `docs/mcp.md`: the table of `connect` commands, the agents' folders and
+  configuration files, the commands "Who is asking" looks for and any
+  `session_var` or `folder_var`.
 - `docs/architecture.md`: the agent list, the glossary and the code map.
 - `CHANGELOG.md`.
 
 ## Done when
 
-- [ ] `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`
-  and `cargo test --locked` pass.
-- [ ] The fixture home holds a session of the agent's, whose usage the CLI
-  snapshots count.
-- [ ] The rewritten snapshots differ only by the new agent and its session.
-- [ ] `macos/Logos/agents/acme.svg` exists, and `macos/Logos/README.md`
-  says where it came from.
-- [ ] `README.md`, `docs/cli.md`, `docs/mcp.md`, `docs/architecture.md`
-  and `CHANGELOG.md` name the agent.
-- [ ] On a Mac with the agent, `turnscope usage --agent acme --by session`
-  lists its sessions with their usage, and `turnscope doctor` reports
-  nothing about it.
+On a Mac with the agent, `turnscope usage --agent acme --by session` lists
+its sessions with their usage, and `turnscope doctor` reports nothing about
+it.

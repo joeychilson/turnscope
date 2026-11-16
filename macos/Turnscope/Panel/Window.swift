@@ -1,23 +1,15 @@
 // The panel's shell: the floating frame with its own glass, edge and shadow,
 // and the pages it slides between, the first page (`FirstPage.swift`) and
 // Settings.
-//
-// It sits in a transparent window that doesn't resize and draws its own
-// glass, edge and shadow, so its height animates with its content and nothing
-// jumps (`App.swift`).
 
 import SwiftUI
 import TurnscopeKit
 
 let panelWidth: CGFloat = 340
 
-/// What the panel needs the app around it to do.
-struct PanelActions {
-    var close: () -> Void = {}
-}
-
 extension EnvironmentValues {
-    @Entry var panelActions = PanelActions()
+    /// Closes the panel.
+    @Entry var closePanel: () -> Void = {}
 }
 
 /// The floating panel, with its own glass, edge and shadow.

@@ -2,26 +2,6 @@
 // the menu bar, the panel and a notification. Figures and times are here,
 // limits and the panel in `Words+Limits.swift`, notifications in
 // `Words+Notes.swift`.
-//
-// Words decides nothing the engine decides. Whether a limit lasts, runs out
-// or is used up is its outlook. What's left is `leftPercent`, rounded down so
-// it's never overstated, and full once its window has reset since it was read
-// (`resetSince`). The limit that speaks for an account is its `deciding`. A
-// limit is called what its provider calls it.
-//
-// A time is written for how far off it is: within three hours, "in 2h 10m";
-// later today, "3:40 PM"; this week, "Thu 7:50 PM" or "tomorrow 9 AM"; later,
-// "Oct 18". VoiceOver and a notification spell out the day and month,
-// "Saturday 7:50 PM" and "October 18": VoiceOver can read "Sat" as the word
-// "sat", and a notification has room and is read on its own. The panel and
-// the menu bar keep them short: a row has no room for them, and the line
-// under the headline says a time as the rows do. Durations read "1h 30m", or
-// "2d 4h" past a day.
-//
-// Times are told as of the minute it is, as serve tells them. At 12:00:40, a
-// reset at 14:00 is in 2h, as the menu bar's clock and the command line have
-// it. Counted from 12:00:40, it was in 1h 59m, and a limit's last minute
-// before it ran out read 0m.
 
 import Foundation
 
@@ -34,6 +14,10 @@ public struct Words: Sendable {
     /// Every agent's name, by id.
     let names: [String: String]
 
+    /// Times are told as of the minute `now` is in, as serve tells them. At
+    /// 12:00:40, a reset at 14:00 is in 2h, as the menu bar's clock and the
+    /// command line have it. Counted from 12:00:40, it was in 1h 59m, and a
+    /// limit's last minute before it ran out read 0m.
     init(now: Date = .now, calendar: Calendar = .autoupdatingCurrent, names: [String: String] = [:]) {
         self.now = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60)
         self.calendar = calendar
@@ -79,9 +63,9 @@ public struct Words: Sendable {
         spend.partial && spend.monthUsd == 0
     }
 
-    /// What an API-key account cost this month, in short for a row: "$84
-    /// this month", "At least $84 this month" when some usage had no price,
-    /// and "Cost unknown" when none of it had.
+    /// What an API-key account cost this month, as VoiceOver reads it after
+    /// the account's name: "$84 this month", "At least $84 this month" when
+    /// some usage had no price, and "Cost unknown" when none of it had.
     func spent(_ spend: Spend) -> String {
         if unknown(spend) { return "Cost unknown" }
         return (spend.partial ? "At least " : "") + "\(dollars(spend.monthUsd)) this month"
@@ -144,7 +128,9 @@ public struct Words: Sendable {
     /// that stays on screen while the clock moves, such as a notification:
     /// "3:40 PM", "tomorrow 9 AM", "Thu 7:50 PM", "Oct 18". A time that's
     /// soon is given as the time of day it falls on. `full` spells out the
-    /// day and month: "Thursday 7:50 PM", "October 18".
+    /// day and month, "Thursday 7:50 PM", "October 18", for VoiceOver and a
+    /// notification: VoiceOver can read "Sat" as the word "sat", and a
+    /// notification has room.
     func clock(_ moment: Moment, full: Bool = false) -> String {
         guard moment.horizon == .soon else { return at(moment.at, moment.horizon, full: full) }
         return at(moment.at, calendar.isDate(moment.at, inSameDayAs: now) ? .today : .thisWeek, full: full)

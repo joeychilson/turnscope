@@ -1,10 +1,6 @@
 //! The database: one SQLite file, `turnscope.sqlite` in the data directory.
-//! Each module writes its own SQL against this schema.
-//!
-//! Times are UTC milliseconds and money is dollars. History read from the
-//! agents' files (`file`, `session`, `response`) can be read again;
-//! accounts, readings, sign-ins, prices as they were, alerts and settings
-//! exist nowhere else.
+//! Each module writes its own SQL against this schema. What it holds:
+//! docs/architecture.md#data.
 
 use std::fs::File;
 use std::os::unix::fs::DirBuilderExt as _;
@@ -229,11 +225,12 @@ DELETE FROM session_file
 WHERE file IN (SELECT id FROM file WHERE path LIKE '%/chat\_history.jsonl' ESCAPE '\');
 DELETE FROM file WHERE path LIKE '%/chat\_history.jsonl' ESCAPE '\';
 
--- Of a session, what usage reads stays: its agent, its project, its title,
--- the session it's a subagent of, and when it was last active. Its agent
--- folder, the folder it worked in, its branch, when it started, and the
--- session a fork or a continuation came from were read only to list, show
--- and hand off sessions, as was a file's agent folder.
+-- Of a session, what usage reads stays: its agent, its project, its title
+-- and the session it's a subagent of. Its agent folder, the folder it
+-- worked in, its branch, when it started, and the session a fork or a
+-- continuation came from were read only to list, show and hand off
+-- sessions, as was a file's agent folder. When it was last active was read
+-- only to mark it active now in the app's list of what used a limit.
 --
 -- A fork or a continuation was a session of its own already. Now it has no
 -- parent, so a parent is a subagent's alone and `link` goes. On that
@@ -247,6 +244,7 @@ ALTER TABLE session DROP COLUMN branch;
 ALTER TABLE session DROP COLUMN started;
 ALTER TABLE session DROP COLUMN folder;
 ALTER TABLE session DROP COLUMN cwd;
+ALTER TABLE session DROP COLUMN last;
 ALTER TABLE file DROP COLUMN folder;
 
 -- A title is kept to its first 200 characters, as `agents::Session::title`
@@ -265,7 +263,7 @@ const APPLICATION_ID: i32 = 0x5452_4E53;
 /// beside it: turning on write-ahead logging, which a new database needs,
 /// can't wait for another connection as a query does, and fails at once.
 pub fn open(dir: &Path) -> Result<Connection> {
-    // The owner's alone: it holds what each session cost and was asked.
+    // The owner's alone: it holds what each session cost, and its title.
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -442,13 +440,11 @@ mod tests {
         assert_eq!(files, [1, 3]);
         assert_eq!(count("SELECT count(*) FROM session_file"), 1);
         // A session keeps what usage reads, and only a subagent a parent.
-        let sessions: Vec<[Option<String>; 5]> = db
-            .prepare(
-                "SELECT id, project, title, parent, CAST(last AS TEXT) FROM session ORDER BY id",
-            )
+        let sessions: Vec<[Option<String>; 4]> = db
+            .prepare("SELECT id, project, title, parent FROM session ORDER BY id")
             .unwrap()
             .query_map([], |row| {
-                Ok([0, 1, 2, 3, 4].map(|column| row.get(column).unwrap()))
+                Ok([0, 1, 2, 3].map(|column| row.get(column).unwrap()))
             })
             .unwrap()
             .collect::<rusqlite::Result<_>>()
@@ -462,47 +458,30 @@ mod tests {
                     some("grok-build:s1"),
                     some("/work/app"),
                     some("Add a flag."),
-                    None,
-                    some("2000")
+                    None
                 ],
-                [
-                    some("grok-build:s2"),
-                    None,
-                    None,
-                    some("grok-build:s1"),
-                    some("1800")
-                ],
-                [some("grok-build:s3"), None, None, None, some("3000")],
-                [some("grok-build:s4"), None, None, None, some("4000")],
-                [some("grok-build:s5"), None, some(&cut), None, None],
+                [some("grok-build:s2"), None, None, some("grok-build:s1")],
+                [some("grok-build:s3"), None, None, None],
+                [some("grok-build:s4"), None, None, None],
+                [some("grok-build:s5"), None, some(&cut), None],
             ]
         );
-        let columns = |table: &str| -> Vec<String> {
+        let columns = |table: &str| -> String {
             db.prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
                 .unwrap()
                 .query_map([], |row| row.get(0))
                 .unwrap()
-                .collect::<rusqlite::Result<_>>()
+                .collect::<rusqlite::Result<Vec<String>>>()
                 .unwrap()
+                .join(" ")
         };
         assert_eq!(
             columns("session"),
-            [
-                "id",
-                "agent",
-                "project",
-                "title",
-                "title_rank",
-                "parent",
-                "last"
-            ]
+            "id agent project title title_rank parent"
         );
         assert_eq!(
             columns("file"),
-            [
-                "id", "path", "agent", "size", "modified", "inode", "cursor", "skipped", "failed",
-                "readers"
-            ]
+            "id path agent size modified inode cursor skipped failed readers"
         );
     }
 }

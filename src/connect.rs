@@ -1,12 +1,6 @@
 //! Adding Turnscope's MCP server to an agent, or removing it, with the
 //! agent's own command, as a person would in a terminal: Turnscope never
 //! writes an agent's files.
-//!
-//! The app connects through `serve`, which an app started from Finder runs
-//! with a bare `PATH`, so the agent's command is found with the `PATH` of the
-//! person's interactive login shell, where agents' installers add their
-//! folders: on 2026-09-30, `zsh -lc` found none of four agents, and `zsh
-//! -ilc` all four, in 0.15 s.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -75,8 +69,6 @@ fn temporary(exe: &Path) -> bool {
     exe.starts_with("/Volumes") || exe.to_string_lossy().contains("/AppTranslocation/")
 }
 
-/// Remove the server from `agent`, in each of its folders, with the agent's
-/// own command where it has one.
 pub fn disconnect(agent: &dyn Agent, home: &Path) -> Result<()> {
     let info = agent.info();
     let Some(remove) = info.mcp_remove else {
@@ -114,7 +106,6 @@ pub fn disconnect(agent: &dyn Agent, home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run the agent's command with `args`, as `command` makes it.
 fn run(
     info: &Info,
     args: &[&str],
@@ -126,8 +117,6 @@ fn run(
     output_within(&mut command, Duration::from_secs(60))
 }
 
-/// The agent's command with `args`, on `path` where it's known, for the
-/// folder `at`, or its own, in `home`.
 fn command(
     info: &Info,
     args: &[&str],
@@ -141,11 +130,10 @@ fn command(
         command.env("PATH", path);
     }
     // An agent keeps its settings under its home, so it's run with `HOME`
-    // set to the home Turnscope was given. With the process's own, and
+    // set to the home Turnscope was given, over the process's own: with
     // `--home` at a copy, Turnscope read the copy, found no server there,
     // and had the agent add one to the person's own settings. That each
-    // agent takes its home from `HOME` wasn't tried: trying it runs the
-    // agent's command.
+    // agent takes its home from `HOME` isn't tested: that runs its command.
     command.env("HOME", home);
     // A second account's folder, as `~/.claude-work`, keeps its own
     // settings: the agent is pointed at it as it's run for that account.
@@ -172,9 +160,8 @@ fn pointed(info: &Info, at: Option<&Path>, home: &Path) -> String {
     pointed
 }
 
-/// Whether `agent` runs this copy's MCP server: in every one of its
-/// folders, another copy's in one, or none. Compared as files, so a link to
-/// this binary, as one on the `PATH`, is it.
+/// Compared as files, so a link to this binary, as one on the `PATH`, is
+/// this copy.
 pub fn connection(agent: &dyn Agent, home: &Path) -> Connection {
     let real = |path: &Path| std::fs::canonicalize(path).ok();
     let me = std::env::current_exe().ok().and_then(|exe| real(&exe));
@@ -196,7 +183,10 @@ pub fn connection(agent: &dyn Agent, home: &Path) -> Connection {
     }
 }
 
-/// The `PATH` of the person's interactive login shell.
+/// An app started from Finder runs `serve` with a bare `PATH`, so the
+/// agent's command is found with the `PATH` of the person's interactive
+/// login shell, where agents' installers add their folders: on 2026-09-30,
+/// `zsh -lc` found none of four agents, and `zsh -ilc` all four, in 0.15 s.
 ///
 /// Asked in the person's own home, whatever home Turnscope was given: the
 /// shell sets its `PATH` from the files it reads there, as `~/.zshrc`. A

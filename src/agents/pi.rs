@@ -14,24 +14,21 @@
 //! **Usage.** An assistant message carries `usage`: `input` excludes cached
 //! input, `output` includes `reasoning`, `cacheWrite1h` is the part of
 //! `cacheWrite` kept for an hour, and `cost.total` is what Pi worked out it
-//! cost. A response is its `responseId`, its model `responseModel` where the
-//! provider named one. Calls that are no message carry usage too: a `usage`
-//! entry (keeping the cache warm), and the model call that wrote a
-//! `compaction` or `branch_summary`.
+//! cost. A response is its `responseId`. Calls that are no message carry
+//! usage too: a `usage` entry (keeping the cache warm), and the model call
+//! that wrote a `compaction` or `branch_summary`.
 //!
 //! **Forks.** A fork's file copies every entry of its parent's, times and
-//! response ids as they were, after a header of its own: an entry from before
-//! the header is a copy of the parent's. The copy is the parent's: its
-//! responses are marked copies of the parent's, and nothing else in it is
-//! the fork's.
+//! response ids as they were, after a header of its own. The copy is the
+//! parent's: its responses are marked copies of the parent's, and nothing
+//! else in it is the fork's.
 //!
 //! **Providers.** A response names its provider as Pi's registry does, kept
 //! as it is: its ChatGPT sign-in is `openai-codex`, beside `openai` for a key,
 //! so its use of a plan is told from its use of the API.
 //!
 //! **Logins** are `auth.json`, an entry per provider under the name its
-//! responses give it: `oauth` with its token `access`, or `api_key` with
-//! `key`. OpenRouter's sign-in gives Pi a key (`sk-or-`), kept as `access`.
+//! responses give it.
 
 use std::path::{Path, PathBuf};
 
@@ -60,7 +57,6 @@ struct Cursor {
     offset: u64,
     session: Option<String>,
     titled: bool,
-    /// When the session began: an entry from before is a fork's copy.
     began: Option<i64>,
     /// The provider and model of the latest response, which a summary is
     /// written with.
@@ -104,7 +100,6 @@ impl Agent for Pi {
         let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
         let logins = kept.as_object().into_iter().flatten().map(|(name, entry)| {
             let reads = match name.as_str() {
-                // A ChatGPT sign-in, beside an OpenAI API key's `openai`.
                 "openai-codex" => Some("openai"),
                 name => crate::providers::by_id(name).map(|provider| provider.info().id),
             };
@@ -130,9 +125,6 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
             .as_str()
             .filter(|cwd| !cwd.is_empty())
             .map(str::to_owned);
-        if let Some(at) = at {
-            facts.saw(at);
-        }
         (cursor.session, cursor.began) = (Some(session), at);
         return;
     }
@@ -142,36 +134,40 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
     // An entry from before the session began is a fork's copy of its
     // parent's.
     let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
-    if let (false, Some(at)) = (copy, at) {
-        read.session(&session).saw(at);
-    }
     // A copy's entry id is its parent's, under the parent's own
     // session, so it can't name a response of this one.
     let entry = line["id"]
         .as_str()
         .filter(|_| !copy)
         .map(|entry| format!("{session}:{entry}"));
-    match line["type"].as_str() {
+    let (usage, provider, model, id, at) = match line["type"].as_str() {
         Some("session_info") if !copy => {
             if let Some(name) = line["name"].as_str() {
                 read.session(&session).title(Title::Named, name);
             }
+            return;
         }
         Some("usage") => {
-            if let (Some(provider), Some(model), Some(id)) =
+            let (Some(provider), Some(model), Some(id)) =
                 (line["provider"].as_str(), line["model"].as_str(), entry)
-            {
-                let used = (provider, model);
-                charge(&line["usage"], used, id, &session, copy, at, read);
-            }
+            else {
+                return;
+            };
+            (
+                &line["usage"],
+                provider.to_owned(),
+                model.to_owned(),
+                id,
+                at,
+            )
         }
         Some("compaction" | "branch_summary") => {
-            if let (Some((provider, model)), Some(id)) = (cursor.model.clone(), entry)
-                && line["usage"].is_object()
-            {
-                let used = (provider.as_str(), model.as_str());
-                charge(&line["usage"], used, id, &session, copy, at, read);
-            }
+            let (Some((provider, model)), Some(id), true) =
+                (cursor.model.clone(), entry, line["usage"].is_object())
+            else {
+                return;
+            };
+            (&line["usage"], provider, model, id, at)
         }
         Some("message") => {
             let message = &line["message"];
@@ -188,6 +184,7 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
                         read.session(&session).title(Title::Prompt, asked);
                         cursor.titled = true;
                     }
+                    return;
                 }
                 Some("assistant") => {
                     // The model the provider answered with, where it said.
@@ -202,30 +199,21 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
                     // A copy without a response id couldn't be told
                     // from its parent's.
                     let id = message["responseId"].as_str().map(str::to_owned).or(entry);
-                    if let Some(id) = id {
-                        let at = message["timestamp"].as_i64().or(at);
-                        let used = (provider, model);
-                        charge(&message["usage"], used, id, &session, copy, at, read);
-                    }
+                    let Some(id) = id else { return };
+                    let at = message["timestamp"].as_i64().or(at);
+                    (
+                        &message["usage"],
+                        provider.to_owned(),
+                        model.to_owned(),
+                        id,
+                        at,
+                    )
                 }
-                _ => {}
+                _ => return,
             }
         }
-        _ => {}
-    }
-}
-
-/// Record `usage` of `model` from `provider`, as the response `id` of
-/// `session`.
-fn charge(
-    usage: &Value,
-    (provider, model): (&str, &str),
-    id: String,
-    session: &str,
-    copy: bool,
-    at: Option<i64>,
-    read: &mut Read,
-) {
+        _ => return,
+    };
     let count = |name: &str| usage[name].as_u64();
     let (Some(input), Some(cache_read), Some(cache_write), Some(output), Some(at)) = (
         count("input"),
@@ -252,11 +240,11 @@ fn charge(
     }
     read.respond(Response {
         id,
-        session: session.to_owned(),
+        session,
         copy,
         at,
-        provider: provider.to_owned(),
-        model: model.to_owned(),
+        provider,
+        model,
         prompt: input + cache_read + cache_write,
         tokens,
         web_searches: 0,

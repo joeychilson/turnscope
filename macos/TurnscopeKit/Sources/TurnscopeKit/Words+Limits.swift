@@ -1,6 +1,6 @@
-// The words for limits: a limit's name, how it reads in a row and on its own
-// line, the panel's headline and the line under it, and the menu bar text.
-// Then the panel's lists, and whether an agent is connected.
+// The words for limits and the panel: a limit's name and lines, an account's
+// row, the headline, the menu bar, the folds, the sessions that used a limit,
+// and whether an agent is connected.
 
 import Foundation
 
@@ -52,13 +52,7 @@ extension Words {
     }
 
     /// What a row says under an account's name while its limits aren't
-    /// shown. A refused login says "Sign in again", plus "to update" if it
-    /// has limits read before, and an expired one "Open Codex to update".
-    /// Otherwise it's which limit its figure is for and what happens to it
-    /// next, as [`short`] says it. If every limit reset since it was read, it
-    /// names the last one to reset, which decides it: "Weekly reset Sat 12
-    /// AM". A key with no limit says it has none. With no limit read, it
-    /// says why: "Couldn't be read yet", "Signed out" or "Not read yet".
+    /// shown.
     public func status(_ account: AccountStatus) -> String {
         if account.refused {
             return account.limits.isEmpty ? "Sign in again" : "Sign in again to update"

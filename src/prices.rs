@@ -1,20 +1,10 @@
-//! What a response cost: the provider's charge where the agent records it
-//! (Grok Build's), otherwise models.dev's list prices for the model, otherwise
-//! the agent's own estimate (OpenCode's and Pi's). Unknown is never zero.
-//!
-//! A response costs what the model's price was when it was made: each price
-//! is kept from when it was first read, so a price that changes later leaves
-//! what was used before as it was. Usage from before a model's first price
-//! was read takes that first price, the nearest known.
+//! What a response cost, in the order docs/architecture.md#prices gives.
 //!
 //! Prices are dollars a million tokens, as models.dev's `api.json` gives
-//! them. Some models cost more once a prompt passes a size (`tiers`, or the
-//! older `context_over_200k` where a model lists none); a faster tier is the
-//! mode whose request asks for `speed: fast` or `service_tier: priority`.
-//! models.dev lists one cache-write price, so a cache write kept an hour costs
-//! twice the input rate and a web search $10 a thousand, as Anthropic, the
-//! only provider whose usage reports either, charges. Reasoning is output,
-//! unless a rate of its own is listed.
+//! them. models.dev lists one cache-write price and none for a web search, so
+//! a cache write kept an hour costs twice the input rate and a web search $10
+//! a thousand, as Anthropic, the only provider whose usage reports either,
+//! charges.
 
 use std::collections::HashMap;
 
@@ -99,7 +89,6 @@ impl Prices {
         Ok(Prices(models))
     }
 
-    /// What `agent`'s `response` cost.
     pub fn cost(&self, agent: &str, response: &Response) -> Option<f64> {
         // A recorded cost of zero is usage a subscription covered: it says
         // nothing of what it would have cost.
@@ -130,7 +119,6 @@ impl Prices {
         Some(dollars / 1e6 + response.web_searches as f64 * 0.01)
     }
 
-    /// `model`'s price in force `at`.
     fn at(&self, provider: &str, model: &str, at: i64) -> Option<&Model> {
         in_force(self.0.get(&(provider.to_owned(), model.to_owned()))?, at)
     }
@@ -184,16 +172,14 @@ fn claim(db: &Connection, now: i64) -> Result<bool> {
     Ok(claimed > 0)
 }
 
-/// Take in models.dev's catalog as of `now`.
 fn take_in(db: &mut Connection, now: i64) -> Result<()> {
-    let (status, json) = providers::get("https://models.dev/api.json", &[], 60)?;
+    let (status, json) = providers::request("https://models.dev/api.json", &[], None, 60)?;
     if status != 200 {
         return Err(Error::Failed(format!("models.dev answered {status}")));
     }
     let catalog: HashMap<String, Value> = serde_json::from_slice(&json)
         .map_err(|error| Error::Failed(format!("models.dev's catalog didn't read: {error}")))?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    // Each model's price now: its latest row.
     let current: HashMap<(String, String), (String, Option<String>)> = tx
         .prepare(
             "SELECT provider, model, cost, fast FROM price p

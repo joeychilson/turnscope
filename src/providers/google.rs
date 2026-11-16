@@ -2,76 +2,59 @@
 //! to, and the account Gemini API keys draw on. An API key carries no limit
 //! an agent's key can read.
 //!
-//! A plan's limits are read the way Antigravity reads them, with two
-//! requests to the service its app and `agy` talk to. Both are POSTs that
-//! change nothing. None of it is documented: what follows was measured with
-//! this Mac's sign-in on 2026-11-10, asking as OpenUsage and CodexBar do
-//! (their code, read that day).
+//! A plan's limits are read as Antigravity reads them, with two POSTs, which
+//! change nothing, to the service its app and `agy` talk to. None of it is
+//! documented: what follows was measured with this Mac's sign-in on
+//! 2026-11-10, asking as OpenUsage and CodexBar do (their code, read that
+//! day).
 //!
-//! - `loadCodeAssist` says which plan the sign-in is on and the project
-//!   Google keeps its usage under, `cloudaicompanionProject`, a string. The
-//!   plan paid for is `paidTier`. `currentTier` was `free-tier` beside it.
-//! - `retrieveUserQuotaSummary`, asked with that project, gives the limits:
-//!   `groups` of `buckets`, each bucket a `window` (`5h`, `weekly`) with
-//!   the fraction of it left, `remainingFraction`, and when it resets,
-//!   `resetTime`.
+//! - `loadCodeAssist` gives the plan paid for, `paidTier` (`currentTier` was
+//!   `free-tier` beside it), and the project Google keeps the usage under,
+//!   `cloudaicompanionProject`. Google makes the project when Antigravity is
+//!   first used, and Turnscope never does: without one there's nothing to
+//!   ask.
+//! - `retrieveUserQuotaSummary`, asked with that project, gives `groups` of
+//!   `buckets`, each a `window` (`5h`, `weekly`) with the fraction left,
+//!   `remainingFraction`, and `resetTime`.
 //!
-//! **The client.** Asked by a client named `Turnscope`, `loadCodeAssist`
-//! still answered 200, with no tier of the account's, no project, and the
-//! reason `UNSUPPORTED_CLIENT`. So both requests name the client as
-//! Antigravity's app does.
+//! **The client.** Asked as `Turnscope`, `loadCodeAssist` answered 200 with
+//! no tier, no project, and the reason `UNSUPPORTED_CLIENT`. So both
+//! requests name the client as Antigravity's app does.
 //!
-//! **The host.** The limits are asked of the `daily-` host, over the one
-//! that tells the plan. Asked at the same moment, that one had every bucket
-//! full and resetting a whole window later, where `daily-` had 2.3% of the
-//! Gemini week used.
-//!
-//! **The plan's name.** The tier paid for had the id `g1-ultra-lite-tier`
-//! and the name `Google AI Ultra`. So a plan is called what Google names it,
-//! over a name from its id, which would have been Ultra Lite.
+//! **The host.** Limits are asked of the `daily-` host, over the one that
+//! tells the plan: asked at the same moment, that one had every bucket full
+//! and resetting a whole window later, where `daily-` had 2.3% of the Gemini
+//! week used.
 //!
 //! **Windows.** A pool nothing had drawn on reset a whole window after the
 //! request, so it reads as a window beginning now. In the pool in use, the
 //! 5-hour window reset 10 hours after the week began: 5-hour windows follow
 //! one another from the week's first use.
 //!
-//! **Which limit is the plan's own.** A plan has a pool for Gemini models
-//! and one for Claude and GPT models, each with a 5-hour and a weekly
-//! bucket. No bucket is on all usage. The Gemini pool's two, `gemini-5h` and
-//! `gemini-weekly`, are read as the plan's own, over giving every limit a
-//! scope: Antigravity's own models draw on them, and with no limit of its
-//! own an account has nothing to stand by, in the status line or for
-//! `guard`. Every other bucket is its group's, as `Weekly (Claude and
-//! GPT)`, and still shows when it runs out. The group is named `Claude and
-//! GPT models`: a scope names models already, and with the word the app's
-//! panel cut the limit's reset short.
+//! **The plan's own limits.** A plan has a pool for Gemini models and one
+//! for Claude and GPT models, each with a 5-hour and a weekly bucket, and
+//! none on all usage. The Gemini pool's are the plan's own, over giving
+//! every limit a scope: Antigravity's own models draw on them, and with no
+//! limit of its own an account has nothing to stand by in the status line
+//! or for `guard`. Every other bucket is scoped by its group, as `Weekly
+//! (Claude and GPT)`, and still shows when it runs out.
 //!
-//! **Keys.** A limit is keyed by its window, and one that isn't the plan's
-//! own by its bucket too, as `weekly:3p-weekly`, over the bucket's id alone.
-//! The status lists an account's limits by key, and by their ids the
-//! Claude and GPT pool's came before the plan's own (seen on this Mac's
-//! account, 2026-11-10).
+//! **Keys.** A limit is keyed by its window, and one not the plan's own by
+//! its bucket too, as `weekly:3p-weekly`, over the bucket's id alone: the
+//! status lists limits by key, and by id the Claude and GPT pool's came
+//! before the plan's own.
 //!
-//! **Without a project** there's nothing to ask about. Google makes one when
-//! Antigravity is first used, and Turnscope never does.
-//!
-//! **Not measured.** A refused sign-in: only a 401 is taken for one, as at
-//! xAI, since a 403 from this service can mean a client or an account it
-//! doesn't serve, which signing in again wouldn't change. An account that
-//! pays for no plan, which is named by its tier's id, `free`. A group for
-//! one model, which OpenUsage reads as `Gemini 4 Argon`. A bucket marked
-//! `disabled`, which is passed over as OpenUsage's reader does. A response
-//! of a Claude or GPT model through Antigravity: a breakdown of the limit on
-//! them counts models whose id holds `claude` or `gpt`, as their scope
-//! names them, and a breakdown of the Gemini limits counts every model's,
-//! theirs too.
-//!
-//! A used-up bucket hasn't been seen either. It should still come with
-//! `remainingFraction: 0`: CodexBar reads `agy`'s own form of this answer,
-//! where the fraction is one of the cases a bucket's `remaining` can be, and
-//! a case that's set is written even at zero. So a bucket without the
-//! fraction says nothing of what's left and is passed over, as OpenUsage's
-//! reader does, over reading it as used up.
+//! **Not measured.** A refused sign-in: only a 401 is taken for one, since a
+//! 403 from this service can mean a client or an account it doesn't serve.
+//! An account that pays for no plan. A group for one model, which OpenUsage
+//! reads as `Gemini 4 Argon`. A `disabled` bucket, passed over as OpenUsage
+//! does. A Claude or GPT response through Antigravity: the limit on them
+//! counts models whose id holds `claude` or `gpt`, and the Gemini limits
+//! count every model's. A used-up bucket: it should still have
+//! `remainingFraction: 0`, as CodexBar reads `agy`'s form of the answer,
+//! where a fraction that's set is written even at zero. So a bucket without
+//! it says nothing of what's left and is passed over, as OpenUsage does,
+//! over reading it as used up.
 
 use serde_json::{Value, json};
 
@@ -106,10 +89,7 @@ impl Provider for Google {
     }
 
     fn account(&self, credential: &Credential) -> Option<Account> {
-        if credential.key {
-            return Some(super::api_account(INFO.id));
-        }
-        Some(super::subscription(INFO.id, credential.identity.clone()?))
+        super::account(INFO.id, credential, || credential.identity.clone())
     }
 
     fn limits(&self, credential: &Credential, _now: i64) -> Result<Limits, Problem> {
@@ -121,20 +101,24 @@ impl Provider for Google {
             "platform": "PLATFORM_UNSPECIFIED",
             "pluginType": "GEMINI",
         }});
-        // Both within the time one request gets elsewhere, as `guard` waits
-        // on a read.
         let began = std::time::Instant::now();
-        let signed_in =
-            super::ask_sending(PLAN, credential, &[CLIENT], &client, &[401], super::WAIT)?;
+        let signed_in = super::asked(
+            PLAN,
+            credential,
+            &[CLIENT],
+            Some(&client),
+            &[401],
+            super::WAIT,
+        )?;
         let project = signed_in["cloudaicompanionProject"]
             .as_str()
             .filter(|project| !project.is_empty())
             .ok_or(Problem::Unavailable)?;
-        let answer = super::ask_sending(
+        let answer = super::asked(
             QUOTA,
             credential,
             &[CLIENT],
-            &json!({"project": project}),
+            Some(&json!({"project": project})),
             &[401],
             super::wait_left(began.elapsed()),
         )?;
@@ -149,8 +133,9 @@ impl Provider for Google {
 }
 
 /// The plan a sign-in is on: the name of the tier paid for, without the
-/// `Google AI` it begins with, or for an account that pays for none its
-/// tier's id, `free-tier` as `free`.
+/// `Google AI` it begins with, over a name from its id: `Google AI Ultra`'s
+/// was `g1-ultra-lite-tier`. For an account that pays for none, its tier's
+/// id, `free-tier` as `free`.
 fn plan(signed_in: &Value) -> Option<String> {
     let plan = match signed_in["paidTier"]["name"].as_str() {
         Some(name) => name.strip_prefix(PLANS).unwrap_or(name).trim(),
@@ -209,7 +194,8 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
 }
 
 /// A group's name as a limit's scope, without a last word `models`: `Claude
-/// and GPT models` is `Claude and GPT`.
+/// and GPT models` is `Claude and GPT`. A scope names models already, and
+/// with the word the app's panel cut the limit's reset short.
 fn scope(group: &str) -> &str {
     let group = group.trim();
     match group.rsplit_once(' ') {

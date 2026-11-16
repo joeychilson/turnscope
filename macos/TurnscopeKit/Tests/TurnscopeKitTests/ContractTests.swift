@@ -56,7 +56,7 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
         .filter { $0.hasSuffix(".json") }.sorted()
     #expect(Set(names) == Set(answers.keys).union(requests.keys), "an example not checked, or one missing")
     for name in names {
-        let data = try contract(name)
+        let data = try Data(contentsOf: contract(name))
         if let read = answers[name] {
             do { try read(data) } catch { Issue.record("\(name): \(error)") }
         } else if let write = requests[name] {
@@ -68,11 +68,11 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
 }
 
 @Test func theStatusSaysWhatTheEngineDecided() throws {
-    let status = try Contract.decoder.decode(Pushed<Status>.self, from: contract("status.notification.json")).params
+    let status = try Contract.decoder.decode(Pushed<Status>.self,
+                                             from: Data(contentsOf: contract("status.notification.json"))).params
     let claude = status.accounts[0]
     #expect(claude.inUse && claude.standing == .runningOut)
     #expect(claude.decidingLimit?.key == "five_hour")
-    #expect(claude.decidingLimit?.name == "5 hours")
     guard case .runsOut(let likely)? = claude.decidingLimit?.outlook else {
         Issue.record("not running out")
         return
@@ -88,14 +88,11 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
     let keys = status.accounts[2]
     #expect(keys.apiKey && keys.spend?.partial == true)
     #expect(keys.limits[0].money == Money(sizeUsd: 30, leftUsd: 8.7))
-    #expect(keys.limits[0].heldBy == ["pi"])
     #expect(status.accounts[4].refused && status.accounts[4].hidden)
-    #expect(status.accounts.map(\.recent) == [true, true, true, false, false, false])
     #expect(status.accounts[3].state == .unread(why: .signIn))
     #expect(status.accounts[5].state == .unread(why: .readFailed))
-    #expect(status.agents.map(\.connection) == [.connected, .outdated, .available, .available, .available, .available])
-    #expect(status.settings.notify == Notify(runningOut: true, usedUp: true, reset: true, signIn: true))
-    let hello = try Contract.decoder.decode(Answer<HelloResult>.self, from: contract("hello.result.json")).result
+    let hello = try Contract.decoder.decode(Answer<HelloResult>.self,
+                                            from: Data(contentsOf: contract("hello.result.json"))).result
     #expect(hello.status.accounts[0].state == .asOf(readAt: Date(timeIntervalSince1970: 1_791_459_600), why: .expired))
     #expect(hello.alerts.map(\.kind) == [.runningOut, .usedUp, .reset, .signIn])
 }

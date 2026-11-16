@@ -3,54 +3,26 @@
 //! OpenCode keeps every session in one SQLite database,
 //! `~/.local/share/opencode/opencode.db`: a row per session in `session_v2`,
 //! a row per message in `session_message`, whose `data` holds an assistant
-//! message's tokens, cost, provider and model as JSON. It's read on from 10 s
-//! before the latest `time_updated` seen in each table, as a row can be
-//! committed after one stamped later: OpenCode stamps a row as it makes the
-//! write, then waits up to 5 s (`busy_timeout`) for another process's write
-//! to end. Rows read again change nothing. (From OpenCode's code,
-//! `packages/core/src/database/`, read 2026-10-12.)
-//!
-//! The latest seen is taken no later than the clock. A row stamped while the
-//! Mac's clock was ahead, as one set by hand and then put right, is later
-//! than every row stamped at the true time until the clock passes it. Read
-//! on from it, none of those was ever read, and `doctor` said nothing, since
-//! each read succeeded: on a made-up database with a session stamped a day
-//! ahead, one saved a minute before now was still unread two days on. So
-//! such a row is read again at each read until the clock passes it, which
-//! changes nothing, and one that can't be read is counted then. (No real
-//! history was looked at for such a row.)
+//! message's tokens, cost, provider and model as JSON.
 //!
 //! What follows was measured on this Mac's history, September and October 2026.
 //!
 //! **Usage.** `tokens.input` excludes cached input, and `reasoning` is apart
 //! from `output`, as OpenCode's own costs bear out.
 //!
-//! **Forks** open with copies of their parent's messages, which keep the times
-//! they were first written, before the fork's own creation; they're the
-//! parent's, as OpenCode's own statistics count them. (No fork was on this
-//! Mac to measure: this is from OpenCode's code, which copies them so.)
-//!
-//! **When.** OpenCode adds a step to a session without touching the session's
-//! `time_updated`, so when it worked is its messages': each one's creation
-//! and a response's completion.
-//!
-//! **Titles.** A session OpenCode hasn't titled has no title, or the
-//! placeholder it used to write, `New session - <ISO time>` (`Child session -
-//! …` for a subagent's), which it reads as none. (From OpenCode's code,
-//! `isFallbackTitle` in `packages/util/src/session-title-fallback.ts`, read
-//! 2026-10-12.)
+//! **Messages** are read on from their own `time_updated`, not their
+//! session's: OpenCode adds a step to a session without touching the
+//! session's.
 //!
 //! **Not read.** A session's own totals add calls no message records, such as
 //! compacting and naming it: a few hundredths of a percent of its tokens.
 //!
-//! **Logins** are rows of `credential`: `integration_id` names the provider,
-//! and `value` is `{type: "key", key}` or `{type: "oauth", access, …}`; an
-//! OpenRouter sign-in is kept either way, its token a key. Of several to one
-//! provider, `active` marks the one in use.
+//! **Logins** are rows of `credential`, `integration_id` naming the provider.
+//! Of several to one provider, the latest `active` one is in use.
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -72,19 +44,31 @@ static INFO: Info = Info {
 };
 
 /// Whether the message `m` of the session `s` is the session's own: a fork's
-/// copies keep the times they were first written, before the fork began.
+/// copies of its parent's messages keep the times they were first written,
+/// before the fork began. They're the parent's, as OpenCode's own statistics
+/// count them. (From OpenCode's code: no fork was on this Mac to measure.)
 const OWN: &str = "(s.fork_session_id IS NULL OR m.time_created >= s.time_created)";
 
 #[derive(Default, Serialize, Deserialize)]
 struct Cursor {
     /// The latest `time_updated` seen in each table, and no later than the
-    /// clock was at that read.
+    /// clock was at that read. Chosen over the latest seen alone, under which
+    /// a row stamped while the clock was ahead, as one set by hand and put
+    /// right, hid every row stamped at the true time until the clock passed
+    /// it, and `doctor` said nothing. On a made-up database with a session
+    /// stamped a day ahead, one saved a minute before now was still unread
+    /// two days on. Such a row is read again at each read until the clock
+    /// passes it, which changes nothing. (No real history was looked at for
+    /// such a row.)
     sessions: i64,
     messages: i64,
 }
 
-/// How long before the latest `time_updated` seen a read starts, so a row
-/// committed after one stamped later is read.
+/// How long before the latest `time_updated` seen a read starts. A row can
+/// be committed after one stamped later: OpenCode stamps a row as it makes
+/// the write, then waits up to 5 s (`busy_timeout`) for another process's
+/// write to end. Rows read again change nothing. (From OpenCode's code,
+/// `packages/core/src/database/`, read 2026-10-12.)
 const LATE: i64 = 10_000;
 
 fn open(file: &Path) -> rusqlite::Result<Connection> {
@@ -112,28 +96,28 @@ impl Agent for OpenCode {
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
         let file = folder.join("opencode.db");
+        if !file.is_file() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, String)> = open(&file)
+            .and_then(|db| {
+                db.prepare(
+                    "SELECT integration_id, value FROM credential
+                     WHERE integration_id IS NOT NULL AND coalesce(active, 1) != 0
+                     ORDER BY time_updated DESC",
+                )?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+            })
+            .map_err(|error| super::reading(&file, error))?;
         let mut logins: Vec<Login> = Vec::new();
-        if file.is_file() {
-            // Of several to one provider, the latest active one is in use.
-            let rows: Vec<(String, String)> = open(&file)
-                .and_then(|db| {
-                    db.prepare(
-                        "SELECT integration_id, value FROM credential
-                         WHERE integration_id IS NOT NULL AND coalesce(active, 1) != 0
-                         ORDER BY time_updated DESC",
-                    )?
-                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                    .collect()
-                })
-                .map_err(|error| super::reading(&file, error))?;
-            for (provider, value) in rows {
-                if logins.iter().any(|login| login.provider == provider) {
-                    continue;
-                }
-                let value: Value = serde_json::from_str(&value).unwrap_or_default();
-                let reads = crate::providers::by_id(&provider).map(|provider| provider.info().id);
-                logins.push(super::kept_login(provider, reads, &value, "key"));
+        for (provider, value) in rows {
+            if logins.iter().any(|login| login.provider == provider) {
+                continue;
             }
+            let value: Value = serde_json::from_str(&value).unwrap_or_default();
+            let reads = crate::providers::by_id(&provider).map(|provider| provider.info().id);
+            logins.push(super::kept_login(provider, reads, &value, "key"));
         }
         Ok(logins)
     }
@@ -159,7 +143,6 @@ fn read_at(file: &Path, cursor: &str, now: i64) -> rusqlite::Result<Read> {
     Ok(read)
 }
 
-/// Read the sessions changed since `cursor` into `read`.
 fn sessions(
     db: &Connection,
     now: i64,
@@ -167,8 +150,7 @@ fn sessions(
     read: &mut Read,
 ) -> rusqlite::Result<()> {
     let mut sessions = db.prepare(&format!(
-        "SELECT s.id, nullif(s.parent_id, ''), nullif(s.directory, ''), s.title,
-             s.time_created, s.time_updated,
+        "SELECT s.id, nullif(s.parent_id, ''), nullif(s.directory, ''), s.title, s.time_updated,
              (SELECT m.data FROM session_message m WHERE m.session_id = s.id
                  AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
          FROM session_v2 s WHERE s.time_updated >= ?1"
@@ -176,19 +158,19 @@ fn sessions(
     let mut rows = sessions.query([cursor.sessions - LATE])?;
     while let Some(row) = rows.next()? {
         let (native, parent): (String, Option<String>) = (row.get(0)?, row.get(1)?);
-        let (created, updated): (i64, i64) = (row.get(4)?, row.get(5)?);
+        let updated: i64 = row.get(4)?;
         cursor.sessions = cursor.sessions.max(updated.min(now));
         let session = read.session(&INFO.session(&native));
         // A subagent's parent. A fork is a session of its own.
         session.parent = parent.map(|parent| INFO.session(&parent));
         session.cwd = row.get(2)?;
-        session.saw(created);
-        session.saw(updated);
-        let first: Option<String> = row.get(6)?;
+        let first: Option<String> = row.get(5)?;
         if let Some(text) = first.and_then(|data| serde_json::from_str::<Value>(&data).ok()) {
             session.title(Title::Prompt, text["text"].as_str().unwrap_or_default());
         }
-        // OpenCode reads its placeholder as no title.
+        // The placeholder OpenCode used to write, which it reads as no title
+        // (`isFallbackTitle` in `packages/util/src/session-title-fallback.ts`,
+        // read 2026-10-12).
         let placeholder = |title: &str| {
             ["New session - ", "Child session - "].iter().any(|prefix| {
                 title
@@ -205,7 +187,6 @@ fn sessions(
     Ok(())
 }
 
-/// Read the messages changed since `cursor` into `read`.
 fn messages(
     db: &Connection,
     now: i64,
@@ -213,18 +194,17 @@ fn messages(
     read: &mut Read,
 ) -> rusqlite::Result<()> {
     let mut messages = db.prepare(&format!(
-        "SELECT m.id, m.session_id, m.type, m.time_created, m.time_updated, m.data
+        "SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data
          FROM session_message m LEFT JOIN session_v2 s ON s.id = m.session_id
-         WHERE m.time_updated >= ?1 AND m.type IN ('user', 'assistant') AND {OWN}"
+         WHERE m.time_updated >= ?1 AND m.type = 'assistant' AND {OWN}"
     ))?;
     // A message is read again each time it changes, and while it's
     // within `LATE` of the latest change.
     let mark = cursor.messages;
-    let mut rows = messages.query(params![mark - LATE])?;
+    let mut rows = messages.query([mark - LATE])?;
     while let Some(row) = rows.next()? {
-        let (message, native, kind): (String, String, String) =
-            (row.get(0)?, row.get(1)?, row.get(2)?);
-        let (created, updated): (i64, i64) = (row.get(3)?, row.get(4)?);
+        let (message, native): (String, String) = (row.get(0)?, row.get(1)?);
+        let (created, updated): (i64, i64) = (row.get(2)?, row.get(3)?);
         cursor.messages = cursor.messages.max(updated.min(now));
         // A row read again only for being within `LATE` was counted, and
         // one stamped ahead of the clock is counted by the read that takes
@@ -232,22 +212,10 @@ fn messages(
         // last read, isn't: knowing it wasn't seen would take every bad
         // row's id in the cursor, for a count only doctor shows.
         let unseen = u64::from(updated > mark && updated <= now);
-        let session = INFO.session(&native);
-        // A prompt says when its session worked, and no more: what it holds
-        // isn't read.
-        if kind == "user" {
-            read.session(&session).saw(created);
-            continue;
-        }
-        let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(5)?) else {
+        let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(4)?) else {
             read.skipped += unseen;
             continue;
         };
-        read.session(&session).saw(created);
-        let completed = data["time"]["completed"].as_i64();
-        if let Some(completed) = completed {
-            read.session(&session).saw(completed);
-        }
         // A message has no tokens until its response ends.
         let tokens = &data["tokens"];
         let (Some(input), Some(output), Some(reasoning), Some(cache_read), Some(cache_write)) = (
@@ -279,9 +247,10 @@ fn messages(
         }
         read.respond(Response {
             id: message,
-            session,
+            session: INFO.session(&native),
             copy: false,
-            at: completed
+            at: data["time"]["completed"]
+                .as_i64()
                 .or(data["time"]["created"].as_i64())
                 .unwrap_or(created),
             provider: provider.to_owned(),
@@ -416,11 +385,8 @@ mod tests {
         );
         let session = &read.sessions["opencode:s1"];
         assert_eq!(session.title.as_ref().unwrap().1, "Fix the form");
-        assert_eq!(session.last, Some(2500));
         // A fork is a session of its own.
         assert!(read.sessions["opencode:s2"].parent.is_none());
-        // Read on, rows within 10 s of the mark are read again, which
-        // changes nothing.
         let again = OpenCode.read(&file, &read.cursor).unwrap();
         assert_eq!(again.responses["m2"], read.responses["m2"]);
     }
@@ -446,27 +412,6 @@ mod tests {
     }
 
     #[test]
-    fn a_row_that_cant_be_read_is_counted_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = database(dir.path());
-        let db = Connection::open(&file).unwrap();
-        db.execute(
-            "INSERT INTO session_message VALUES ('m4', 's1', 'assistant', 3, 2600, 2600, 'not JSON')",
-            [],
-        )
-        .unwrap();
-        let first = OpenCode.read(&file, "").unwrap();
-        assert_eq!(first.skipped, 1);
-        // Within `LATE` of it, so it's read again.
-        db.execute(
-            "INSERT INTO session_message VALUES ('m5', 's1', 'user', 4, 2700, 2700, '{\"text\": \"Thanks.\"}')",
-            [],
-        )
-        .unwrap();
-        assert_eq!(OpenCode.read(&file, &first.cursor).unwrap().skipped, 0);
-    }
-
-    #[test]
     fn a_row_stamped_ahead_of_the_clock_doesnt_stop_later_rows_being_read() {
         let dir = tempfile::tempdir().unwrap();
         let file = database(dir.path());
@@ -483,18 +428,15 @@ mod tests {
         ))
         .unwrap();
         let first = read_at(&file, "", 20_000).unwrap();
-        // The clock put right, a session and a request at 30,000.
-        db.execute_batch(
-            "INSERT INTO session_v2 VALUES ('s4', NULL, NULL, '/work/web', 'Footer', 30000, 30000);
-             INSERT INTO session_message VALUES ('m6', 's4', 'user', 1, 30000, 30000, '{\"text\": \"Add a footer.\"}');",
+        // The clock put right, a session at 30,000.
+        db.execute(
+            "INSERT INTO session_v2 VALUES ('s4', NULL, NULL, '/work/web', 'Footer', 30000, 30000)",
+            [],
         )
         .unwrap();
         let later = read_at(&file, &first.cursor, 31_000).unwrap();
         let footer = &later.sessions["opencode:s4"];
         assert_eq!(footer.title.as_ref().unwrap().1, "Footer");
-        assert_eq!(footer.last, Some(30_000));
-        // The rows stamped ahead are read again, which changes nothing: the
-        // reply is the same response.
         assert_eq!(later.responses["m4"], first.responses["m4"]);
         // The row that can't be read is counted once, when the clock passes
         // it.

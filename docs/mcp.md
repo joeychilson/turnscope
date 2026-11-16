@@ -4,10 +4,7 @@
 output. A coding agent connected to it can check its limits before costly
 work, and find out what used them. It has two tools.
 
-The tools only read: they change nothing in your agents' files. Each call
-first brings Turnscope's database up to date, with limits and prices when
-they're due and new history from the agents' files, so every answer is
-current.
+The tools only read: they change nothing in your agents' files.
 
 ## Connect an agent
 
@@ -19,11 +16,9 @@ turnscope disconnect codex      # remove it
 
 The app's Settings → Agents does the same.
 
-`connect` runs the agent's own command. Turnscope never writes an agent's
-files. It finds the command on the `PATH` of your interactive login shell,
-where agents' installers add their folders, so it also works from the app.
-With [`--home`](cli.md#global-options), it runs the command with `HOME` set
-to that folder.
+`connect` runs the agent's own command, found on the `PATH` of your
+interactive login shell ([cli.md](cli.md#connect-and-disconnect)), and
+never writes the agent's files itself.
 
 | Agent | Id | Add | Remove |
 |---|---|---|---|
@@ -49,16 +44,8 @@ from `mcp.servers` in `~/.config/opencode/opencode.json`.
 
 ### Check the connection
 
-`turnscope connect` with no agent lists each agent's state:
-
-```
-Claude Code  not connected: `turnscope connect claude-code`
-Codex        not connected: `turnscope connect codex`
-OpenCode     not connected: `turnscope connect opencode`
-Pi           not connected: `turnscope connect pi`
-Grok Build   not connected: `turnscope connect grok-build`
-Antigravity  not connected: `turnscope connect antigravity`
-```
+`turnscope connect` with no agent lists each agent's state
+([cli.md](cli.md#connect-and-disconnect) shows it):
 
 | State | Means |
 |---|---|
@@ -112,10 +99,8 @@ way.
 
 - Every answer is one markdown text block: the verdict in sentences, then
   lists and tables.
-- There is no `structuredContent`. Claude Code gives the model structured
-  content in place of the text, and agents given the same answers as JSON
-  needed more calls. Programs should use the CLI's `--json` or the
-  [serve protocol](protocol.md).
+- There is no `structuredContent`: programs should use the CLI's `--json`
+  or the [serve protocol](protocol.md).
 - Times are local, on a 24-hour clock: `10:37` today, `Wed 09:00` within a
   week, `Sep 12 09:30` beyond. A limit's times also say how far off they
   are: `15:00 (in 3h)`.
@@ -133,9 +118,10 @@ way.
   no account is named nope; there are: Claude Max (me@example.com) (anthropic:acct-1:org-1), ChatGPT Plus (me@example.com) (openai:acct-2), OpenRouter API key (openrouter:api), SuperGrok (me@example.com) (xai:user-3)
   ```
 
-- Each call first reads what's new. If that fails, as when a provider
-  can't be reached, the tool still answers from what's known, and ends by
-  saying it's as of the last read, and why.
+- Each call first reads what's new: history, and limits and prices when
+  they're due. If that fails, as when a provider can't be reached, the tool
+  still answers from what's known, and ends by saying it's as of the last
+  read, and why.
 
 ## Tools
 
@@ -182,10 +168,7 @@ The answer has three parts:
    line per limit with what's left, the reset, the outlook and the work
    left, and for an API key, the spend this month across its keys.
 
-"At this pace" counts clock time, breaks included: when the limit runs out
-if use goes on as it has. "Hours of work" counts only the time agents were
-working: how much more work the limit allows. See
-[Forecast](architecture.md#forecast).
+[cli.md](cli.md#status) says what "at this pace" and "of work" count.
 
 With no account to show, the answer is one line saying why, as the command
 line's `status` says it: no account's limits have been read yet, or every
@@ -225,7 +208,7 @@ together, as for "what did I spend across my agents".
 | `account` | string | the caller's | One account: its id, or text in its title, label or id. If the text matches several, the error lists them. |
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
 | `limit` | string | the limit that decides how the account stands | Text in a limit's name or key, any case, such as `week` or `5 hours`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
-| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit. The description says that "this week" of a weekly limit is its window, as `week` is the calendar week from Monday: an agent asked what used a weekly limit this week passed `week` and lost the shares. A `since` at or after now is an error, as it is for the command line's `usage`. |
+| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. A `since` at or after now is an error, as it is for the command line's `usage`. |
 | `by` | `session`, `project`, `model` or `agent` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
 
@@ -244,18 +227,12 @@ The answer:
    Usage with no known price shows as `(+N unpriced)` after the cost, as
    in the table.
 
-Shares are approximate. Providers say how much of a limit is used, not by
-what, so each row's share is the points used times its part of the cost.
-A limit on one model, such as `Weekly (Opus)`, counts only the responses of
-models whose id names it; one on several, such as `Weekly (Claude and GPT)`,
-those of any of them. Shares are known only over the limit's current
-window, so with any other `since` the column is left out, and a line says
-from when the window runs and to leave `since` out for them.
-
-For a limit whose window reset since it was read, the usage runs from the
-reset, or from one window's length ago when that's later, and no row has a
-share: how much of the new window is used isn't known. With another
-`since`, no line then says how to get shares.
+The usage's start and each row's share are worked out as for the command
+line's `usage --limit` ([cli.md](cli.md#usage)). Shares are
+approximate, and known only over the limit's current window: with any
+other `since`, the column is left out, and a line says from when the
+window runs and to leave `since` out for them. A limit whose window reset
+since it was read gives no shares, so no line says how to get them.
 
 An account with no limit read, such as one whose login expired, still has
 its usage broken down, without the limit's line or shares: unless `since`
@@ -285,7 +262,6 @@ notification, which has no `id`, gets no reply.
 | `2026-07-28` | `server/discover`. Each request carries `_meta["io.modelcontextprotocol/protocolVersion"]`. |
 | `2025-11-25`, `2025-06-18` | `initialize` |
 
-Current clients still use `initialize`: Codex 0.160 speaks 2025-06-18.
 `initialize` answers with the client's revision when it's one of these two,
 and with `2025-11-25` otherwise.
 

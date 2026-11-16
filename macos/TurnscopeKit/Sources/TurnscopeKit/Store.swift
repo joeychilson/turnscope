@@ -191,7 +191,6 @@ public final class Store {
     /// between.
     public func setNotify(_ change: (inout Notify) -> Void) {
         guard var settings = status?.settings else { return }
-        let before = settings
         change(&settings.notify)
         status?.settings = settings
         guard let client else { return }
@@ -199,7 +198,7 @@ public final class Store {
             do {
                 let _: Done = try await client.request("settings.set", SettingsParams(settings: settings))
             } catch {
-                status?.settings = served ?? before
+                if let served { status?.settings = served }
             }
         }
     }
@@ -252,9 +251,6 @@ public final class Store {
         case .phase(.connected):
             failure = nil
             onChange()
-        case .hello(let hello):
-            take(hello.status)
-            hello.alerts.forEach(onAlert)
         case .status(let status): take(status)
         case .alert(let alert): onAlert(alert)
         }

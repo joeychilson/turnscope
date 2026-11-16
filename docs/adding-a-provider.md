@@ -13,25 +13,15 @@ models.dev doesn't list costs what the agent recorded, if anything, and
 
 The steps use a provider called Acme, with id `acme`.
 
-| Step | File |
-|---|---|
-| [1. Measure its answers](#1-measure-its-answers) | The module comment of `src/providers/acme.rs` |
-| [2. Describe it in `Info`](#2-describe-it-in-info) | `src/providers/acme.rs` |
-| [3. Implement `Provider`](#3-implement-provider) | `src/providers/acme.rs` |
-| [4. Register it](#4-register-it) | `src/providers/mod.rs` |
-| [5. Have an agent hold its logins](#5-have-an-agent-hold-its-logins) | `src/agents/<agent>.rs` |
-| [6. Test it](#6-test-it) | `src/providers/acme.rs` |
-| [7. Add its logo](#7-add-its-logo) | `macos/Logos/providers/acme.svg` |
-| [8. Update the docs](#8-update-the-docs) | `README.md`, `docs/architecture.md`, `CHANGELOG.md` |
-
 ## 1. Measure its answers
 
 Find the endpoint that reports usage for a login the agents hold, and read
 real answers from it: each limit's fields, what a plan without a window
 sends, how times are written, and what a refused login gets: its status,
 and whether its body is an HTML page, which `ask` doesn't count as refused.
-Write what you measured, with dates, in the module comment at the top of
-`src/providers/acme.rs`, as the other providers do.
+The module comment of `src/providers/acme.rs` says how its API answers.
+Each decision you measured goes on the code it applies to, with its
+numbers and dates.
 
 ## 2. Describe it in `Info`
 
@@ -68,10 +58,7 @@ impl Provider for Acme {
     }
 
     fn account(&self, credential: &Credential) -> Option<Account> {
-        if credential.key {
-            return Some(super::api_account(INFO.id));
-        }
-        Some(super::subscription(INFO.id, credential.identity.clone()?))
+        super::account(INFO.id, credential, || credential.identity.clone())
     }
 
     fn limits(&self, credential: &Credential, _now: i64) -> Result<Limits, Problem> {
@@ -131,7 +118,7 @@ limit:
 | Field | What it is |
 |---|---|
 | `key` | The same at every read: it names the limit in readings, alerts and `limit.breakdown`. A limit that belongs to one API key is keyed `key-<fingerprint>`, from `credential.secret.fingerprint()`: the status then shows the agents holding that key, and the limit never decides how the account stands. |
-| `name` | As the user knows it: `5 hours`, `Weekly`, `Credits`. A limit of money whose name ends in `s` is said as plural, "Credits are used up", by the engine and the app alike. |
+| `name` | As the user knows it: `5 hours`, `Weekly`, `Credits`. A limit of money whose name ends in `s` is said as plural, "Credits are used up", by the command line, the MCP server and the app alike. |
 | `scope` | The model it covers, when not all: `Opus`. Join several with "and", as `Claude and GPT`: a breakdown counts the responses of models whose id names any of them. |
 | `used` | Percent used. For a limit of money, what was spent divided by the limit, times 100. |
 | `size` | Dollars, for a limit of money. For one that never resets, all that was ever bought, as OpenRouter's credits are, so it grows when more is: a `usedUp` alert is raised once per size. |
@@ -152,21 +139,12 @@ A failure is a `Problem`:
 - `Problem::Unavailable`: the provider is out of reach or busy, or its
   answer isn't understood.
 
-Helpers in `src/providers/mod.rs`:
-
-| Helper | Does |
-|---|---|
-| `ask(url, credential, headers)` | GETs `url` with `Authorization: Bearer <secret>` and `headers`, for JSON, giving up after 15 seconds. A 2xx status gives the JSON, and a 401 or 403 `Problem::SignIn`, unless its body is an HTML page, such as a bot check's, which signing in again wouldn't get past. Anything else is `Problem::Unavailable`. |
-| `ask_refused_by(url, credential, headers, refused)` | As `ask`, with `refused` the statuses that mean a refused login, where a 403 can mean something else, as at xAI. |
-| `ask_within(url, credential, headers, seconds)` | As `ask`, giving up after `seconds`, for a provider's second request, as OpenRouter's for credits. |
-| `ask_sending(url, credential, headers, body, refused, seconds)` | As `ask_refused_by`, as a POST of `body` as JSON, for a provider that tells its limits only in answer to one, as Google does. The body is in curl's arguments, so it must hold no secret. It gives up after `seconds`. |
-| `wait_left(spent)` | The `seconds` for a second request: what's left of the 15 with `spent` gone, a second at least. A provider that asks twice shares the 15 between the two, as `guard` waits on a read. |
-| `get(url, headers, seconds)` | The request itself, giving the status and body, for a provider whose token goes in another header. It gives up after `seconds`, or after 5 without a connection. A limit read passes 15, as `ask` does. |
-| `absent(window)` | Whether a window is null or all nulls, as providers send one a plan doesn't have. |
-| `window_name(length)` | A window's name by its length in milliseconds: `Hourly`, `5 hours`, `Daily`, `Weekly`, `Monthly`, or `<n> days`. |
-| `words(key)` | A provider's key as words: `super_heavy` is `Super Heavy`. |
-| `api_account(provider)` | The one account, `<provider>:api`, that all of a provider's API keys draw on. |
-| `subscription(provider, (id, label))` | The subscription account `<provider>:<id>`, with `label`, from an id and label such as `credential.identity`. |
+The helpers in `src/providers/mod.rs` each have a doc comment:
+`account(provider, credential, identity)` and `api_account(provider)`;
+`ask(url, credential, headers)`, `asked(url, credential, headers, body,
+refused, seconds)` and `request(url, headers, body, seconds)`, with
+`wait_left(spent)` for a second request; and `absent(window)`,
+`window_name(length)` and `words(key)` for reading an answer.
 
 How Turnscope calls it, every five minutes:
 
@@ -181,10 +159,9 @@ Rules:
 
 - **Never refresh a token** or write a login. Turnscope waits for the agent
   to refresh it.
-- **Requests** go only through `ask`, `ask_refused_by`, `ask_within`,
-  `ask_sending` or `get`: curl with the credential on standard input,
-  Turnscope's only way to the network. A request changes nothing at the
-  provider.
+- **Requests** go only through `ask`, `asked` or `request`: curl with the
+  credential on standard input, Turnscope's only way to the network. A
+  request changes nothing at the provider.
 - **An answer that isn't understood** is `Problem::Unavailable`, not an
   empty list of readings, which would read as a plan without limits. A
   window whose time won't parse fails the whole answer, as the rest would
@@ -252,23 +229,14 @@ mod tests {
 }
 ```
 
-Run what CI runs ([development.md](development.md)):
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-```
-
-Adding a provider changes no CLI snapshot.
+Run what CI runs ([development.md](development.md#test)). Adding a
+provider changes no CLI snapshot.
 
 ## 7. Add its logo
 
-Add a one-color SVG (`currentColor`) at `macos/Logos/providers/acme.svg`.
-models.dev has most providers' logos, at `https://models.dev/logos/<id>.svg`.
-It must be shapes, not an embedded picture, and not models.dev's placeholder
-([macos/Logos/README.md](../macos/Logos/README.md)). Without one, the app
-draws a generic mark.
+Add a logo at `macos/Logos/providers/acme.svg`, as
+[macos/Logos/README.md](../macos/Logos/README.md) says. Without one, the
+app draws a generic mark.
 
 ## 8. Update the docs
 
@@ -280,10 +248,5 @@ Name the provider in:
 
 ## Done when
 
-- [ ] `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`
-  and `cargo test --locked` pass, and no snapshot changed.
-- [ ] `macos/Logos/providers/acme.svg` exists.
-- [ ] `README.md`, `docs/architecture.md` and `CHANGELOG.md` name the
-  provider.
-- [ ] With an agent signed in to it, `turnscope status` shows the account
-  and its limits, and `turnscope doctor` reports nothing about it.
+With an agent signed in to it, `turnscope status` shows the account and its
+limits, and `turnscope doctor` reports nothing about it.

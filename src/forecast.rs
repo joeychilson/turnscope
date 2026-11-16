@@ -1,38 +1,8 @@
 //! Where a limit's window is headed, by the clock and by the work done:
 //! what it will have used by its reset, when it runs out if it does, and how
-//! many hours of work are left, each as an 80% range.
-//!
-//! Chosen by replaying this Mac's real limit history (the `backtest` test):
-//! least squares, recent 1-, 3- and 24-hour rates, weighted rates, blends and
-//! a duty cycle all did no better than the simplest on windows of a day or
-//! less, and worse on longer ones, where they raised false alarms.
-//!
-//! - **Pace** is use so far over time so far in the window: since it began,
-//!   or since use was last given back, as by an early reset, to the moment
-//!   asked. Time with no new reading is time nothing more was used.
-//! - **The range** scales the pace by how the pace that followed compared
-//!   with it on ended windows, by window length and share of it left: the
-//!   10th and 90th percentiles the backtest measured ([`BANDS`]); they held
-//!   82% of the time.
-//! - **Not enough data** in a window's first twentieth (15 minutes at
-//!   least), or before 2 points are used: providers report whole percents,
-//!   so one step of rounding would read as a pace, and a month's first hours
-//!   say little of its weeks.
-//! - **A run-out is told** only within a quarter of the window from now
-//!   ([`told`]): 75 minutes of 5 hours, 42 hours of a week. Further out, the
-//!   pace mostly carries a burst at the window's start forward, through the
-//!   nights for a week. Four weeks of this Mac's work, replayed as 5-hour and
-//!   weekly windows at 0.8 to 4 times its spend (October 2026): run-outs told
-//!   as soon as the pace gave one came true 56–76% of the time, and those
-//!   told within a quarter 75–100%, missing at most one more and still told
-//!   about an hour, or a day and a half, ahead. Further out is not enough
-//!   data.
-//! - **Work** is what an hour of work uses: points risen over the hours an
-//!   agent here worked on the account, the 5-minute slots holding a response
-//!   on it, over its latest readings. The clock's pace counts nights and
-//!   breaks, so for a week it understated what more hours of work use about
-//!   2 times; this was unbiased, with an 80% range of what followed of 0.5 to
-//!   1.6 times it for windows of a day or less, 0.4 to 2.2 for longer.
+//! many hours of work are left, each as an 80% range. The pace was chosen,
+//! and its range measured, by replaying this Mac's real limit history (the
+//! `backtest` test).
 
 use crate::time::{DAY, HOUR, MINUTE};
 
@@ -40,7 +10,7 @@ use crate::time::{DAY, HOUR, MINUTE};
 /// windows of a day or less, then longer, by share of the window left: the
 /// last quarter, half, and more. Measured by the backtest, rounded
 /// outward; a bucket measured on fewer than five windows takes the widest
-/// of its length's.
+/// of its length's. The ranges held 82% of the time.
 const BANDS: [[(f64, f64); 3]; 2] = [
     [(0.05, 2.5), (0.25, 1.8), (0.35, 1.6)],
     [(0.0, 3.4), (0.0, 3.4), (0.7, 3.4)],
@@ -83,10 +53,18 @@ impl Projection {
     }
 }
 
-/// `window` projected from `now` at its pace so far; `None` without enough
-/// data.
+/// `window` projected from `now` at its pace: points used since the window
+/// began, or since use was last given back, as by an early reset, over the
+/// hours since. Time with no new reading is time nothing more was used.
+/// Chosen over least squares, recent 1-, 3- and 24-hour rates, weighted
+/// rates, blends and a duty cycle: none did better on windows of a day or
+/// less, and all did worse on longer ones, where they raised false alarms.
+///
+/// `None` in a window's first twentieth (15 minutes at least), or with some
+/// use but under 2 points: providers report whole percents, so one step of
+/// rounding would read as a pace, and a month's first hours say little of
+/// its weeks.
 pub fn project(window: &Window, now: i64) -> Option<Projection> {
-    // Since use was last given back, as by an early reset.
     let from = window
         .readings
         .windows(2)
@@ -109,7 +87,13 @@ pub fn project(window: &Window, now: i64) -> Option<Projection> {
 }
 
 /// Whether a run-out at `out` is near enough to `at` to tell: within a
-/// quarter of `window`'s length.
+/// quarter of `window`'s length, 75 minutes of 5 hours or 42 hours of a
+/// week. Further out, the pace mostly carries a burst at the window's start
+/// forward, through the nights for a week. Four weeks of this Mac's work,
+/// replayed as 5-hour and weekly windows at 0.8 to 4 times its spend
+/// (October 2026): run-outs told as soon as the pace gave one came true
+/// 56–76% of the time, and those told within a quarter 75–100%, missing at
+/// most one more and still told about an hour, or a day and a half, ahead.
 pub fn told(window: &Window, at: i64, out: i64) -> bool {
     out - at <= (window.resets - window.starts) / 4
 }
@@ -173,8 +157,7 @@ pub struct Reading {
 /// resets drift by seconds from read to read.
 pub const DRIFT: i64 = 5 * MINUTE;
 
-/// Whether readings with resets `a` and `b` are of the same window: both
-/// within [`DRIFT`] of each other, or both with none.
+/// Whether readings with resets `a` and `b` are of the same window.
 pub fn same_reset(a: Option<i64>, b: Option<i64>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => (a - b).abs() <= DRIFT,
@@ -184,13 +167,17 @@ pub fn same_reset(a: Option<i64>, b: Option<i64>) -> bool {
 
 /// Points of a limit an hour of work uses: what it rose by over the hours
 /// worked between its latest `readings` (oldest first, across windows),
-/// back to `enough` hours of work. `worked` holds the start of each slot of
-/// work on its account, oldest first, and is whose work it is only from
-/// `known`, when the sign-ins it rests on were first read. A window's first
-/// reading counts from the window's start only where both reach back past
-/// it: work from before would otherwise be counted as none, and work on
-/// another account before Turnscope ran as this one's. `None` with less
-/// than an hour of work or 2 points measured.
+/// back to `enough` hours of work. Chosen over the clock's pace, which
+/// counts nights and breaks: for a week it understated what more hours of
+/// work use about 2 times, where this showed no bias.
+///
+/// `worked` holds the start of each slot of work on its account, oldest
+/// first, and is whose work it is only from `known`, when the sign-ins it
+/// rests on were first read. A window's first reading counts from the
+/// window's start only where both reach back past it: work from before would
+/// otherwise be counted as none, and work on another account before
+/// Turnscope ran as this one's. `None` with less than an hour of work or 2
+/// points measured.
 pub fn work_rate(
     readings: &[Reading],
     worked: &[i64],
@@ -229,8 +216,16 @@ pub fn work_rate(
     (worked_hours >= 1.0 && rose >= 2.0).then(|| rose / worked_hours)
 }
 
+/// The hours of work [`work_rate`] walks back to for a window of `length`.
+pub fn enough_work(length: Option<i64>) -> f64 {
+    match length {
+        Some(length) if length <= DAY => 3.0,
+        _ => 5.0,
+    }
+}
+
 /// The 80% range of what an hour of work used next over the rate measured,
-/// for a window of `length`: a day or less, or longer.
+/// for a window of `length`.
 pub fn work_band(length: Option<i64>) -> (f64, f64) {
     match length {
         Some(length) if length <= DAY => (0.5, 1.6),

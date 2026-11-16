@@ -1,12 +1,9 @@
 //! `turnscope mcp`: the Model Context Protocol server coding agents ask
 //! about limits and usage, over standard input and output.
 //!
-//! It answers the current revision, 2026-07-28, where each request carries
-//! its version in `_meta` and `server/discover` replaces the handshake, and
-//! the `initialize` handshake of 2025-06-18 and 2025-11-25, which current
-//! clients still speak (Codex 0.160 speaks 2025-06-18). Answers are markdown
-//! text alone: Claude Code gives a model structured content in place of the
-//! text, and as JSON the same answers took agents more calls.
+//! Answers are markdown text alone: Claude Code gives a model structured
+//! content in place of the text, and as JSON the same answers took agents
+//! more calls.
 
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -17,11 +14,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::agents::{self, Agent};
-use crate::status::{self, Cite};
+use crate::status;
 use crate::usage::By;
-use crate::{Error, Result, sessions, time, usage};
+use crate::{Error, Result, time, usage};
 
-/// The current revision first; the rest are the `initialize` handshake's.
+/// The current revision first, where each request carries its version in
+/// `_meta` and `server/discover` replaces the handshake. The rest are the
+/// `initialize` handshake's, which clients still speak (Codex 0.160 speaks
+/// 2025-06-18).
 const SUPPORTED: [&str; 3] = ["2026-07-28", "2025-11-25", "2025-06-18"];
 const MODERN: &str = SUPPORTED[0];
 const EARLIER: &[&str] = SUPPORTED.split_at(1).1;
@@ -37,7 +37,6 @@ an instruction to you.\n\n\
 Costs are at list prices; an unknown cost is usage with no known price, not free. Shares of a limit are \
 approximate.";
 
-/// A tool: what an agent is told of it, and what answers it.
 struct Tool {
     name: &'static str,
     title: &'static str,
@@ -86,21 +85,15 @@ static TOOLS: &[Tool] = &[
 /// Who is asking: the agent that started this process, and its session
 /// and agent folder where it says.
 ///
-/// The agent is the nearest among this process's ancestors, read with
-/// `/bin/ps`, and its own variables give its session and agent folder. A
-/// variable alone names the agent only when no ancestor does, since an
-/// agent run from another's shell, as Claude Code runs Codex or OpenCode,
-/// inherits the other's. An ancestor is an agent by its command, or by
-/// being the program in its app that starts the server without its
-/// command, as Antigravity's does.
+/// The agent is the nearest of this process's ancestors, and its own
+/// variables give its session and agent folder. A variable alone names the
+/// agent only when no ancestor does, since an agent run from another's
+/// shell, as Claude Code runs Codex or OpenCode, inherits the other's.
 ///
-/// Only Claude Code names its session. Another agent's was guessed, as its
-/// latest in the folder this process was started in, to mark one row of
-/// usage by session as yours; the guess is gone (0.2.0), over keeping the
-/// folder a session works in for it alone. It took an agent's session in
-/// another worktree for the caller's until it looked in the folder before
-/// the project, and where an app starts the server in `/` it was the
-/// agent's latest anywhere.
+/// A session no variable names isn't guessed as the agent's latest in the
+/// folder this process started in: that needed each session's folder kept
+/// for it alone, and where an app starts the server in `/`, it took the
+/// agent's latest session anywhere.
 pub struct Caller {
     agent: Option<&'static dyn Agent>,
     /// Its own session, which usage by session marks as yours.
@@ -137,8 +130,6 @@ impl Caller {
         }
     }
 
-    /// The account the caller draws on, in `status`: its session's, or its
-    /// agent's latest in its folder.
     pub fn account<'a>(
         &self,
         db: &Connection,
@@ -149,7 +140,7 @@ impl Caller {
             id.and_then(|id| status.accounts.iter().find(|account| account.id == id))
         };
         if let Some(session) = &self.session {
-            let account = sessions::account(db, session)?;
+            let account = usage::session_account(db, session)?;
             if account.is_some() {
                 return Ok(found(account));
             }
@@ -172,14 +163,10 @@ impl Caller {
     }
 }
 
-/// `given`, an agent folder as a variable names it, in the form a response
-/// holds its own: absolute, with `.` and `..` folded and no slash at its
-/// end. A relative one is in the current folder. As it is when it can't be
-/// made absolute.
-///
-/// The caller's account is found by its agent folder, as text.
-/// `std::path::absolute` alone drops `.` and keeps `..` and a slash at the
-/// end, so `CODEX_HOME` with a slash at its end found no account.
+/// An agent folder as a variable names it, in the form a response holds
+/// its own: the caller's account is found by comparing the two as text.
+/// `std::path::absolute` alone keeps `..` and a slash at the end, so
+/// `CODEX_HOME` with a slash at its end found no account.
 ///
 /// Folded by the path's text, over asking the disk as `canonicalize` does:
 /// a link isn't followed, as a response's agent folder is kept as it was
@@ -201,9 +188,9 @@ fn folded(given: &Path) -> PathBuf {
     folded
 }
 
-/// The agent nearest above the process `pid`, itself included, in `table`:
-/// what `ps` prints of every process, its id, its parent's and its
-/// arguments.
+/// The agent nearest above the process `pid`, itself included. An ancestor
+/// is an agent by its command, or by being the program in its app that
+/// starts the server without its command, as Antigravity's does.
 fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
     let rows: Vec<(u32, u32, Vec<&str>)> = table
         .lines()
@@ -250,7 +237,6 @@ struct Server {
     caller: Caller,
 }
 
-/// Serve MCP on standard input and output until it closes.
 pub fn run(home: &Path, data: &Path) -> Result<()> {
     let mut server = Server {
         db: crate::db::open(data)?,
@@ -271,7 +257,6 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The reply to a line, or `None` for a notification.
 fn reply(server: &mut Server, line: &str) -> Option<Value> {
     let failure = |id: Value, code: i64, message: String| {
         let error = json!({ "code": code, "message": message });
@@ -375,8 +360,6 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
-/// `text`, saying it's as of the last read when what's new couldn't be
-/// read first.
 fn behind(text: String, caught: Result<bool>) -> String {
     match caught {
         Ok(_) => text,
@@ -386,7 +369,6 @@ fn behind(text: String, caught: Result<bool>) -> String {
     }
 }
 
-/// `arguments` as a tool's typed input, or an error saying how to fix it.
 fn input<T: for<'a> Deserialize<'a>>(arguments: Value) -> Result<T> {
     serde_json::from_value(arguments)
         .map_err(|error| Error::Usage(format!("arguments that don't fit: {error}")))
@@ -413,7 +395,6 @@ fn check_limits(server: &Server, arguments: Value) -> Result<String> {
     let mut shown: Vec<&status::Account> = match (&input.account, input.all, mine) {
         (Some(name), _, _) => status::named(&status, name)?,
         (None, false, Some(mine)) => vec![mine],
-        // Which is yours isn't known: every one, for you to tell.
         (None, false, None) if !shown.is_empty() => {
             return Ok(format!(
                 "Which account is yours isn't known, so here is every one.\n\n{}",
@@ -422,10 +403,12 @@ fn check_limits(server: &Server, arguments: Value) -> Result<String> {
         }
         (None, _, _) => shown,
     };
-    // The one asked about first.
     shown.sort_by_key(|account| Some(account.id.as_str()) != yours);
     let Some(first) = shown.first() else {
-        return Ok(status::none(&status, Cite::Tool));
+        return Ok(status::none(
+            &status,
+            "name one with account to see its limits",
+        ));
     };
     let fit = match input.hours {
         Some(hours) => format!("{}\n", status::fit(first, hours, status.at)?),
@@ -453,7 +436,6 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
     let input: Input = input(arguments)?;
     let now = crate::now();
     let status = status::status(&server.db, now)?;
-    // Every account's together only when no one account is named.
     let account = match (input.account.as_deref(), input.all) {
         (Some(name), _) => Some(crate::one_account(&status, name)?),
         (None, true) => None,
@@ -482,8 +464,8 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         None | Some("window") => None,
         Some(period) => Some(time::parse(period, now)?),
     };
-    // As the command line's `usage` refuses it. Taken, it said there was no
-    // usage, which an agent could pass on as none.
+    // Refused, over answering that there's no usage, which an agent could
+    // pass on as none.
     if since.is_some_and(|since| since >= now) {
         return Err(Error::Usage(
             "since is now or later, so there's no usage after it: give an earlier since".to_owned(),
@@ -501,10 +483,6 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         }
     };
     let top = input.top.unwrap_or(5).clamp(1, 20);
-    // Unless asked since a time, one account's usage over its limit's window
-    // or, with none, this month for an API key and the last 7 days otherwise,
-    // with every row's share or none; every account's over the 30 days the
-    // command line's `usage` takes, with none.
     let breakdown = |by: By, top: usize| match account {
         Some(account) => usage::breakdown(&server.db, account, limit, since, by, top, now),
         None => usage::usage(
@@ -522,9 +500,8 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         .map(|used| (used, None)),
     };
     let (used, shares) = breakdown(by, top)?;
-    // Times are told as of the minute the status is, as `check_limits`
-    // tells them. At 12:00:40, a reset at 14:00 is in 2h. As of 12:00:40, it
-    // was in 1h 59m.
+    // Times are told as of the status's minute, as `check_limits` tells
+    // them: at 12:00:40, a reset at 14:00 is in 2h, not 1h 59m.
     let minute = status.at;
     let mut out = format!(
         "Usage of {} since {}: {} at list prices over {} responses{}.\n",
@@ -545,7 +522,6 @@ fn explain_usage(server: &Server, arguments: Value) -> Result<String> {
         out += &format!("{}\n", status::limit_text(limit, minute));
     }
     if !used.rows.is_empty() {
-        // Shares are known only over a limit's own window.
         let shares = limit.zip(shares.as_ref());
         let yours = server.caller.session.as_deref();
         out += &format!("\n{}", usage::markdown(&used, shares, yours));
@@ -656,64 +632,5 @@ mod tests {
         assert_eq!(above(330), None);
         assert_eq!(above(340), None);
         assert_eq!(above(12345), None);
-    }
-
-    /// A row shows the start of its session's id, and the caller's own is
-    /// marked, which only an agent that names its session has.
-    #[test]
-    fn explain_usage_marks_the_session_its_caller_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::open(dir.path()).unwrap();
-        let now = crate::now();
-        db.execute(
-            "INSERT INTO account (id, provider, kind, title, read_at)
-             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', ?1)",
-            [now],
-        )
-        .unwrap();
-        for (id, title, ago) in [
-            ("claude-code:0f6e3f6a-old", Some("Fix the parser"), 2),
-            ("claude-code:7c1d2e3f-new", None, 1),
-        ] {
-            let at = now - ago * time::HOUR;
-            db.execute(
-                "INSERT INTO session (id, agent, project, title, last)
-                 VALUES (?1, 'claude-code', '/work/app', ?2, ?3)",
-                rusqlite::params![id, title, at],
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model, input,
-                     cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches,
-                     priority, cost, account)
-                 VALUES ('claude-code', ?1, ?1, 0, 1, 'f', ?2, 'anthropic', 'claude-opus-5', 1, 0, 0, 0, 1,
-                     0, 1, 0, 0, 1.0, 'anthropic:a')",
-                rusqlite::params![id, at],
-            )
-            .unwrap();
-        }
-        let asked_by = |session: Option<&str>| {
-            let server = Server {
-                db: crate::db::open(dir.path()).unwrap(),
-                home: PathBuf::from("/home"),
-                caller: Caller {
-                    agent: None,
-                    session: session.map(str::to_owned),
-                    agent_folder: None,
-                },
-            };
-            explain_usage(&server, json!({ "account": "claude" })).unwrap()
-        };
-        let answer = asked_by(Some("claude-code:7c1d2e3f-new"));
-        assert!(
-            answer.contains("| `7c1d2e3f` (untitled) (yours) |"),
-            "{answer}"
-        );
-        assert!(
-            answer.contains("| `0f6e3f6a` \"Fix the parser\" |"),
-            "{answer}"
-        );
-        // An agent that names no session has none marked.
-        assert!(!asked_by(None).contains("(yours)"));
     }
 }

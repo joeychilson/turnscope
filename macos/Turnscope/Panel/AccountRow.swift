@@ -1,16 +1,4 @@
 // One account as a row, the same everywhere it's listed.
-//
-// Closed, it shows the account's logo and name, a line under the name saying
-// which limit decides it and what happens next, and on the right what's left
-// of that limit ("—" when nothing is known).
-//
-// It opens only when it has more to show: its limits, or a note on what they
-// can't say. Opened, it shows each limit as its own line, all laid out alike:
-// the limit's name and times (when it runs out, when it resets, or when it's
-// back), what's left, and a bar. Below them come the note, and the sessions
-// that used it most, where any did.
-//
-// Hovering a row shows its Hide button, and right-clicking offers Hide too.
 
 import SwiftUI
 import TurnscopeKit
@@ -197,7 +185,7 @@ struct Bar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(.quaternary)
                 Capsule()
-                    .fill(limit.standing == .lasts ? AnyShapeStyle(.secondary) : AnyShapeStyle(limit.standing.color))
+                    .fill(limit.standing.ink(lasting: .secondary))
                     .frame(width: max(level > 0 ? 5 : 0, geometry.size.width * (grown || reduceMotion ? level : 0)))
             }
         }
@@ -226,14 +214,7 @@ private struct UsedMostList: View {
                 .foregroundStyle(.secondary)
             ForEach(sessions) { used in
                 VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 5) {
-                        Text(used.title ?? "Untitled session").font(.line).lineLimit(1)
-                        if used.running {
-                            Circle().fill(Color.active).frame(width: 6, height: 6)
-                                .help("Active now")
-                                .accessibilityLabel("Active now")
-                        }
-                    }
+                    Text(used.title ?? "Untitled session").font(.line).lineLimit(1)
                     Text(words.used(used, agents: agents))
                         .font(.small.monospacedDigit()).foregroundStyle(.secondary)
                 }

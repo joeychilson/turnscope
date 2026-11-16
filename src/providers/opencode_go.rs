@@ -1,12 +1,10 @@
 //! OpenCode Go: the Go plan's rolling 5-hour, weekly and monthly limits.
 //!
-//! OpenCode and Pi keep the plan's API key under `opencode-go`. A key is its
-//! own identity, known by its fingerprint. A plan can have several keys, and
-//! nothing in an answer names the plan (measured 2026-10-05). But two keys to
-//! one plan answer alike, the monthly reset to the same second (measured
-//! 2026-10-09), so keys whose monthly window resets at the same instant are
-//! read as one account. Two plans would have to begin in the same second to
-//! be taken for one.
+//! A plan can have several keys, and nothing in an answer names the plan
+//! (measured 2026-10-05). But two keys to one plan answer alike, the monthly
+//! reset to the same second (measured 2026-10-09), so keys whose monthly
+//! window resets at the same instant are read as one account. Two plans
+//! would have to begin in the same second to be taken for one.
 //!
 //! Each window's `percent` is a whole number, rounded down, and nothing else
 //! says how much is used (measured 2026-10-09). OpenCode's console rounds a

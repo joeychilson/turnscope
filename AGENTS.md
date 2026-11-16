@@ -8,8 +8,8 @@ runs, Swift tests included.
 ## Never use the user's real data
 
 - Run and test against copies, off the network:
-  `TURNSCOPE_OFFLINE=1 target/debug/turnscope --data "$(mktemp -d)" --home tests/fixtures/home`.
-  Never the data directory
+  `TURNSCOPE_OFFLINE=1 target/debug/turnscope --data "$(mktemp -d)" --home target/tmp/home`,
+  the fixture home `cargo test --test cli` builds. Never the data directory
   (`~/Library/Application Support/com.joeychilson.turnscope`) or the
   agents' own folders.
 - `turnscope connect <agent>` and `disconnect` change an agent's

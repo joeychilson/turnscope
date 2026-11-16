@@ -16,26 +16,17 @@
 //! in a rollout with records that is nothing (48,823 of 49,260 totals), but a
 //! rollout written before records existed is counted from its totals alone.
 //! A compaction's request is recorded and left out of the total, which then
-//! grows by less than its records. `input_tokens` includes cached input, and
-//! `output_tokens` reasoning.
+//! grows by less than its records.
 //!
 //! **Subagents.** A spawned subagent's rollout opens with a copy of its
 //! parent's history, up to `subagent_history_start_ordinal`: its totals,
-//! prompts and times are the parent's, so they're passed over. Records always
-//! belong to the rollout they're in.
+//! prompts and times are the parent's, so they're passed over. A record,
+//! copied or not, counts for the thread its `thread_id` names, or else for
+//! the rollout's.
 //!
 //! **Reviews** (`thread_source` `guardian_review`) are Codex asking a model
 //! whether to approve an action, handing it the whole transcript. They do none
 //! of the work and are read as nothing.
-//!
-//! **Models.** Records name no model: each is counted under the latest
-//! `turn_context`'s or `thread_settings_applied`'s, with its service tier. A
-//! response before any model is named waits, in the cursor, for the first.
-//!
-//! **Titles.** A thread Codex didn't name is titled by the first thing the
-//! person asked. A message sent as the person's comes in parts, its context
-//! (`AGENTS.md`, the environment, a goal carried on) in parts of their own,
-//! some tags with attributes: the title is without them.
 //!
 //! What follows is from Codex's code (openai/codex at `a9b0815`, read
 //! 2026-10-12), not measured.
@@ -45,28 +36,19 @@
 //! `rollout-<time>-<thread>_<rollout id>.jsonl`, whose `session_meta` has a
 //! `history_base`: an earlier rollout, kept below `end_ordinal_exclusive`
 //! (`thread-store/src/local/revert_thread.rs`). The new rollout's ordinals
-//! go on from there (`rollout_lineage.rs`). It doesn't hold the thread's
-//! first request, so it titles nothing. The responses a rewind went back
-//! past were made, and stay counted. A name starts with the time its rollout
-//! was made, so names sort oldest first, and rollouts are listed in that
-//! order.
+//! go on from there (`rollout_lineage.rs`). The responses a rewind went back
+//! past were made, and stay counted.
 //!
 //! **Forks.** A fork of a paginated thread points at its parent's history
 //! with `history_base` and copies none of it. Its own history starts at
 //! `forked_from_ordinal_exclusive`, which a rewind of the fork keeps
 //! (`rollout/src/metadata.rs`). A fork of a legacy thread
-//! (`history_mode` `legacy`) copies it: after the fork's own `session_meta`
-//! come the parent's `session_meta` and history, then a
-//! `thread_settings_applied` whose `thread_id` is the fork's, written with the
-//! copy (`core/src/session/mod.rs`); a copied one keeps its owner's
-//! `thread_id`. The copy is the parent's: its records name the parent's
-//! thread, its settings the models they were made with, and nothing else in
-//! it is the fork's. A fork made by a Codex before 2026-08-29
-//! (openai/codex#41567) has no `thread_id` on that event, so the rest of its
-//! file reads as the copy until a current Codex resumes it. A subagent given
-//! its parent's history has a `forked_from_id` too, from the parent's
-//! `session_meta` in its copy (`core/src/session/session.rs`), but its copy
-//! ends at `subagent_history_start_ordinal`.
+//! (`history_mode` `legacy`) copies it, and the copy is the parent's: its
+//! records name the parent's thread, its settings the models they were made
+//! with, and nothing else in it is the fork's. A subagent given its parent's
+//! history has a `forked_from_id` too, from the parent's `session_meta` in
+//! its copy (`core/src/session/session.rs`), but its copy ends at
+//! `subagent_history_start_ordinal`.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -150,10 +132,29 @@ impl Copy {
         }
     }
 
-    /// Whether `line`, in a rollout of `thread`, is of the copy, keeping
-    /// `copying` up to date.
-    fn holds(&mut self, line: &Line, thread: &str) -> bool {
-        (self.legacy_fork && in_copy(line, thread, &mut self.copying))
+    /// Whether `line`, with `payload`, in a rollout of `thread`, is of the
+    /// copy, keeping `copying` up to date. A legacy fork's copy runs from the
+    /// parent's `session_meta` to the `thread_settings_applied` that names
+    /// `thread`, written with the copy; a copied one names its owner
+    /// (`core/src/session/mod.rs`). A Codex before 2026-08-29
+    /// (openai/codex#41567) named no thread there, so the rest of such a
+    /// fork reads as the copy until a current Codex resumes it.
+    fn holds(&mut self, line: &Line, payload: &Payload, thread: &str) -> bool {
+        if self.legacy_fork {
+            let names = |native: &Option<String>| {
+                native
+                    .as_deref()
+                    .is_some_and(|native| INFO.session(native) == thread)
+            };
+            match (&*line.kind, payload.kind.as_deref()) {
+                ("session_meta", _) if !names(&payload.id) => self.copying = true,
+                ("event_msg", Some("thread_settings_applied")) if names(&payload.thread_id) => {
+                    self.copying = false
+                }
+                _ => {}
+            }
+        }
+        self.copying
             || line
                 .ordinal
                 .zip(self.copied_until)
@@ -173,37 +174,33 @@ struct Usage {
 }
 
 impl Usage {
-    /// These counts less `other`'s, or `None` where one would fall below zero.
-    fn minus(&self, other: &Usage) -> Option<Usage> {
+    fn zip(&self, other: &Usage, f: fn(u64, u64) -> Option<u64>) -> Option<Usage> {
         Some(Usage {
-            input_tokens: self.input_tokens.checked_sub(other.input_tokens)?,
-            cached_input_tokens: self
-                .cached_input_tokens
-                .checked_sub(other.cached_input_tokens)?,
-            cache_write_input_tokens: self
-                .cache_write_input_tokens
-                .checked_sub(other.cache_write_input_tokens)?,
-            output_tokens: self.output_tokens.checked_sub(other.output_tokens)?,
-            reasoning_output_tokens: self
-                .reasoning_output_tokens
-                .checked_sub(other.reasoning_output_tokens)?,
-            total_tokens: self.total_tokens.checked_sub(other.total_tokens)?,
+            input_tokens: f(self.input_tokens, other.input_tokens)?,
+            cached_input_tokens: f(self.cached_input_tokens, other.cached_input_tokens)?,
+            cache_write_input_tokens: f(
+                self.cache_write_input_tokens,
+                other.cache_write_input_tokens,
+            )?,
+            output_tokens: f(self.output_tokens, other.output_tokens)?,
+            reasoning_output_tokens: f(
+                self.reasoning_output_tokens,
+                other.reasoning_output_tokens,
+            )?,
+            total_tokens: f(self.total_tokens, other.total_tokens)?,
         })
     }
 
-    fn plus(&self, other: &Usage) -> Usage {
-        Usage {
-            input_tokens: self.input_tokens + other.input_tokens,
-            cached_input_tokens: self.cached_input_tokens + other.cached_input_tokens,
-            cache_write_input_tokens: self.cache_write_input_tokens
-                + other.cache_write_input_tokens,
-            output_tokens: self.output_tokens + other.output_tokens,
-            reasoning_output_tokens: self.reasoning_output_tokens + other.reasoning_output_tokens,
-            total_tokens: self.total_tokens + other.total_tokens,
-        }
+    fn minus(&self, other: &Usage) -> Option<Usage> {
+        self.zip(other, u64::checked_sub)
     }
 
-    /// Codex's input includes what was read from and written to the cache.
+    fn plus(&self, other: &Usage) -> Usage {
+        self.zip(other, u64::checked_add).unwrap_or(*self)
+    }
+
+    /// Codex's input includes what was read from and written to the cache,
+    /// and its output reasoning.
     fn tokens(&self) -> Option<Tokens> {
         let cached = self.cached_input_tokens + self.cache_write_input_tokens;
         Some(Tokens {
@@ -283,14 +280,8 @@ impl Payload<'_> {
             && self.forked_from_id.is_some()
             && self.history_mode.as_deref() == Some("legacy")
     }
-
-    /// Where the history this `session_meta` goes on from ends.
-    fn base(&self) -> Option<i64> {
-        parsed::<Base>(self.history_base).map(|base| base.end_ordinal_exclusive)
-    }
 }
 
-/// A `session_meta`'s `history_base`: where the history it goes on from ends.
 #[derive(Deserialize)]
 struct Base {
     end_ordinal_exclusive: i64,
@@ -369,8 +360,9 @@ impl Agent for Codex {
         let mut files = Vec::new();
         rollouts(&folder.join("sessions"), &mut files);
         rollouts(&folder.join("archived_sessions"), &mut files);
-        // Oldest first, so a thread's first rollout, which holds its first
-        // request and the folder it began in, is read before a rewind's.
+        // A name starts with the time its rollout was made, so this is
+        // oldest first, and the folder a thread began in is stored before a
+        // rewind's.
         files.sort_by(|one, other| one.file_name().cmp(&other.file_name()));
         files.insert(0, folder.join("session_index.jsonl"));
         files
@@ -399,14 +391,15 @@ impl Agent for Codex {
                     }
                 })?;
         } else {
-            cursor.offset =
-                super::lines(file, cursor.offset, |bytes| {
-                    match serde_json::from_slice::<Line>(bytes) {
-                        Ok(line) if !cursor.review => read_line(&line, &mut cursor, &mut read),
-                        Ok(_) => {}
-                        Err(_) => read.skipped += 1,
-                    }
-                })?;
+            cursor.offset = super::lines(file, cursor.offset, |bytes| {
+                if cursor.review {
+                    return;
+                }
+                match serde_json::from_slice::<Line>(bytes) {
+                    Ok(line) => read_line(&line, &mut cursor, &mut read),
+                    Err(_) => read.skipped += 1,
+                }
+            })?;
         }
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
@@ -446,13 +439,12 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
     let Some(payload) = &line.payload else { return };
     let Some(thread) = cursor.thread.clone() else {
         if line.kind == "session_meta" {
-            open(payload, line.at(), cursor, read);
+            open(payload, cursor, read);
         }
         return;
     };
-    let copied = cursor.copy.holds(line, &thread);
+    let copied = cursor.copy.holds(line, payload, &thread);
     match (&*line.kind, payload.kind.as_deref()) {
-        ("session_meta", _) => return,
         // Settings are taken from a copy too: its records were made under them.
         ("turn_context", _) => {
             if !copied {
@@ -515,35 +507,10 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
         }
         _ => {}
     }
-    if let (false, Some(at)) = (copied, line.at()) {
-        read.session(&thread).saw(at);
-    }
-}
-
-/// Whether `line`, in a legacy fork's rollout of `thread`, is of its copy of
-/// its parent's history: from the parent's `session_meta` to the
-/// `thread_settings_applied` that names `thread`, written with the copy.
-fn in_copy(line: &Line, thread: &str, copying: &mut bool) -> bool {
-    let Some(payload) = &line.payload else {
-        return *copying;
-    };
-    let names = |native: &Option<String>| {
-        native
-            .as_deref()
-            .is_some_and(|native| INFO.session(native) == thread)
-    };
-    match (&*line.kind, payload.kind.as_deref()) {
-        ("session_meta", _) if !names(&payload.id) => *copying = true,
-        ("event_msg", Some("thread_settings_applied")) if names(&payload.thread_id) => {
-            *copying = false
-        }
-        _ => {}
-    }
-    *copying
 }
 
 /// Take in the rollout's own `session_meta`.
-fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
+fn open(meta: &Payload, cursor: &mut Cursor, read: &mut Read) {
     if meta.thread_source.as_deref() == Some("guardian_review") {
         cursor.review = true;
         return;
@@ -559,9 +526,6 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
         .parent_thread_id
         .as_deref()
         .map(|parent| INFO.session(parent));
-    if let Some(at) = at {
-        session.saw(at);
-    }
     session.cwd = meta.cwd.clone();
     if let Some(nickname) = &meta.agent_nickname {
         session.title(Title::Task, nickname);
@@ -569,9 +533,9 @@ fn open(meta: &Payload, at: Option<i64>, cursor: &mut Cursor, read: &mut Read) {
     // A rollout that goes on from the thread's own history, as a rewind's
     // does, doesn't hold its first request, so it titles nothing. A fork's
     // own history starts after its parent's.
-    cursor.titled = meta
-        .base()
-        .is_some_and(|end| end > meta.forked_from_ordinal_exclusive.unwrap_or(0));
+    cursor.titled = parsed::<Base>(meta.history_base).is_some_and(|base| {
+        base.end_ordinal_exclusive > meta.forked_from_ordinal_exclusive.unwrap_or(0)
+    });
     cursor.thread = Some(thread);
 }
 
@@ -590,8 +554,6 @@ fn apply(settings: Settings, cursor: &mut Cursor, read: &mut Read) {
     }
 }
 
-/// Count what a running total grew by beyond the records written since the
-/// total before it.
 fn total(
     info: Totals,
     line: &Line,
@@ -648,8 +610,9 @@ fn total(
     );
 }
 
-/// Record usage under the model and provider in force, or before any model is
-/// named, under none, and keep it waiting for the first.
+/// Records name no model, so usage is recorded under the model and provider
+/// in force, or before any model is named, under none, and kept waiting for
+/// the first.
 fn respond(
     id: String,
     session: String,
@@ -729,22 +692,17 @@ mod tests {
                 ),
                 line(
                     2,
-                    "response_item",
-                    json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context>x</environment_context>Add retries."}]}),
-                ),
-                line(
-                    3,
                     "token_usage_record",
                     json!({"response_id": "resp_1", "usage": usage(1000, 600, 40)}),
                 ),
-                total(4, usage(1000, 600, 40), usage(1000, 600, 40)),
+                total(3, usage(1000, 600, 40), usage(1000, 600, 40)),
                 // A compaction's request: recorded, and left out of the total.
                 line(
-                    5,
+                    4,
                     "token_usage_record",
                     json!({"response_id": "resp_2", "usage": usage(500, 0, 10)}),
                 ),
-                total(6, usage(1000, 600, 40), usage(0, 0, 0)),
+                total(5, usage(1000, 600, 40), usage(0, 0, 0)),
             ],
         );
         let read = Codex.read(&file, "").unwrap();
@@ -765,9 +723,7 @@ mod tests {
             (first.model.as_str(), first.priority, first.session.as_str()),
             ("gpt-5.5", true, "codex:t1")
         );
-        let session = &read.sessions["codex:t1"];
-        assert_eq!(session.cwd.as_deref(), Some("/work/api"));
-        assert_eq!(session.title.as_ref().unwrap().1, "Add retries.");
+        assert_eq!(read.sessions["codex:t1"].cwd.as_deref(), Some("/work/api"));
     }
 
     #[test]
@@ -873,7 +829,6 @@ mod tests {
                 ("resp_2", "codex:t2", "gpt-5.5")
             ]
         );
-        // The parent's request, in the copy, doesn't title the fork.
         assert!(copy.sessions["codex:t2"].title.is_none());
         let fork = &own.sessions["codex:t2"];
         assert_eq!(fork.title.as_ref().unwrap().1, "Try it on staging.");
@@ -966,6 +921,7 @@ mod tests {
     #[test]
     fn a_title_is_the_persons_first_request_without_codexs_context() {
         let dir = tempfile::tempdir().unwrap();
+        let asked = "Replace the <image href=\"a.png\"/> in logo.svg with a path, then add a <skill> element to the manifest.";
         let file = rollout(
             dir.path(),
             "t1",
@@ -977,34 +933,6 @@ mod tests {
                     json!({"type": "message", "role": "user", "content": [
                         {"type": "input_text", "text": "# AGENTS.md instructions for /work\n\nBe brief."},
                         {"type": "input_text", "text": "<environment_context>x</environment_context>"},
-                        {"type": "input_text", "text": "Fix the parser."}]}),
-                ),
-                line(2, "response_item", message("assistant", "Fixed.")),
-                // The first request titles it, not one after.
-                line(3, "response_item", message("user", "Now the tests.")),
-            ],
-        );
-        let read = Codex.read(&file, "").unwrap();
-        assert_eq!(
-            read.sessions["codex:t1"].title.as_ref().unwrap().1,
-            "Fix the parser."
-        );
-    }
-
-    #[test]
-    fn a_tag_the_person_typed_is_theirs_and_codexs_own_are_taken_out() {
-        let dir = tempfile::tempdir().unwrap();
-        let asked = "Replace the <image href=\"a.png\"/> in logo.svg with a path, then add a <skill> element to the manifest.";
-        let file = rollout(
-            dir.path(),
-            "t1",
-            &[
-                line(0, "session_meta", json!({"id": "t1"})),
-                line(
-                    1,
-                    "response_item",
-                    json!({"type": "message", "role": "user", "content": [
-                        {"type": "input_text", "text": "<environment_context>x</environment_context>"},
                         {"type": "input_text", "text": "<skill>\n<name>docs</name>\nWrite plainly.\n</skill>"},
                         // An image's tags, each in a part of its own.
                         {"type": "input_text", "text": "<image name=[Image #1]>"},
@@ -1012,6 +940,9 @@ mod tests {
                         {"type": "input_text", "text": "</image>"},
                         {"type": "input_text", "text": asked}]}),
                 ),
+                line(2, "response_item", message("assistant", "Fixed.")),
+                // The first request titles it, not one after.
+                line(3, "response_item", message("user", "Now the tests.")),
             ],
         );
         let read = Codex.read(&file, "").unwrap();

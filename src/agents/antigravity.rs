@@ -1,21 +1,15 @@
-//! Antigravity.
-//!
 //! Antigravity's app and its command line, `agy`, share `~/.gemini`: the
 //! app keeps its history in `antigravity/` there, `agy` in
 //! `antigravity-cli/`, and both their MCP servers in
 //! `config/mcp_config.json`. So `~/.gemini` is its one folder, over a folder
 //! for each: `connect` then runs `agy` once, and a second folder stays what
-//! it is for the other agents, a second account's. The Gemini command line
-//! keeps its settings in `~/.gemini` too, so Antigravity is installed when
-//! one of its own two folders is there, not when `~/.gemini` is.
+//! it is for the other agents, a second account's.
 //!
-//! What follows was measured on this Mac's history on 2026-11-10: 8
-//! conversations of 405 steps and 196 model calls, written by `agy` 1.2.11
-//! in September 2026 and by the app 2.31.0 that day. Antigravity publishes
-//! no schema for what it writes as protobuf. The field numbers here are the
-//! ones measured, written `#1.#4` for field 4 of the message in field 1, and
-//! they're the ones CodexBar, tokscale, CodeBurn and agent-walker read
-//! (their code, read 2026-11-10).
+//! Antigravity publishes no schema for what it writes as protobuf. What
+//! follows was measured on 2026-11-10 on 8 conversations with 196 model
+//! calls, written by `agy` 1.2.11 and the app 2.31.0. The field numbers are
+//! the ones CodexBar, tokscale, CodeBurn and agent-walker read. `#1.#4` is
+//! field 4 of the message in field 1.
 //!
 //! **Files.** In each of the two folders, a conversation `<id>` is:
 //!
@@ -26,8 +20,7 @@
 //!   with no folder has none.
 //! - `brain/<id>/.system_generated/logs/transcript_full.jsonl`, a line per
 //!   step as the model saw it. `transcript.jsonl` beside it cuts long text
-//!   short, and the files under `chunks/` are the same lines cut every
-//!   100 KiB, mid-line too.
+//!   short, and `chunks/` holds the same lines cut every 100 KiB, mid-line.
 //! - its row of `conversation_summaries.db`, with the title Antigravity gave
 //!   it: 3 of the 8 had one.
 //!
@@ -38,66 +31,10 @@
 //! Output includes reasoning: it was reasoning plus the reply in all 193
 //! calls with tokens. No call wrote to a cache. The model is #1.#19, as
 //! `gemini-3.8-flash`. A call is made when the step it names first (#2) is:
-//! that step's `metadata` holds the time (#1, seconds and nanoseconds), and
-//! held the same message id in all 193.
-//!
-//! The 3 calls without tokens were each the last of their conversation, as
-//! one still running or one that failed is. So a read goes on from the last
-//! row it read, which it reads again. Measured again later that day, with
-//! 254 calls, the same 3 were the only ones, each still its conversation's
-//! last.
-//!
-//! **Providers.** Antigravity signs in to Google only, and every call here
-//! was to a Gemini model, so a response's provider is `google`. It serves
-//! Claude and GPT models from the same plan. None was on this Mac to
-//! measure, so they're `google`'s too, where they have no price.
-//!
-//! **Titles.** A conversation Antigravity gave no title is titled by the
-//! first thing the person asked: the first `USER_INPUT` line of its
-//! transcript from `USER_EXPLICIT`, which holds what they typed in
-//! `<USER_REQUEST>`, then the blocks Antigravity adds, as
-//! `<ADDITIONAL_METADATA>`. A line is written once. Of the transcript, only
-//! that request and each line's time are read.
-//!
-//! **Subagents.** `conversation_summaries.parent_conversation_id` names a
-//! conversation's parent. That is from the column's name: no conversation
-//! here had one.
-//!
-//! **MCP servers.** `agy` starts one itself. The app doesn't run `agy`:
-//! measured 2026-11-11 with Turnscope connected, the app (2.31.0) started
-//! `turnscope mcp` from `Contents/Resources/bin/language_server`, a child of
-//! its own process, `Antigravity`, with nothing named `agy` above it. So
-//! that program names the agent too. Only it, over any process of the app:
-//! a person's shell in a terminal the app holds would be under the app as
-//! well, and what they run there isn't run by the agent. Where such a shell
-//! hangs wasn't measured: none ran, and under the app were the language
-//! server and the two MCP servers it had started.
-//!
-//! The app set no variable that names the conversation, so the caller's
-//! own session isn't known.
+//! that step's `metadata` holds the time (#1), and held the same message id
+//! in all 193.
 //!
 //! **Not read.** The Antigravity IDE's history, which this Mac doesn't have.
-//!
-//! **Logins.** The app and `agy` keep one Google sign-in, in the Keychain
-//! item with service `gemini` and account `antigravity`. `agy` keeps it
-//! with go-keyring, which writes through `/usr/bin/security`, so reading it
-//! with that raises no prompt, and marks a value it wrote as base64 with
-//! `go-keyring-base64:`. Read on this Mac 2026-11-10, the value was so
-//! marked, and inside it JSON: the `token`, with its `access_token`, its
-//! `expiry` as a written time with the zone's offset, and `expires_in`; the
-//! `auth_method`, `consumer`; the account's email, `id_token_email`; and a
-//! `writer_id`. Only the email names the account, so it is the account's id
-//! as well as its label.
-//!
-//! The token had 22 minutes left, hours after Antigravity was signed in: it
-//! writes each token it renews back to the item. Turnscope never renews one,
-//! so once the last has expired the account waits for Antigravity to be
-//! used again.
-//!
-//! Only a sign-in whose `auth_method` is `consumer`, a Google account's, is
-//! read. Google answers a token of Antigravity's other client with limits
-//! nothing has touched, CodexBar found (its code, read 2026-11-10), which
-//! would pass for the plan's.
 
 use std::path::{Path, PathBuf};
 
@@ -107,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
-use crate::{Error, Result};
+use crate::Result;
 
 pub struct Antigravity;
 
@@ -115,31 +52,36 @@ static INFO: Info = Info {
     id: "antigravity",
     name: "Antigravity",
     command: "agy",
+    // The app doesn't run `agy`: it started `turnscope mcp` from this
+    // program, a child of its process `Antigravity` (2.31.0, measured
+    // 2026-11-11). Only this program, over any process of the app: a
+    // person's shell in a terminal the app holds would be under the app too
+    // (not measured: none ran).
     app: Some("Antigravity.app/Contents/Resources/bin/language_server"),
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),
     folder_var: None,
     charges: false,
+    // The app set no variable that names the conversation.
     session_var: None,
 };
 
 /// The folders of `~/.gemini` that keep history: the app's, and `agy`'s.
 const KEPT: [&str; 2] = ["antigravity", "antigravity-cli"];
 
-/// A folder's titles, and a conversation's transcript.
 const TITLES: &str = "conversation_summaries.db";
 const TRANSCRIPT: &str = "transcript_full.jsonl";
 
-/// The Keychain item that holds the sign-in: its service, and its account.
+/// The Keychain item, service and account, where the app and `agy` keep
+/// their one Google sign-in.
 const SIGN_IN: (&str, &str) = ("gemini", "antigravity");
 /// What go-keyring puts before a value it wrote as base64.
 const WRAPPED: &str = "go-keyring-base64:";
 
-/// Where a conversation's database was read to: the steps and the model
-/// calls numbered below these were read.
+/// Where a conversation's database was read to: the model calls numbered
+/// below this were read.
 #[derive(Default, Serialize, Deserialize)]
 struct Rows {
-    steps: i64,
     calls: i64,
 }
 
@@ -150,23 +92,18 @@ struct Lines {
     titled: bool,
 }
 
-/// What `read` finds in one of Antigravity's databases, opened to read.
+/// A database keeps a write-ahead log, `<file>-wal`, while Antigravity has
+/// it open. With no log beside it, all it holds is in the file, which is
+/// then read as one that can't change: read as any other, SQLite makes a
+/// log and its index beside it and leaves them, 14 files after reading 7
+/// conversations (measured 2026-11-10). With a log, it's read as any other.
 ///
-/// Each keeps a write-ahead log, `<file>-wal`, while Antigravity has it
-/// open. With no log beside it, all it holds is in the file, which is then
-/// read as one that can't change. Read as any other, SQLite makes a log and
-/// its index beside it and leaves them: 14 files in Antigravity's folder
-/// after reading 7 conversations (measured 2026-11-10). With a log beside
-/// it, it's read as any other, log included, and nothing is made.
-///
-/// SQLite takes no lock on a file it's told can't change. So one that did
-/// change while it was read, or that Antigravity opened meanwhile, fails:
-/// what was read may be of two moments, and it's read again at the next
-/// catch-up.
+/// SQLite takes no lock on a file it's told can't change. So one that
+/// changed while it was read, or that Antigravity opened meanwhile, fails,
+/// and is read again at the next catch-up.
 fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
     let mut log = file.as_os_str().to_owned();
     log.push("-wal");
-    // The file's size and when it was last written, with no log beside it.
     let alone = || {
         let file = std::fs::metadata(file).ok()?;
         (!Path::new(&log).exists()).then_some((file.len(), file.modified().ok()))
@@ -212,6 +149,7 @@ impl Agent for Antigravity {
         vec![home.join(".gemini")]
     }
 
+    /// The Gemini command line keeps its settings in `~/.gemini` too.
     fn installed(&self, folder: &Path) -> bool {
         KEPT.iter().any(|kept| folder.join(kept).is_dir())
     }
@@ -243,24 +181,18 @@ impl Agent for Antigravity {
 
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
         match file.file_name().and_then(|name| name.to_str()) {
-            Some(TITLES) => titles(file),
+            Some(TITLES) => opened(file, |db| titles(db, file)),
             Some(TRANSCRIPT) => transcript(file, cursor),
-            _ => conversation(file, cursor),
+            _ => opened(file, |db| conversation(db, file, cursor)),
         }
     }
 
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
-        // Where it isn't installed, the Keychain isn't asked.
         if !self.installed(folder) {
             return Ok(Vec::new());
         }
         let (service, account) = SIGN_IN;
-        let credential = match super::keychain(home, service, Some(account))? {
-            Some(kept) => signed_in(&kept).map_err(|why| {
-                Error::Failed(format!("reading the Keychain item {service}: {why}"))
-            })?,
-            None => None,
-        };
+        let credential = super::keychain(home, service, Some(account), signed_in)?.flatten();
         Ok(vec![Login {
             provider: "google".to_owned(),
             credential,
@@ -281,6 +213,18 @@ impl Agent for Antigravity {
 /// The sign-in the Keychain item's value `kept` holds, when it's one to a
 /// Google account. Why not, for a value that doesn't read: taking that for
 /// signed out would sign its account out.
+///
+/// Read 2026-11-10, the value was base64 JSON: `token` with its
+/// `access_token` and `expiry`, `auth_method`, and `id_token_email`, the
+/// only name of the account, so its id and its label. Antigravity writes
+/// each token it renews back to the item (one had 22 minutes left, hours
+/// after sign-in). Turnscope never renews one, so once the last has expired
+/// the account waits for Antigravity to be used again.
+///
+/// Only `auth_method` `consumer`, a Google account's, is read: Google
+/// answers a token of Antigravity's other client with limits nothing has
+/// touched, which would pass for the plan's (CodexBar's code, read
+/// 2026-11-10).
 fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
     let kept = std::str::from_utf8(kept).map_err(|error| error.to_string())?;
     let kept = kept
@@ -312,7 +256,9 @@ fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
     }))
 }
 
-/// What the person typed, of a `USER_INPUT` line's `content`.
+/// What the person typed, of a `USER_INPUT` line's `content`: it's in
+/// `<USER_REQUEST>`, then come the blocks Antigravity adds, as
+/// `<ADDITIONAL_METADATA>`.
 fn request(content: &str) -> String {
     match super::inner(content, "USER_REQUEST") {
         Some(request) => request.trim().to_owned(),
@@ -320,13 +266,9 @@ fn request(content: &str) -> String {
     }
 }
 
-/// Read a conversation's database on from `cursor`: when it worked, where,
-/// and its model calls.
-fn conversation(file: &Path, cursor: &str) -> Result<Read> {
-    opened(file, |db| conversation_in(db, file, cursor))
-}
-
-fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<Read> {
+/// Read a conversation's database on from `cursor`: where it worked, and
+/// its model calls.
+fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<Read> {
     let mut cursor: Rows = serde_json::from_str(cursor).unwrap_or_default();
     let mut read = Read::default();
     let Some(native) = file.file_stem().and_then(|stem| stem.to_str()) else {
@@ -336,19 +278,9 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Resu
     // One read transaction, so steps and calls are of one moment.
     let tx = db.unchecked_transaction()?;
 
-    let mut steps = tx.prepare("SELECT idx, metadata FROM steps WHERE idx >= ?1 ORDER BY idx")?;
-    let mut rows = steps.query([cursor.steps])?;
-    while let Some(row) = rows.next()? {
-        let idx: i64 = row.get(0)?;
-        let metadata: Option<Vec<u8>> = row.get(1)?;
-        cursor.steps = idx + 1;
-        if let Some(at) = metadata.as_deref().and_then(made) {
-            read.session(&session).saw(at);
-        }
-    }
-    read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
     // One opened and never used is no session.
-    if cursor.steps == 0 {
+    let used: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM steps)", [], |row| row.get(0))?;
+    if !used {
         return Ok(read);
     }
 
@@ -360,18 +292,18 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Resu
         )
         .optional()?
         .flatten();
-    let facts = read.session(&session);
-    if let Some(about) = &about {
-        facts.cwd = within(about, &[1, 1]).and_then(folder);
-        if let Some(began) = bytes(about, 2).and_then(time) {
-            facts.saw(began);
-        }
-    }
+    read.session(&session).cwd = about
+        .as_deref()
+        .and_then(|about| within(about, &[1, 1]))
+        .and_then(folder);
 
     let mut calls =
         tx.prepare("SELECT idx, data FROM gen_metadata WHERE idx >= ?1 ORDER BY idx")?;
     let mut step = tx.prepare("SELECT metadata FROM steps WHERE idx = ?1")?;
-    // The last call read may have had no tokens yet.
+    // The last call read may have had no tokens yet, so it's read again: the
+    // 3 calls without tokens were each their conversation's last, as one
+    // still running or one that failed is, and were still the only 3 of 254
+    // later that day.
     let seen = cursor.calls;
     let mut rows = calls.query([seen - 1])?;
     while let Some(row) = rows.next()? {
@@ -391,7 +323,6 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Resu
             output: count(3),
             reasoning: count(9),
         };
-        // A call has no tokens until it ends, and none if it fails.
         if tokens == Tokens::default() {
             continue;
         }
@@ -426,6 +357,9 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Resu
             session: session.clone(),
             copy: false,
             at,
+            // Antigravity signs in to Google only. The Claude and GPT models
+            // it serves from the same plan weren't measured: they're
+            // `google`'s too, where they have no price.
             provider: "google".to_owned(),
             model: model.to_owned(),
             prompt: tokens.input + tokens.cache_read + tokens.cache_write_5m,
@@ -439,34 +373,38 @@ fn conversation_in(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Resu
     Ok(read)
 }
 
-/// Read a transcript on from `cursor`: when the session worked, and its
-/// first request as its title.
+/// Read a transcript on from `cursor` for its session's title: the first
+/// thing the person asked, its first `USER_INPUT` line from
+/// `USER_EXPLICIT`. A line is written once. Once it has that, nothing more
+/// is read.
 fn transcript(file: &Path, cursor: &str) -> Result<Read> {
+    let mut read = Read {
+        cursor: cursor.to_owned(),
+        ..Read::default()
+    };
     let mut cursor: Lines = serde_json::from_str(cursor).unwrap_or_default();
-    let mut read = Read::default();
     // `brain/<id>/.system_generated/logs/transcript_full.jsonl`.
     let native = file
         .ancestors()
         .nth(3)
         .and_then(|folder| folder.file_name())
         .and_then(|name| name.to_str());
-    let Some(native) = native else {
+    let (Some(native), false) = (native, cursor.titled) else {
         return Ok(read);
     };
     let session = INFO.session(native);
     cursor.offset = super::lines(file, cursor.offset, |bytes| {
+        if cursor.titled {
+            return;
+        }
         let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
             read.skipped += 1;
             return;
         };
-        let facts = read.session(&session);
-        if let Some(at) = line["created_at"].as_str().and_then(crate::time::millis) {
-            facts.saw(at);
-        }
-        if !cursor.titled && line["type"] == "USER_INPUT" && line["source"] == "USER_EXPLICIT" {
+        if line["type"] == "USER_INPUT" && line["source"] == "USER_EXPLICIT" {
             let request = request(line["content"].as_str().unwrap_or_default());
             if !request.is_empty() {
-                facts.title(Title::Prompt, &request);
+                read.session(&session).title(Title::Prompt, &request);
                 cursor.titled = true;
             }
         }
@@ -476,18 +414,15 @@ fn transcript(file: &Path, cursor: &str) -> Result<Read> {
 }
 
 /// Read a folder's titles: the title Antigravity gave a conversation, and
-/// the conversation that began it.
-fn titles(file: &Path) -> Result<Read> {
-    opened(file, |db| titles_in(db, file))
-}
-
-fn titles_in(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
+/// the conversation that began it, `parent_conversation_id`. That column is
+/// read by its name alone: no conversation measured had one.
+fn titles(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
     let mut read = Read::default();
     // The app's titles list `agy`'s conversations too, so a conversation's
     // database is in either folder. A row whose conversation has none in
-    // either gives no session: a title alone would make one with no times,
-    // shown as last active in 1970. Whether Antigravity leaves such a row
-    // behind when it deletes a conversation wasn't measured.
+    // either gives no session, which would have a title and no usage.
+    // Whether Antigravity leaves such a row behind when it deletes a
+    // conversation wasn't measured.
     let has_database = |native: &str| {
         let folder = file.parent().and_then(Path::parent);
         folder.is_some_and(|folder| {
@@ -498,16 +433,13 @@ fn titles_in(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
         })
     };
     // Every row is read at each read, over reading on from the latest
-    // `last_modified_time` seen, which rested on what wasn't measured: that
-    // a title written later moves the time, that a row is committed at most
-    // 10 seconds after one stamped later, and that every time is in UTC.
-    // Measured 2026-11-14 with a release build on a made-up table of 5,000
-    // conversations, each titled and with a database: a catch-up after one
-    // title changed ran 691M instructions more than one with nothing to
-    // read (1,185M over 494M), about 0.1 s. Reading on from the latest ran
-    // 21M more. Reading the rows took 51 to 56 ms of that, 4 of them the
-    // query, and writing 5,000 sessions the rest. The history measured
-    // above had 8 conversations.
+    // `last_modified_time` seen, which rested on three things not measured:
+    // that a later title moves the time, that a row is committed at most
+    // 10 s after one stamped later, and that every time is UTC. Measured
+    // 2026-11-14, release build, on a made-up table of 5,000 titled
+    // conversations (the real one had 8): a catch-up after one title changed
+    // ran 691M instructions more than one with nothing to read, about 0.1 s;
+    // reading on from the latest ran 21M more.
     let mut titled = db.prepare(
         "SELECT conversation_id, title, parent_conversation_id FROM conversation_summaries
          WHERE step_count > 0 AND conversation_id IS NOT NULL",
@@ -742,7 +674,7 @@ mod tests {
         )
         .unwrap();
 
-        let transcript = super::super::jsonl(
+        let transcript = crate::agents::jsonl(
             kept.join("brain/c1/.system_generated/logs")
                 .join(TRANSCRIPT),
             &lines()[..4],
@@ -766,8 +698,7 @@ mod tests {
     }
 
     /// A transcript's lines: the four of `c1`, then three a longer
-    /// conversation would add. The reader takes each line's time, and what a
-    /// request holds.
+    /// conversation would add. The reader takes what the first request holds.
     fn lines() -> Vec<Value> {
         let line = |step: u64, source: &str, kind: &str, content: &str| {
             json!({"step_index": step, "source": source, "type": kind, "content": content,
@@ -835,7 +766,6 @@ mod tests {
         );
         let session = &read.sessions["antigravity:c1"];
         assert_eq!(session.cwd.as_deref(), Some("/work/my app"));
-        assert_eq!(session.last, Some(1_010_500));
 
         let asked = Antigravity.read(&transcript, "").unwrap();
         let title = |read: &Read| read.sessions["antigravity:c1"].title.clone().unwrap();
@@ -875,7 +805,6 @@ mod tests {
             "the calls before it aren't read again"
         );
         assert_eq!(later.responses["bot-3"].at, 1_020_500);
-        // Read again from there, it's the same response.
         let again = Antigravity.read(&database, &later.cursor).unwrap();
         assert_eq!(again.responses["bot-3"], later.responses["bot-3"]);
     }
@@ -967,46 +896,24 @@ mod tests {
     }
 
     #[test]
-    fn a_transcript_read_in_two_parts_is_titled_by_its_first_request_alone() {
+    fn a_transcript_is_read_until_its_first_request() {
         let home = tempfile::tempdir().unwrap();
         let (_, transcript, _) = kept(home.path());
         let first = Antigravity.read(&transcript, "").unwrap();
-        // A line still being written isn't read until it ends.
         let mut text = std::fs::read_to_string(&transcript).unwrap();
-        let more: Vec<String> = lines()[4..].iter().map(Value::to_string).collect();
-        text.push_str(&more.join("\n"));
+        for line in &lines()[4..] {
+            text.push_str(&format!("{line}\n"));
+        }
         std::fs::write(&transcript, &text).unwrap();
         let later = Antigravity.read(&transcript, &first.cursor).unwrap();
-        // The later part's request isn't the session's title, and its lines
-        // say when the session last worked: all but the last, not yet ended.
-        let session = &later.sessions["antigravity:c1"];
-        assert!(session.title.is_none());
-        assert_eq!(session.last, Some(1_008_000));
-        text.push('\n');
-        std::fs::write(&transcript, &text).unwrap();
-        let last = Antigravity.read(&transcript, &later.cursor).unwrap();
-        assert_eq!(last.sessions["antigravity:c1"].last, Some(1_009_000));
-        assert_eq!(last.skipped, 0);
+        assert!(later.sessions.is_empty());
+        assert_eq!(later.cursor, first.cursor);
     }
 
     #[test]
-    fn a_tag_the_person_typed_is_theirs_and_antigravitys_own_are_taken_out() {
-        let asked =
-            "Log each <USER_SETTINGS_CHANGE> block, then the <ADDITIONAL_METADATA> after it.";
-        let added = "<ADDITIONAL_METADATA>\nThe current local time is: 1970-01-01T00:16:40Z.\n</ADDITIONAL_METADATA>";
-        // In their request, and in content with none.
-        for content in [
-            format!("<USER_REQUEST>\n{asked}\n</USER_REQUEST>\n{added}"),
-            format!("{added}\n{asked}"),
-        ] {
-            assert_eq!(request(&content), asked);
-        }
-        assert_eq!(
-            request(&format!(
-                "<USER_SETTINGS_CHANGE>\nThe model is now Gemini 3.8 Flash.\n</USER_SETTINGS_CHANGE>\n{added}"
-            )),
-            ""
-        );
+    fn content_with_no_request_loses_what_antigravity_added() {
+        let content = "<USER_SETTINGS_CHANGE>\nThe model is now Gemini 3.8 Flash.\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nThe current local time is: 1970-01-01T00:16:40Z.\n</ADDITIONAL_METADATA>\nRun the tests.";
+        assert_eq!(request(content), "Run the tests.");
     }
 
     #[test]

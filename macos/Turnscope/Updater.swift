@@ -1,12 +1,3 @@
-// Updates, with Sparkle. It reads the appcast each release publishes on
-// GitHub (`SUFeedURL` in Info.plist), checks a new release's signature with
-// the public key in the app (`SUPublicEDKey`), and asks before installing and
-// relaunching. The release workflow signs each disk image and writes the
-// appcast (`scripts/sign-release.sh`).
-//
-// A build without a public key, such as one from a checkout, never checks, so
-// it can't be offered an update it couldn't verify.
-//
 // A menu bar app has no window to bring forward, so Sparkle would show an
 // update found by a scheduled check behind other apps. Instead, unless Sparkle
 // can show it in focus, as just after launch, the panel says one is waiting

@@ -19,18 +19,17 @@ hands off sessions.
   used again as history is read. Of what was said, Turnscope keeps only
   the title: the one you or the agent gave it, or else the first thing you
   asked. It no longer reads Grok Build's `chat_history.jsonl`.
-- **Less is kept of each session:** its agent, project and title, the
-  session it's a subagent of, and when it was last active. Its folder, its
-  branch, when it started and the session it was forked or continued from
-  are deleted in that first open, as only the removed commands showed
-  them.
+- **Less is kept of each session:** its agent, project and title, and the
+  session it's a subagent of. Its folder, its branch, when it started,
+  when it was last active and the session it was forked or continued from
+  are deleted in that first open.
 - **A title is kept to its first 200 characters,** and longer ones stored
   before are cut in that first open. A title is often your whole first
   request. No list shows more than 80 characters of one;
   `usage --by session --json` gave it whole in `name`, and now gives 200.
 - **`explain_usage` shows a session by the first 8 characters of its id,**
   as `usage --by session` does: `` `7c1d2e3f` "Add retries" ``. It showed
-  the whole id, about 45 characters a row, for the tools that took one.
+  the whole id, about 45 characters a row.
 - **`explain_usage` marks a session `(yours)` only where the agent names
   its session,** which Claude Code does. For Codex, OpenCode, Pi, Grok
   Build and Antigravity it was a guess, the agent's latest session in the
@@ -39,19 +38,30 @@ hands off sessions.
   The title is kept as written, and `usage --by session`, the app and
   `explain_usage` show it so. A title stored before keeps its `[redacted]`
   until its file is read again from the start.
-- **What used a limit is listed as before:** `usage --limit` and
-  `explain_usage` list its sessions, each with its title, cost and share,
-  and the app the three that used it most. `usage --by session` still
-  lists sessions with their cost.
-- An older Turnscope still running, such as an agent's MCP server started
-  before the update, can't read new history into the changed database.
-  Until that agent's session is restarted, its `check_limits` answers from
-  what's known and says why, and its `explain_usage` fails when it lists
-  sessions, which it does unless asked for `by` something else.
-- **A Turnscope left running through a later update that changes its
-  database** reads nothing more into it from this version on: no history,
-  limits or prices. It answers from what it read before and says a newer
-  Turnscope has updated the data, where 0.1.8 went on until a read failed.
+- **A Turnscope left running through an update,** such as an agent's MCP
+  server, answers from what it read before until it's restarted. One from
+  0.1.8 goes on until a read fails: it can't read new history into this
+  version's database, and its `explain_usage` fails when it lists sessions,
+  as it does unless given another `by`. From this version on, once a newer
+  one changes the database, one left running reads no more history, limits
+  or prices, and says a newer Turnscope has updated the data.
+- **`status --hours` and `check_limits` name the limit that runs out
+  first.** They named the first limit in key order whose work would run
+  out. With 5 hours at 1h 15m of work left and Weekly at 40m,
+  `check_limits` said 5 hours runs out after about 1h 20m, beside a
+  verdict naming Weekly. The verdict now also counts a limit that reset
+  since it was read, with a new window's work left, where it could name a
+  later limit or say there was room to keep going.
+- **`status --hours` counts a limit that reset since it was read only to
+  the end of its new window.** At 10% an hour, 6 hours of work left about
+  40% of 5 hours, it said, where the new window ends with 50%.
+- **Settings → Agents, with no agent installed,** says "No agent Turnscope
+  reads is installed." It said "serves".
+- **Removed: the green dot for a session active now** in the app's list
+  of what used a limit most.
+- **`serve` speaks protocol 3.** A session in a `limit.breakdown` answer
+  no longer has `running`, and an alert no longer has `at`, which no
+  client read. A client of protocol 2 is refused.
 
 ## 0.1.8
 

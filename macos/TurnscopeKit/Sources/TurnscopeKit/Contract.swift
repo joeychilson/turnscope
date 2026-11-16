@@ -10,7 +10,7 @@
 import Foundation
 
 /// The protocol version this app speaks.
-public let protocolVersion = 2
+public let protocolVersion = 3
 
 // MARK: Status
 
@@ -121,7 +121,7 @@ public enum Stale: String, Decodable, Sendable {
     /// Its provider refused the login.
     case signIn
     /// Its provider couldn't be reached, or gave an answer that wasn't
-    /// understood.
+    /// understood, or nothing read it for 30 minutes.
     case readFailed
     /// Every login to it has expired. Its agent renews one the next time
     /// it's used. This isn't a refusal, so nothing asks to sign in.
@@ -199,7 +199,7 @@ public enum Outlook: Decodable, Equatable, Sendable {
 public enum UnknownReason: String, Decodable, Sendable {
     /// Too little of its window has been read to tell a pace.
     case notEnoughData
-    /// Its readings are too old: no agent here is signed in, or it reset since.
+    /// Read over 30 minutes ago, or its window reset since.
     case stale
     /// It never resets, like credits.
     case noReset
@@ -286,16 +286,15 @@ public struct UsedMost: Decodable, Equatable, Identifiable, Sendable {
     /// Roughly how many percentage points of the limit it used. Nil when
     /// that can't be known, such as for a limit with no window start.
     public var sharePercent: Double?
-    public var running: Bool
 
     public var id: String { session }
 }
 
 /// The answer to `hello`, read after the engine it names (`Client.greet`).
-public struct HelloResult: Decodable, Equatable, Sendable {
-    public var status: Status
+struct HelloResult: Decodable, Sendable {
+    var status: Status
     /// Alerts no client has acknowledged, oldest first.
-    public var alerts: [Alert]
+    var alerts: [Alert]
 }
 
 /// `hello`'s parameters.

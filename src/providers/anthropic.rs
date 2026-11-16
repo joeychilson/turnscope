@@ -1,7 +1,6 @@
 //! Anthropic: the limits of a Claude plan, which only Claude Code signs in
-//! to, and the account Anthropic API keys draw on. Whose a sign-in is,
-//! Claude Code's `.claude.json` says. An API key carries no limit an agent's
-//! key can read.
+//! to, and the account Anthropic API keys draw on. An API key carries no
+//! limit an agent's key can read.
 //!
 //! The usage answer keys each window by its length, `five_hour` and
 //! `seven_day`, and a window on one model as `seven_day_` and the model; a
@@ -36,10 +35,7 @@ impl Provider for Anthropic {
     }
 
     fn account(&self, credential: &Credential) -> Option<Account> {
-        if credential.key {
-            return Some(super::api_account(INFO.id));
-        }
-        Some(super::subscription(INFO.id, credential.identity.clone()?))
+        super::account(INFO.id, credential, || credential.identity.clone())
     }
 
     fn limits(&self, credential: &Credential, now: i64) -> Result<Limits, Problem> {

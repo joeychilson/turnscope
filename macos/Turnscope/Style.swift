@@ -60,11 +60,6 @@ extension Font {
 }
 
 extension Color {
-    /// The color of something at work right now, such as an active session.
-    /// It's the only color in a calm panel, since it needs nothing from you.
-    /// It's as bright as the dark appearance's amber, and as muted.
-    static let active = Color(red: 0.27, green: 0.72, blue: 0.43)
-
     /// The color `0xRRGGBB`, in sRGB.
     fileprivate init(hex: Int) {
         self.init(red: Double(hex >> 16 & 0xFF) / 255, green: Double(hex >> 8 & 0xFF) / 255,

@@ -1,15 +1,5 @@
 //! Reading accounts' limits: every login the agents hold, grouped by the
-//! account it's to, each account asked of its provider once, all at once.
-//!
-//! A subscription is read with its freshest login that works; an API-key
-//! account with every key, since each key can carry a limit of its own. A
-//! login known to have expired is never sent: agents renew their own logins,
-//! and Turnscope never does. What each agent folder holds is recorded as a
-//! sign-in, which says whose usage is whose.
-//!
-//! Where a provider can't say which plan a key is to, accounts it reads as
-//! one plan (`Provider::plan_mark`) are made one, and a key keeps the account
-//! it was last signed in to, so they stay one.
+//! account it's to, each account asked of its provider once.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -112,8 +102,14 @@ fn gather(db: &Connection, home: &Path) -> Result<(Vec<SignedIn>, BTreeMap<Strin
          ORDER BY since DESC LIMIT 1",
     )?;
     let listable = std::fs::read_dir(home).is_ok();
+    let mut latest = db.prepare(
+        "SELECT folder, provider FROM sign_in s WHERE agent = ?1 AND account IS NOT NULL
+         AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
+    )?;
     for &agent in agents::ALL {
         let folders = agent.folders(home);
+        // Each folder whose logins were read, with the providers they name.
+        let mut read: Vec<(String, Vec<String>)> = Vec::new();
         for folder in &folders {
             // A folder whose logins can't be read keeps what it held.
             let Ok(logins) = agent.logins(folder, home) else {
@@ -160,46 +156,27 @@ fn gather(db: &Connection, home: &Path) -> Result<(Vec<SignedIn>, BTreeMap<Strin
                         .hold(credential);
                 }
             }
-            // A login gone from the folder is signed out of.
-            let mut gone = db.prepare_cached(
-                "SELECT provider FROM sign_in s WHERE folder = ?1 AND account IS NOT NULL
-                 AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
-            )?;
-            for provider in gone.query_map([&folder], |row| row.get::<_, String>(0))? {
-                let provider = provider?;
-                if !named.contains(&provider) {
-                    signed_in.push(SignedIn {
-                        agent: agent.info().id,
-                        folder: folder.clone(),
-                        provider,
-                        account: None,
-                        key: None,
-                    });
+            read.push((folder, named));
+        }
+        // A login gone from a folder that was read is signed out of. So is
+        // every login of a folder no longer listed: one deleted, or a second
+        // account's without the file its agent writes once signed in. A
+        // folder is listed by what's under `home` alone, so none drops off
+        // the list while its agent is signed in there. A home that can't be
+        // listed, as one on a volume that's away, lists no second account's
+        // folder: each then keeps what it held.
+        for row in latest.query_map([agent.info().id], |row| Ok((row.get(0)?, row.get(1)?)))? {
+            let (folder, provider): (String, String) = row?;
+            let gone = match read.iter().find(|(read, _)| *read == folder) {
+                Some((_, named)) => !named.contains(&provider),
+                None => {
+                    listable
+                        && !folders
+                            .iter()
+                            .any(|listed| listed.to_string_lossy() == folder)
                 }
-            }
-        }
-        // So is every login of a folder no longer listed: one deleted, or a
-        // second account's without the file its agent writes once signed
-        // in. A folder is listed by what's under `home` alone, so none
-        // drops off the list while its agent is signed in there. A home
-        // that can't be listed, as one on a volume that's away, lists no
-        // second account's folder: each then keeps what it held.
-        if !listable {
-            continue;
-        }
-        let mut held = db.prepare_cached(
-            "SELECT folder, provider FROM sign_in s WHERE agent = ?1 AND account IS NOT NULL
-             AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
-        )?;
-        let held = held.query_map([agent.info().id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for held in held {
-            let (folder, provider) = held?;
-            if !folders
-                .iter()
-                .any(|listed| listed.to_string_lossy() == folder)
-            {
+            };
+            if gone {
                 signed_in.push(SignedIn {
                     agent: agent.info().id,
                     folder,
@@ -387,8 +364,7 @@ fn same_plan(
     one
 }
 
-/// Make `other` part of `first`: the folders signed in to it, what drew on
-/// it, what it read and raised, and whether it's hidden.
+/// Make `other` part of `first`.
 fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
     for moved in [
         "UPDATE sign_in SET account = ?2 WHERE account = ?1",
@@ -400,7 +376,7 @@ fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
     ] {
         tx.execute(moved, params![other, first])?;
     }
-    // What was the same as the first's at the same time.
+    // Readings and alerts left over duplicate the first's.
     for left in [
         "DELETE FROM reading WHERE account = ?1",
         "DELETE FROM alert WHERE account = ?1",
@@ -413,9 +389,9 @@ fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
 
 /// An account's limits with its logins, the freshest first, and its plan.
 /// A subscription is read with the first that works; an API-key account
-/// with every key. A login refused gives way to the next. With every login
-/// expired, none is sent: the agent renews its login the next time it's
-/// used.
+/// with every key, since each can carry a limit of its own. A login refused
+/// gives way to the next. A login known to have expired is never sent:
+/// agents renew their own logins, and Turnscope never does.
 fn read(held: &mut Held, now: i64) -> std::result::Result<Limits, Problem> {
     held.credentials
         .sort_by_key(|credential| std::cmp::Reverse(credential.expires));
@@ -523,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_no_longer_listed_is_signed_out_of() {
+    fn a_login_gone_is_signed_out_of() {
         // `gather` asks every agent for its logins, Claude Code's of the
         // Keychain under this made-up home, as `doctor` does in the
         // end-to-end tests.
@@ -531,28 +507,36 @@ mod tests {
         let db = crate::db::open(data.path()).unwrap();
         let folder = |name: &str| home.path().join(name).to_string_lossy().into_owned();
         // Two second accounts of Codex's, signed in when last read. One's
-        // folder was deleted since; the other's sign-in is half written.
-        for name in [".codex-gone", ".codex-written"] {
+        // folder was deleted since; the other's sign-in is half written. And
+        // Pi's own folder, whose login to OpenRouter is gone: it holds none.
+        for (agent, name, provider) in [
+            ("codex", ".codex-gone", "openai"),
+            ("codex", ".codex-written", "openai"),
+            ("pi", ".pi/agent", "openrouter"),
+        ] {
             db.execute(
                 "INSERT INTO sign_in (agent, folder, provider, since, account)
-                 VALUES ('codex', ?1, 'openai', 1000, 'openai:made-up')",
-                [folder(name)],
+                 VALUES (?1, ?2, ?3, 1000, 'made-up')",
+                params![agent, folder(name), provider],
             )
             .unwrap();
         }
         std::fs::create_dir(folder(".codex-written")).unwrap();
         std::fs::write(home.path().join(".codex-written/auth.json"), "{").unwrap();
-        // What each of the two is now recorded as signed in to.
+        // What each of the three is now recorded as signed in to.
         let signed = |home: &Path| -> Vec<(String, Option<String>)> {
             let (signed_in, _) = gather(&db, home).unwrap();
             signed_in
                 .into_iter()
-                .filter(|signed| signed.folder.contains(".codex-"))
+                .filter(|signed| signed.folder.contains(".codex-") || signed.folder.contains(".pi"))
                 .map(|signed| (signed.folder, signed.account))
                 .collect()
         };
         // The one that can't be read keeps what it held.
-        assert_eq!(signed(home.path()), [(folder(".codex-gone"), None)]);
+        assert_eq!(
+            signed(home.path()),
+            [(folder(".codex-gone"), None), (folder(".pi/agent"), None)]
+        );
         // A home that can't be listed, as one on a volume that's away, says
         // nothing of its folders.
         assert!(signed(&home.path().join("away")).is_empty());

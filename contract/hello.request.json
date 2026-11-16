@@ -3,6 +3,6 @@
   "jsonrpc": "2.0",
   "method": "hello",
   "params": {
-    "protocol": 2
+    "protocol": 3
   }
 }
