@@ -10,9 +10,9 @@
 //! **Usage.** `tokens.input` excludes cached input, and `reasoning` is apart
 //! from `output`, as OpenCode's own costs bear out.
 //!
-//! **When.** OpenCode adds a step to a session without touching the session's
-//! `time_updated`, so when it worked is its messages': each one's creation
-//! and a response's completion.
+//! **Messages** are read on from their own `time_updated`, not their
+//! session's: OpenCode adds a step to a session without touching the
+//! session's.
 //!
 //! **Not read.** A session's own totals add calls no message records, such as
 //! compacting and naming it: a few hundredths of a percent of its tokens.

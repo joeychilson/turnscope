@@ -420,9 +420,9 @@ fn titles(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
     let mut read = Read::default();
     // The app's titles list `agy`'s conversations too, so a conversation's
     // database is in either folder. A row whose conversation has none in
-    // either gives no session: a title alone would make one with no times,
-    // shown as last active in 1970. Whether Antigravity leaves such a row
-    // behind when it deletes a conversation wasn't measured.
+    // either gives no session, which would have a title and no usage.
+    // Whether Antigravity leaves such a row behind when it deletes a
+    // conversation wasn't measured.
     let has_database = |native: &str| {
         let folder = file.parent().and_then(Path::parent);
         folder.is_some_and(|folder| {

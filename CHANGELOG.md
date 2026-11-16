@@ -50,8 +50,11 @@ hands off sessions.
   out. With 5 hours at 1h 15m of work left and Weekly at 40m,
   `check_limits` said 5 hours runs out after about 1h 20m, beside a
   verdict naming Weekly. The verdict now also counts a limit that reset
-  since it was read, with a new window's work left, where it could say
-  there was room to keep going.
+  since it was read, with a new window's work left, where it could name a
+  later limit or say there was room to keep going.
+- **`status --hours` counts a limit that reset since it was read only to
+  the end of its new window.** At 10% an hour, 6 hours of work left about
+  40% of 5 hours, it said, where the new window ends with 50%.
 - **Settings → Agents, with no agent installed,** says "No agent Turnscope
   reads is installed." It said "serves".
 - **Removed: the green dot for a session active now** in the app's list

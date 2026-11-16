@@ -153,7 +153,7 @@ Pushes go only to clients that have said `hello`. A client that doesn't
 take a message within 2 seconds is dropped.
 
 ```json
-{"jsonrpc":"2.0","method":"alert","params":{"account":"anthropic:acct-1:org-1","accountTitle":"Claude Max (me@example.com)","at":1791460500000,"id":1,"kind":"runningOut","limit":"five_hour","limitName":"5 hours","replaces":"limit:anthropic:acct-1:org-1:five_hour","resets":{"at":1791471600000,"horizon":"today"},"runsOut":{"at":1791463800000,"horizon":"soon"}}}
+{"jsonrpc":"2.0","method":"alert","params":{"account":"anthropic:acct-1:org-1","accountTitle":"Claude Max (me@example.com)","id":1,"kind":"runningOut","limit":"five_hour","limitName":"5 hours","replaces":"limit:anthropic:acct-1:org-1:five_hour","resets":{"at":1791471600000,"horizon":"today"},"runsOut":{"at":1791463800000,"horizon":"soon"}}}
 ```
 
 ## Errors

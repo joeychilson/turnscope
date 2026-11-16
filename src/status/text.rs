@@ -6,7 +6,7 @@ use super::{
     Account, Horizon, HoursLeft, Limit, Moment, Outlook, Spread, Stale, State, Status, Unknown,
 };
 use crate::agents;
-use crate::time::{self, HOUR, MINUTE};
+use crate::time::{self, MINUTE};
 
 /// What under ten minutes of work reads as.
 const UNDER: &str = "under 10m";
@@ -239,9 +239,7 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
 /// ten minutes twice, or it's under ten minutes or more, which is any
 /// amount.
 fn range(limit: &Limit, left: &HoursLeft, now: i64) -> String {
-    let until = limit
-        .resets()
-        .map(|resets| (resets - now) as f64 / HOUR as f64);
+    let until = limit.hours_to_reset(now);
     let (low, high) = (worked(left.low), worked(left.high));
     match until.is_some_and(|until| left.high >= until - 0.1) {
         true if low == UNDER => String::new(),
@@ -308,9 +306,9 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
         match &limit.work {
             Some(work) => {
                 // At the pace of work, until the reset at most.
-                let until = limit.resets().map_or(hours, |resets| {
-                    ((resets - now).max(0) as f64 / HOUR as f64).min(hours)
-                });
+                let until = limit
+                    .hours_to_reset(now)
+                    .map_or(hours, |until| until.min(hours));
                 let left = f64::from(limit.left_percent) - work.rate_per_hour * until;
                 after.push(format!("about {:.0}% of {}", left.max(0.0), limit.name));
             }
@@ -393,7 +391,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     let whole: Vec<&Limit> = account
         .limits
         .iter()
-        .filter(|limit| limit.whole() && limit.reset_since.is_none())
+        .filter(|limit| limit.whole())
         .collect();
     if !whole.is_empty() && whole.iter().all(|limit| limit.work.is_some()) {
         return format!(
@@ -545,10 +543,31 @@ mod tests {
             fit(&account, 4.0, now).unwrap(),
             "4 more hours of work don't fit: 5 hours runs out after about 3h of work."
         );
+        // Its slow end lasts the new window, as long as the one read.
         assert_eq!(
             verdict(&account, now),
-            "Claude Max (me@example.com): about 3h of work left (1h 50m–5h) before 5 hours runs out."
+            "Claude Max (me@example.com): about 3h of work left (1h 50m or more) before 5 hours runs out."
         );
+        // At 10% an hour of work, 6 hours fit, and the new window ends with
+        // half left: 5 hours of work count, not 6.
+        let mut account = claude.clone();
+        let five = &mut account["limits"][0];
+        five["resetSince"] = (now - 10 * MINUTE).into();
+        five["leftPercent"] = 100.into();
+        five["work"] = serde_json::json!({"ratePerHour": 10.0, "leftHours": null});
+        let lasting: Account = serde_json::from_value(account.clone()).unwrap();
+        let said = fit(&lasting, 6.0, now).unwrap();
+        assert!(said.contains("leaving about 50% of 5 hours"), "{said}");
+        // Every limit lasts, the one that reset too: room to keep going.
+        assert_eq!(
+            verdict(&lasting, now),
+            "Claude Max (me@example.com): room to keep going; no limit runs out before it resets, even working nonstop."
+        );
+        // Too little work measured on it since: no room is claimed.
+        account["limits"][0]["work"] = serde_json::Value::Null;
+        let unmeasured: Account = serde_json::from_value(account).unwrap();
+        let said = verdict(&unmeasured, now);
+        assert!(!said.contains("room"), "{said}");
         // Its 5 hours made a window that rolls, as OpenCode Go's is: said,
         // rather than taken for too little work. Its weekly is forecast.
         let mut account = claude.clone();

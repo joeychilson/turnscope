@@ -127,7 +127,7 @@ src/
   status.rs           every account and limit, as every front end shows them
   status/text.rs      the status in words, for the command line and MCP
   alerts.rs           which alerts a status raises, which wait to be shown, and the settings for them
-  usage.rs            usage grouped by time, model, project, agent, account or session; what used a limit; a session's account and whether it runs now
+  usage.rs            usage grouped by time, model, project, agent, account or session; what used a limit; a session's account
   mcp.rs              the MCP server: who is asking, the tools, the stdio loop
   serve.rs            the app's daemon: JSON-RPC on a Unix socket, keeping the data current
   connect.rs          adding and removing the MCP server with the agent's own command, and whether it's there

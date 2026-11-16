@@ -226,6 +226,17 @@ impl Limit {
             .map(|window| window.resets.at)
     }
 
+    /// The hours until its window resets, as its work left counts them.
+    pub fn hours_to_reset(&self, now: i64) -> Option<f64> {
+        let window = self.window?;
+        hours_to_reset(
+            window.starts_at,
+            window.resets.at,
+            self.reset_since.is_some(),
+            now,
+        )
+    }
+
     /// When its window started, unless it has reset since it was read: the
     /// start read is then the window before's.
     pub fn started(&self) -> Option<i64> {
@@ -545,6 +556,17 @@ pub fn agents(home: &Path, accounts: &[Account]) -> Vec<Agent> {
 /// for the pace of work.
 const WORKED: i64 = 14 * DAY;
 
+/// The hours from `now` until a window resets. One that reset since it was
+/// read is a new one, as long: its start isn't known, and is taken as now.
+fn hours_to_reset(starts: Option<i64>, resets: i64, reset: bool, now: i64) -> Option<f64> {
+    let until = if reset {
+        resets - starts?
+    } else {
+        resets - now
+    };
+    Some(until.max(0) as f64 / HOUR as f64)
+}
+
 /// An account's limits as last read, at `read_at`, and whether any rose
 /// between its last two reads within the half hour, as use elsewhere makes
 /// them.
@@ -668,12 +690,8 @@ fn limits(
             .filter(|_| !rolling)
             .map(|rate| {
                 let tenths = |value: f64| (value * 10.0).round() / 10.0;
-                // A window that reset since is a new one, as long.
-                let until = match reset_since {
-                    Some(_) => length,
-                    None => resets.map(|resets| resets - now),
-                };
-                let until = until.map(|until| until.max(0) as f64 / HOUR as f64);
+                let until = resets
+                    .and_then(|resets| hours_to_reset(starts, resets, reset_since.is_some(), now));
                 let left_hours =
                     forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
                         .map(|(low, likely, high)| HoursLeft {
