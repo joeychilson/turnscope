@@ -610,6 +610,7 @@ fn guard(
 ) -> Result<Option<String>> {
     let mut db = db::open(data)?;
     if online() {
+        db::writing(&db)?;
         limits::refresh(&mut db, home)?;
     }
     let now = now();
@@ -723,7 +724,7 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
 /// longer fits still fails: 0.1.8's usage by session did. Reading the
 /// revision takes 2.8 µs (November 2026).
 pub fn catch_up(db: &mut rusqlite::Connection, home: &Path) -> Result<bool> {
-    db::revision(db)?;
+    db::writing(db)?;
     let (priced, limits) = match online() {
         true => (
             prices::refresh(db).unwrap_or(false),

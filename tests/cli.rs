@@ -855,6 +855,52 @@ fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
 }
 
 #[test]
+fn a_server_left_running_stops_writing_once_a_newer_turnscope_has() {
+    let data = store();
+    let mut mcp = command(data.path(), &["mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = mcp.stdin.take().unwrap();
+    let mut replies = BufReader::new(mcp.stdout.take().unwrap()).lines();
+    let mut usage = || {
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
+        writeln!(stdin, "{request}").unwrap();
+        let reply: serde_json::Value =
+            serde_json::from_str(&replies.next().unwrap().unwrap()).unwrap();
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let before = usage();
+    // A newer version writes, and Codex's file is one not read yet.
+    let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
+    db.execute_batch(
+        "UPDATE state SET version = 99000000; DELETE FROM file WHERE agent = 'codex';",
+    )
+    .unwrap();
+    assert_eq!(
+        usage(),
+        format!(
+            "{before}\n\nWhat's new couldn't be read first, so this is as of the last read: \
+             a newer Turnscope has updated this data; update Turnscope"
+        )
+    );
+    let read: i64 = db
+        .query_row(
+            "SELECT count(*) FROM file WHERE agent = 'codex'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(read, 0, "it wrote after a newer Turnscope had");
+    drop(stdin);
+    assert!(mcp.wait().unwrap().success());
+}
+
+#[test]
 fn an_mcp_session_answers_as_its_snapshot_says() {
     let data = store();
     let requests = [

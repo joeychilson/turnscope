@@ -119,9 +119,10 @@ way.
   ```
 
 - Each call first reads what's new: history, and limits and prices when
-  they're due. If that fails, as when a provider can't be reached, the tool
-  still answers from what's known, and ends by saying it's as of the last
-  read, and why. A call that then fails says why first, since its query
+  they're due. If that fails, as when a provider can't be reached or a
+  newer Turnscope has written to the data since the server started, the
+  tool still answers from what's known, and ends by saying it's as of the
+  last read, and why. A call that then fails says why first, since its query
   may no longer fit a schema a newer Turnscope changed: `What's new
   couldn't be read first: a newer Turnscope has updated this data; update
   Turnscope. Then this failed: …`.
