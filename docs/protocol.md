@@ -82,10 +82,13 @@ nc -U "$(turnscope serve --socket)"
   (`turnscope 0.1.0`), and the app checks that before reading the rest. If
   it names another engine, the app sends `shutdown`, waits up to 5 s for
   that `serve` to exit, and connects again, starting its own `serve`. It
-  does this once per run. If the next `serve` runs another engine too,
-  another app keeps starting it: the app says `Turnscope 0.1.0 is also
-  running. Quit it to use this one.`, and tries again as after a failed
-  attempt. So two app versions can't keep stopping each other's `serve`.
+  does this once per run while another Turnscope app runs. If the next
+  `serve` runs another engine too, that app keeps starting it: the app says
+  `Turnscope 0.1.0 is also running; quit it to use this one`, and tries
+  again as after a failed attempt. So two app versions can't keep stopping
+  each other's `serve`. Once no other app runs, a `serve` it left is asked
+  to exit at the next try: each try would otherwise keep it from ever
+  being alone for 60 s.
 
 ## Handshake
 
