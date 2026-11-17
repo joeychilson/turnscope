@@ -107,7 +107,7 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     serve.push("status", ["accounts": "not a list"])
     await until { store.failure != nil }
     // One sentence: what Swift said goes to the log.
-    #expect(store.failure == "Turnscope couldn't read what its engine sent.")
+    #expect(store.failure == "Turnscope couldn't read what its engine sent")
     // The last status it read stays, marked out of date, until hello on the
     // next connection brings it up to date.
     #expect(store.status != nil)
@@ -115,7 +115,7 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     #expect(serve.methods.filter { $0 == "hello" }.count == 2)
     serve.push("alert", ["id": "not a number"])
     await until { store.failure != nil }
-    #expect(store.failure == "Turnscope couldn't read what its engine sent.")
+    #expect(store.failure == "Turnscope couldn't read what its engine sent")
     client.stop()
 }
 
@@ -182,7 +182,7 @@ enum FailedHello: CaseIterable {
 
     /// What the store says, or how it starts.
     var why: String {
-        self == .silence ? "Turnscope's engine didn't answer" : "Turnscope couldn't read what its engine sent."
+        self == .silence ? "Turnscope's engine didn't answer" : "Turnscope couldn't read what its engine sent"
     }
 }
 
@@ -329,6 +329,18 @@ func aHelloThatFailsIsSaidAndTriedAgain(_ failed: FailedHello) async throws {
     client.start()
     await until { store.failure != nil }
     #expect(store.failure == why)
+    client.stop()
+}
+
+@MainActor
+@Test func aServeThatEndsWithAnErrorAndSaysNothingIsSaidAtOnce() async throws {
+    // As one that's killed: nothing on standard error.
+    let client = Client(binary: try binary(socket: socketPath(), fails: ""))
+    let store = Store(client: client)
+    client.start()
+    // Not after `startWait`, 30 s.
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope's engine stopped as it started")
     client.stop()
 }
 

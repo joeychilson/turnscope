@@ -277,7 +277,7 @@ public enum ClientError: Error, Equatable, Sendable, CustomStringConvertible {
         switch self {
         case .notConnected: "Turnscope's engine isn't running"
         case .failed(let why), .unsupported(let why): why
-        case .unreadable: "Turnscope couldn't read what its engine sent."
+        case .unreadable: "Turnscope couldn't read what its engine sent"
         }
     }
 }
@@ -497,9 +497,11 @@ private struct Engine: Sendable {
                 throw .failed("Turnscope stopped")
             }
             if let socket = Engine.connect(to: path) { return (socket, serve) }
-            if !serve.isRunning, serve.terminationStatus != 0,
-               let why = (try? String(contentsOfFile: said, encoding: .utf8))?.split(whereSeparator: \.isNewline).last {
-                throw .failed(String(why))
+            // One that ends with an error fails at once, as one killed says
+            // nothing.
+            if !serve.isRunning, serve.terminationStatus != 0 {
+                let last = (try? String(contentsOfFile: said, encoding: .utf8))?.split(whereSeparator: \.isNewline).last
+                throw .failed(last.map(String.init) ?? "Turnscope's engine stopped as it started")
             }
         }
         throw .failed("Turnscope's engine didn't start")
