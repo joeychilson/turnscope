@@ -48,15 +48,27 @@ public final class Client {
     private var engineName: String?
     /// Why serve said it stopped on the current connection, if it did.
     private var stopped: String?
-    /// How long serve has to answer a request. `hello` works out a whole
-    /// status, which is slow on a long history, and any other request may
-    /// wait behind a status being pushed. One with no answer by then ends
-    /// the connection, so what's shown is marked out of date. Tests shorten
-    /// it.
+    /// How long serve has to answer a request. One with no answer by then
+    /// ends the connection, so what's shown is marked out of date. Tests
+    /// shorten it.
+    ///
+    /// 30 s, over a wait nearer what answering takes: serve answers one
+    /// request at a time, and one that writes, as `alerts.ack`, waits up to
+    /// 10 s for another process's write to end (`db::open`'s busy timeout)
+    /// before it fails. A shorter wait would end a connection that is only
+    /// waiting, and mark the panel out of date for it.
+    ///
+    /// Measured 2026-11-17 on a made-up history of 10,785 files and 463,755
+    /// responses, with 30 days of limits read every 5 minutes: `hello` took
+    /// 9 to 10 ms with one account, 18 to 19 ms with six, and 3 to 7 ms
+    /// while serve read all of history the first time. With another process
+    /// holding the write lock, `hello` took 17 ms; `alerts.ack` failed after
+    /// 10.3 s, and a `hello` sent behind it was answered at 10.4 s.
     var answerWait = Duration.seconds(30)
     /// How long a serve the client started has to listen while it runs. It
-    /// opens the database first, which a new version migrates: 0.2.0's
-    /// migration took 2.1 s on a database of 484 MB.
+    /// opens the database first, which a new version migrates once another
+    /// process's write has ended, after up to 10 s: 0.2.0's migration took
+    /// 2.1 s on a database of 484 MB.
     var startWait = Duration.seconds(30)
     /// How long another engine's serve has to exit once asked to. It only
     /// has to end its process. Tests shorten it.
