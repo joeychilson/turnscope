@@ -90,10 +90,10 @@ public final class Client {
     /// until cancelled.
     private func keepConnected() async {
         var backoff = Backoff()
-        // A serve of another engine is asked to exit once. The one after it
-        // is kept, whatever engine it runs, as long as what it says can be
-        // read. That way two apps of different versions can't take turns
-        // ending each other's serve.
+        // A serve of another engine is asked to exit once. If the next one
+        // runs another engine too, another app keeps starting it: the client
+        // says so, and leaves it running. That way two apps of different
+        // versions can't take turns ending each other's serve.
         var replaced = false
         while !Task.isCancelled {
             do throws(ClientError) {
@@ -140,7 +140,7 @@ public final class Client {
 
     /// Say hello on `connection`, then take what serve pushes until it
     /// ends. If `replacing`, a serve that names an engine other than
-    /// `engine`, or doesn't speak this protocol, is asked to exit.
+    /// `engine` is asked to exit.
     private func converse(on connection: Channel, engine: String?,
                           replacing: Bool) async throws(ClientError) -> Ended {
         self.connection = connection
@@ -173,17 +173,22 @@ public final class Client {
 
     /// Say hello on `connection` and read the answer. The engine it names is
     /// read first, so a serve of an engine other than `engine` is spotted by
-    /// that alone, whatever else it says, and if `replacing` is
-    /// `unsupported`, like one that speaks another protocol. Then the whole
+    /// that alone, whatever else it says. If `replacing` it's `unsupported`,
+    /// and otherwise said as another Turnscope running. Then the whole
     /// answer is read.
     private func greet(_ connection: Channel, engine: String?,
                        replacing: Bool) async throws(ClientError) -> HelloResult {
         struct Server: Decodable { var server: String }
         let deadline = connection.end(after: helloWait)
         defer { deadline.cancel() }
-        let line = try await connection.ask("hello", HelloParams(protocol: protocolVersion))
+        let line = try await connection.ask("hello")
         let server = try decode(Answer<Server>.self, from: line).result.server
-        if replacing, let engine, server != engine { throw .unsupported("it runs \(server), not \(engine)") }
+        if let engine, server != engine {
+            if replacing { throw .unsupported("it runs \(server), not \(engine)") }
+            // `turnscope 0.2.0`, as `turnscope --version` prints it.
+            let version = server.split(separator: " ").last.map(String.init) ?? server
+            throw .failed("Turnscope \(version) is also running. Quit it to use this one.")
+        }
         return try decode(Answer<HelloResult>.self, from: line).result
     }
 
@@ -237,8 +242,7 @@ public enum ClientError: Error, Equatable, Sendable, CustomStringConvertible {
     /// The engine couldn't be run or started, the connection closed, or
     /// serve answered with an error, and why.
     case failed(String)
-    /// Serve doesn't speak this app's protocol, and says which it does, or
-    /// runs another engine.
+    /// Serve runs another engine, and which.
     case unsupported(String)
     case unreadable(String)
 
@@ -297,7 +301,6 @@ private final class Channel {
             var error: Failure?
         }
         struct Failure: Decodable {
-            var code: Int
             var message: String
         }
         var unread: ClientError?
@@ -315,7 +318,6 @@ private final class Channel {
                 }
             case (nil, let id?):
                 let answer: Result<Data, ClientError> = switch header.error {
-                case let failure? where failure.code == -32001: .failure(.unsupported(failure.message))
                 case let failure?: .failure(.failed(failure.message))
                 case nil: .success(line)
                 }

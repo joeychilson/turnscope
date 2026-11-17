@@ -469,8 +469,7 @@ The engine decides and the app only shows. If a view needs a threshold, an
 order or a choice, make it in the engine and send the answer.
 
 1. Add the field to the Rust type and to the examples in `contract/`
-   ([protocol.md](protocol.md#change-the-protocol)). An added field doesn't
-   need a new protocol version.
+   ([protocol.md](protocol.md#change-the-protocol)).
 2. Add it to the type in `Contract.swift`.
 3. Word it in `Words`, with a test in `WordsTests.swift`. If it sets a
    color, derive that in `Standing.swift`.

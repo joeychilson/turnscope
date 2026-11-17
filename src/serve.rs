@@ -17,9 +17,6 @@ use serde_json::{Value, json};
 
 use crate::{Error, Result, agents, alerts, status, usage};
 
-/// The protocol spoken, raised for any change a client can't ignore.
-pub const PROTOCOL: u64 = 3;
-
 /// macOS allows a socket path of 103 bytes at most.
 pub fn socket_path(data: &Path) -> PathBuf {
     let path = data.join("serve.sock");
@@ -52,6 +49,7 @@ struct Client {
 struct AppStatus {
     #[serde(flatten)]
     status: status::Status,
+    /// Every agent Turnscope reads, installed or not.
     agents: Vec<status::Agent>,
 }
 
@@ -408,29 +406,7 @@ impl Server {
                 self.send(client, &reply(id, Ok(json!({}))));
                 return false;
             }
-            "hello" => {
-                #[derive(Deserialize)]
-                struct Hello {
-                    protocol: u64,
-                }
-                given::<Hello>(params).and_then(|hello| {
-                    if hello.protocol != PROTOCOL {
-                        let message = format!(
-                            "this turnscope speaks protocol {PROTOCOL}, not {}",
-                            hello.protocol
-                        );
-                        let data = json!({ "supported": [PROTOCOL] });
-                        return Err(json!({ "code": -32001, "message": message, "data": data }));
-                    }
-                    let status = AppStatus::of(&self.db, &self.home, now).map_err(failed)?;
-                    let alerts = alerts::pending(&self.db, &status.status, now).map_err(failed)?;
-                    if let Some(client) = self.clients.get_mut(&client) {
-                        client.greeted = true;
-                    }
-                    let server = format!("turnscope {}", env!("CARGO_PKG_VERSION"));
-                    Ok(json!({ "server": server, "status": status, "alerts": alerts }))
-                })
-            }
+            "hello" => self.hello(client, now).map_err(failed),
             _ if !greeted => Err(refused(-32002, "send hello first".to_owned())),
             "alerts.ack" => {
                 #[derive(Deserialize)]
@@ -514,6 +490,20 @@ impl Server {
         true
     }
 
+    /// Greet `client`: the engine this is, the whole status, and the alerts
+    /// waiting to be shown. It takes no parameters, and any sent are passed
+    /// over: the app only talks to the engine it ships with, which it tells
+    /// by `server`.
+    fn hello(&mut self, client: u64, now: i64) -> Result<Value> {
+        let status = AppStatus::of(&self.db, &self.home, now)?;
+        let alerts = alerts::pending(&self.db, &status.status, now)?;
+        if let Some(client) = self.clients.get_mut(&client) {
+            client.greeted = true;
+        }
+        let server = format!("turnscope {}", env!("CARGO_PKG_VERSION"));
+        Ok(json!({ "server": server, "status": status, "alerts": alerts }))
+    }
+
     /// From the status last pushed: the one the app shows.
     fn breakdown(&self, account: &str, limit: &str, now: i64) -> Result<Vec<UsedMost>> {
         let status = match &self.sent {
@@ -563,12 +553,16 @@ impl Server {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UsedMost {
+    /// The session's id: `claude-code:0f6e3f6a-713c`.
     session: String,
     title: Option<String>,
-    /// Its folder's name.
+    /// The name of its project's folder.
     project: Option<String>,
+    /// The agent's id.
     agent: String,
-    /// Points of the limit it took.
+    /// About how many points of the limit it used: its share of the cost,
+    /// times the points used. None when the window's start isn't known, the
+    /// window reset since the limit was read, or nothing used had a price.
     share_percent: Option<f64>,
 }
 
@@ -595,6 +589,109 @@ mod tests {
         again::<super::AppStatus>(&hello["result"]["status"]);
         for each in hello["result"]["alerts"].as_array().unwrap() {
             again::<crate::alerts::Alert>(each);
+        }
+    }
+
+    /// The app reads an enum value it doesn't know as an error, so each
+    /// value of each enum it reads is in an example, where both sides'
+    /// tests read it. An enum's values are those serde names when it
+    /// refuses one it doesn't know, so a new value fails here until an
+    /// example holds it.
+    #[test]
+    fn the_contracts_examples_hold_every_value_of_every_enum() {
+        use crate::{alerts, providers, status};
+        use serde::de::DeserializeOwned;
+        use serde_json::json;
+        use std::collections::BTreeSet;
+
+        fn values<T: DeserializeOwned>(unknown: Value) -> Vec<String> {
+            let refused = serde_json::from_value::<T>(unknown).err().unwrap();
+            let said = refused.to_string();
+            let expected = said.split_once("expected").map_or("", |(_, rest)| rest);
+            expected
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect()
+        }
+        // Each string in `value`, with the key it's under and the key of the
+        // object holding it. An array's items are held by the array's key.
+        fn strings(value: &Value, holder: &str, found: &mut BTreeSet<(String, String, String)>) {
+            match value {
+                Value::Object(fields) => {
+                    for (key, field) in fields {
+                        if let Value::String(text) = field {
+                            found.insert((holder.to_owned(), key.clone(), text.clone()));
+                        }
+                        strings(field, key, found);
+                    }
+                }
+                Value::Array(items) => {
+                    for item in items {
+                        strings(item, holder, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = BTreeSet::new();
+        let folder = format!("{}/contract", env!("CARGO_MANIFEST_DIR"));
+        for file in std::fs::read_dir(folder).unwrap() {
+            let text = std::fs::read_to_string(file.unwrap().path()).unwrap();
+            strings(&serde_json::from_str(&text).unwrap(), "", &mut found);
+        }
+        // Each enum, and where its values are: the key holding the object
+        // they're in, and their own key.
+        type At = fn(&str, &str) -> bool;
+        let enums: [(&str, Vec<String>, At); 8] = [
+            (
+                "Connection",
+                values::<status::Connection>(json!("")),
+                |_, key| key == "connection",
+            ),
+            (
+                "State",
+                values::<status::State>(json!({ "kind": "" })),
+                |holder, key| (holder, key) == ("state", "kind"),
+            ),
+            (
+                "Stale",
+                values::<status::Stale>(json!("")),
+                |holder, key| (holder, key) == ("state", "why"),
+            ),
+            ("Horizon", values::<status::Horizon>(json!("")), |_, key| {
+                key == "horizon"
+            }),
+            (
+                "Outlook",
+                values::<status::Outlook>(json!({ "kind": "" })),
+                |holder, key| (holder, key) == ("outlook", "kind"),
+            ),
+            (
+                "Unknown",
+                values::<status::Unknown>(json!("")),
+                |holder, key| (holder, key) == ("outlook", "reason"),
+            ),
+            (
+                "an account's Kind",
+                values::<providers::Kind>(json!("")),
+                |holder, key| (holder, key) == ("accounts", "kind"),
+            ),
+            (
+                "an alert's Kind",
+                values::<alerts::Kind>(json!("")),
+                |holder, key| key == "kind" && ["params", "alerts"].contains(&holder),
+            ),
+        ];
+        for (name, values, at) in enums {
+            assert!(!values.is_empty(), "serde named no values of {name}");
+            for value in values {
+                let held = found
+                    .iter()
+                    .any(|(holder, key, text)| at(holder, key) && *text == value);
+                assert!(held, "no example in contract/ holds {name} `{value}`");
+            }
         }
     }
 

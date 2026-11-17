@@ -18,19 +18,30 @@ pub enum Kind {
     SignIn,
 }
 
+/// An alert, as sent: when each kind is raised is in
+/// docs/architecture.md#alerts. The horizons of `resets` and `runs_out` are
+/// worked out when it's sent, not when it was raised.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
+    /// The id to acknowledge it by.
     pub id: i64,
     pub kind: Kind,
+    /// The account's id.
     pub account: String,
+    /// Its title and label when raised: `Claude Max (me@example.com)`.
     pub account_title: String,
+    /// The limit's key. None for `signIn`.
     pub limit: Option<String>,
+    /// The limit's name. None for `signIn`.
     pub limit_name: Option<String>,
     /// The notification it takes the place of: `limit:<account>:<key>` or
     /// `account:<account>`, so a reset replaces the warning before it.
     pub replaces: String,
+    /// When the limit's window resets. None for `signIn`, and for a limit
+    /// that never resets, such as credits.
     pub resets: Option<Moment>,
+    /// For `runningOut`, when it likely runs out. Otherwise None.
     pub runs_out: Option<Moment>,
 }
 
@@ -269,12 +280,17 @@ pub struct Settings {
     pub notify: Notify,
 }
 
+/// Which alerts to send, each on by default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Notify {
+    /// When a limit in use will run out before it resets.
     pub running_out: bool,
+    /// When a limit in use is used up.
     pub used_up: bool,
+    /// When a limit that was used up is back.
     pub reset: bool,
+    /// When an account in use needs signing in again.
     pub sign_in: bool,
 }
 
