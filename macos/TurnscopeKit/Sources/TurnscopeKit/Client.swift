@@ -61,6 +61,9 @@ public final class Client {
     /// How long another engine's serve has to exit once asked to. It only
     /// has to end its process. Tests shorten it.
     var exitWait = Duration.seconds(5)
+    /// Whether another Turnscope app is running, as the app tells. Until it
+    /// says otherwise, one is taken to be.
+    public var anotherAppRuns: () -> Bool = { true }
 
     /// A client of the serve run by `binary` (`turnscope`), with
     /// `arguments` (`--data`, `--home`) passed on.
@@ -106,7 +109,10 @@ public final class Client {
         // A serve of another engine is asked to exit once. If the next one
         // runs another engine too, another app keeps starting it: the client
         // says so, and leaves it running. That way two apps of different
-        // versions can't take turns ending each other's serve.
+        // versions can't take turns ending each other's serve. Once no other
+        // app runs, one left behind is asked to exit again: serve stays 60 s
+        // after its last client, and each try to connect, within 30 s of the
+        // last, would keep it running for good.
         var replaced = false
         while !Task.isCancelled {
             do throws(ClientError) {
@@ -121,7 +127,7 @@ public final class Client {
                 serves.removeAll { !$0.isRunning }
                 let began = ContinuousClock.now
                 let ended = try await converse(on: Channel(socket: opened.socket), engine: engineName,
-                                               replacing: !replaced)
+                                               replacing: !replaced || !anotherAppRuns())
                 switch ended {
                 case .replaced:
                     replaced = true
@@ -202,7 +208,7 @@ public final class Client {
             if replacing { throw .unsupported("it runs \(server), not \(engine)") }
             // `turnscope 0.2.0`, as `turnscope --version` prints it.
             let version = server.split(separator: " ").last.map(String.init) ?? server
-            throw .failed("Turnscope \(version) is also running. Quit it to use this one.")
+            throw .failed("Turnscope \(version) is also running; quit it to use this one")
         }
         return try decode(Answer<HelloResult>.self, from: line).result
     }
