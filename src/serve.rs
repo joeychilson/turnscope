@@ -638,7 +638,11 @@ mod tests {
         let mut found = BTreeSet::new();
         let folder = format!("{}/contract", env!("CARGO_MANIFEST_DIR"));
         for file in std::fs::read_dir(folder).unwrap() {
-            let text = std::fs::read_to_string(file.unwrap().path()).unwrap();
+            let path = file.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(path).unwrap();
             strings(&serde_json::from_str(&text).unwrap(), "", &mut found);
         }
         // Each enum, and where its values are: the key holding the object

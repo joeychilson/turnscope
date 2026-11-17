@@ -3,8 +3,9 @@
 ## 0.2.1
 
 - **Two versions of the app at once:** one of them now says `Turnscope
-  0.2.0 is also running. Quit it to use this one.` It no longer shows the
-  other version's figures, which it could misread.
+  0.2.0 is also running; quit it to use this one`, and connects once the
+  other is quit. It no longer shows the other version's figures, which it
+  could misread.
 
 ## 0.2.0
 

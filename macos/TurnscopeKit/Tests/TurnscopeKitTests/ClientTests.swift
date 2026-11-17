@@ -345,10 +345,26 @@ func aServeOfAnotherEngineIsAskedToExit(_ other: OtherServe) async throws {
     // other's serve. The client says why it can't connect, and keeps
     // trying.
     await until { store.failure != nil }
-    #expect(store.failure == "Turnscope 0.1.0 is also running. Quit it to use this one.")
+    #expect(store.failure == "Turnscope 0.1.0 is also running; quit it to use this one")
     #expect(store.status == nil)
     #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 3 })
     #expect(serve.methods.filter { $0 == "shutdown" }.count == 1)
+    client.stop()
+}
+
+@MainActor
+@Test func anotherEnginesServeLeftBehindIsAskedToExitOnceItsAppQuits() async throws {
+    // Another app keeps starting a serve of its engine.
+    let serve = try serve()
+    defer { serve.close() }
+    let (client, store) = try store(over: serve, version: "turnscope 9.9.9")
+    client.start()
+    await until { serve.methods.contains("shutdown") }
+    serve.drop()
+    await until { store.failure != nil }
+    // That app quits. Its serve stays, and is asked to exit at the next try.
+    client.anotherAppRuns = { false }
+    #expect(await until { serve.methods.filter { $0 == "shutdown" }.count == 2 })
     client.stop()
 }
 
@@ -362,7 +378,7 @@ func aServeOfAnotherEngineIsAskedToExit(_ other: OtherServe) async throws {
     // It neither answers nor exits. The client stops waiting, connects
     // again, and says it's running.
     await until { store.failure != nil }
-    #expect(store.failure == "Turnscope 0.1.0 is also running. Quit it to use this one.")
+    #expect(store.failure == "Turnscope 0.1.0 is also running; quit it to use this one")
     #expect(serve.methods == ["hello", "shutdown", "hello"])
     client.stop()
 }
