@@ -55,7 +55,8 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     client.start()
     await until { store.status != nil }
     #expect(serve.methods.first == "hello")
-    #expect(serve.params(of: "hello").first?["protocol"] as? Int == protocolVersion)
+    // It takes no parameters, so it's sent none.
+    #expect(serve.calls(of: "hello").first?.keys.contains("params") == false)
     #expect(store.all.count == 6)
     #expect(store.inUse.map(\.id) == ["anthropic:acct-1:org-1"])
     // The alerts kept for a client come with the handshake, each as an
@@ -280,40 +281,41 @@ func aHelloThatFailsIsSaidAndTriedAgain(_ failed: FailedHello) async throws {
     client.stop()
 }
 
-/// How a serve that isn't this app's answers hello.
+/// How a serve of another engine answers hello.
 enum OtherServe: CaseIterable {
-    /// As another engine, as after an update, when the running serve was
-    /// started by the app's previous version.
-    case anotherEngine
-    /// As an engine whose status this app can't read. The field that names
-    /// the engine is read first, so it's replaced anyway.
-    case unreadableStatus
-    /// With an error: it doesn't speak this app's protocol.
-    case anotherProtocol
+    /// With a status this app reads, as after an update, when the running
+    /// serve was started by the app's previous version.
+    case readable
+    /// With a status this app can't read. The field that names the engine
+    /// is read first, so it's replaced anyway.
+    case unreadable
 
     var hello: Reply {
         get throws {
             switch self {
-            case .anotherEngine: .of(try helloResult())
-            case .unreadableStatus:
+            case .readable: .of(try helloResult())
+            case .unreadable:
                 .of(["server": "turnscope 0.0.1", "status": ["accounts": "not a list"], "alerts": []])
-            case .anotherProtocol: .error(code: -32001, "this serve speaks protocol 2")
             }
         }
     }
 }
 
+/// The contract's `hello` answer, naming `engine` as the server's.
+private func hello(from engine: String) throws -> Reply {
+    .of(try helloResult().merging(["server": engine]) { $1 })
+}
+
 @MainActor
 @Test(arguments: OtherServe.allCases)
-func aServeNotThisAppsIsAskedToExitOnceAndTheNextKept(_ other: OtherServe) async throws {
+func aServeOfAnotherEngineIsAskedToExit(_ other: OtherServe) async throws {
     let first = try other.hello
-    let hello = Reply.of(try helloResult())
+    let ours = try hello(from: "turnscope 9.9.9")
     let serve = FakeServe { method, _, serve in
         guard method == "hello" else { return .done }
-        return serve.methods.filter { $0 == "hello" }.count == 1 ? first : hello
+        return serve.methods.filter { $0 == "hello" }.count == 1 ? first : ours
     }
     defer { serve.close() }
-    // This app's engine is neither serve's.
     let (client, store) = try store(over: serve, version: "turnscope 9.9.9")
     client.start()
     await until { serve.methods.contains("shutdown") }
@@ -322,45 +324,62 @@ func aServeNotThisAppsIsAskedToExitOnceAndTheNextKept(_ other: OtherServe) async
     // null there.
     #expect(serve.calls(of: "shutdown").first?.keys.contains("params") == false)
     #expect(store.status == nil && store.failure == nil)
-    // It exits. The serve connected to next is kept, whatever engine it
-    // runs, so two apps can't take turns ending each other's serve.
+    // It exits, and the serve connected to next runs this app's engine.
     serve.drop()
     await connected(client, store)
     #expect(serve.methods == ["hello", "shutdown", "hello"])
-    #expect(store.status != nil)
     client.stop()
 }
 
 @MainActor
-@Test func aServeOfAnotherEngineThatDoesntExitIsKeptAfterAWhile() async throws {
+@Test func anotherEngineStartedAgainIsSaidToBeRunningAndLeftAlone() async throws {
+    // Each serve runs the contract's engine, as another app starts one
+    // each time its own is asked to exit.
+    let serve = try serve()
+    defer { serve.close() }
+    let (client, store) = try store(over: serve, version: "turnscope 9.9.9")
+    client.start()
+    await until { serve.methods.contains("shutdown") }
+    serve.drop()
+    // Asked to exit once only, so two apps can't take turns ending each
+    // other's serve. The client says why it can't connect, and keeps
+    // trying.
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope 0.1.0 is also running; quit it to use this one")
+    #expect(store.status == nil)
+    #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 3 })
+    #expect(serve.methods.filter { $0 == "shutdown" }.count == 1)
+    client.stop()
+}
+
+@MainActor
+@Test func anotherEnginesServeLeftBehindIsAskedToExitOnceItsAppQuits() async throws {
+    // Another app keeps starting a serve of its engine.
+    let serve = try serve()
+    defer { serve.close() }
+    let (client, store) = try store(over: serve, version: "turnscope 9.9.9")
+    client.start()
+    await until { serve.methods.contains("shutdown") }
+    serve.drop()
+    await until { store.failure != nil }
+    // That app quits. Its serve stays, and is asked to exit at the next try.
+    client.anotherAppRuns = { false }
+    #expect(await until { serve.methods.filter { $0 == "shutdown" }.count == 2 })
+    client.stop()
+}
+
+@MainActor
+@Test func aServeOfAnotherEngineThatDoesntExitIsLeftAfterAWhile() async throws {
     let serve = try serve { method, _, _ in method == "shutdown" ? .silence : .done }
     defer { serve.close() }
     let (client, store) = try store(over: serve, version: "turnscope 9.9.9")
     client.exitWait = .milliseconds(300)
     client.start()
     // It neither answers nor exits. The client stops waiting, connects
-    // again, and keeps it.
-    await connected(client, store)
-    #expect(serve.methods == ["hello", "shutdown", "hello"])
-    client.stop()
-}
-
-@MainActor
-@Test func aServeThatStillDoesntSpeakTheProtocolIsntAskedToExitAgain() async throws {
-    let serve = FakeServe { method, _, _ in
-        method == "hello" ? .error(code: -32001, "this serve speaks protocol 2") : .done
-    }
-    defer { serve.close() }
-    let (client, store) = try store(over: serve)
-    client.start()
-    await until { serve.methods.contains("shutdown") }
-    serve.drop()
-    // The serve after it is kept, so the client says why it can't connect,
-    // and keeps trying.
+    // again, and says it's running.
     await until { store.failure != nil }
-    #expect(store.failure == "this serve speaks protocol 2")
-    #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 3 })
-    #expect(serve.methods.filter { $0 == "shutdown" }.count == 1)
+    #expect(store.failure == "Turnscope 0.1.0 is also running; quit it to use this one")
+    #expect(serve.methods == ["hello", "shutdown", "hello"])
     client.stop()
 }
 

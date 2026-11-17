@@ -9,9 +9,6 @@
 
 import Foundation
 
-/// The protocol version this app speaks.
-public let protocolVersion = 3
-
 // MARK: Status
 
 /// Everything the app shows, as of `at`.
@@ -295,11 +292,6 @@ struct HelloResult: Decodable, Sendable {
     var status: Status
     /// Alerts no client has acknowledged, oldest first.
     var alerts: [Alert]
-}
-
-/// `hello`'s parameters.
-struct HelloParams: Encodable, Sendable {
-    var `protocol`: Int
 }
 
 /// `alerts.ack`'s parameters.

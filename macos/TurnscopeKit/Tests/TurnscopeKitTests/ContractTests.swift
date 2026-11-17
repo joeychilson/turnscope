@@ -11,7 +11,6 @@ private struct Refused: Decodable {
     struct Error: Decodable {
         var code: Int
         var message: String
-        var data: [String: [Int]]?
     }
 
     var error: Error
@@ -31,7 +30,7 @@ private let answers: [String: @Sendable (Data) throws -> Void] = [
 /// The line the app writes for each request example, by file name, given
 /// the example's id.
 private let requests: [String: @Sendable (Int) -> Data] = [
-    "hello.request.json": write("hello", HelloParams(protocol: protocolVersion)),
+    "hello.request.json": write("hello"),
     "alerts.ack.request.json": write("alerts.ack", AckParams(ids: [1, 2])),
     "limit.breakdown.request.json": write("limit.breakdown",
                                           BreakdownParams(account: "anthropic:acct-1:org-1", limit: "five_hour")),
@@ -109,8 +108,7 @@ private func write(_ method: String, _ params: (any Encodable & Sendable)? = nil
     #expect(throws: DecodingError.self) { try decode(#"{"kind":"gone"}"#, AccountState.self) }
     let alert = #"{"id":9,"kind":"weekly","at":0,"account":"a","accountTitle":"A","replaces":"x"}"#
     #expect(throws: DecodingError.self) { try decode(alert, Alert.self) }
-    // An unknown field is skipped, as a client of any protocol version
-    // does.
+    // An unknown field is skipped.
     let state = try Contract.decoder.decode(AccountState.self, from: Data(#"{"kind":"unread","why":"signIn","extra":1}"#.utf8))
     #expect(state == .unread(why: .signIn))
 }

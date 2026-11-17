@@ -36,7 +36,10 @@ pub struct Status {
     pub at: i64,
     /// Whether the first read of the agents' history finished.
     pub history_read: bool,
-    /// In the order to list them: in use first, the most urgent first.
+    /// Every account, hidden ones too, in the order to list them: in use
+    /// first, the most urgent first (docs/architecture.md#status). Until
+    /// `history_read`, each is listed as one in use, whatever its `in_use`
+    /// says.
     pub accounts: Vec<Account>,
     pub settings: crate::alerts::Settings,
 }
@@ -44,9 +47,14 @@ pub struct Status {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Agent {
+    /// `claude-code`.
     pub id: String,
+    /// `Claude Code`.
     pub name: String,
+    /// Its own folder exists. For Antigravity, one of its own two in
+    /// `~/.gemini`, which the Gemini command line keeps too.
     pub installed: bool,
+    /// Whether it runs Turnscope's MCP server.
     pub connection: Connection,
     /// Its responses drew on an account in the last half hour.
     pub in_use: bool,
@@ -55,37 +63,45 @@ pub struct Agent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Connection {
-    /// It runs this Turnscope's MCP server.
+    /// It runs this binary's MCP server in every one of its folders. A link
+    /// to the binary counts.
     Connected,
-    /// It runs another copy's, as one since moved.
+    /// A folder of it runs another copy's, as one since moved.
     Outdated,
+    /// Otherwise: a folder of it runs none.
     Available,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
+    /// `<provider>:<the provider's id for it>`: `anthropic:acct-1:org-1`.
     pub id: String,
+    /// The provider's id: `anthropic`.
     pub provider: String,
     pub kind: Kind,
     /// `Claude Max`, `Anthropic API key`.
     pub title: String,
     /// What tells it from another of its kind, such as an email address.
     pub label: Option<String>,
-    /// The agents signed into it now.
+    /// The agents signed into it now, by id.
     pub agents: Vec<String>,
     /// The agents that drew on it in the last half hour, the latest first.
     pub used_by: Vec<String>,
-    /// Drawn on in the last half hour, or a limit rose at its last read.
+    /// Drawn on in the last half hour, or a limit rose at its last reading,
+    /// taken in the last half hour, as use elsewhere makes it.
     pub in_use: bool,
     /// In use, or drawn on in the last 7 days: one the person uses.
     pub recent: bool,
+    /// The person hid it.
     pub hidden: bool,
     pub state: State,
+    /// Its limits as last read, by key. Empty if never read.
     pub limits: Vec<Limit>,
-    /// The key of the limit that decides how it stands.
+    /// The key of the limit that decides how it stands
+    /// (docs/architecture.md#status). None with no limits.
     pub deciding: Option<String>,
-    /// For an API key, what it cost this month.
+    /// For an API key, what it cost this month. None for a subscription.
     pub spend: Option<Spend>,
 }
 
@@ -135,6 +151,7 @@ impl Account {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum State {
+    /// Read at the last try.
     #[serde(rename_all = "camelCase")]
     Live { read_at: i64 },
     /// As of an earlier read, and why not since.
@@ -172,22 +189,30 @@ pub enum Stale {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Limit {
+    /// The provider's key: `five_hour`, `seven_day`. An API key's own limit
+    /// is `key-<fingerprint>`.
     pub key: String,
-    /// `5 hours`, `Weekly`.
+    /// The provider's name: `5 hours`, `Weekly`, `Credits`.
     pub name: String,
-    /// The model or models it applies to, when not all.
+    /// The model it applies to, such as `Opus`, or several joined with
+    /// "and", such as `Claude and GPT`. None for every model.
     pub scope: Option<String>,
+    /// None for a limit that never resets, such as credits.
     pub window: Option<LimitWindow>,
     pub read_at: i64,
-    /// Rounded down; 100 once its window reset since it was read.
+    /// Percent left, 0 to 100, rounded down; 100 once its window reset
+    /// since it was read.
     pub left_percent: u8,
+    /// For a limit of money, its size and what's left.
     pub money: Option<Money>,
     /// When its window reset, if it has since it was read.
     pub reset_since: Option<i64>,
-    /// For one API key's own limit, the agents holding the key.
+    /// For one API key's own limit, the agents holding the key. Otherwise
+    /// empty.
     pub held_by: Vec<String>,
     pub outlook: Outlook,
-    /// None until an hour of work is measured, and for a window that rolls.
+    /// The pace of work, and the work left at it. None until an hour of
+    /// work and 2 points are measured, and for a window that rolls.
     pub work: Option<Work>,
 }
 
@@ -290,12 +315,13 @@ impl Limit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LimitWindow {
+    /// None for a window that rolls.
     pub starts_at: Option<i64>,
     pub resets: Moment,
 }
 
 /// A time to come, to the minute, and how soon it is, which decides how
-/// it's said.
+/// it's said: as a countdown, a time of day, a weekday or a date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Moment {
@@ -324,15 +350,18 @@ impl Moment {
 pub enum Horizon {
     /// Within three hours.
     Soon,
+    /// Later today, in local time.
     Today,
     /// Within a week.
     ThisWeek,
+    /// Further off.
     Later,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Money {
+    /// The limit's size.
     pub size_usd: f64,
     /// Rounded down to the cent.
     pub left_usd: f64,
@@ -366,15 +395,20 @@ pub enum Outlook {
     #[serde(rename_all = "camelCase")]
     Lasts { left_at_reset: Option<Spread> },
     /// It runs out before its reset: likely then, and within the 80% range
-    /// from soonest to latest (`None` where the slow end lasts).
+    /// from soonest to latest (`None` where the slow end lasts). Each is
+    /// rounded to 10 minutes within a day and to the hour beyond, and is
+    /// never in the past.
     #[serde(rename_all = "camelCase")]
     RunsOut {
         likely: Moment,
         soonest: Moment,
         latest: Option<Moment>,
     },
+    /// It's used up, and back when it resets: `None` for a limit that never
+    /// resets.
     #[serde(rename_all = "camelCase")]
     UsedUp { back: Option<Moment> },
+    /// No forecast, and why.
     #[serde(rename_all = "camelCase")]
     Unknown { reason: Unknown },
 }
@@ -382,6 +416,8 @@ pub enum Outlook {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Unknown {
+    /// Too little of the window has passed or been used to tell a pace
+    /// (docs/architecture.md#forecast).
     NotEnoughData,
     /// Read too long ago, or its window reset since.
     Stale,
@@ -391,22 +427,26 @@ pub enum Unknown {
     Rolling,
 }
 
-/// Percents as an 80% range: its low and high ends, and the likely.
+/// Percent left at the reset, as an 80% range, each end rounded down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Spread {
+    /// At the fast end of the range.
     pub low: u8,
     pub likely: u8,
+    /// At the slow end.
     pub high: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Spend {
+    /// What it cost so far this calendar month.
     pub month_usd: f64,
-    /// The month at its pace so far; none in its first day.
+    /// The whole month at its pace so far; None in its first day.
     pub forecast_usd: Option<f64>,
-    /// Some usage has no known price.
+    /// Some of this month's usage has no known price, so it cost more than
+    /// `month_usd`.
     pub partial: bool,
 }
 

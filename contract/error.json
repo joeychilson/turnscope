@@ -1,13 +1,8 @@
 {
   "error": {
-    "code": -32001,
-    "data": {
-      "supported": [
-        3
-      ]
-    },
-    "message": "this turnscope speaks protocol 3, not 4"
+    "code": -32000,
+    "message": "no limit seven_day of openrouter:api"
   },
-  "id": 1,
+  "id": 3,
   "jsonrpc": "2.0"
 }

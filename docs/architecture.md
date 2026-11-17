@@ -266,8 +266,8 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
 ## Status
 
 `status::status` works out everything the app, the CLI and the MCP server
-show, with every decision already made. Its fields are in
-[protocol.md](protocol.md#status). The agents in it are worked out apart,
+show, with every decision already made. Its fields are documented on its
+types, which [protocol.md](protocol.md#status) lists. The agents in it are worked out apart,
 by `status::agents`, for the app and `turnscope connect` only: whether an
 agent is connected is read from its MCP settings, and Claude Code's can be
 megabytes.
@@ -277,13 +277,13 @@ megabytes.
 - Percent left is rounded down, so it's never overstated. A limit whose
   window reset since it was read counts as full.
 - Each time to come is rounded to the minute and carries how soon it is, a
-  [`Moment`](protocol.md#moment).
+  `Moment`.
 - An account is **in use** when a response drew on it in the last 30
   minutes, or a limit rose between its last two readings in the last 30
   minutes, as use elsewhere makes it. It's **recent** when in use or drawn
   on in the last 7 days.
 - An account's **state** says whether its limits were read at the last
-  try, and if not, why ([protocol.md](protocol.md#state)).
+  try, and if not, why (`status::State`).
 - A limit's outlook is `unknown` (`stale`) once its latest reading is over
   30 minutes old.
 - The **deciding limit** says how an account stands. It's chosen from the
@@ -305,7 +305,7 @@ megabytes.
   was read counts, with a new window's work left.
 - Each **agent** is `installed` when its own folder exists, and its
   connection says whether each of its folders runs this binary's MCP
-  server ([protocol.md](protocol.md#agent)).
+  server (`status::Connection`).
 
 ## Prices
 

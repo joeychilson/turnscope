@@ -20,7 +20,8 @@ Both sides test against the examples, so they can't drift apart:
   checks that each request the app writes is exactly its example. It fails
   on an example it doesn't check.
 - `serve::tests` reads every status and alert in the examples into the Rust
-  types and writes them back unchanged.
+  types and writes them back unchanged. It also checks that every value of
+  every enum in them is in an example.
 - `tests/cli.rs` sends every request example to a running `serve` and expects
   a result. It skips `agent.connect` and `agent.disconnect`, which would run
   an agent's own command, and sends `shutdown` last.
@@ -39,7 +40,7 @@ Try it by hand, with the app running or after `turnscope serve &`:
 
 ```sh
 nc -U "$(turnscope serve --socket)"
-{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":3}}
+{"jsonrpc":"2.0","id":1,"method":"hello"}
 ```
 
 ## Lifecycle
@@ -69,30 +70,30 @@ nc -U "$(turnscope serve --socket)"
 - **Another engine.** The app only talks to the engine it ships with. The
   `hello` result names the server, as `turnscope --version` prints it
   (`turnscope 0.1.0`), and the app checks that before reading the rest. If
-  it names another engine, or the answer is `-32001`, the app sends
-  `shutdown`, waits up to 5 s for that `serve` to exit, and connects again,
-  starting its own `serve`. It does this once per run, so two app versions
-  can't keep stopping each other's `serve`.
+  it names another engine, the app sends `shutdown`, waits up to 5 s for
+  that `serve` to exit, and connects again, starting its own `serve`. It
+  does this once per run while another Turnscope app runs. If the next
+  `serve` runs another engine too, that app keeps starting it: the app says
+  `Turnscope 0.1.0 is also running; quit it to use this one`, and tries
+  again as after a failed attempt. So two app versions can't keep stopping
+  each other's `serve`. Once no other app runs, a `serve` it left is asked
+  to exit at the next try: each try would otherwise keep it from ever
+  being alone for 60 s.
 
 ## Handshake
 
-The first request on a connection is `hello`. Its result holds the whole
+The first request on a connection is `hello`. It takes no parameters, and
+any sent are passed over. Its result names the engine, and holds the whole
 status and every alert not yet acknowledged, so each connection starts in
 sync. Until `hello` succeeds, any other request but `shutdown` gets
 `-32002`.
 
 ```json
-{"id":1,"jsonrpc":"2.0","method":"hello","params":{"protocol":3}}
+{"id":1,"jsonrpc":"2.0","method":"hello"}
 ```
 
 ```json
 {"id":1,"jsonrpc":"2.0","result":{"alerts":[…],"server":"turnscope 0.1.0","status":{…}}}
-```
-
-A protocol the server doesn't speak gets `-32001` (`error.json`):
-
-```json
-{"error":{"code":-32001,"data":{"supported":[3]},"message":"this turnscope speaks protocol 3, not 4"},"id":1,"jsonrpc":"2.0"}
 ```
 
 ## Requests
@@ -164,8 +165,7 @@ take a message within 2 seconds is dropped.
 | `-32600` | No `method` | `a request needs a method` |
 | `-32601` | No such method | `no method <method>` |
 | `-32602` | Parameters that don't fit, or an unknown agent | `parameters that don't fit: <why>`, `no agent is <id>` |
-| `-32000` | The engine couldn't do it | Why, such as `no limit <key> of <account>` |
-| `-32001` | Unsupported protocol. `data.supported` lists those spoken | `this turnscope speaks protocol 3, not <n>` |
+| `-32000` | The engine couldn't do it (`error.json`) | Why, such as `no limit <key> of <account>` |
 | `-32002` | A request before `hello` | `send hello first` |
 
 ## Conventions
@@ -184,265 +184,43 @@ take a message within 2 seconds is dropped.
 `Status` is everything the app shows, with every decision already made. The
 app only chooses words, colors and layout.
 
-| Field | Type | Holds |
-|---|---|---|
-| `at` | ms | The minute it was worked out for |
-| `historyRead` | bool | Whether the first read of the agents' history finished |
-| `accounts` | [Account] | Every account, hidden ones too, in the order to list them ([architecture.md](architecture.md#status)). Until `historyRead` is true, each is ordered as an account in use, whatever its `inUse` says |
-| `agents` | [Agent] | Every agent Turnscope reads, installed or not |
-| `settings` | Settings | The user's settings |
+What each field holds is said once, on the Rust type that sends it:
 
-### Agent
-
-| Field | Type | Holds |
-|---|---|---|
-| `id` | string | `claude-code` |
-| `name` | string | `Claude Code` |
-| `installed` | bool | Its folder exists. For Antigravity, one of its own two in `~/.gemini`, which the Gemini command line keeps too |
-| `connection` | string | Whether it runs Turnscope's MCP server |
-| `inUse` | bool | Its responses drew on an account in the last 30 minutes |
-
-| `connection` | Means |
+| Type | In |
 |---|---|
-| `connected` | It runs this binary's MCP server in every one of its folders. A link to the binary counts |
-| `outdated` | A folder of it runs another copy's |
-| `available` | Otherwise: a folder of it runs none |
+| `Status` and what it holds: `Account`, `Limit`, `Outlook`, `Moment` and the rest | `src/status.rs` |
+| `Status.agents`, and `UsedMost`, a session in a `limit.breakdown` result | `src/serve.rs` |
+| `Settings`, `Notify` and `Alert` | `src/alerts.rs` |
+| An account's `kind` | `src/providers/mod.rs` |
 
-### Account
-
-| Field | Type | Holds |
-|---|---|---|
-| `id` | string | `anthropic:acct-1:org-1` |
-| `provider` | string | The provider's id: `anthropic` |
-| `kind` | `subscription`, `apiKey` | A plan with limits that reset, or a key paid for as used |
-| `title` | string | `Claude Max`, `OpenRouter API key` |
-| `label` | string or null | What tells it apart from another of its kind, such as an email address |
-| `agents` | [string] | The agents signed in to it now, by id |
-| `usedBy` | [string] | The agents that drew on it in the last 30 minutes, the latest first |
-| `inUse` | bool | Drawn on in the last 30 minutes, or a limit rose at its last reading, taken in the last 30 minutes, as use elsewhere makes it |
-| `recent` | bool | In use, or drawn on in the last 7 days |
-| `hidden` | bool | The user hid it |
-| `state` | State | How its limits were last read |
-| `limits` | [Limit] | Its limits as last read, by key. Empty if never read |
-| `deciding` | string or null | The key of the limit that decides how the account stands ([architecture.md](architecture.md#status)). Null with no limits |
-| `spend` | Spend or null | For an API key, this month's cost. Null for a subscription |
-
-### State
-
-| `kind` | Other fields | Means |
-|---|---|---|
-| `live` | `readAt` | Read at the last attempt |
-| `asOf` | `readAt`, `why` | As read at `readAt`, and not since, because of `why` |
-| `unread` | `why` | Never read, because of `why` |
-
-| `why` | Means |
-|---|---|
-| `signedOut` | No agent here is signed in to it now |
-| `signIn` | Its provider refused the login |
-| `expired` | Every login to it expired. Its agent renews one when next used |
-| `readFailed` | Its provider couldn't be reached or gave an answer Turnscope doesn't understand, or nothing has read it for 30 minutes |
-
-### Limit
-
-| Field | Type | Holds |
-|---|---|---|
-| `key` | string | The provider's key: `five_hour`, `seven_day`. An API key's own limit is `key-<fingerprint>` |
-| `name` | string | The provider's name: `5 hours`, `Weekly`, `Credits` |
-| `scope` | string or null | The model it applies to, such as `Opus`, or several joined with "and", such as `Claude and GPT`. Null for every model |
-| `window` | Window or null | Null for a limit that never resets, such as credits |
-| `readAt` | ms | When it was read |
-| `leftPercent` | integer | Percent left, 0 to 100, rounded down. It's 100 once its window reset since it was read |
-| `money` | Money or null | For a limit of money, its size and what's left |
-| `resetSince` | ms or null | When its window reset, if it has since it was read |
-| `heldBy` | [string] | For an API key's own limit, the agents holding the key. Otherwise empty |
-| `outlook` | Outlook | Where it's headed |
-| `work` | Work or null | The pace of work, and the work left at it |
-
-A limit from the contract's example:
-
-```json
-{
-  "key": "five_hour", "name": "5 hours", "scope": null,
-  "leftPercent": 28, "money": null, "resetSince": null, "heldBy": [],
-  "readAt": 1791460680000,
-  "window": {"startsAt": 1791453600000, "resets": {"at": 1791471600000, "horizon": "today"}},
-  "outlook": {
-    "kind": "runsOut",
-    "likely":  {"at": 1791463800000, "horizon": "soon"},
-    "soonest": {"at": 1791462600000, "horizon": "soon"},
-    "latest":  {"at": 1791468600000, "horizon": "soon"}
-  },
-  "work": {"ratePerHour": 25.0, "leftHours": {"low": 0.7, "likely": 1.1, "high": 2.2}}
-}
-```
-
-### Window
-
-| Field | Type | Holds |
-|---|---|---|
-| `startsAt` | ms or null | When the window started. Null for a window that rolls |
-| `resets` | Moment | When it resets |
-
-### Moment
-
-A time to come, rounded to the minute, with how soon it is. The horizon
-decides how the time is worded: a countdown, a time of day, a weekday or a
-date.
-
-| Field | Type | Holds |
-|---|---|---|
-| `at` | ms | The time |
-| `horizon` | string | How soon it is |
-
-| `horizon` | Means |
-|---|---|
-| `soon` | Within 3 hours |
-| `today` | Later today, in local time |
-| `thisWeek` | Within 7 days |
-| `later` | Further off |
-
-### Money
-
-| Field | Type | Holds |
-|---|---|---|
-| `sizeUsd` | number | The limit's size |
-| `leftUsd` | number | What's left, rounded down to the cent |
-
-### Outlook
-
-| `kind` | Other fields | Means |
-|---|---|---|
-| `lasts` | `leftAtReset` | It lasts until its reset. `leftAtReset` is a Spread of the percent left then, or null with nothing used yet |
-| `runsOut` | `likely`, `soonest`, `latest` | It runs out before its reset. Each is a Moment: likely at `likely`, within the 80% range from `soonest` to `latest`. `latest` is null when the slow end of the range lasts |
-| `usedUp` | `back` | It's used up. `back` is the Moment it resets, or null for a limit that never resets |
-| `unknown` | `reason` | No forecast, because of `reason` |
-
-`runsOut` times are rounded to 10 minutes within a day and to the hour
-beyond, and are never in the past.
-
-| `reason` | Means |
-|---|---|
-| `notEnoughData` | Too little of the window has passed or been used to tell a pace ([architecture.md](architecture.md#forecast)) |
-| `stale` | Read more than 30 minutes ago, or its window reset since it was read |
-| `noReset` | It never resets, such as credits |
-| `rolling` | Its window rolls: it has a reset but no start to pace from |
-
-### Spread
-
-Percent left at the reset, as an 80% range, each end rounded down.
-
-| Field | Type | Holds |
-|---|---|---|
-| `low` | integer | At the fast end of the range |
-| `likely` | integer | At the likely pace |
-| `high` | integer | At the slow end |
-
-### Work
-
-The pace of work counts only the hours agents were working on the account,
-not clock time ([architecture.md](architecture.md#forecast)). `work` is null
-until at least an hour of work and 2 points have been measured, and always
-for a window that rolls.
-
-| Field | Type | Holds |
-|---|---|---|
-| `ratePerHour` | number | Points of the limit an hour of work uses |
-| `leftHours` | HoursLeft or null | Hours of work left at that rate. Null when the limit lasts until its reset even with nonstop work |
-
-### HoursLeft
-
-Hours of work left, as an 80% range.
-
-| Field | Type | Holds |
-|---|---|---|
-| `low` | number | The fewest |
-| `likely` | number | The likely |
-| `high` | number | The most |
-
-### Spend
-
-| Field | Type | Holds |
-|---|---|---|
-| `monthUsd` | number | What it cost so far this calendar month |
-| `forecastUsd` | number or null | The whole month at the pace so far. Null in the month's first day |
-| `partial` | bool | Some of this month's usage has no known price, so it cost more than `monthUsd` |
-
-### Settings
-
-| Field | Type | Holds |
-|---|---|---|
-| `notify` | Notify | Which alerts to send |
-
-### Notify
-
-Each is on by default.
-
-| Field | Type | Sends an alert when |
-|---|---|---|
-| `runningOut` | bool | A limit in use will run out before it resets |
-| `usedUp` | bool | A limit in use is used up |
-| `reset` | bool | A limit that was used up is back |
-| `signIn` | bool | An account in use needs signing in again |
-
-### UsedMost
-
-A session in a `limit.breakdown` result.
-
-| Field | Type | Holds |
-|---|---|---|
-| `session` | string | The session's id: `claude-code:0f6e3f6a-713c` |
-| `title` | string or null | Its title |
-| `project` | string or null | The name of its project's folder |
-| `agent` | string | The agent's id |
-| `sharePercent` | number or null | About how many points of the limit it used: its share of the cost, times the points used. Null when the window's start isn't known, the window reset since the limit was read, or nothing used had a price |
+`contract/status.notification.json` holds every field and every value.
 
 ## Alerts
 
 [architecture.md](architecture.md#alerts) says when each kind is raised,
-and how long `hello` sends it again until a client acknowledges it.
+and how long `hello` sends it again until a client acknowledges it. Its
+fields are on `Alert` in `src/alerts.rs`.
 
-| Field | Type | Holds |
-|---|---|---|
-| `id` | integer | The id to acknowledge it by |
-| `kind` | `runningOut`, `usedUp`, `reset`, `signIn` | What happened |
-| `account` | string | The account's id |
-| `accountTitle` | string | Its title and label when raised: `Claude Max (me@example.com)` |
-| `limit` | string or null | The limit's key. Null for `signIn` |
-| `limitName` | string or null | The limit's name. Null for `signIn` |
-| `replaces` | string | The notification it takes the place of: `limit:<account>:<key>` or `account:<account>`. A limit that's back replaces the one saying it was used up |
-| `resets` | Moment or null | When the limit's window resets. Null for `signIn`, and for a limit that never resets, such as credits |
-| `runsOut` | Moment or null | For `runningOut`, when it likely runs out. Otherwise null |
+## Change the protocol
 
-The horizons of `resets` and `runsOut` are worked out when the alert is
-sent, not when it was raised.
-
-## Versioning
-
-`protocol` is an integer, now `3`: `PROTOCOL` in `src/serve.rs` and
-`protocolVersion` in `Contract.swift`. Within a version, fields may be
-added, and clients ignore fields they don't know. Anything else needs a new
-version: a new enum value, a field removed or renamed, or a field with a
-new meaning. The app treats an enum value it doesn't know as an error,
-not a guess.
-
-### Change the protocol
+There's no protocol version. The app only talks to the engine it ships
+with ([Lifecycle](#lifecycle)), so the two sides change together. The app
+reads an enum value it doesn't know as an error, not a guess.
 
 Make the whole change in one commit:
 
 1. Change the examples in `contract/`. Cover every new enum value. A new
    message gets its own file.
-2. Change the Rust types (`src/status.rs`, `src/alerts.rs`) or the method
-   in `src/serve.rs`.
+2. Change the Rust types (`src/status.rs`, `src/alerts.rs`), with what each
+   new field holds in its doc comment, or the method in `src/serve.rs`.
 3. Change `Contract.swift`, and `Client.swift` or `Store.swift` for a new
    method. Add a new example file to the `answers` or `requests` table in
    `ContractTests.swift`.
 4. If the app sends a type back, like `Settings`, model every field of it
    in `Contract.swift`. `serve` sets a field the app leaves out to
    its default.
-5. For anything but an added field, raise `PROTOCOL` and
-   `protocolVersion`, and update `hello.request.json` and `error.json`.
-6. Update this document.
-7. Run both sides' tests:
+5. For a new method, notification or error, update this document.
+6. Run both sides' tests:
 
 ```sh
 cargo test serve

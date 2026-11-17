@@ -74,6 +74,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             store = Store(fixture: launch.fixture)
         } else {
             let client = Client(binary: AppDelegate.binary, arguments: launch.passed)
+            // Another version of the app, which starts a serve of its own.
+            client.anotherAppRuns = {
+                let me = ProcessInfo.processInfo.processIdentifier
+                return NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+                    .contains { $0.processIdentifier != me }
+            }
             self.client = client
             store = Store(client: client, fromDiskImage: AppDelegate.fromDiskImage)
         }
