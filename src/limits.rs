@@ -49,6 +49,7 @@ struct SignedIn {
 /// Read every account's limits, when it's five minutes since any process
 /// last did; whether it did.
 pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
+    crate::db::writing(db)?;
     let now = now();
     if !claim(db, now)? {
         return Ok(false);

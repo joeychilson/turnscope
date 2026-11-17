@@ -5,8 +5,8 @@
 - **When Turnscope's engine stops, the app says why:** `Turnscope's
   engine stopped: a newer Turnscope has updated this data; update
   Turnscope`. It said only that the engine stopped.
-- **The engine stops once a newer Turnscope has changed its data,** so the
-  app says to update. It went on, and the app showed what it had read
+- **The engine stops once a newer Turnscope has written to its data,** so
+  the app says to update. It went on, and the app showed what it had read
   before as current.
 - **A request the engine doesn't answer within 30 seconds,** such as the
   sessions shown under an open account, marks what's shown as out of date
@@ -24,6 +24,12 @@
   0.2.0 is also running; quit it to use this one`, and connects once the
   other is quit. It no longer shows the other version's figures, which it
   could misread.
+- **An older Turnscope still running writes nothing once a newer one has
+  written,** as an agent's Turnscope MCP server started before an update.
+  It read limits and prices its way among the newer one's, and could hide
+  or show an account. Until the agent starts it again, it answers from
+  what's there and says `Turnscope was updated after this one started;
+  start it again`.
 
 ## 0.2.0
 

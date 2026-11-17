@@ -452,6 +452,7 @@ pub struct Spend {
 
 /// Leave an account out of lists and alerts, or show it again.
 pub fn hide(db: &rusqlite::Connection, account: &str, hidden: bool) -> Result<()> {
+    crate::db::writing(db)?;
     db.execute(
         "UPDATE account SET hidden = ?2 WHERE id = ?1",
         params![account, hidden],

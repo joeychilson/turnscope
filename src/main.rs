@@ -191,6 +191,7 @@ enum AccountAction {
 }
 
 fn main() -> ExitCode {
+    db::started();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // A hook reads a guard's exit code, and 2 blocks: a guard it can't
@@ -723,7 +724,7 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
 /// longer fits still fails: 0.1.8's usage by session did. Reading the
 /// revision takes 2.8 µs (November 2026).
 pub fn catch_up(db: &mut rusqlite::Connection, home: &Path) -> Result<bool> {
-    db::revision(db)?;
+    db::writing(db)?;
     let (priced, limits) = match online() {
         true => (
             prices::refresh(db).unwrap_or(false),

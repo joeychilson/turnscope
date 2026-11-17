@@ -142,6 +142,7 @@ pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
 /// a model listed for the first time prices what was used of it before.
 /// Whether it was taken in.
 pub fn refresh(db: &mut Connection) -> Result<bool> {
+    crate::db::writing(db)?;
     let now = crate::now();
     if !claim(db, now)? {
         return Ok(false);

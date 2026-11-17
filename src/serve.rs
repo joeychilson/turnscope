@@ -120,11 +120,13 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
         log(&logged, &panic.to_string());
         panicked(panic);
     }));
-    // Before the socket, so a database this serve can't open, as one a
-    // newer Turnscope changed, is said on standard error, where the app
+    // Before the socket, so data this serve can't keep current, as data a
+    // newer Turnscope has written, is said on standard error, where the app
     // reads why a serve it started couldn't. Opened after it, the app
     // could connect first, and then only saw the connection close.
-    let db = crate::db::open(data).inspect_err(|error| log(data, &error.to_string()))?;
+    let db = crate::db::open(data)
+        .and_then(|db| crate::db::writing(&db).map(|()| db))
+        .inspect_err(|error| log(data, &error.to_string()))?;
     let socket = socket_path(data);
     // Left by a serve that ended without removing it: none holds the lock.
     let _ = std::fs::remove_file(&socket);
@@ -318,11 +320,11 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
         let read = match crate::catch_up(&mut db, home) {
             Ok(read) => read,
             Err(error) => {
-                // Once a newer Turnscope has changed the schema, this one
-                // reads nothing more, so it stops: the app says why, and the
-                // serve it starts next can't open the data, and says to
-                // update. Going on, it showed what it read before as current.
-                crate::db::revision(&db)?;
+                // Once a newer Turnscope has written here, this one writes
+                // nothing more, so it stops: the app says why, and the serve
+                // it starts next says to update before it listens. Going on,
+                // it showed what it read before as current.
+                crate::db::writing(&db)?;
                 say(data, &error.to_string());
                 // One that failed may have read some.
                 true
@@ -777,22 +779,32 @@ mod tests {
         }
     }
 
-    /// A database serve can't open, as one a newer Turnscope changed, is
-    /// said before it listens: the app reads a starting serve's standard
+    /// How a newer Turnscope has written to the data: its schema, or
+    /// anything else.
+    const NEWER: [&str; 2] = [
+        "PRAGMA user_version = 99",
+        "UPDATE state SET version = 99000000",
+    ];
+
+    /// Data serve can't keep current, as data a newer Turnscope has written,
+    /// is said before it listens: the app reads a starting serve's standard
     /// error only until it connects.
     #[test]
-    fn a_database_it_cant_open_is_said_before_it_listens() {
-        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        drop(crate::db::open(data.path()).unwrap());
-        let newer = rusqlite::Connection::open(data.path().join("turnscope.sqlite")).unwrap();
-        newer.pragma_update(None, "user_version", 99).unwrap();
-        let error = super::run(home.path(), data.path())
-            .unwrap_err()
-            .to_string();
-        assert_eq!(error, crate::db::newer().to_string());
-        assert!(!super::socket_path(data.path()).exists());
-        let logged = std::fs::read_to_string(data.path().join("serve.log")).unwrap();
-        assert!(logged.trim_end().ends_with(&error), "{logged}");
+    fn data_it_cant_keep_current_is_said_before_it_listens() {
+        for newer in NEWER {
+            let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            crate::db::open(data.path())
+                .unwrap()
+                .execute_batch(newer)
+                .unwrap();
+            let error = super::run(home.path(), data.path())
+                .unwrap_err()
+                .to_string();
+            assert_eq!(error, crate::db::newer().to_string(), "{newer}");
+            assert!(!super::socket_path(data.path()).exists());
+            let logged = std::fs::read_to_string(data.path().join("serve.log")).unwrap();
+            assert!(logged.trim_end().ends_with(&error), "{logged}");
+        }
     }
 
     #[test]
@@ -810,11 +822,19 @@ mod tests {
         );
     }
 
-    /// Once a newer Turnscope has changed the schema, keeping the data
-    /// current stops at the next catch-up, so serve exits and the app says
-    /// why.
+    /// Once a newer Turnscope has written to the data, keeping it current
+    /// stops at the next catch-up, so serve exits and the app says why.
     #[test]
     fn keeping_the_data_current_stops_once_the_schema_is_newer() {
+        stops_once(NEWER[0]);
+    }
+
+    #[test]
+    fn keeping_the_data_current_stops_once_a_newer_version_has_written() {
+        stops_once(NEWER[1]);
+    }
+
+    fn stops_once(newer: &str) {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         // Claude Code is installed, so its folder is watched.
         let folder = home.path().join(".claude/projects/-work-a");
@@ -833,7 +853,7 @@ mod tests {
         std::thread::spawn(move || ended.send(super::keep(&home_kept, &data_kept, &sender)));
         let first = messages.recv_timeout(super::Duration::from_secs(10));
         assert!(matches!(first, Ok(super::Message::Kept)));
-        db.pragma_update(None, "user_version", 99).unwrap();
+        db.execute_batch(newer).unwrap();
         // A write in the folder, so it catches up, 5 s after the last.
         std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
         let stopped = end.recv_timeout(super::Duration::from_secs(20));

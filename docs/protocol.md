@@ -71,7 +71,7 @@ nc -U "$(turnscope serve --socket)"
   after it starts if no client connects. An app restart or update reconnects
   in that time without reading anything again. `shutdown` makes it exit now.
   If the thread that keeps the data current fails, as when a newer
-  Turnscope has changed the database, `serve` sends `stopped` with why and
+  Turnscope has written to the data, `serve` sends `stopped` with why and
   exits with an error. The app says `Turnscope's engine stopped: <why>`,
   and starts a new one.
 - **Its log.** `serve` adds each error it meets while it runs to

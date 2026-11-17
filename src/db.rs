@@ -3,8 +3,10 @@
 //! docs/architecture.md#data.
 
 use std::fs::File;
-use std::os::unix::fs::DirBuilderExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
 use std::path::Path;
+use std::sync::OnceLock;
+use std::time::SystemTime;
 
 use rusqlite::{Connection, Row};
 
@@ -252,6 +254,12 @@ ALTER TABLE file DROP COLUMN folder;
 -- went from 43.4 MB to 1.5 MB.
 UPDATE session SET title = substr(title, 1, 200) WHERE length(title) > 200;
 "#,
+    r#"
+-- The newest Turnscope that has written here, as major * 1,000,000 +
+-- minor * 1,000 + patch, so an older one still running stops writing
+-- (`writing`).
+ALTER TABLE state ADD COLUMN version INTEGER;
+"#,
 ];
 
 /// "TRNS", in the header, so a file that isn't Turnscope's is never written.
@@ -320,10 +328,87 @@ pub fn revision(db: &Connection) -> Result<i64> {
     Ok(revision)
 }
 
+/// This Turnscope's version, as `state.version` holds it.
+const VERSION: i64 = number(env!("CARGO_PKG_VERSION_MAJOR")) * 1_000_000
+    + number(env!("CARGO_PKG_VERSION_MINOR")) * 1_000
+    + number(env!("CARGO_PKG_VERSION_PATCH"));
+
+const fn number(digits: &str) -> i64 {
+    let digits = digits.as_bytes();
+    let (mut number, mut at) = (0, 0);
+    while at < digits.len() {
+        number = number * 10 + (digits[at] - b'0') as i64;
+        at += 1;
+    }
+    number
+}
+
+/// Called first by each function that writes: the error when a newer
+/// Turnscope has written here, its schema or anything else, and otherwise
+/// this one is recorded as the newest that has. An older one still running,
+/// as an agent's MCP server started before an update, then only answers.
+///
+/// By the version, over a number raised by hand when what's written
+/// changes, as `ingest::READERS` is: it can't be forgotten. An older one
+/// read limits and prices its way among the newer one's, as after a
+/// provider changed what it sends. The cost: after each update, such an
+/// MCP server says on each answer that it has to be started again, until
+/// its agent does, even when nothing it writes changed.
+pub fn writing(db: &Connection) -> Result<()> {
+    revision(db)?;
+    let newest = || -> Result<Option<i64>> {
+        Ok(db.query_row("SELECT version FROM state", [], |row| row.get(0))?)
+    };
+    // Looked at first: raising it waits for the write lock, which a hook
+    // shouldn't once this one is recorded.
+    let mut newest_now = newest()?;
+    if newest_now < Some(VERSION) {
+        // Raised, never lowered, so an older one at once can't undo it.
+        db.execute(
+            "UPDATE state SET version = ?1 WHERE version IS NULL OR version < ?1",
+            [VERSION],
+        )?;
+        newest_now = newest()?;
+    }
+    match newest_now > Some(VERSION) {
+        true => Err(newer()),
+        false => Ok(()),
+    }
+}
+
+/// The file this process runs, as it was when the process started.
+static STARTED_FROM: OnceLock<Option<(u64, SystemTime)>> = OnceLock::new();
+
+/// Note the file this process runs, first thing, so `newer` can tell if an
+/// update has replaced it since.
+pub fn started() {
+    STARTED_FROM.get_or_init(binary);
+}
+
+/// The file this process runs: its inode and when it was modified.
+fn binary() -> Option<(u64, SystemTime)> {
+    let file = std::fs::metadata(std::env::current_exe().ok()?).ok()?;
+    Some((file.ino(), file.modified().ok()?))
+}
+
 /// The error when a newer Turnscope has updated the data: this one would
-/// misread it, or undo what that one did.
+/// misread it, or undo what that one did. Said so when the file this
+/// process runs was replaced since it started, as an update does: it's
+/// left over from before, as an agent's MCP server is, and has to be
+/// started again, which updating doesn't do. Telling everyone to update
+/// told someone who just had.
 pub fn newer() -> Error {
-    Error::Failed("a newer Turnscope has updated this data; update Turnscope".to_owned())
+    let updated = matches!(
+        (STARTED_FROM.get(), binary()),
+        (Some(Some(then)), Some(now)) if *then != now
+    );
+    Error::Failed(
+        match updated {
+            true => "Turnscope was updated after this one started; start it again",
+            false => "a newer Turnscope has updated this data; update Turnscope",
+        }
+        .to_owned(),
+    )
 }
 
 /// Tokens from six columns of `row` starting at `from`, in `response`'s
@@ -345,6 +430,38 @@ pub fn tokens(row: &Row, from: usize) -> rusqlite::Result<Tokens> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_older_turnscope_stops_writing_once_a_newer_one_has() {
+        let numbers: Vec<i64> = env!("CARGO_PKG_VERSION")
+            .split('.')
+            .map(|number| number.parse().unwrap())
+            .collect();
+        assert_eq!(
+            super::VERSION,
+            numbers[0] * 1_000_000 + numbers[1] * 1_000 + numbers[2]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let db = super::open(dir.path()).unwrap();
+        let newest = || -> Option<i64> {
+            db.query_row("SELECT version FROM state", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(newest(), None);
+        super::writing(&db).unwrap();
+        assert_eq!(newest(), Some(super::VERSION));
+        // An older one is raised over.
+        db.execute("UPDATE state SET version = ?1", [super::VERSION - 1])
+            .unwrap();
+        super::writing(&db).unwrap();
+        assert_eq!(newest(), Some(super::VERSION));
+        // A newer one stays, and this one may not write.
+        db.execute("UPDATE state SET version = ?1", [super::VERSION + 1])
+            .unwrap();
+        let error = super::writing(&db).unwrap_err().to_string();
+        assert_eq!(error, super::newer().to_string());
+        assert_eq!(newest(), Some(super::VERSION + 1));
+    }
+
     #[test]
     fn a_new_database_opened_at_once_from_many_places_opens_in_each() {
         let dir = tempfile::tempdir().unwrap();

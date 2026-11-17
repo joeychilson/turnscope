@@ -68,7 +68,7 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
 | `alert` | Each alert raised, what it says, and whether a client acknowledged it |
 | `price` | models.dev's prices for each model, each from when it was read |
-| `state` | One row: the latest reader version that read the history, when its first read finished, when limits and prices were last read, and the settings |
+| `state` | One row: the latest reader version that read the history, the newest Turnscope version that has written, when its first read finished, when limits and prices were last read, and the settings |
 
 `db::open` creates or migrates the database. Each revision is one script: a
 shipped script is never edited, and a change is a new script at the end.
@@ -103,13 +103,14 @@ into another program's database.
   hold, and which sessions it holds are taken out first. Responses and
   sessions from files the agent has since deleted stay.
 - **An older Turnscope still running**, such as an agent's MCP server
-  started before an update, stops reading into the data. Once a newer one
-  has raised the readers, it reads no more history (`ingest`), but still
-  reads limits and prices. Once a newer one has changed the schema, it
-  reads nothing more (`catch_up`). Either way it answers from what it read
-  before, where its queries still fit the schema, and says to update; but
-  `serve` stops then. One started after the schema changed doesn't open
-  the data, and says to update (`db::open`).
+  started before an update, writes nothing once a newer one has written:
+  `state` holds the newest version that has, and each function that
+  writes checks it first (`db::writing`). It answers from what's there,
+  where its queries still fit the schema. If an update has replaced its
+  binary since it started, it says to start it again; otherwise, to update
+  Turnscope. `serve` stops instead, and one started then says so before it
+  listens. One started after the schema changed doesn't open the data, and
+  says to update (`db::open`).
 
 ## Code
 
@@ -261,8 +262,8 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
   agent's own command on a thread of its own, as it can take a minute.
 - If the thread that keeps the data current stops, `serve` tells each
   client why (`stopped`) and exits with an error, so the app says why and
-  starts one that works. It stops once a newer Turnscope has changed the
-  schema: the `serve` started next can't open the data, and says to update.
+  starts one that works. It stops once a newer Turnscope has written to
+  the data: the `serve` started next says to update before it listens.
 - What goes wrong while it runs is added to `serve.log` in the data
   directory: once the app has connected, no one reads its standard error.
 - It exits 60 seconds after its last client leaves.
