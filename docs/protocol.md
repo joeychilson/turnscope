@@ -51,10 +51,15 @@ nc -U "$(turnscope serve --socket)"
   and `--home` to get the socket's path, and `turnscope --version` to get
   its engine's name. Then it connects. If nothing listens, it starts
   `turnscope serve` with the same `--data` and `--home`, and tries to
-  connect every 100 ms for 5 seconds. If that `serve` exits with an error
-  first, the app shows the last line it printed on standard error as why.
-  Its standard error is a file, not a pipe: once the app quit, a pipe
-  would end `serve` the first time it printed anything.
+  connect every 100 ms for up to 30 seconds while it runs. `serve` opens the
+  database before it listens, and a new version migrates it then. If that
+  `serve` exits with an error first, the app shows the last line it printed
+  on standard error as why. Its standard error is a file, not a pipe: once
+  the app quit, a pipe would end `serve` the first time it printed
+  anything.
+- **Answers.** The app waits up to 30 s for an answer to a request, but for
+  `agent.connect` and `agent.disconnect`. With none by then, it ends the
+  connection, says `Turnscope's engine didn't answer`, and connects again.
 - **Reconnecting.** After a dropped connection or a failed attempt, the app
   waits 0.5 s, doubling each time up to 30 s. The wait goes back to 0.5 s
   only after a connection has held for 30 s, so an engine that keeps failing
@@ -65,8 +70,13 @@ nc -U "$(turnscope serve --socket)"
 - **Exiting.** `serve` exits 60 seconds after its last client leaves, or
   after it starts if no client connects. An app restart or update reconnects
   in that time without reading anything again. `shutdown` makes it exit now.
-  If the thread that keeps the data current fails, `serve` exits with an
-  error, and the app starts a new one.
+  If the thread that keeps the data current fails, as when a newer
+  Turnscope has changed the database, `serve` sends `stopped` with why and
+  exits with an error. The app says `Turnscope's engine stopped: <why>`,
+  and starts a new one.
+- **Its log.** `serve` adds each error it meets while it runs to
+  `serve.log` in the data directory, with the time. Past a megabyte, the
+  log starts over.
 - **Another engine.** The app only talks to the engine it ships with. The
   `hello` result names the server, as `turnscope --version` prints it
   (`turnscope 0.1.0`), and the app checks that before reading the rest. If
@@ -144,6 +154,7 @@ ignored.
 |---|---|---|
 | `status` | `Status` | When anything in it but `at` changed |
 | `alert` | `Alert` | When an alert is raised, right after the `status` that raised it |
+| `stopped` | `{why}` | Just before `serve` exits because it can't keep the data current |
 
 `serve` works out the status again after a catch-up and after a request
 that changes it ([architecture.md](architecture.md#serve) says when). An

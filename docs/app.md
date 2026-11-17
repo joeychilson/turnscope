@@ -408,9 +408,11 @@ TURNSCOPE_BINARY=$PWD/target/debug/turnscope "$app" --data /tmp/ts --open accoun
 ```
 
 The app logs to the unified log, under the subsystem
-`com.joeychilson.turnscope`. What a `serve` it starts prints on standard
-error is kept only to say why it couldn't start
-([protocol.md](protocol.md#lifecycle)). To watch the connection:
+`com.joeychilson.turnscope`, with anything from `serve` it couldn't read.
+What a `serve` it starts prints on standard error is kept only to say why
+it couldn't start ([protocol.md](protocol.md#lifecycle)). Once running,
+`serve` writes what goes wrong to `serve.log` in the data directory. To
+watch the connection:
 
 ```sh
 log stream --predicate 'subsystem == "com.joeychilson.turnscope"'

@@ -41,7 +41,7 @@ formats correctly, and the forecast.
 | Response | The usage of one model call as the agent records it: tokens, cost, and the account it drew on. Grok Build records one per model per turn. |
 | Reading | A limit as its provider reported it at one time. |
 | Sign-in | What an agent folder held for a provider from a given time. It says which account a response drew on. |
-| Data directory | Where Turnscope keeps its database, locks and socket: `~/Library/Application Support/com.joeychilson.turnscope`, or `--data`. |
+| Data directory | Where Turnscope keeps its database, locks, socket and `serve.log`: `~/Library/Application Support/com.joeychilson.turnscope`, or `--data`. |
 | Engine | `turnscope serve`, the daemon the app talks to. |
 
 ## Data
@@ -107,9 +107,9 @@ into another program's database.
   has raised the readers, it reads no more history (`ingest`), but still
   reads limits and prices. Once a newer one has changed the schema, it
   reads nothing more (`catch_up`). Either way it answers from what it read
-  before, where its queries still fit the schema, and says to update. One
-  started after the schema changed doesn't open the data, and says to
-  update (`db::open`).
+  before, where its queries still fit the schema, and says to update; but
+  `serve` stops then. One started after the schema changed doesn't open
+  the data, and says to update (`db::open`).
 
 ## Code
 
@@ -259,8 +259,12 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
 - `settings.set`, `account.hide`, and an `agent.connect` or
   `agent.disconnect` that worked push the status too. Connecting runs the
   agent's own command on a thread of its own, as it can take a minute.
-- If the thread that keeps the data current stops, `serve` exits with an
-  error, so the app starts one that works.
+- If the thread that keeps the data current stops, `serve` tells each
+  client why (`stopped`) and exits with an error, so the app says why and
+  starts one that works. It stops once a newer Turnscope has changed the
+  schema: the `serve` started next can't open the data, and says to update.
+- What goes wrong while it runs is added to `serve.log` in the data
+  directory: once the app has connected, no one reads its standard error.
 - It exits 60 seconds after its last client leaves.
 
 ## Status

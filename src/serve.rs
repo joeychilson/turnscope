@@ -66,6 +66,7 @@ impl AppStatus {
 struct Server {
     db: Connection,
     home: PathBuf,
+    data: PathBuf,
     clients: HashMap<u64, Client>,
     /// The status last pushed, and what it shows: all of it but `at`.
     sent: Option<(status::Status, Value)>,
@@ -74,6 +75,34 @@ struct Server {
 
 /// How long serve stays with no client: an app restart reconnects first.
 const LINGER: Duration = Duration::from_secs(60);
+
+/// How large `serve.log` grows before it starts over. A catch-up that fails
+/// each time it's tried writes about 150 bytes, every 5 s at most while
+/// agents work: a day of that at least.
+const LOG_SIZE: u64 = 1 << 20;
+
+/// Add `line` to `serve.log` in `data`, with the time. No one reads serve's
+/// standard error once the app has connected, so what goes wrong while it
+/// runs is kept here.
+fn log(data: &Path, line: &str) {
+    let path = data.join("serve.log");
+    let full = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_SIZE);
+    let mut options = std::fs::OpenOptions::new();
+    match full {
+        true => options.write(true).truncate(true),
+        false => options.append(true),
+    };
+    if let Ok(mut file) = options.create(true).open(path) {
+        let line = line.replace('\n', " ");
+        let _ = writeln!(file, "{:.0} {line}", jiff::Timestamp::now());
+    }
+}
+
+/// Say `line` on standard error, and in `serve.log`.
+fn say(data: &Path, line: &str) {
+    eprintln!("turnscope serve: {line}");
+    log(data, line);
+}
 
 pub fn run(home: &Path, data: &Path) -> Result<()> {
     std::fs::DirBuilder::new()
@@ -85,11 +114,25 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
         eprintln!("turnscope serve: already running for {}", data.display());
         return Ok(());
     }
+    let logged = data.to_path_buf();
+    let panicked = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        log(&logged, &panic.to_string());
+        panicked(panic);
+    }));
+    // Before the socket, so a database this serve can't open, as one a
+    // newer Turnscope changed, is said on standard error, where the app
+    // reads why a serve it started couldn't. Opened after it, the app
+    // could connect first, and then only saw the connection close.
+    let db = crate::db::open(data).inspect_err(|error| log(data, &error.to_string()))?;
     let socket = socket_path(data);
     // Left by a serve that ended without removing it: none holds the lock.
     let _ = std::fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket)
-        .map_err(|error| Error::Failed(format!("can't listen on {}: {error}", socket.display())))?;
+    let listener = UnixListener::bind(&socket).map_err(|error| {
+        let error = format!("can't listen on {}: {error}", socket.display());
+        log(data, &error);
+        Error::Failed(error)
+    })?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
 
     let (sender, messages) = mpsc::channel();
@@ -102,8 +145,9 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
         }
     });
     let mut server = Server {
-        db: crate::db::open(data)?,
+        db,
         home: home.to_path_buf(),
+        data: data.to_path_buf(),
         clients: HashMap::new(),
         sent: None,
         sender: sender.clone(),
@@ -118,7 +162,7 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
         let why = match kept {
             Ok(Ok(())) => return,
             Ok(Err(error)) => error.to_string(),
-            Err(_) => "keeping the data current panicked".to_owned(),
+            Err(_) => "it panicked".to_owned(),
         };
         let _ = sender.send(Message::Stopped(why));
     });
@@ -178,6 +222,7 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
             }
             Ok(Message::Kept) => server.push(),
             Ok(Message::Stopped(why)) => {
+                server.stopped(&why);
                 let _ = std::fs::remove_file(&socket);
                 return Err(Error::Failed(format!(
                     "keeping the data current stopped: {why}"
@@ -262,7 +307,7 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
     // read.
     if crate::online() {
         let read = crate::limits::refresh(&mut db, home).unwrap_or_else(|error| {
-            eprintln!("turnscope serve: {error}");
+            say(data, &error.to_string());
             true
         });
         if read && kept.send(Message::Kept).is_err() {
@@ -270,11 +315,19 @@ fn keep(home: &Path, data: &Path, kept: &Sender<Message>) -> Result<()> {
         }
     }
     loop {
-        // One that failed may have read some.
-        let read = crate::catch_up(&mut db, home).unwrap_or_else(|error| {
-            eprintln!("turnscope serve: {error}");
-            true
-        });
+        let read = match crate::catch_up(&mut db, home) {
+            Ok(read) => read,
+            Err(error) => {
+                // Once a newer Turnscope has changed the schema, this one
+                // reads nothing more, so it stops: the app says why, and the
+                // serve it starts next can't open the data, and says to
+                // update. Going on, it showed what it read before as current.
+                crate::db::revision(&db)?;
+                say(data, &error.to_string());
+                // One that failed may have read some.
+                true
+            }
+        };
         let now = (
             crate::now().div_euclid(crate::time::MINUTE),
             db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
@@ -307,7 +360,7 @@ impl Server {
     fn push(&mut self) {
         let app = match AppStatus::of(&self.db, &self.home, crate::now()) {
             Ok(app) => app,
-            Err(error) => return eprintln!("turnscope serve: {error}"),
+            Err(error) => return say(&self.data, &error.to_string()),
         };
         let mut shown = serde_json::to_value(&app).unwrap_or_default();
         if let Some(fields) = shown.as_object_mut() {
@@ -326,8 +379,24 @@ impl Server {
                 self.sent = Some((app.status, shown));
             }
             // Not sent, so the next push raises them again.
-            Err(error) => eprintln!("turnscope serve: alerts: {error}"),
+            Err(error) => say(&self.data, &format!("alerts: {error}")),
         }
+    }
+
+    /// Tell every client why the data can't be kept current, before serve
+    /// exits: once the app has connected, no one reads what serve says on
+    /// standard error.
+    fn stopped(&mut self, why: &str) {
+        log(
+            &self.data,
+            &format!("keeping the data current stopped: {why}"),
+        );
+        self.broadcast(
+            "stopped",
+            json!(Stopped {
+                why: why.to_owned()
+            }),
+        );
     }
 
     fn broadcast(&mut self, method: &str, params: Value) {
@@ -549,6 +618,14 @@ impl Server {
     }
 }
 
+/// Why serve stopped, as `stopped` tells it.
+#[derive(Serialize, Deserialize)]
+struct Stopped {
+    /// What went wrong, as `a newer Turnscope has updated this data; update
+    /// Turnscope`.
+    why: String,
+}
+
 /// A session that used a limit, as `limit.breakdown` lists it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -584,6 +661,7 @@ mod tests {
             assert_eq!(&serde_json::to_value(read).unwrap(), value);
         }
         again::<super::AppStatus>(&example("status.notification.json")["params"]);
+        again::<super::Stopped>(&example("stopped.notification.json")["params"]);
         again::<crate::alerts::Alert>(&example("alert.notification.json")["params"]);
         let hello = example("hello.result.json");
         again::<super::AppStatus>(&hello["result"]["status"]);
@@ -699,6 +777,106 @@ mod tests {
         }
     }
 
+    /// A database serve can't open, as one a newer Turnscope changed, is
+    /// said before it listens: the app reads a starting serve's standard
+    /// error only until it connects.
+    #[test]
+    fn a_database_it_cant_open_is_said_before_it_listens() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        drop(crate::db::open(data.path()).unwrap());
+        let newer = rusqlite::Connection::open(data.path().join("turnscope.sqlite")).unwrap();
+        newer.pragma_update(None, "user_version", 99).unwrap();
+        let error = super::run(home.path(), data.path())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, crate::db::newer().to_string());
+        assert!(!super::socket_path(data.path()).exists());
+        let logged = std::fs::read_to_string(data.path().join("serve.log")).unwrap();
+        assert!(logged.trim_end().ends_with(&error), "{logged}");
+    }
+
+    #[test]
+    fn the_log_starts_over_once_it_is_full() {
+        let data = tempfile::tempdir().unwrap();
+        let path = data.path().join("serve.log");
+        std::fs::write(&path, vec![b'x'; super::LOG_SIZE as usize + 1]).unwrap();
+        super::log(data.path(), "it failed\nat once");
+        let logged = std::fs::read_to_string(&path).unwrap();
+        // One line, the time first.
+        assert_eq!(logged.lines().count(), 1, "{logged}");
+        assert!(
+            logged.trim_end().ends_with("Z it failed at once"),
+            "{logged}"
+        );
+    }
+
+    /// Once a newer Turnscope has changed the schema, keeping the data
+    /// current stops at the next catch-up, so serve exits and the app says
+    /// why.
+    #[test]
+    fn keeping_the_data_current_stops_once_the_schema_is_newer() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // Claude Code is installed, so its folder is watched.
+        let folder = home.path().join(".claude/projects/-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        let db = crate::db::open(data.path()).unwrap();
+        // Nothing is asked over the network: the prices and limits count
+        // as read just now.
+        db.execute(
+            "UPDATE state SET prices_at = ?1, limits_at = ?1",
+            [crate::now()],
+        )
+        .unwrap();
+        let (sender, messages) = std::sync::mpsc::channel();
+        let (home_kept, data_kept) = (home.path().to_path_buf(), data.path().to_path_buf());
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || ended.send(super::keep(&home_kept, &data_kept, &sender)));
+        let first = messages.recv_timeout(super::Duration::from_secs(10));
+        assert!(matches!(first, Ok(super::Message::Kept)));
+        db.pragma_update(None, "user_version", 99).unwrap();
+        // A write in the folder, so it catches up, 5 s after the last.
+        std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
+        let stopped = end.recv_timeout(super::Duration::from_secs(20));
+        let why = stopped.expect("it went on").unwrap_err().to_string();
+        assert_eq!(why, crate::db::newer().to_string());
+    }
+
+    #[test]
+    fn why_it_stopped_is_told_to_each_client_and_logged() {
+        use std::io::BufRead as _;
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (stream, app) = super::UnixStream::pair().unwrap();
+        let mut server = super::Server {
+            db: crate::db::open(data.path()).unwrap(),
+            home: home.path().to_path_buf(),
+            data: data.path().to_path_buf(),
+            clients: [(
+                1,
+                super::Client {
+                    stream,
+                    greeted: true,
+                },
+            )]
+            .into(),
+            sent: None,
+            sender: std::sync::mpsc::channel().0,
+        };
+        let why = "a newer Turnscope has updated this data; update Turnscope";
+        server.stopped(why);
+        let mut line = String::new();
+        std::io::BufReader::new(app).read_line(&mut line).unwrap();
+        let told: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            told,
+            serde_json::json!({ "jsonrpc": "2.0", "method": "stopped", "params": { "why": why } })
+        );
+        let logged = std::fs::read_to_string(data.path().join("serve.log")).unwrap();
+        assert!(
+            logged.contains(&format!("keeping the data current stopped: {why}")),
+            "{logged}"
+        );
+    }
+
     /// The main thread is told once the limits are read, before the first
     /// read of history. That read can't begin here: its lock is held, as
     /// another Turnscope reading history holds it.
@@ -756,6 +934,7 @@ mod tests {
         let mut server = super::Server {
             db: crate::db::open(data.path()).unwrap(),
             home: home.path().to_path_buf(),
+            data: data.path().to_path_buf(),
             clients: [(
                 1,
                 super::Client {

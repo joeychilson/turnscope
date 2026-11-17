@@ -21,6 +21,7 @@ private let answers: [String: @Sendable (Data) throws -> Void] = [
     "hello.result.json": read(Answer<HelloResult>.self),
     "status.notification.json": read(Pushed<Status>.self),
     "alert.notification.json": read(Pushed<Alert>.self),
+    "stopped.notification.json": read(Pushed<Stopped>.self),
     "alerts.ack.result.json": read(Answer<Done>.self),
     "limit.breakdown.result.json": read(Answer<BreakdownResult>.self),
     "done.result.json": read(Answer<Done>.self),

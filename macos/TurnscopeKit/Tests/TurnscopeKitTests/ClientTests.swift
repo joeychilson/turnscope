@@ -106,7 +106,8 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     let (client, store) = try await connected(to: serve)
     serve.push("status", ["accounts": "not a list"])
     await until { store.failure != nil }
-    #expect(store.failure?.hasPrefix("Turnscope couldn't read what its engine sent") == true)
+    // One sentence: what Swift said goes to the log.
+    #expect(store.failure == "Turnscope couldn't read what its engine sent")
     // The last status it read stays, marked out of date, until hello on the
     // next connection brings it up to date.
     #expect(store.status != nil)
@@ -114,7 +115,57 @@ private func connected(to serve: FakeServe) async throws -> (Client, Store) {
     #expect(serve.methods.filter { $0 == "hello" }.count == 2)
     serve.push("alert", ["id": "not a number"])
     await until { store.failure != nil }
-    #expect(store.failure?.hasPrefix("Turnscope couldn't read what its engine sent") == true)
+    #expect(store.failure == "Turnscope couldn't read what its engine sent")
+    client.stop()
+}
+
+@MainActor
+@Test func whyServeStoppedIsSaid() async throws {
+    let serve = try serve()
+    defer { serve.close() }
+    let (client, store) = try await connected(to: serve)
+    serve.push("stopped", ["why": "a newer Turnscope has updated this data; update Turnscope"])
+    serve.drop()
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope's engine stopped: a newer Turnscope has updated this data; update Turnscope")
+    // The next connection, once it's dropped, says only that it stopped.
+    await connected(client, store)
+    serve.drop()
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope's engine stopped")
+    client.stop()
+}
+
+@MainActor
+@Test func aRequestServeDoesntAnswerEndsTheConnection() async throws {
+    let serve = try serve { method, _, _ in method == "limit.breakdown" ? .silence : .done }
+    defer { serve.close() }
+    let (client, store) = try store(over: serve)
+    client.answerWait = .milliseconds(300)
+    client.start()
+    await connected(client, store)
+    store.askWhatUsedEach()
+    // What's shown is out of date until it connects again.
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope's engine didn't answer")
+    #expect(store.status != nil)
+    await connected(client, store)
+    #expect(serve.methods.filter { $0 == "hello" }.count == 2)
+    client.stop()
+}
+
+@MainActor
+@Test func connectingAnAgentIsWaitedOnLongerThanAnythingElse() async throws {
+    let serve = try serve { method, _, _ in method == "agent.connect" ? .silence : .done }
+    defer { serve.close() }
+    let (client, store) = try store(over: serve)
+    client.answerWait = .milliseconds(300)
+    client.start()
+    await connected(client, store)
+    store.connect("codex")
+    try await Task.sleep(for: .milliseconds(900))
+    #expect(client.phase == .connected && store.failure == nil)
+    #expect(store.changingAgents == ["codex": .connected])
     client.stop()
 }
 
@@ -142,10 +193,10 @@ func aHelloThatFailsIsSaidAndTriedAgain(_ failed: FailedHello) async throws {
     let serve = FakeServe { method, _, _ in method == "hello" ? hello : .done }
     defer { serve.close() }
     let (client, store) = try store(over: serve)
-    client.helloWait = .milliseconds(300)
+    client.answerWait = .milliseconds(300)
     client.start()
     await until { store.failure != nil }
-    #expect(store.failure?.hasPrefix(failed.why) == true)
+    #expect(store.failure == failed.why)
     #expect(store.status == nil)
     #expect(!serve.methods.contains("shutdown"))
     // It connects again on its own and says hello again.
@@ -278,6 +329,18 @@ func aHelloThatFailsIsSaidAndTriedAgain(_ failed: FailedHello) async throws {
     client.start()
     await until { store.failure != nil }
     #expect(store.failure == why)
+    client.stop()
+}
+
+@MainActor
+@Test func aServeThatEndsWithAnErrorAndSaysNothingIsSaidAtOnce() async throws {
+    // As one that's killed: nothing on standard error.
+    let client = Client(binary: try binary(socket: socketPath(), fails: ""))
+    let store = Store(client: client)
+    client.start()
+    // Not after `startWait`, 30 s.
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope's engine stopped as it started")
     client.stop()
 }
 
