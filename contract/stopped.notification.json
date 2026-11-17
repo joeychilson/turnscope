@@ -1,0 +1,7 @@
+{
+  "jsonrpc": "2.0",
+  "method": "stopped",
+  "params": {
+    "why": "a newer Turnscope has updated this data; update Turnscope"
+  }
+}

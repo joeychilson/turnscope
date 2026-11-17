@@ -2,6 +2,24 @@
 
 ## 0.2.1
 
+- **When Turnscope's engine stops, the app says why:** `Turnscope's
+  engine stopped: a newer Turnscope has updated this data; update
+  Turnscope`. It said only that the engine stopped.
+- **The engine stops once a newer Turnscope has changed its data,** so the
+  app says to update. It went on, and the app showed what it had read
+  before as current.
+- **A request the engine doesn't answer within 30 seconds,** such as the
+  sessions shown under an open account, marks what's shown as out of date
+  and connects again: `Turnscope's engine didn't answer`. The app waited
+  forever, showing old figures as current.
+- **The engine has up to 30 seconds to start, not 5,** as it now opens its
+  database before the app can connect, and a new version may update the
+  database first.
+- **The engine keeps a log:** `serve.log` in its data directory, with each
+  error it meets while it runs.
+- **When the app can't read what its engine sent,** it says so in one
+  sentence, and the details go to the unified log. It showed Swift's
+  error.
 - **Two versions of the app at once:** one of them now says `Turnscope
   0.2.0 is also running. Quit it to use this one.` It no longer shows the
   other version's figures, which it could misread.

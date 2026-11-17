@@ -294,6 +294,9 @@ struct HelloResult: Decodable, Sendable {
     var alerts: [Alert]
 }
 
+/// Why serve stopped, as `stopped` says it.
+struct Stopped: Decodable, Sendable { var why: String }
+
 /// `alerts.ack`'s parameters.
 struct AckParams: Encodable, Sendable { var ids: [Int] }
 

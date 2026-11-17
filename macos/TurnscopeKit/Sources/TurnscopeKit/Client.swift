@@ -46,9 +46,18 @@ public final class Client {
     /// on each retry.
     private var socketPath: String?
     private var engineName: String?
-    /// How long serve has to answer `hello`. It works out a whole status for
-    /// that, which is slow on a long history. Tests shorten it.
-    var helloWait = Duration.seconds(30)
+    /// Why serve said it stopped on the current connection, if it did.
+    private var stopped: String?
+    /// How long serve has to answer a request. `hello` works out a whole
+    /// status, which is slow on a long history, and any other request may
+    /// wait behind a status being pushed. One with no answer by then ends
+    /// the connection, so what's shown is marked out of date. Tests shorten
+    /// it.
+    var answerWait = Duration.seconds(30)
+    /// How long a serve the client started has to listen while it runs. It
+    /// opens the database first, which a new version migrates: 0.2.0's
+    /// migration took 2.1 s on a database of 484 MB.
+    var startWait = Duration.seconds(30)
     /// How long another engine's serve has to exit once asked to. It only
     /// has to end its process. Tests shorten it.
     var exitWait = Duration.seconds(5)
@@ -77,10 +86,14 @@ public final class Client {
     // MARK: Requests
 
     /// Send serve `method` with `params`, if it takes any, and read the
-    /// answer as `R`.
+    /// answer as `R`. Serve has `answerWait` to answer, but for
+    /// `agent.connect` and `agent.disconnect`, which run the agent's own
+    /// commands for up to minutes, on a thread of serve's own.
     func request<R: Decodable>(_ method: String, _ params: (any Encodable)? = nil,
                                as _: R.Type = R.self) async throws(ClientError) -> R {
         guard phase == .connected, let connection else { throw .notConnected }
+        let deadline = method.hasPrefix("agent.") ? nil : connection.end(after: answerWait)
+        defer { deadline?.cancel() }
         return try decode(Answer<R>.self, from: try await connection.ask(method, params)).result
     }
 
@@ -103,7 +116,7 @@ public final class Client {
                     throw .failed("Turnscope couldn't run its engine, \(engine.binary.path)")
                 }
                 if engineName == nil { engineName = await engine.said(["--version"]) }
-                let opened = try await engine.open(path)
+                let opened = try await engine.open(path, within: startWait)
                 if let serve = opened.serve { serves.append(serve) }
                 serves.removeAll { !$0.isRunning }
                 let began = ContinuousClock.now
@@ -144,6 +157,7 @@ public final class Client {
     private func converse(on connection: Channel, engine: String?,
                           replacing: Bool) async throws(ClientError) -> Ended {
         self.connection = connection
+        stopped = nil
         let listening = Task {
             await connection.listen { [weak self] method, line throws(ClientError) in try self?.pushed(method, line) }
         }
@@ -168,7 +182,8 @@ public final class Client {
         emit.yield(.status(hello.status))
         for alert in hello.alerts { emit.yield(.alert(alert)) }
         let unread = await listening.value
-        return .dropped(why: unread?.description ?? "Turnscope's engine stopped")
+        let why = unread?.description ?? stopped.map { "Turnscope's engine stopped: \($0)" } ?? connection.ended
+        return .dropped(why: why ?? "Turnscope's engine stopped")
     }
 
     /// Say hello on `connection` and read the answer. The engine it names is
@@ -179,7 +194,7 @@ public final class Client {
     private func greet(_ connection: Channel, engine: String?,
                        replacing: Bool) async throws(ClientError) -> HelloResult {
         struct Server: Decodable { var server: String }
-        let deadline = connection.end(after: helloWait)
+        let deadline = connection.end(after: answerWait)
         defer { deadline.cancel() }
         let line = try await connection.ask("hello")
         let server = try decode(Answer<Server>.self, from: line).result.server
@@ -197,6 +212,7 @@ public final class Client {
         switch method {
         case "status": emit.yield(.status(try decode(Pushed<Status>.self, from: line).params))
         case "alert": emit.yield(.alert(try decode(Pushed<Alert>.self, from: line).params))
+        case "stopped": stopped = try decode(Pushed<Stopped>.self, from: line).params.why
         default: break
         }
     }
@@ -227,12 +243,16 @@ struct Backoff {
     }
 }
 
-/// `line` decoded as `T`.
+/// `line` decoded as `T`. What couldn't be read goes to the log, not to
+/// the panel.
 private func decode<T: Decodable>(_: T.Type, from line: Data) throws(ClientError) -> T {
     do {
         return try Contract.decoder.decode(T.self, from: line)
     } catch {
-        throw .unreadable(String(describing: error))
+        let why = "\(T.self): \(error)"
+        Logger(subsystem: "com.joeychilson.turnscope", category: "serve")
+            .error("couldn't read \(why, privacy: .public)")
+        throw .unreadable(why)
     }
 }
 
@@ -244,13 +264,14 @@ public enum ClientError: Error, Equatable, Sendable, CustomStringConvertible {
     case failed(String)
     /// Serve runs another engine, and which.
     case unsupported(String)
+    /// What serve sent couldn't be read, and why, for the log.
     case unreadable(String)
 
     public var description: String {
         switch self {
         case .notConnected: "Turnscope's engine isn't running"
         case .failed(let why), .unsupported(let why): why
-        case .unreadable(let why): "Turnscope couldn't read what its engine sent: \(why)"
+        case .unreadable: "Turnscope couldn't read what its engine sent."
         }
     }
 }
@@ -273,6 +294,8 @@ private final class Channel {
     private var closed = false
     /// Why it ended, as told to requests still waiting.
     private var reason = "the connection to Turnscope's engine closed"
+    /// Why it was ended for a request with no answer, if it was.
+    private(set) var ended: String?
 
     init(socket: Int32) {
         self.socket = socket
@@ -344,6 +367,7 @@ private final class Channel {
                 return
             }
             reason = "Turnscope's engine didn't answer"
+            ended = reason
             close()
         }
     }
@@ -432,10 +456,11 @@ private struct Engine: Sendable {
     var arguments: [String]
 
     /// Connect to serve's socket at `path`. If nothing is listening, start
-    /// serve and keep trying for five seconds while it starts. Returns the
+    /// serve and keep trying for up to `wait` while it starts. Returns the
     /// socket, and the serve process if it started one. If serve ends with
     /// an error instead, the last line it printed is why.
-    nonisolated func open(_ path: String) async throws(ClientError) -> sending (socket: Int32, serve: Process?) {
+    nonisolated func open(_ path: String,
+                          within wait: Duration) async throws(ClientError) -> sending (socket: Int32, serve: Process?) {
         if let socket = Engine.connect(to: path) { return (socket, nil) }
         let serve = Process()
         serve.executableURL = binary
@@ -458,7 +483,8 @@ private struct Engine: Sendable {
         }
         // A serve that exits at once, as a second one does when another is
         // already running, is dealt with on the next try.
-        for _ in 0..<50 {
+        let deadline = ContinuousClock.now + wait
+        while ContinuousClock.now < deadline {
             do {
                 try await Task.sleep(for: .milliseconds(100))
             } catch {
