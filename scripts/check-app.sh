@@ -17,7 +17,6 @@ root="$(dirname "$0")/.."
 app=${1:-"$root/target/dist/Turnscope.app"}
 # The app's hello, as the contract has it.
 hello=$(jq -c . "$root/contract/hello.request.json")
-protocol=$(jq -e '.params.protocol' <<<"$hello")
 executable="$app/Contents/Helpers/turnscope"
 for needed in "$executable" "$app/Contents/MacOS/Turnscope"; do
   if [ ! -x "$needed" ]; then
@@ -66,7 +65,8 @@ for slice in $slices; do
     exit 1
   fi
 
-  # The app's hello is answered with a status.
+  # The app's hello is answered with a status, by the engine of the
+  # bundle's version, which is what the app checks.
   socket=$(turnscope serve --socket)
   turnscope serve 2>/dev/null &
   serve=$!
@@ -75,7 +75,9 @@ for slice in $slices; do
     sleep 0.1
   done
   if ! answer=$(printf '%s\n' "$hello" | nc -U -w 2 "$socket" | head -n 1) ||
-    ! jq -e '.result.status.accounts | type == "array"' <<<"$answer" >/dev/null; then
+    ! jq -e --arg server "turnscope $version" \
+      '.result.server == $server and (.result.status.accounts | type == "array")' \
+      <<<"$answer" >/dev/null; then
     printf 'check-app.sh: serve (%s) answered no hello:\n%s\n' "$slice" "$(cut -c 1-300 <<<"${answer:-}")" >&2
     exit 1
   fi
@@ -123,7 +125,7 @@ for slice in $slices; do
   done
 
   echo "  $slice doctor: $(head -n 1 <<<"$report")"
-  echo "  $slice serve: protocol $protocol, a hello answered with a status"
+  echo "  $slice serve: turnscope $version answered a hello with a status"
   echo "  $slice mcp: $tools"
   echo "  $slice app: drew its panel, light and dark, from the contract's example status"
   checked=$((checked + 1))
