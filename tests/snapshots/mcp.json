@@ -13,7 +13,7 @@
       "serverInfo": {
         "name": "turnscope",
         "title": "Turnscope",
-        "version": "0.2.0"
+        "version": "0.2.1"
       }
     }
   },
@@ -176,7 +176,7 @@
         "io.modelcontextprotocol/serverInfo": {
           "name": "turnscope",
           "title": "Turnscope",
-          "version": "0.2.0"
+          "version": "0.2.1"
         }
       },
       "cacheScope": "public",
