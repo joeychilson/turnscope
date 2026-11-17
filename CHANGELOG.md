@@ -26,8 +26,10 @@
   could misread.
 - **An older Turnscope still running writes nothing once a newer one has
   written,** as an agent's Turnscope MCP server started before an update.
-  It read limits and prices its way among the newer one's. Until the agent
-  starts it again, it answers from what's there and says to update.
+  It read limits and prices its way among the newer one's, and could hide
+  or show an account. Until the agent starts it again, it answers from
+  what's there and says `Turnscope was updated after this one started;
+  start it again`.
 
 ## 0.2.0
 

@@ -191,6 +191,7 @@ enum AccountAction {
 }
 
 fn main() -> ExitCode {
+    db::started();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // A hook reads a guard's exit code, and 2 blocks: a guard it can't
@@ -610,7 +611,6 @@ fn guard(
 ) -> Result<Option<String>> {
     let mut db = db::open(data)?;
     if online() {
-        db::writing(&db)?;
         limits::refresh(&mut db, home)?;
     }
     let now = now();

@@ -104,11 +104,13 @@ into another program's database.
   sessions from files the agent has since deleted stay.
 - **An older Turnscope still running**, such as an agent's MCP server
   started before an update, writes nothing once a newer one has written:
-  `state` holds the newest version that has (`db::writing`). It answers
-  from what's there, where its queries still fit the schema, and says to
-  update; but `serve` stops, and one started then says to update before
-  it listens. One started after the schema changed doesn't open the data,
-  and says to update (`db::open`).
+  `state` holds the newest version that has, and each function that
+  writes checks it first (`db::writing`). It answers from what's there,
+  where its queries still fit the schema. If an update has replaced its
+  binary since it started, it says to start it again; otherwise, to update
+  Turnscope. `serve` stops instead, and one started then says so before it
+  listens. One started after the schema changed doesn't open the data, and
+  says to update (`db::open`).
 
 ## Code
 

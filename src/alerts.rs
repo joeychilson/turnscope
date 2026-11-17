@@ -57,6 +57,7 @@ struct Detail {
 
 /// Raise the alerts `status` makes due, and give back those to tell.
 pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
+    crate::db::writing(db)?;
     let now = status.at;
     let notify = status.settings.notify;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -237,6 +238,7 @@ pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>>
 
 /// Mark alerts shown, so they aren't sent again.
 pub fn acknowledge(db: &Connection, ids: &[i64]) -> Result<usize> {
+    crate::db::writing(db)?;
     let mut statement =
         db.prepare("UPDATE alert SET acknowledged = 1 WHERE id = ?1 AND acknowledged = 0")?;
     let mut done = 0;
@@ -313,6 +315,7 @@ pub fn settings(db: &rusqlite::Connection) -> Result<Settings> {
 }
 
 pub fn save_settings(db: &rusqlite::Connection, settings: &Settings) -> Result<()> {
+    crate::db::writing(db)?;
     db.execute(
         "UPDATE state SET settings = ?1",
         [serde_json::to_string(settings).unwrap_or_default()],

@@ -248,6 +248,7 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
 /// Read what's new in every agent's history under `home`; whether any file
 /// was read.
 pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
+    crate::db::writing(db)?;
     let _lock = lock(db)?;
 
     let (readers, first): (i64, bool) =

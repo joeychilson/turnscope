@@ -91,15 +91,21 @@ fn command(data: &Path, args: &[&str]) -> Command {
 /// turnscope rather than becoming it. The caller is the nearest agent above
 /// turnscope, so without the shell it would be the agent these tests run in.
 fn command_as(agent: &str, data: &Path, args: &[&str]) -> Command {
+    command_of(
+        Path::new(env!("CARGO_BIN_EXE_turnscope")),
+        agent,
+        data,
+        args,
+    )
+}
+
+/// `command_as`, running the binary at `binary`.
+fn command_of(binary: &Path, agent: &str, data: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("/bin/sh");
     command
         .arg0(agent)
-        .args([
-            "-c",
-            r#""$@"; exit $?"#,
-            "sh",
-            env!("CARGO_BIN_EXE_turnscope"),
-        ])
+        .args(["-c", r#""$@"; exit $?"#, "sh"])
+        .arg(binary)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         // As Claude Code sets it in what it starts, and so in what another
@@ -857,7 +863,11 @@ fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
 #[test]
 fn a_server_left_running_stops_writing_once_a_newer_turnscope_has() {
     let data = store();
-    let mut mcp = command(data.path(), &["mcp"])
+    // Its own copy of the binary, which an update can replace.
+    let folder = tempfile::tempdir().unwrap();
+    let binary = folder.path().join("turnscope");
+    std::fs::copy(env!("CARGO_BIN_EXE_turnscope"), &binary).unwrap();
+    let mut mcp = command_of(&binary, "claude", data.path(), &["mcp"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -896,8 +906,39 @@ fn a_server_left_running_stops_writing_once_a_newer_turnscope_has() {
         )
         .unwrap();
     assert_eq!(read, 0, "it wrote after a newer Turnscope had");
+    // Once an update has replaced its binary, it says to start it again:
+    // the one who updated has nothing more to update.
+    std::fs::remove_file(&binary).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_turnscope"), &binary).unwrap();
+    assert_eq!(
+        usage(),
+        format!(
+            "{before}\n\nWhat's new couldn't be read first, so this is as of the last read: \
+             Turnscope was updated after this one started; start it again"
+        )
+    );
     drop(stdin);
     assert!(mcp.wait().unwrap().success());
+}
+
+#[test]
+fn an_account_isnt_hidden_by_an_older_turnscope() {
+    let data = store();
+    let db = Connection::open(data.path().join("turnscope.sqlite")).unwrap();
+    db.execute("UPDATE state SET version = 99000000", [])
+        .unwrap();
+    let hide = turnscope(data.path(), &["accounts", "hide", "claude"], None);
+    assert!(!hide.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&hide.stderr).trim_end(),
+        "turnscope: a newer Turnscope has updated this data; update Turnscope"
+    );
+    let hidden: i64 = db
+        .query_row("SELECT count(*) FROM account WHERE hidden", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(hidden, 0);
 }
 
 #[test]
