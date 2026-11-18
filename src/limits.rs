@@ -202,6 +202,9 @@ fn record(
     now: i64,
 ) -> Result<Vec<(String, String, i64)>> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // Again, inside the write: a newer one may have written while the
+    // providers answered.
+    crate::db::writing(&tx)?;
     let existing: HashSet<String> = tx
         .prepare("SELECT id FROM account")?
         .query_map([], |row| row.get(0))?
@@ -690,5 +693,26 @@ mod tests {
             (title.as_str(), problem.as_str()),
             ("OpenCode Go", "expired")
         );
+    }
+
+    #[test]
+    fn limits_read_once_a_newer_turnscope_has_written_are_not_recorded() {
+        // As when it wrote while the providers answered.
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        db.execute("UPDATE state SET version = ?1", [i64::MAX])
+            .unwrap();
+        let error = record(
+            &mut db,
+            Vec::new(),
+            vec![(monthly(1), held("opencode-go:key-b"))],
+            1_000,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), crate::db::newer().to_string());
+        let accounts: i64 = db
+            .query_row("SELECT count(*) FROM account", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(accounts, 0);
     }
 }

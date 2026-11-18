@@ -250,6 +250,8 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
 pub fn ingest(db: &mut Connection, home: &Path) -> Result<bool> {
     crate::db::writing(db)?;
     let _lock = lock(db)?;
+    // Again: a newer one may have written while this waited for the lock.
+    crate::db::writing(db)?;
 
     let (readers, first): (i64, bool) =
         db.query_row("SELECT readers, history_at IS NULL FROM state", [], |row| {
@@ -1042,5 +1044,27 @@ mod tests {
             count(&db, "SELECT count(*) FROM session WHERE id LIKE '%ses_new'"),
             1
         );
+    }
+
+    #[test]
+    fn history_is_not_read_once_a_newer_turnscope_wrote_while_this_waited() {
+        let (dir, home, db, folder) = store();
+        std::fs::write(folder.join("s1.jsonl"), turn("a")).unwrap();
+        // Another process reads history.
+        let held = lock(&db).unwrap();
+        let (data, home_path) = (dir.path().to_owned(), home.path().to_owned());
+        let reading = std::thread::spawn(move || {
+            let mut db = crate::db::open(&data).unwrap();
+            ingest(&mut db, &home_path).map_err(|error| error.to_string())
+        });
+        // By then it has looked, and waits for the lock. Had it not yet, it
+        // stops all the same.
+        std::thread::sleep(Duration::from_millis(500));
+        db.execute("UPDATE state SET version = ?1", [i64::MAX])
+            .unwrap();
+        drop(held);
+        let error = reading.join().unwrap().unwrap_err();
+        assert_eq!(error, crate::db::newer().to_string());
+        assert_eq!(count(&db, "SELECT count(*) FROM file"), 0);
     }
 }

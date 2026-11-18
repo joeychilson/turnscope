@@ -248,7 +248,8 @@ turnscope accounts show <name>
 
 Lists the accounts, each with its id. `hide` leaves an account out of
 lists and alerts; `show` brings it back. Both then print the list. The
-name must match one account.
+name must match one account. Once a newer Turnscope has written to the
+data, `hide` and `show` change nothing, and say to update.
 
 ```console
 $ turnscope accounts
@@ -367,7 +368,9 @@ Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at t
 ```
 
 A hook waits for the guard, so it reads no history and no prices. It reads
-the limits only when five minutes have passed since any process did. While
+the limits only when five minutes have passed since any process did, and
+not once a newer Turnscope has written to the data: then it guards by the
+limits read before. While
 the app runs, its daemon always has. Each read of a login's limits gives
 up after 15 seconds, whether its provider takes one request or two, or
 after 5 if it can't connect.
