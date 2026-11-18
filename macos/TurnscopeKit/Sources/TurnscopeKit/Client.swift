@@ -142,8 +142,17 @@ public final class Client {
                                                replacing: !replaced || !anotherAppRuns())
                 switch ended {
                 case .replaced:
-                    replaced = true
-                    continue
+                    // Its own engine is read again, as the app may have been
+                    // built or installed again while it ran. Only the first
+                    // is asked to exit at once: later ones wait as after a
+                    // failed attempt, so a binary that names an engine other
+                    // than the one its serve names can't start serve over and
+                    // over.
+                    engineName = nil
+                    guard replaced else {
+                        replaced = true
+                        continue
+                    }
                 case .dropped(let why):
                     backoff.ended(after: ContinuousClock.now - began)
                     guard !Task.isCancelled else { return }
@@ -214,15 +223,34 @@ public final class Client {
         struct Server: Decodable { var server: String }
         let deadline = connection.end(after: answerWait)
         defer { deadline.cancel() }
-        let line = try await connection.ask("hello")
+        let line: Data
+        do throws(ClientError) {
+            line = try await connection.ask("hello")
+        } catch .unsupported(let why) {
+            // This engine's `hello` takes nothing, and is refused only when
+            // the data can't be read. Refused otherwise, it's an engine
+            // before 0.2.1, which wanted a protocol number.
+            if replacing { throw .unsupported("it refused hello: \(why)") }
+            throw .failed("An older Turnscope is also running; quit it to use this one")
+        }
         let server = try decode(Answer<Server>.self, from: line).result.server
         if let engine, server != engine {
             if replacing { throw .unsupported("it runs \(server), not \(engine)") }
             // `turnscope 0.2.0`, as `turnscope --version` prints it.
             let version = server.split(separator: " ").last.map(String.init) ?? server
+            // A newer one has written to the data, so this one can't keep it
+            // current, even once that one quits.
+            if numbers(engine).lexicographicallyPrecedes(numbers(server)) {
+                throw .failed("Turnscope \(version) is also running; update this one to use it")
+            }
             throw .failed("Turnscope \(version) is also running; quit it to use this one")
         }
         return try decode(Answer<HelloResult>.self, from: line).result
+    }
+
+    /// The version in an engine's name, `turnscope 0.2.1`, as numbers.
+    private func numbers(_ engine: String) -> [Int] {
+        engine.split(separator: " ").last.map { $0.split(separator: ".").compactMap { Int($0) } } ?? []
     }
 
     /// Handle a notification serve pushed: `method`, in `line`.
@@ -280,7 +308,8 @@ public enum ClientError: Error, Equatable, Sendable, CustomStringConvertible {
     /// The engine couldn't be run or started, the connection closed, or
     /// serve answered with an error, and why.
     case failed(String)
-    /// Serve runs another engine, and which.
+    /// Serve runs another engine: it names another, or refused a request
+    /// as the app sends it. And why, for the log.
     case unsupported(String)
     /// What serve sent couldn't be read, and why, for the log.
     case unreadable(String)
@@ -342,6 +371,7 @@ private final class Channel {
             var error: Failure?
         }
         struct Failure: Decodable {
+            var code: Int
             var message: String
         }
         var unread: ClientError?
@@ -359,7 +389,11 @@ private final class Channel {
                 }
             case (nil, let id?):
                 let answer: Result<Data, ClientError> = switch header.error {
-                case let failure?: .failure(.failed(failure.message))
+                // It couldn't do what was asked, and says why.
+                case let failure? where failure.code == -32000: .failure(.failed(failure.message))
+                // It didn't take the request as the app sends it: an engine
+                // of another version.
+                case let failure?: .failure(.unsupported(failure.message))
                 case nil: .success(line)
                 }
                 waiting.removeValue(forKey: id)?.resume(returning: answer)
@@ -512,8 +546,11 @@ private struct Engine: Sendable {
             // One that ends with an error fails at once, as one killed says
             // nothing.
             if !serve.isRunning, serve.terminationStatus != 0 {
-                let last = (try? String(contentsOfFile: said, encoding: .utf8))?.split(whereSeparator: \.isNewline).last
-                throw .failed(last.map(String.init) ?? "Turnscope's engine stopped as it started")
+                // Said as `turnscope: <why>`. A panic says nothing a user can
+                // act on, and is in serve's log.
+                let lines = (try? String(contentsOfFile: said, encoding: .utf8))?.split(whereSeparator: \.isNewline)
+                let why = lines?.last { $0.hasPrefix("turnscope: ") }?.dropFirst("turnscope: ".count)
+                throw .failed(why.map { "Turnscope's engine stopped: \($0)" } ?? "Turnscope's engine stopped as it started")
             }
         }
         throw .failed("Turnscope's engine didn't start")

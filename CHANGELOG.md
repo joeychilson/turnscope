@@ -2,9 +2,9 @@
 
 ## 0.2.1
 
-- **When Turnscope's engine stops, the app says why:** `Turnscope's
-  engine stopped: a newer Turnscope has updated this data; update
-  Turnscope`. It said only that the engine stopped.
+- **When Turnscope's engine stops or can't start, the app says why:**
+  `Turnscope's engine stopped: a newer Turnscope has updated this data;
+  update Turnscope`. It said only that the engine stopped.
 - **The engine stops once a newer Turnscope has written to its data,** so
   the app says to update. It went on, and the app showed what it had read
   before as current.
@@ -15,21 +15,25 @@
 - **The engine has up to 30 seconds to start, not 5,** as it now opens its
   database before the app can connect, and a new version may update the
   database first.
-- **The engine keeps a log:** `serve.log` in its data directory, with each
-  error it meets while it runs.
+- **The engine keeps a log:** `serve.log` in its data directory, with why
+  it couldn't start or stopped, and each error it meets keeping the data
+  current.
 - **When the app can't read what its engine sent,** it says so in one
   sentence, and the details go to the unified log. It showed Swift's
   error.
-- **Two versions of the app at once:** one of them now says `Turnscope
-  0.2.0 is also running; quit it to use this one`, and connects once the
-  other is quit. It no longer shows the other version's figures, which it
-  could misread.
+- **Two versions of the app at once:** the newer one connects. From this
+  version on, the older one says `Turnscope 0.2.2 is also running; update
+  this one to use it`, and no longer shows the other version's figures,
+  which it could misread.
 - **An older Turnscope still running writes nothing once a newer one has
   written,** as an agent's Turnscope MCP server started before an update.
   It read limits and prices its way among the newer one's, and could hide
   or show an account. Until the agent starts it again, it answers from
   what's there and says `Turnscope was updated after this one started;
-  start it again`.
+  start it again`. An MCP server of 0.2.0 left running through this update
+  says `a newer Turnscope has updated this data; update Turnscope`
+  instead: a new session in its agent starts the new one. A guard hook
+  still guards, by the limits read before.
 
 ## 0.2.0
 
