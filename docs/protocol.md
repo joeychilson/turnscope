@@ -53,8 +53,9 @@ nc -U "$(turnscope serve --socket)"
   `turnscope serve` with the same `--data` and `--home`, and tries to
   connect every 100 ms for up to 30 seconds while it runs. `serve` opens the
   database before it listens, and a new version migrates it then. If that
-  `serve` exits with an error first, the app shows the last line it printed
-  on standard error as why. Its standard error is a file, not a pipe: once
+  `serve` exits with an error first, the app shows why, from the last line
+  it printed on standard error as `turnscope: <why>`: `Turnscope's engine
+  stopped: <why>`. Its standard error is a file, not a pipe: once
   the app quit, a pipe would end `serve` the first time it printed
   anything.
 - **Answers.** The app waits up to 30 s for an answer to a request, but for
@@ -64,8 +65,9 @@ nc -U "$(turnscope serve --socket)"
   waits 0.5 s, doubling each time up to 30 s. The wait goes back to 0.5 s
   only after a connection has held for 30 s, so an engine that keeps failing
   isn't started twice a second. A `serve` that doesn't answer `hello` within
-  30 s counts as a failed attempt. That's long because `hello` works out the
-  whole status, which is slow on a long history. A `status` or `alert` the
+  30 s counts as a failed attempt. That's long because `serve` answers one
+  request at a time, and one that writes waits up to 10 s for another
+  process's write. A `status` or `alert` the
   app can't read drops the connection.
 - **Exiting.** `serve` exits 60 seconds after its last client leaves, or
   after it starts if no client connects. An app restart or update reconnects
@@ -74,21 +76,30 @@ nc -U "$(turnscope serve --socket)"
   Turnscope has written to the data, `serve` sends `stopped` with why and
   exits with an error. The app says `Turnscope's engine stopped: <why>`,
   and starts a new one.
-- **Its log.** `serve` adds each error it meets while it runs to
-  `serve.log` in the data directory, with the time. Past a megabyte, the
-  log starts over.
+- **Its log.** `serve` adds to `serve.log` in the data directory, with the
+  time, why it couldn't start or stopped, a panic, and each error it meets
+  keeping the data current or pushing to the app. An error it answers a
+  request with goes only to the app. Past a megabyte, the log starts over.
 - **Another engine.** The app only talks to the engine it ships with. The
   `hello` result names the server, as `turnscope --version` prints it
-  (`turnscope 0.1.0`), and the app checks that before reading the rest. If
-  it names another engine, the app sends `shutdown`, waits up to 5 s for
-  that `serve` to exit, and connects again, starting its own `serve`. It
-  does this once per run while another Turnscope app runs. If the next
-  `serve` runs another engine too, that app keeps starting it: the app says
-  `Turnscope 0.1.0 is also running; quit it to use this one`, and tries
-  again as after a failed attempt. So two app versions can't keep stopping
-  each other's `serve`. Once no other app runs, a `serve` it left is asked
-  to exit at the next try: each try would otherwise keep it from ever
-  being alone for 60 s.
+  (`turnscope 0.1.0`), and the app checks that before reading the rest. An
+  engine before 0.2.1 refuses `hello` instead, as it wanted a protocol
+  number: the app takes any refusal but `-32000` as another engine. Then
+  the app sends `shutdown`, which every engine takes before `hello`, waits
+  up to 5 s for that `serve` to exit, and connects again, starting its own
+  `serve`. It does this once per run while another Turnscope app runs. If
+  the next `serve` runs another engine too, that app keeps starting it: the
+  app says `Turnscope 0.1.0 is also running; quit it to use this one`, or
+  `An older Turnscope is also running; quit it to use this one` for one
+  that refused `hello`. If that one is newer, quitting it doesn't help, as
+  it has written to the data: the app says `Turnscope 0.1.0 is also
+  running; update this one to use it`. Either way it tries again as after a
+  failed attempt. So two app versions can't keep stopping each other's
+  `serve`. Once no other app runs, a `serve` it left is asked to exit at
+  the next try: each try would otherwise keep it from ever being alone for
+  60 s. After the first, a `serve` that runs another engine is asked to
+  exit only after the wait of a failed attempt, and the app reads its own
+  engine's name again first: its binary may have changed while it ran.
 
 ## Handshake
 
@@ -110,7 +121,7 @@ sync. Until `hello` succeeds, any other request but `shutdown` gets
 
 | Method | Params | Result | Does |
 |---|---|---|---|
-| `hello` | `{protocol}` | `{server, status, alerts}` | The handshake. `alerts` are oldest first |
+| `hello` | none | `{server, status, alerts}` | The handshake. `alerts` are oldest first |
 | `alerts.ack` | `{ids}` | `{acknowledged}` | Marks alerts as shown, so they aren't sent again. `acknowledged` counts those newly marked. Unknown ids are skipped |
 | `limit.breakdown` | `{account, limit}` | `{sessions: [UsedMost]}` | The sessions that used most of a limit |
 | `settings.set` | `{settings}` | `{}` | Saves the settings, then pushes the status that carries them |

@@ -181,6 +181,9 @@ fn take_in(db: &mut Connection, now: i64) -> Result<()> {
     let catalog: HashMap<String, Value> = serde_json::from_slice(&json)
         .map_err(|error| Error::Failed(format!("models.dev's catalog didn't read: {error}")))?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // Again, inside the write: a newer one may have written while
+    // models.dev answered.
+    crate::db::writing(&tx)?;
     let current: HashMap<(String, String), (String, Option<String>)> = tx
         .prepare(
             "SELECT provider, model, cost, fast FROM price p

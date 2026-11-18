@@ -610,7 +610,10 @@ fn guard(
     account: Option<&str>,
 ) -> Result<Option<String>> {
     let mut db = db::open(data)?;
-    if online() {
+    // The limits read before still guard when this one can't read them
+    // again, as once a newer Turnscope has written here: a hook that fails
+    // guards nothing.
+    if online() && db::writing(&db).is_ok() {
         limits::refresh(&mut db, home)?;
     }
     let now = now();

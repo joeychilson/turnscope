@@ -109,8 +109,10 @@ into another program's database.
   where its queries still fit the schema. If an update has replaced its
   binary since it started, it says to start it again; otherwise, to update
   Turnscope. `serve` stops instead, and one started then says so before it
-  listens. One started after the schema changed doesn't open the data, and
-  says to update (`db::open`).
+  listens. `guard` guards by the limits read before. A function that waits
+  before it writes, for `ingest.lock` or for a provider, checks again inside
+  its write. One started after the schema changed doesn't open the data,
+  and says to update (`db::open`).
 
 ## Code
 
@@ -264,8 +266,9 @@ directory, or one under `$TMPDIR` when that path is too long for macOS
   client why (`stopped`) and exits with an error, so the app says why and
   starts one that works. It stops once a newer Turnscope has written to
   the data: the `serve` started next says to update before it listens.
-- What goes wrong while it runs is added to `serve.log` in the data
-  directory: once the app has connected, no one reads its standard error.
+- Why it couldn't start or stopped, and each error it meets keeping the
+  data current, is added to `serve.log` in the data directory: once the
+  app has connected, no one reads its standard error.
 - It exits 60 seconds after its last client leaves.
 
 ## Status

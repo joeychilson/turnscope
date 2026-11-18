@@ -343,9 +343,10 @@ const fn number(digits: &str) -> i64 {
     number
 }
 
-/// Called first by each function that writes: the error when a newer
-/// Turnscope has written here, its schema or anything else, and otherwise
-/// this one is recorded as the newest that has. An older one still running,
+/// Called first by each function that writes, and again inside its write
+/// when it waited for anything after: the error when a newer Turnscope has
+/// written here, its schema or anything else, and otherwise this one is
+/// recorded as the newest that has. An older one still running,
 /// as an agent's MCP server started before an update, then only answers.
 ///
 /// By the version, over a number raised by hand when what's written

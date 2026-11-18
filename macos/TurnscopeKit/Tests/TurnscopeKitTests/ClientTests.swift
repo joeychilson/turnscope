@@ -328,7 +328,19 @@ func aHelloThatFailsIsSaidAndTriedAgain(_ failed: FailedHello) async throws {
     let store = Store(client: client)
     client.start()
     await until { store.failure != nil }
-    #expect(store.failure == why)
+    #expect(store.failure == "Turnscope's engine stopped: a newer Turnscope has updated this data; update Turnscope")
+    client.stop()
+}
+
+@MainActor
+@Test func aServeThatPanicsAsItStartsIsSaidToHaveStopped() async throws {
+    // What a panic prints says nothing a user can act on.
+    let panic = "thread main panicked at src/serve.rs:1:1:\nboom\nnote: run with `RUST_BACKTRACE=1` to display a backtrace"
+    let client = Client(binary: try binary(socket: socketPath(), fails: panic))
+    let store = Store(client: client)
+    client.start()
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope's engine stopped as it started")
     client.stop()
 }
 
@@ -352,6 +364,9 @@ enum OtherServe: CaseIterable {
     /// With a status this app can't read. The field that names the engine
     /// is read first, so it's replaced anyway.
     case unreadable
+    /// Refused, as by an engine before 0.2.1, which wanted a protocol
+    /// number: as after an update from 0.2.0, with its serve still there.
+    case older
 
     var hello: Reply {
         get throws {
@@ -359,6 +374,7 @@ enum OtherServe: CaseIterable {
             case .readable: .of(try helloResult())
             case .unreadable:
                 .of(["server": "turnscope 0.0.1", "status": ["accounts": "not a list"], "alerts": []])
+            case .older: .error(code: -32602, "parameters that don't fit: invalid type: null, expected struct Hello")
             }
         }
     }
@@ -412,6 +428,56 @@ func aServeOfAnotherEngineIsAskedToExit(_ other: OtherServe) async throws {
     #expect(store.status == nil)
     #expect(await until { serve.methods.filter { $0 == "hello" }.count >= 3 })
     #expect(serve.methods.filter { $0 == "shutdown" }.count == 1)
+    client.stop()
+}
+
+@MainActor
+@Test func anOlderEngineStartedAgainIsSaidToBeRunning() async throws {
+    // Another app, of 0.2.0, keeps starting its serve.
+    let serve = FakeServe { method, _, _ in
+        method == "hello" ? .error(code: -32602, "parameters that don't fit: invalid type: null, expected struct Hello") : .done
+    }
+    defer { serve.close() }
+    let (client, store) = try store(over: serve)
+    client.start()
+    await until { serve.methods.contains("shutdown") }
+    serve.drop()
+    await until { store.failure != nil }
+    #expect(store.failure == "An older Turnscope is also running; quit it to use this one")
+    #expect(serve.methods.filter { $0 == "shutdown" }.count == 1)
+    client.stop()
+}
+
+@MainActor
+@Test func aNewerEngineStartedAgainIsSaidToNeedThisOneUpdated() async throws {
+    // Another app, newer than this one, keeps starting its serve. Quitting
+    // it wouldn't help: it has written to the data.
+    let serve = try serve()
+    defer { serve.close() }
+    let (client, store) = try store(over: serve, version: "turnscope 0.0.9")
+    client.start()
+    await until { serve.methods.contains("shutdown") }
+    serve.drop()
+    await until { store.failure != nil }
+    #expect(store.failure == "Turnscope 0.1.0 is also running; update this one to use it")
+    client.stop()
+}
+
+@MainActor
+@Test func aServeNamingAnotherEngineTimeAfterTimeIsAskedToExitNoFasterThanTriesToConnect() async throws {
+    // As when the app's own binary names an engine other than the one its
+    // serve names: each serve it starts would be asked to exit at once.
+    let serve = try serve()
+    defer { serve.close() }
+    let (client, _) = try store(over: serve, version: "turnscope 9.9.9")
+    client.anotherAppRuns = { false }
+    client.exitWait = .milliseconds(100)
+    client.start()
+    await until { serve.methods.contains("shutdown") }
+    try await Task.sleep(for: .seconds(1.2))
+    // Twice at once, as after an update, then after 0.5 s; next after 1 s
+    // more. Without a wait, about ten times by then.
+    #expect((2...4).contains(serve.methods.filter { $0 == "shutdown" }.count))
     client.stop()
 }
 
