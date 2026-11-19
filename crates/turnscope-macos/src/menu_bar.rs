@@ -468,10 +468,10 @@ fn panel_rect(
     width: f64,
     gutter: f64,
 ) -> [f64; 4] {
-    let left = (mid - width / 2.0).clamp(
-        visible.origin.x + 6.0,
-        visible.origin.x + visible.size.width - width - 6.0,
-    );
+    // Not `clamp`, which panics on a screen narrower than the panel: there it's at the left.
+    let left = (mid - width / 2.0)
+        .min(visible.origin.x + visible.size.width - width - 6.0)
+        .max(visible.origin.x + 6.0);
     let top = under - 6.0;
     [
         left - gutter,
@@ -481,14 +481,13 @@ fn panel_rect(
     ]
 }
 
-/// The height of the screen the item is on, below the menu bar, in points.
+/// The height of the screen the panel opens on (`panel_place`), below the menu bar, in points.
 pub fn screen_height() -> Option<f64> {
     let mtm = MainThreadMarker::new()?;
-    let on_item = ITEM.with(|cell| {
-        let cell = cell.borrow();
-        cell.as_ref()?.item.button(mtm)?.window()?.screen()
-    });
-    let screen = on_item.or_else(|| NSScreen::mainScreen(mtm))?;
+    let screen = match item_window(mtm) {
+        Some((_, screen)) => screen,
+        None => NSScreen::screens(mtm).firstObject()?,
+    };
     Some(screen.visibleFrame().size.height)
 }
 
@@ -529,6 +528,10 @@ mod tests {
         let [x, ..] = panel_rect(1500.0, 949.0, laptop(), LAPTOP, 340.0, 28.0);
         assert_eq!(x + 28.0 + 340.0, 1512.0 - 6.0);
         let [x, ..] = panel_rect(10.0, 949.0, laptop(), LAPTOP, 340.0, 28.0);
+        assert_eq!(x + 28.0, 6.0);
+        // A screen narrower than the panel has it at the left.
+        let narrow = rect(0.0, 0.0, 300.0, 949.0);
+        let [x, ..] = panel_rect(150.0, 949.0, narrow, LAPTOP, 340.0, 28.0);
         assert_eq!(x + 28.0, 6.0);
     }
 

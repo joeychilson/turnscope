@@ -46,8 +46,9 @@ pub static HANDLE: OnceLock<AppHandle<State>> = OnceLock::new();
 static STARTED: OnceLock<Instant> = OnceLock::new();
 /// Whether the app ticks each minute: while something shown counts down with the clock, in the
 /// menu bar or the open panel, and not otherwise, so a closed panel with nothing urgent never
-/// wakes the app.
+/// wakes the app. The tick's thread waits for it (`tick`).
 static COUNTING: AtomicBool = AtomicBool::new(false);
+static TICKER: OnceLock<std::thread::Thread> = OnceLock::new();
 
 thread_local! {
     /// When the panel last closed. A click on the item takes focus from the panel, which
@@ -127,7 +128,11 @@ fn take(s: &mut State, shown: Shown) -> Taken {
 /// Redraws the menu bar item, and ticks while something counts down.
 fn drew(s: &State) {
     menu_bar::draw(s);
-    COUNTING.store(s.panel_open || s.urgent(), Ordering::Relaxed);
+    let counting = s.panel_open || s.urgent();
+    COUNTING.store(counting, Ordering::Relaxed);
+    if counting && let Some(ticker) = TICKER.get() {
+        ticker.unpark();
+    }
 }
 
 /// Opens what `opening` names, as `--open` does.
@@ -331,8 +336,12 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
 
 /// Ticks each minute, the finest unit the words use for time, while something counts down.
 fn tick() {
-    std::thread::spawn(|| {
+    let ticker = std::thread::spawn(|| {
         loop {
+            // Parked while nothing counts down, it wakes only when something does.
+            while !COUNTING.load(Ordering::Relaxed) {
+                std::thread::park();
+            }
             let now = turnscope::now();
             let next = minute(now) + 60_000;
             std::thread::sleep(Duration::from_millis((next - now).max(0) as u64 + 50));
@@ -344,6 +353,7 @@ fn tick() {
             }
         }
     });
+    let _ = TICKER.set(ticker.thread().clone());
 }
 
 /// Ticks once the Mac wakes. The tick's sleep stops while the Mac sleeps, so for up to a
@@ -514,7 +524,6 @@ fn main() {
         );
         return;
     }
-    panel::LIVE.store(true, Ordering::Relaxed);
     let fixed = launch.fixture.as_deref().map(fixture);
     if fixed.is_none() {
         let _ = engine::DATA.set(data.clone());
@@ -534,6 +543,7 @@ fn main() {
                 None => State::new(Preferences::read()),
             };
             s.from_disk_image = from_disk_image();
+            s.live = true;
             s.opening = opening;
             s
         })
@@ -549,17 +559,16 @@ fn main() {
     let handle = app.handle();
     let _ = HANDLE.set(handle.clone());
     let runs_engine = launch.fixture.is_none();
+    let engine_handle = handle.clone();
     handle.update(move |s, _| {
         drew(s);
-        notifier::start();
-        updater::start();
-        tick_on_wake();
+        // A fixed status asks nothing of macOS or Sparkle, and doesn't count down.
         if runs_engine {
-            engine::start(
-                home,
-                data,
-                HANDLE.get().cloned().expect("the handle is set"),
-            );
+            notifier::start();
+            updater::start();
+            tick_on_wake();
+            tick();
+            engine::start(home, data, engine_handle);
         } else if let Some(opening) = s.opening.take() {
             // A fixed status is there from the start.
             when_placed(move |s, _| {
@@ -568,7 +577,6 @@ fn main() {
             });
         }
     });
-    tick();
     let options = WindowOptions::launcher_panel().macos(|native| {
         // As a menu is: above other windows, on every Space, and left out of window cycling.
         let behavior = NSWindowCollectionBehavior::CanJoinAllSpaces

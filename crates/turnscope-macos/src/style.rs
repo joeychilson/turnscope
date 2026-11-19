@@ -88,7 +88,7 @@ pub const LINE: TextStyle = style(12.0, 400.0, 15.0);
 pub const SMALL: TextStyle = style(11.0, 400.0, 14.0);
 pub const SMALL_DIGITS: TextStyle = style(11.0, 400.0, 14.0).features("'tnum' 1");
 pub const HEADING: TextStyle = style(11.0, 590.0, 14.0);
-pub const PILL: TextStyle = style(12.0, 510.0, 15.0);
+const PILL: TextStyle = style(12.0, 510.0, 15.0);
 pub const TITLE: TextStyle = style(15.0, 590.0, 18.0);
 pub const STRONG: TextStyle = style(13.0, 590.0, 16.0);
 pub const HEADLINE: TextStyle = style(20.0, 590.0, 24.0);
@@ -131,9 +131,8 @@ pub struct Ink {
     pub primary: Color,
     pub secondary: Color,
     pub tertiary: Color,
+    /// Also the panel's edge, as `separatorColor` is the same gray.
     pub quaternary: Color,
-    /// The panel's edge.
-    pub edge: Color,
     /// The fill of an open or hovered row, as a `wash`.
     pub row: f32,
     pub accent: Color,
@@ -161,7 +160,13 @@ pub const AMBER: [u32; 4] = [0x8A5303, 0xED941A, 0x6B3E00, 0xFFB76B];
 pub const RED: [u32; 4] = [0xC1070E, 0xFE8375, 0x970007, 0xFFB3A8];
 
 fn srgb(hex: u32) -> Color {
-    rune::color::hex(&format!("#{hex:06X}")).unwrap_or(Color::BLACK)
+    let channel = |shift: u32| rune::color::srgb_decode(((hex >> shift) & 0xFF) as f32 / 255.0);
+    Color {
+        r: channel(16),
+        g: channel(8),
+        b: channel(0),
+        a: 1.0,
+    }
 }
 
 /// The overlay that, drawn over `under`, shows `to`: hover and press overlays are drawn over
@@ -205,7 +210,6 @@ impl Ink {
             secondary: base.alpha(s),
             tertiary: base.alpha(t),
             quaternary: base.alpha(q),
-            edge: base.alpha(q),
             row: if more { 0.1 } else { 0.06 },
             accent,
             amber: srgb(AMBER[at]),
@@ -537,7 +541,7 @@ pub fn spans(parts: &[(&str, Color, Option<f32>)]) -> El {
 }
 
 /// The text and spans `spans` draws.
-pub fn spanned(parts: &[(&str, Color, Option<f32>)]) -> (String, Vec<Span>) {
+fn spanned(parts: &[(&str, Color, Option<f32>)]) -> (String, Vec<Span>) {
     let mut content = String::new();
     let mut spans = Vec::new();
     for (said, color, weight) in parts {

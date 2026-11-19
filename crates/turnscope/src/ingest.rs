@@ -303,11 +303,15 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     // it ran. `readers` says, after `READERS` was raised, that all was read
     // again: raised before, a read cut short would go on at the next with
     // no word that it reads all (`waits`).
-    if first {
-        db.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
-    }
-    if readers != READERS {
-        db.execute("UPDATE state SET readers = ?1", [READERS])?;
+    if first || readers != READERS {
+        let tx = crate::db::write(db)?;
+        if first {
+            tx.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
+        }
+        if readers != READERS {
+            tx.execute("UPDATE state SET readers = ?1", [READERS])?;
+        }
+        tx.commit()?;
     }
     Ok(wrote)
 }

@@ -21,7 +21,7 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
     let exe = std::fs::canonicalize(engine)?;
     if temporary(&exe) {
         return Err(Error::Failed(format!(
-            "Turnscope's engine runs from {}, which goes away when its disk image is ejected or its drive is removed. Put Turnscope in Applications, quit it, and open it from there a minute later to connect",
+            "Turnscope's engine runs from {}, which goes away when its disk image is ejected or its drive is removed. Put Turnscope in Applications, quit it, and open it from there to connect",
             exe.display()
         )));
     }

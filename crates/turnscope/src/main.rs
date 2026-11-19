@@ -613,10 +613,10 @@ fn guard(
     }
     let mut db = db::open(data)?;
     // The limits read before still guard when this one can't read them
-    // again, as once a newer Turnscope has written here: a hook that fails
-    // guards nothing.
+    // again, as once a newer Turnscope has written here, or does while they
+    // are read: a hook that fails guards nothing.
     if online() && db::writing(&db).is_ok() {
-        limits::refresh(&mut db, home)?;
+        let _ = limits::refresh(&mut db, home);
     }
     let now = now();
     let status = status::status(&db, now)?;

@@ -21,8 +21,8 @@ Inside the app it is
 `turnscope <command> --help` prints a command's flags.
 
 The examples below are the output of the snapshot tests
-(`tests/snapshots/`), run on synthetic accounts and sessions at Thu Oct 1
-12:00 UTC.
+(`crates/turnscope/tests/snapshots/`), run on synthetic accounts and
+sessions at Thu Oct 1 12:00 UTC.
 
 ## Global options
 
@@ -35,7 +35,7 @@ The examples below are the output of the snapshot tests
 | `-V`, `--version` | | Print the version |
 
 Every command that prints data takes `--json`. Examples of the JSON are in
-`tests/snapshots/*.json`.
+`crates/turnscope/tests/snapshots/*.json`.
 
 Before answering, `status`, `usage`, `accounts` and `doctor` bring the
 database up to date. They read what's new in the

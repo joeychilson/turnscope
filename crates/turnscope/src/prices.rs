@@ -154,7 +154,6 @@ pub fn refresh(db: &mut Connection) -> Result<bool> {
 
 /// `refresh`, with the catalog `ask` gets.
 fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> Result<bool> {
-    crate::db::writing(db)?;
     let now = crate::now();
     if !claim(db, now)? {
         return Ok(false);
@@ -166,27 +165,30 @@ fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> R
             // would otherwise price nothing until then. Only when models.dev
             // fails, and not once a newer Turnscope has written, as it may
             // have while models.dev was asked.
-            crate::db::writing(db)?;
-            db.execute(
+            let tx = crate::db::write(db)?;
+            tx.execute(
                 "UPDATE state SET prices_at = ?1",
                 [now - 6 * crate::time::HOUR + 10 * crate::time::MINUTE],
             )?;
+            tx.commit()?;
             Err(error)
         }
     }
 }
 
 /// Claim asking models.dev if it's due, in one statement, so no two
-/// processes ask at once.
-fn claim(db: &Connection, now: i64) -> Result<bool> {
+/// processes ask at once. Not once a newer Turnscope has written.
+fn claim(db: &mut Connection, now: i64) -> Result<bool> {
+    let tx = crate::db::write(db)?;
     // Claimed up to `limits::DUE` ahead of now is another process's, which
     // read the time a moment later; further ahead, as for limits, a clock
     // set back since.
-    let claimed = db.execute(
+    let claimed = tx.execute(
         "UPDATE state SET prices_at = ?1
          WHERE prices_at IS NULL OR prices_at <= ?1 - ?2 OR prices_at > ?1 + ?3",
         params![now, 6 * crate::time::HOUR, crate::limits::DUE],
     )?;
+    tx.commit()?;
     Ok(claimed > 0)
 }
 
@@ -216,8 +218,9 @@ fn catalog() -> Result<Catalog> {
                 .and_then(|modes| {
                     modes.values().find_map(|mode| {
                         let body = &mode["provider"]["body"];
+                        let cost = mode.get("cost").filter(|cost| cost.is_object())?;
                         (body["speed"] == "fast" || body["service_tier"] == "priority")
-                            .then(|| mode["cost"].to_string())
+                            .then(|| cost.to_string())
                     })
                 });
             catalog.push(((provider.clone(), id.clone()), (cost.to_string(), fast)));
@@ -420,12 +423,12 @@ mod tests {
     #[test]
     fn one_process_claims_the_refresh_and_a_clock_set_back_can_claim_it_again() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::open(dir.path()).unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
         let now = 1_800_000_000_000;
-        assert!(claim(&db, now).unwrap());
+        assert!(claim(&mut db, now).unwrap());
         // A process that read the time 20 ms earlier, and claims after.
-        assert!(!claim(&db, now - 20).unwrap());
-        assert!(claim(&db, now - crate::time::DAY).unwrap(), "set back");
+        assert!(!claim(&mut db, now - 20).unwrap());
+        assert!(claim(&mut db, now - crate::time::DAY).unwrap(), "set back");
     }
 
     /// Asked again in ten minutes when models.dev fails, and left as

@@ -205,8 +205,9 @@ fn asked(
     refused: &[u16],
     by: Instant,
 ) -> Result<Value, Problem> {
+    // Under a millisecond, curl's `--max-time` would be 0.000: no limit.
     let left = by.saturating_duration_since(Instant::now());
-    if left.is_zero() {
+    if left < Duration::from_millis(1) {
         return Err(Problem::unavailable(format!(
             "{url}: not asked, as the read's time was spent"
         )));

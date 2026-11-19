@@ -122,7 +122,7 @@ limit:
 
 | Field | What it is |
 |---|---|
-| `key` | The same at every read: it names the limit in readings, alerts and `limit.breakdown`. A limit that belongs to one API key is keyed `key-<fingerprint>`, from `credential.secret.fingerprint()`: the status then shows the agents holding that key, and the limit never decides how the account stands. |
+| `key` | The same at every read: it names the limit in readings, alerts and what used it most. A limit that belongs to one API key is keyed `key-<fingerprint>`, from `credential.secret.fingerprint()`: the status then shows the agents holding that key, and the limit never decides how the account stands. |
 | `name` | As the user knows it: `5 hours`, `Weekly`, `Credits`. A limit of money whose name ends in `s` is said as plural, "Credits are used up", by the command line, the MCP server and the app alike. |
 | `scope` | The model it covers, when not all: `Opus`. Join several with "and", as `Claude and GPT`: a breakdown counts the responses of models whose id names any of them. A limit on use no agent here makes, as Anthropic's on other apps, gets a scope that names no model, `Other apps`, so it counts none. A limit with a scope never decides how its account stands while one without does. |
 | `used` | Percent used. For a limit of money, what was spent divided by the limit, times 100. |

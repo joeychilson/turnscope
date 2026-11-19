@@ -2,24 +2,17 @@
 //! passes what it tells on to the app's state, and the app's requests on to
 //! it.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use rune::{AppHandle, Tx};
-use turnscope::alerts::{Alert, Settings};
+use turnscope::alerts::Settings;
 use turnscope::engine::{Engine, Event};
 use turnscope::status::Connection;
 
 use crate::state::State;
 
 static ENGINE: OnceLock<Engine> = OnceLock::new();
-
-thread_local! {
-    /// Alerts the engine told before its first status, kept for it: a note names the account
-    /// and agent from the status, so without it they were missing.
-    static PENDING: RefCell<Vec<Alert>> = const { RefCell::new(Vec::new()) };
-}
 
 /// The `turnscope` binary agents run: the bundle's `Contents/Helpers/turnscope`,
 /// or beside this one when it runs from `target/`, where Cargo builds both.
@@ -47,12 +40,15 @@ pub fn start(home: PathBuf, data: PathBuf, handle: AppHandle<State>) {
 fn took(s: &mut State, event: Event, tx: &mut Tx) -> bool {
     match event {
         Event::Shown(shown, alerts) => {
-            let alerts = PENDING.take().into_iter().chain(alerts).collect();
+            let alerts = std::mem::take(&mut s.alerts_waiting)
+                .into_iter()
+                .chain(alerts)
+                .collect();
             crate::took(s, *shown, alerts, tx);
             true
         }
         Event::Pending(alerts) if s.status.is_none() => {
-            PENDING.with_borrow_mut(|pending| pending.extend(alerts));
+            s.alerts_waiting.extend(alerts);
             false
         }
         Event::Pending(alerts) => {
@@ -155,7 +151,7 @@ pub static DATA: OnceLock<PathBuf> = OnceLock::new();
 mod tests {
     use super::*;
     use crate::preferences::Preferences;
-    use turnscope::alerts::Kind;
+    use turnscope::alerts::{Alert, Kind};
     use turnscope::engine::{Shown, Stopped};
 
     /// The example status in tests/fixtures/status.json, as `--fixture` shows it.
@@ -177,26 +173,22 @@ mod tests {
         }
     }
 
-    fn pending() -> usize {
-        PENDING.with_borrow(Vec::len)
-    }
-
     #[test]
     fn alerts_told_before_the_first_status_wait_for_it() {
         let mut s = State::new(Preferences::default());
         let mut tx = Tx::default();
         let alert = sign_in("opencode-go:key-0123456789abcdef");
         assert!(!took(&mut s, Event::Pending(vec![alert.clone()]), &mut tx));
-        assert_eq!(pending(), 1);
+        assert_eq!(s.alerts_waiting.len(), 1);
         took(
             &mut s,
             Event::Shown(Box::new(example()), Vec::new()),
             &mut tx,
         );
-        assert_eq!(pending(), 0);
+        assert_eq!(s.alerts_waiting.len(), 0);
         // Once there's a status, they're posted as they come.
         took(&mut s, Event::Pending(vec![alert]), &mut tx);
-        assert_eq!(pending(), 0);
+        assert_eq!(s.alerts_waiting.len(), 0);
     }
 
     #[test]

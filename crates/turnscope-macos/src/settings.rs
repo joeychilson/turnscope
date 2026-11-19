@@ -355,7 +355,7 @@ fn agent_row(s: &State, w: &Words, agent: &Agent, ink: &Ink) -> El {
         ));
     }
     let on = changing.unwrap_or(agent.connection) == Connection::Connected;
-    let enabled = changing.is_none() && !s.from_disk_image;
+    let enabled = changing.is_none() && !s.from_disk_image && !s.stopped();
     let id = agent.id.clone();
     line.child(
         switch(

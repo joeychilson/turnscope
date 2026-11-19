@@ -251,14 +251,15 @@ secrets. Cover:
 
 Run what CI runs ([development.md](development.md#test)).
 
-Then add a session of Acme's to the fixture home, `tests/fixtures/home`,
-where the agent keeps it (`.acme/…`) and in its format: a request, and a
-reply or two with usage, made up as the unit tests' are. Date it on Sep 30,
-a day before the tests' clock, as the other agents' sessions are. An agent
-whose history is a database, as OpenCode's is, gets the SQL that builds it
-beside where the database goes, named as the database with `.sql` for
-`.db`: `home()` in `tests/cli.rs` builds each, as it does `opencode.db`
-from `opencode.sql`.
+Then add a session of Acme's to the fixture home,
+`crates/turnscope/tests/fixtures/home`, where the agent keeps it
+(`.acme/…`) and in its format: a request, and a reply or two with usage,
+made up as the unit tests' are. Date it on Sep 30, a day before the tests'
+clock, as the other agents' sessions are. An agent whose history is a
+database, as OpenCode's is, gets the SQL that builds it beside where the
+database goes, named as the database with `.sql` for `.db`: `home()` in
+`crates/turnscope/tests/cli.rs` builds each, as it does `opencode.db` from
+`opencode.sql`.
 
 The new agent and its session change the snapshots that list every agent or
 its usage, such as `connect`, `usage`, `usage-model`, `status.json` and
@@ -285,7 +286,7 @@ Name the agent in:
 - `docs/cli.md`: the agent ids, any `folder_var` or `session_var` in
   [Environment](cli.md#environment), and the examples whose snapshots
   changed, such as the `connect` output, copied from
-  `tests/snapshots/connect.txt`.
+  `crates/turnscope/tests/snapshots/connect.txt`.
 - `docs/mcp.md`: the table of `connect` commands, the agents' folders and
   configuration files, the commands "Who is asking" looks for and any
   `session_var` or `folder_var`.

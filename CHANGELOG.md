@@ -18,6 +18,11 @@ as before, but for what's below.
   few minutes. An older Turnscope still running, such as an agent's MCP
   server started before the update, then writes nothing more and says to
   start it again.
+- **A second copy of the app, open beside another, says to update once a
+  newer Turnscope has written to the data,** as the first does. It went on
+  for good, logging a failure every 5 seconds. A change asked for then
+  says so at once, and Connect is off, as Hide is: it went back with no
+  word why, for up to a minute.
 - **Turnscope keeps a log:** `app.log` in the data directory, with why it
   couldn't keep the data current or read an account's limits. `turnscope
   doctor` shows what it logged in the last day.
@@ -93,16 +98,17 @@ as before, but for what's below.
   name, line and figure, and says whether it's open.
 - **Increase Contrast strengthens the grays, the panel's edge, an open row
   and a bar's track,** as well as amber and red.
-- **A row darkens while pressed. A status that comes while the panel is
-  open moves into place:** figures fade to their new values, and a row
-  moving between the accounts in use and "Used this week" slides there.
+- **A closed row darkens while pressed. A status that comes while the
+  panel is open moves into place:** figures fade to their new values, and
+  a row moving between the accounts in use and "Used this week" slides
+  there.
 - **An account's label, such as an email, sits on its title's line,** and
   reads a little darker. A Settings tab that scrolls fades at its edge.
 - **An expired login says to open its agent to renew it,** in the app and
   on the command line. The offer to connect an agent reads as a row, its
   name over what's wrong, and its button says Reconnect for an agent that
-  uses another copy of Turnscope. A refused login says to open its agent to sign in again
-  everywhere too.
+  uses another copy of Turnscope. A refused login says to open its agent
+  to sign in again everywhere too.
 - **Claude's "Other apps weekly" counts only what other apps used.** Used
   up, it decided the account, held back the other limits' "back"
   notifications, and listed Claude Code's sessions as what used it.
@@ -137,7 +143,11 @@ as before, but for what's below.
   about $62". When what's spent already reads the same, it's left out.
 - **`turnscope guard`, `connect` and `disconnect` never create the
   database or take in the old one.** `guard` says its standing is unknown
-  until something else has.
+  until something else has. When reading the limits again fails, `guard`
+  guards by those read before: it failed with exit code 1.
+- **Credits used up or running out are said as plural** after a limit
+  that lasts: "Credits are used up". The panel's countdowns round to the
+  nearest minute, as the command line's do.
 
 ## 0.2.1
 

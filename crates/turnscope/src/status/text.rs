@@ -32,7 +32,10 @@ fn about(hours: f64) -> String {
 }
 
 fn capital(text: &str) -> String {
-    format!("{}{}", text[..1].to_uppercase(), &text[1..])
+    let mut chars = text.chars();
+    chars.next().map_or(String::new(), |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// `one` or `many`, to agree with `limit`'s name (`Limit::plural`).

@@ -61,6 +61,9 @@ pub struct State {
     pub frozen: Option<i64>,
     /// Whether the app runs from its disk image, where no agent is offered to connect.
     pub from_disk_image: bool,
+    /// Whether the panel is drawn on the system's glass, as the menu bar app does, or on the
+    /// window's background, as a snapshot is.
+    pub live: bool,
     pub preferences: Preferences,
     /// Whether the engine tries again after `failure`. It doesn't once a newer Turnscope has
     /// written to the data.
@@ -79,6 +82,9 @@ pub struct State {
     /// launched the app, to open in place once the status arrives. None once it has, or once
     /// the panel closes.
     pub clicked: Option<String>,
+    /// Alerts the engine told before its first status, kept for it: a note names the account
+    /// and agent from the status, so without it they were missing.
+    pub alerts_waiting: Vec<turnscope::alerts::Alert>,
 
     // Where the panel is.
     pub page: Page,
@@ -118,6 +124,7 @@ impl State {
             used: HashMap::new(),
             frozen: None,
             from_disk_image: false,
+            live: false,
             preferences,
             trying_again: true,
             notifications_allowed: None,
@@ -126,6 +133,7 @@ impl State {
             login: crate::login::Login::Off,
             opening: None,
             clicked: None,
+            alerts_waiting: Vec::new(),
             page: Page::Main,
             forward: true,
             tab: Tab::General,
@@ -302,6 +310,8 @@ impl State {
         self.tab = Tab::General;
         self.open = None;
         self.closed = None;
+        self.grown = true;
+        self.grow_due = None;
         self.unused_open = false;
         self.hidden_shown = false;
         self.tallest = Some(crate::settings::tallest());

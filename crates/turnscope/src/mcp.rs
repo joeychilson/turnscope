@@ -89,7 +89,7 @@ static TOOLS: &[Tool] = &[
         name: "explain_usage",
         title: "Explain usage",
         description: "What used a limit, or what an account's usage cost: by session (default), project, \
-            model or agent, each row with its cost at list prices and its approximate share of the limit, over \
+            model, agent, day, week or month, each row with its cost at list prices and its approximate share of the limit, over \
             the limit's current window or since a time; with all, every account's usage together. Call it when \
             the person asks what used a limit or what something cost.",
         input: r#"{"type": "object", "properties": {

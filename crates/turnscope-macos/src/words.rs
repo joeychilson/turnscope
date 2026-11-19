@@ -143,24 +143,10 @@ impl<'a> Words<'a> {
         self.date(a) == self.date(b)
     }
 
-    fn stretch(&self, millis: i64) -> String {
-        let minutes = (millis / 60_000).max(0);
-        let (hours, rest) = (minutes / 60, minutes % 60);
-        if hours >= 24 {
-            return if hours % 24 == 0 {
-                format!("{}d", hours / 24)
-            } else {
-                format!("{}d {}h", hours / 24, hours % 24)
-            };
-        }
-        if hours > 0 {
-            return if rest > 0 {
-                format!("{hours}h {rest}m")
-            } else {
-                format!("{hours}h")
-            };
-        }
-        format!("{rest}m")
+    /// How long until `at`, as the command line says it: "2h 10m". Past is "0m": a status can
+    /// be minutes old, as only one that changed is told.
+    fn until(&self, at: i64) -> String {
+        turnscope::time::span((at - self.now).max(0))
     }
 
     /// When `moment` is, as the panel says it: "in 2h 10m", "3 PM", "Thu 9 AM", "Oct 30".
@@ -171,7 +157,7 @@ impl<'a> Words<'a> {
     /// When `at` is, as near as `horizon` says, with the day and month spelled out if `full`.
     fn at_horizon(&self, at: i64, horizon: Horizon, full: bool) -> String {
         match horizon {
-            Horizon::Soon => format!("in {}", self.stretch(at - self.now)),
+            Horizon::Soon => format!("in {}", self.until(at)),
             Horizon::Today => self.time(at),
             Horizon::ThisWeek => {
                 let day = if self.tomorrow(at) {
@@ -581,14 +567,16 @@ impl<'a> Words<'a> {
         };
         match &other.outlook {
             Outlook::UsedUp { back } => format!(
-                "{sentence} {} is used up{}.",
+                "{sentence} {} {} used up{}.",
                 self.name(other),
+                if self.plural(other) { "are" } else { "is" },
                 back.as_ref()
                     .map_or(String::new(), |b| format!(", back {}", self.at(b)))
             ),
             Outlook::RunsOut { likely, .. } => format!(
-                "{sentence} {} runs out {}.",
+                "{sentence} {} {} out {}.",
                 self.name(other),
+                if self.plural(other) { "run" } else { "runs" },
                 self.at(likely)
             ),
             _ => sentence,
@@ -728,7 +716,7 @@ impl<'a> Words<'a> {
                 format!("Back {}", self.clock(b, false))
             }),
             Outlook::RunsOut { likely, .. } if likely.horizon == Horizon::Soon => {
-                self.stretch(likely.at - self.now)
+                self.until(likely.at)
             }
             _ => self.left(limit),
         }
@@ -783,7 +771,7 @@ impl<'a> Words<'a> {
     /// when another account in use has the same title. A notification stands alone, so unlike
     /// the headline it can't point to a row. Only an account in use counts: an idle account
     /// with the same title can't be taken for one in use.
-    pub fn called_among(&self, account: &Account, accounts: &[Account]) -> String {
+    fn called_among(&self, account: &Account, accounts: &[Account]) -> String {
         let in_use: Vec<Account> = accounts.iter().filter(|a| a.in_use).cloned().collect();
         self.called(account, account.twinned(&in_use))
     }
@@ -1160,7 +1148,8 @@ mod tests {
         assert_eq!(w.when(at("2026-10-01T00:40:00Z")), "tonight");
         assert_eq!(w.ago(at("2026-09-30T00:00:00Z")), "12 AM");
         assert_eq!(w.ago(at("2026-09-29T23:59:00Z")), "yesterday 11:59 PM");
-        assert_eq!(w.stretch(52 * 3_600_000), "2d 4h");
+        assert_eq!(w.until(w.now + 52 * 3_600_000), "2d 4h");
+        assert_eq!(w.until(w.now - 60_000), "0m");
     }
 
     #[test]
@@ -1743,6 +1732,13 @@ mod tests {
         assert_eq!(
             w.verdict(&[&mixed], false).1,
             "At this pace, Claude Max's weekly lasts until it resets."
+        );
+        // Credits used up are said as plural.
+        let spent = credits(0, 30.0, 0.0, used_up(None));
+        let spent = account(vec![week.clone(), spent]);
+        assert_eq!(
+            w.verdict(&[&spent], false).1,
+            "At this pace, Claude Max's weekly lasts until it resets. Credits are used up."
         );
         // A key's own limit already says whose key it is.
         let held = Limit {

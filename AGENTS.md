@@ -35,9 +35,9 @@ runs.
 
 | When you change | Also update |
 |---|---|
-| A command or flag of the command line, or its output | `docs/cli.md`; its case in `tests/cli.rs`; the README's command line section if it's shown there |
+| A command or flag of the command line, or its output | `docs/cli.md`; its case in `crates/turnscope/tests/cli.rs`; the README's command line section if it's shown there |
 | An MCP tool, its description or inputs, or its answer | `docs/mcp.md` |
-| The status, an alert, or what the engine tells an app | The Rust types and their doc comments; `tests/fixtures/status.json` for a status field; each app's `engine.rs` for an `engine::Event` |
+| The status, an alert, or what the engine tells an app | The Rust types and their doc comments; `crates/turnscope/tests/fixtures/status.json` for a status field; each app's `engine.rs` for an `engine::Event` |
 | An agent, or how an agent's files are read | [docs/adding-an-agent.md](docs/adding-an-agent.md), which lists the docs to update. Raise `ingest::READERS` when a reader would read a file it read before differently |
 | A provider | [docs/adding-a-provider.md](docs/adding-a-provider.md), which lists the docs to update |
 | The forecast | The decision written in `forecast.rs`, [architecture.md](docs/architecture.md#forecast); run the backtest |

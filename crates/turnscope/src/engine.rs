@@ -187,10 +187,12 @@ impl Engine {
             if inner.newer().is_some() {
                 return;
             }
-            if let Some(showing) = inner.showing().as_ref()
-                && let Err(error) = alerts::acknowledge(&showing.db, &ids)
-            {
-                log(&inner.data, &format!("acknowledging alerts: {error}"));
+            let done = match inner.showing().as_ref() {
+                Some(showing) => alerts::acknowledge(&showing.db, &ids).map(|_| ()),
+                None => return,
+            };
+            if let Err(error) = done {
+                inner.failed("acknowledging alerts", error);
             }
         });
     }
@@ -250,7 +252,7 @@ impl Engine {
                     None => return,
                 };
                 if let Err(error) = done {
-                    log(&inner.data, &format!("{name}: {error}"));
+                    inner.failed(name, error);
                 }
             }
             inner.give(Tell::Always);
@@ -327,8 +329,19 @@ impl Inner {
                     }
                 }
                 // Another app keeps it current: this one shows what that
-                // one writes, until it's gone.
+                // one writes, until it's gone. It writes nothing, so it
+                // looks for a newer Turnscope's writes itself: otherwise,
+                // behind a newer app, it failed to raise alerts every 5 s
+                // for good and never said to update.
                 Ok(None) => {
+                    let newer = match self.showing().as_ref() {
+                        Some(showing) => crate::db::writing(&showing.db),
+                        None => Ok(()),
+                    };
+                    if let Err(error @ Error::Newer(_)) = newer {
+                        self.stopped(error);
+                        return;
+                    }
                     self.kept(None);
                     self.give(Tell::IfChanged);
                 }
@@ -368,7 +381,7 @@ impl Inner {
         if new {
             self.give(Tell::IfChanged);
         }
-        !self.ended()
+        !self.ended() && self.newer().is_none()
     }
 
     /// Tell the app why the data isn't kept current, and log it; whether
@@ -383,6 +396,19 @@ impl Inner {
             trying_again: !newer,
         }));
         newer
+    }
+
+    /// Log why `doing` failed; or, once a newer Turnscope has written to the
+    /// data, stop for good and say so at once, not at the next catch-up, a
+    /// minute later at most: until then a change asked for went back with
+    /// no word why.
+    fn failed(&self, doing: &str, error: Error) {
+        match error {
+            Error::Newer(_) => {
+                self.stopped(error);
+            }
+            error => log(&self.data, &format!("{doing}: {error}")),
+        }
     }
 
     /// What `Event::Kept` last said, if anything.
@@ -437,7 +463,7 @@ impl Inner {
         match next {
             Ok(Some((shown, alerts))) => (self.tell)(Event::Shown(Box::new(shown), alerts)),
             Ok(None) => {}
-            Err(error) => log(&self.data, &error.to_string()),
+            Err(error) => self.failed("working out the status", error),
         }
     }
 
@@ -569,10 +595,14 @@ fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Resul
     // (12 s for a made-up one of 5,000 files, 176 MB), the app showed no
     // account until it ended. The catch-up then finds the limits read.
     if crate::online() {
-        let read = crate::limits::refresh(&mut db, home).unwrap_or_else(|error| {
-            log(data, &error.to_string());
-            true
-        });
+        let read = match crate::limits::refresh(&mut db, home) {
+            Ok(read) => read,
+            Err(error @ Error::Newer(_)) => return Err(error),
+            Err(error) => {
+                log(data, &error.to_string());
+                true
+            }
+        };
         if read && !told(Caught::Limits) {
             return Ok(());
         }
@@ -665,7 +695,8 @@ impl Showing {
     /// The status now, with the alerts it raised, if what it shows changed
     /// since the last one told, or `tell` says to tell it anyway. One whose
     /// alerts were raised is recorded as told; otherwise it's told without
-    /// them, and the next raises them again.
+    /// them, and the next raises them again. None is once a newer Turnscope
+    /// has written: that's the error.
     ///
     /// A status is as of its minute, so it differs from the last told each
     /// minute; one that differs only so isn't told, over telling one each
@@ -706,6 +737,7 @@ impl Showing {
                 self.shown = Some(shown.clone());
                 Ok(Some((shown, raised)))
             }
+            Err(error @ Error::Newer(_)) => Err(error),
             Err(error) => {
                 log(&self.data, &format!("raising alerts: {error}"));
                 Ok(Some((shown, Vec::new())))
@@ -1029,6 +1061,26 @@ mod tests {
             logged.trim_end().ends_with("Z it failed at once"),
             "{logged}"
         );
+    }
+
+    /// An app that another keeps the data current for stops too, and says
+    /// why, though it writes nothing itself.
+    #[test]
+    fn a_second_app_stops_once_a_newer_turnscope_writes() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = read_just_now(data.path());
+        let _other = lock(data.path()).unwrap().expect("no app holds the lock");
+        let (_engine, told) = start(data.path(), home.path());
+        next(&told, 10, |event| {
+            matches!(event, Event::Kept(None)).then_some(())
+        });
+        db.execute_batch(NEWER[1]).unwrap();
+        let stopped = next(&told, 10, |event| match event {
+            Event::Kept(Some(stopped)) => Some(stopped),
+            _ => None,
+        });
+        assert_eq!(stopped.why, crate::db::newer().to_string());
+        assert!(!stopped.trying_again);
     }
 
     /// One app keeps a data directory current at a time, and the next can

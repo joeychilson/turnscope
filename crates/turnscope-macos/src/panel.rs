@@ -15,10 +15,6 @@ use crate::words::Words;
 /// The key of the panel's frame as a snapshot draws it, which the image is cut to.
 pub const FRAME: &str = "frame";
 
-/// Whether the panel is drawn on the system's glass, as the menu bar app does, or on the
-/// window's background, as a snapshot is.
-pub static LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let ink = Ink::new(
         cx.system_dark(),
@@ -31,14 +27,14 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     cx.web_focus();
     let pages = pages(s, &ink);
     // One spring and one hover fade for everything in the panel, which inherits them.
-    panel(pages, &ink)
+    panel(pages, s.live, &ink)
         .motion(SPRING)
         .hover_motion_within(HOVER, HOVER)
 }
 
 /// The panel's frame around `pages`, as the menu bar app draws it or as a snapshot does.
-fn panel(pages: El, ink: &Ink) -> El {
-    if LIVE.load(std::sync::atomic::Ordering::Relaxed) {
+fn panel(pages: El, live: bool, ink: &Ink) -> El {
+    if live {
         // The panel hangs at the top of a see-through window that runs to the bottom of the
         // screen (`menu_bar::panel_place`), and grows and shrinks inside it, as the Swift
         // app's did, with its own corners, edge and shadow. A window that followed the panel's
@@ -65,7 +61,7 @@ fn panel(pages: El, ink: &Ink) -> El {
                     .system_material(rune::SystemMaterial::Popover)
                     .radius(14.0)
                     .continuous_corners()
-                    .border(0.5, ink.edge)
+                    .border(0.5, ink.quaternary)
                     // SwiftUI's `shadow(radius: 18, y: 8)`, black at 28%.
                     .shadow(8.0, 36.0, Color::BLACK.alpha(0.28))
                     // A click on the panel, between its controls, stays on it.
@@ -83,7 +79,7 @@ fn panel(pages: El, ink: &Ink) -> El {
                 .fill(ink.bg)
                 .radius(14.0)
                 .continuous_corners()
-                .border(0.5, ink.edge)
+                .border(0.5, ink.quaternary)
                 .clip_rounded(14.0),
         ),
     )
@@ -455,17 +451,16 @@ fn account_row(s: &State, w: &Words, a: &Account, headlined: bool, ink: &Ink) ->
                 }
             });
         });
+    // A click on what opened closes it too, unshaded, as one on the open header does.
     if openable {
         let id = a.id.clone();
-        body = body
-            .press(ink.press(ink.row))
-            .on_press_tx(move |s: &mut State, tx: &mut Tx| toggle_open(s, &id, tx));
+        body = body.on_press_tx(move |s: &mut State, tx: &mut Tx| toggle_open(s, &id, tx));
     }
     body
 }
 
 /// Opens the account `id` in place, closing any other, or closes it if it's open.
-pub fn toggle_open(s: &mut State, id: &str, tx: &mut Tx) {
+fn toggle_open(s: &mut State, id: &str, tx: &mut Tx) {
     // The row's fill lands at once, while its height springs. Faded in, the open part came
     // in lighter than the part clicked, 252 against 242 of 255, and matched 0.2 s later
     // (measured 2026-11-18).
@@ -840,7 +835,7 @@ fn connect_offer(s: &State, w: &Words, ink: &Ink) -> Option<El> {
         };
         let connect_id = id.clone();
         line.child(
-            pill("connect", verb, true, true, ink)
+            pill("connect", verb, true, !s.stopped(), ink)
                 .label(format!("{verb} {}", agent.name))
                 .help(help)
                 .on_press_tx(move |s: &mut State, _: &mut Tx| crate::connect(s, &connect_id, true)),

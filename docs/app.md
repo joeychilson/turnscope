@@ -390,7 +390,8 @@ as an option's value, so `--open --data <dir>` opens nothing in the panel.
   the status with its agents. Its words are as of the status's `at`, so it
   reads the same whenever it's drawn. Changes made in it show on screen and
   go nowhere: nothing is written to the app's defaults, the login items or
-  Sparkle's settings. To see a first launch while the history is read, with
+  Sparkle's settings, and neither Sparkle nor notifications start. To see
+  a first launch while the history is read, with
   no account known to be in use:
 
   ```sh

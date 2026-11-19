@@ -139,8 +139,8 @@ way.
 
 Every input is optional. An input the schema doesn't list is an error.
 
-The examples come from `tests/snapshots/mcp.json`: synthetic accounts and
-sessions, with the clock at Thu Oct 1 12:00 UTC.
+The examples come from `crates/turnscope/tests/snapshots/mcp.json`:
+synthetic accounts and sessions, with the clock at Thu Oct 1 12:00 UTC.
 
 ### `check_limits`
 
@@ -219,7 +219,8 @@ SuperGrok (me@example.com) · via Grok Build
 
 An agent calls it when you ask what used a limit or what something cost. It
 breaks down one account's usage in a limit's current window, or since a
-time, by session, project, model or agent; or, with `all`, every account's
+time, by session, project, model, agent, day, week or month; or, with
+`all`, every account's
 together, as for "what did I spend across my agents".
 
 | Input | Type | Default | Meaning |

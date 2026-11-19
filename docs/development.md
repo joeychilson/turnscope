@@ -80,19 +80,20 @@ it here.
 | End to end | `crates/turnscope/tests/cli.rs` | The text of `status`, `usage`, `accounts`, `connect` and `doctor`, and the `--json` of `status`, `usage`, `usage --limit`, `accounts` and `connect`, by snapshot, with a session of every agent in the usage; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session |
 | App | `#[cfg(test)]` in `crates/turnscope-macos` | The wording, what the panel lists, launch arguments |
 
-**Fixtures.** `tests/cli.rs` reads a home (`tests/fixtures/home`) with two
-synthetic Claude Code sessions and one of each other agent, and writes a
-database of four synthetic accounts in SQL. It copies the home to
-`target/tmp/home` once a run and builds each database there from the `.sql`
-file beside it, as OpenCode's `opencode.db` from `opencode.sql`, so no
-binary database is kept in the repository. `tests/fixtures/status.json` is
-a made-up status, which the app's tests, `--fixture` and the README's
+**Fixtures.** `crates/turnscope/tests/cli.rs` reads a home
+(`crates/turnscope/tests/fixtures/home`) with two synthetic Claude Code
+sessions and one of each other agent, and writes a database of four
+synthetic accounts in SQL. It copies the home to `target/tmp/home` once a
+run and builds each database there from the `.sql` file beside it, as
+OpenCode's `opencode.db` from `opencode.sql`, so no binary database is kept
+in the repository. `crates/turnscope/tests/fixtures/status.json` is a
+made-up status, which the app's tests, `--fixture` and the README's
 screenshots use. Fixtures never hold real ids, emails, keys or session
 text.
 
 **Snapshots.** The end-to-end tests compare each answer with its file in
-`tests/snapshots/`. After a deliberate change to output, write them again
-and review the diff:
+`crates/turnscope/tests/snapshots/`. After a deliberate change to output,
+write them again and review the diff:
 
 ```sh
 TURNSCOPE_BLESS=1 cargo test --test cli
@@ -143,7 +144,7 @@ with.
 | `scripts/sparkle.sh` | Fetches Sparkle's framework and tools into `target/sparkle/`, at the version it names, checked against its checksum. `app.sh` runs it. |
 | `scripts/sign-release.sh` | Signs the app `app.sh --release` built, notarizes it, and makes `Turnscope-<version>.dmg` and `appcast.xml` beside it. Its header lists the environment variables it reads. |
 | `scripts/check-app.sh [app]` | Checks that a built app's `turnscope`, `mcp` and panel work, for each architecture this Mac can run, off the network and in throwaway folders. The default app is `target/dist/Turnscope.app`. |
-| `scripts/screenshots.sh` | Draws the README's screenshots, light and dark, from `tests/fixtures/status.json` into `.github/screenshots/`. |
+| `scripts/screenshots.sh` | Draws the README's screenshots, light and dark, from `crates/turnscope/tests/fixtures/status.json` into `.github/screenshots/`. |
 | `scripts/release-notes.sh X.Y.Z` | Prints the version's section of `CHANGELOG.md`, without its heading. Fails if the section is missing or empty. |
 
 To build and sign a release on a Mac, run `scripts/app.sh --release &&

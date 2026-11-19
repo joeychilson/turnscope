@@ -96,7 +96,6 @@ struct SignedIn {
 /// Read every account's limits, when it's five minutes since any process
 /// last did; whether it did.
 pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
-    crate::db::writing(db)?;
     let now = now();
     if !claim(db, now)? {
         return Ok(false);
@@ -129,8 +128,8 @@ fn waiting(db: &Connection, now: i64) -> Result<HashSet<String>> {
 }
 
 /// Claim reading the limits if they're due, in one statement, so no two
-/// processes read them at once.
-fn claim(db: &Connection, now: i64) -> Result<bool> {
+/// processes read them at once. Not once a newer Turnscope has written.
+fn claim(db: &mut Connection, now: i64) -> Result<bool> {
     // Looked at first: claiming waits for the write lock, which a hook
     // shouldn't when nothing is due.
     let last: Option<i64> = db.query_row("SELECT limits_at FROM state", [], |row| row.get(0))?;
@@ -138,11 +137,13 @@ fn claim(db: &Connection, now: i64) -> Result<bool> {
         return Ok(false);
     }
     // Claimed more than `DUE` ahead of now is a clock set back since.
-    let claimed = db.execute(
+    let tx = crate::db::write(db)?;
+    let claimed = tx.execute(
         "UPDATE state SET limits_at = ?1
          WHERE limits_at IS NULL OR limits_at <= ?1 - ?2 OR limits_at > ?1 + ?2",
         params![now, DUE],
     )?;
+    tx.commit()?;
     Ok(claimed > 0)
 }
 
@@ -696,8 +697,24 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
             limits.plan = limits.plan.take().or(read.plan);
             limits.readings.extend(read.readings);
         }
-        Err(error) if problem != Some(Problem::SignIn) => problem = Some(error),
-        Err(_) => {}
+        // A refusal is kept over any other problem, and the longest
+        // `Retry-After` over none or a shorter one.
+        Err(error) => {
+            problem = Some(match (problem.take(), error) {
+                (Some(Problem::SignIn), _) | (_, Problem::SignIn) => Problem::SignIn,
+                (
+                    Some(Problem::Unavailable {
+                        retry_after: before,
+                        ..
+                    }),
+                    Problem::Unavailable { why, retry_after },
+                ) => Problem::Unavailable {
+                    why,
+                    retry_after: retry_after.max(before),
+                },
+                (_, error) => error,
+            })
+        }
     };
     for read in own {
         add(read);
@@ -802,6 +819,10 @@ mod tests {
             match secret {
                 refused if refused.contains("refused") => Err(Problem::SignIn),
                 down if down.contains("down") => Err(Problem::unavailable("down")),
+                busy if busy.contains("busy") => Err(Problem::Unavailable {
+                    why: "busy".to_owned(),
+                    retry_after: Some(600_000),
+                }),
                 key => Ok(Limits {
                     plan: None,
                     readings: vec![limit(&format!("key-{key}"))],
@@ -905,7 +926,8 @@ mod tests {
 
     /// A key that can't be read leaves its limit out, so the account isn't
     /// shown as read in full; what was read is kept. A refusal is said over
-    /// a provider out of reach.
+    /// a provider out of reach, and the longest wait a provider asked for
+    /// over none.
     #[test]
     fn a_key_that_cant_be_read_is_said() {
         let (_, mut held) = fake(Kind::ApiKey, &["a", "down b"]);
@@ -914,6 +936,14 @@ mod tests {
         assert_eq!(limits.problem, Some(Problem::unavailable("down")));
         let (_, mut held) = fake(Kind::ApiKey, &["down a", "refused b", "down c"]);
         assert_eq!(read(&mut held, now()).problem, Some(Problem::SignIn));
+        let (_, mut held) = fake(Kind::ApiKey, &["busy a", "down b"]);
+        assert_eq!(
+            read(&mut held, now()).problem,
+            Some(Problem::Unavailable {
+                why: "down".to_owned(),
+                retry_after: Some(600_000),
+            })
+        );
     }
 
     /// The fake provider's account, as signed in to in one folder.
