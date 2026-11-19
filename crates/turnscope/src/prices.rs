@@ -176,17 +176,25 @@ fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> R
     }
 }
 
+/// How long a claim to ask models.dev holds before it's taken in.
+const CLAIMED: i64 = 2 * crate::time::MINUTE;
+
 /// Claim asking models.dev if it's due, in one statement, so no two
 /// processes ask at once. Not once a newer Turnscope has written.
+///
+/// Claimed for two minutes, longer than models.dev is waited for, and for
+/// six hours once its catalog is taken in (`take`). Claimed for six hours
+/// at once, a process that ended while models.dev was asked, as when the
+/// app is quit in its first minute, left every cost unknown until then.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
     let tx = crate::db::write(db)?;
     // Claimed up to `limits::DUE` ahead of now is another process's, which
     // read the time a moment later; further ahead, as for limits, a clock
     // set back since.
     let claimed = tx.execute(
-        "UPDATE state SET prices_at = ?1
+        "UPDATE state SET prices_at = ?1 - ?2 + ?4
          WHERE prices_at IS NULL OR prices_at <= ?1 - ?2 OR prices_at > ?1 + ?3",
-        params![now, 6 * crate::time::HOUR, crate::limits::DUE],
+        params![now, 6 * crate::time::HOUR, crate::limits::DUE, CLAIMED],
     )?;
     tx.commit()?;
     Ok(claimed > 0)
@@ -274,6 +282,7 @@ fn take(db: &mut Connection, catalog: &Catalog, now: i64) -> Result<()> {
     }
     drop(insert);
     crate::ingest::price_again(&tx, &first)?;
+    tx.execute("UPDATE state SET prices_at = ?1", [now])?;
     tx.commit()?;
     Ok(())
 }
@@ -463,8 +472,30 @@ mod tests {
             })
             .unwrap_err();
             assert_eq!(error.to_string(), crate::db::newer().to_string());
-            assert!((began..=crate::now()).contains(&asked()));
+            let claimed = asked() + 6 * crate::time::HOUR - CLAIMED;
+            assert!((began..=crate::now()).contains(&claimed));
         }
+    }
+
+    /// A process that ends while models.dev is asked leaves it to be asked
+    /// again two minutes later, and one that takes its catalog in, six
+    /// hours later.
+    #[test]
+    fn models_dev_is_claimed_for_two_minutes_until_its_catalog_is_taken_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let now = crate::now();
+        assert!(claim(&mut db, now).unwrap());
+        assert!(!claim(&mut db, now + CLAIMED - 1).unwrap());
+        assert!(claim(&mut db, now + CLAIMED).unwrap());
+
+        db.execute("UPDATE state SET prices_at = NULL", []).unwrap();
+        let began = crate::now();
+        assert!(refresh_from(&mut db, || Ok(listing("zai", "glm-5.3", Value::Null))).unwrap());
+        let asked: i64 = db
+            .query_row("SELECT prices_at FROM state", [], |row| row.get(0))
+            .unwrap();
+        assert!((began..=crate::now()).contains(&asked));
     }
 
     /// A catalog listing `model` of `provider` at `cost`.

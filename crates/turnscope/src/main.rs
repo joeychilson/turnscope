@@ -186,7 +186,7 @@ fn main() -> ExitCode {
             ExitCode::from(match error {
                 Error::Usage(_) => 2,
                 Error::NotFound(_) => 3,
-                Error::Failed(_) | Error::Newer(_) => 1,
+                Error::Failed(_) | Error::Newer(_) | Error::Busy(_) => 1,
             })
         }
     }

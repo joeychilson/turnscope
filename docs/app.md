@@ -188,9 +188,12 @@ the top:
    Reconnect), and a round button as tall that stops offering it for that
    agent. It stands apart from the accounts, as a group of its own.
 6. **The footer**: "Not up to date · trying again" while the data can't be
-   kept current, or "Reading your agents' history…" during the first read.
-   Then "Update available" when a scheduled check found one
-   ([Updates](#updates)), Settings (⌘,) and Quit (⌘Q).
+   kept current, "Not up to date · update Turnscope" once a newer Turnscope
+   has written to it ("· start Turnscope again" when it was this one,
+   updated while it ran), or "Reading your agents' history…" during the
+   first read. Then "Update available" when a scheduled check found one
+   ([Updates](#updates)), Settings (⌘,) and Quit (⌘Q). The words are cut
+   short before the buttons are.
 
 Before the first status, the panel shows "Reading your agents' history…",
 or "Turnscope can't read its data" with the reason. Settings → Agents and
@@ -402,7 +405,7 @@ as an option's value, so `--open --data <dir>` opens nothing in the panel.
   ```
 - **`--snapshot`** draws the status in `--fixture`, or else the status the
   engine works out from `--data` and `--home` as they are, reading only:
-  it raises no alert and catches nothing up. With `--open`, it opens a row
+  it makes no database, raises no alert and catches nothing up. With `--open`, it opens a row
   or the fold first, or draws Settings at the tab named. It draws the
   window background where the panel has glass, the panel at its full height
   with nothing scrolled, and no sessions under an open account.

@@ -810,16 +810,17 @@ impl<'a> Words<'a> {
                 format!("back {}", self.clock(b, true))
             }),
             Outlook::RunsOut { likely, .. } if likely.horizon == Horizon::Soon => {
-                format!("runs out in {}", self.spoken(likely.at - self.now))
+                format!("runs out in {}", self.spoken(likely.at))
             }
             Outlook::RunsOut { .. } => format!("{} left, running out", self.left(limit)),
             Outlook::Lasts { .. } | Outlook::Unknown { .. } => format!("{} left", self.left(limit)),
         }
     }
 
-    /// A stretch of time as it's said: "1 hour 5 minutes".
-    fn spoken(&self, millis: i64) -> String {
-        let minutes = (millis / 60_000).max(0) as usize;
+    /// How long until `at`, as it's said: "1 hour 5 minutes". Rounded to the minute, as
+    /// `until` is, so VoiceOver says what's shown.
+    fn spoken(&self, at: i64) -> String {
+        let minutes = (((at - self.now).max(0) + 30_000) / 60_000) as usize;
         let (hours, rest) = (minutes / 60, minutes % 60);
         if hours == 0 {
             return self.counted(rest, "minute");
@@ -1457,6 +1458,14 @@ mod tests {
         }
         // Its last minute is a minute, not none.
         assert_eq!(as_of(at("2026-09-30T13:59:30Z")).figure(&claude), "1m");
+        // Shown and said alike, to the nearest minute.
+        let soon = account(vec![limit(runs_out_at(moment(
+            "2026-09-30T12:49:40Z",
+            Soon,
+        )))]);
+        let w = as_of(noon());
+        assert_eq!(w.figure(&soon), "50m");
+        assert_eq!(w.spoken_figure(&soon), "runs out in 50 minutes");
     }
 
     #[test]

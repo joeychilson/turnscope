@@ -125,7 +125,10 @@ way.
   reading history for over a second, as the app does at its first launch,
   the tool still answers from what's known, and ends by saying it's as of the
   last read, and why: once an update has replaced the binary the server
-  runs, `Turnscope was updated after this one started; start it again`. A call that then fails says why first, since its query
+  runs, `Turnscope was updated after this one started; start it again`.
+  While all of history is read, the first time and after an update, it
+  ends instead by saying its usage is only part of it, and to ask again
+  in a few minutes. A call that then fails says why first, since its query
   may no longer fit a schema a newer Turnscope changed: `What's new
   couldn't be read first: a newer Turnscope has updated this data; update
   Turnscope. Then this failed: …`.

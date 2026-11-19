@@ -854,8 +854,10 @@ fn connect_offer(s: &State, w: &Words, ink: &Ink) -> Option<El> {
 }
 
 /// Settings and Quit, and how current the data is. While the data can't be kept current, it
-/// says what's shown may be out of date. While the agents' history is first read, it says
-/// that. When a scheduled check found an update, a button beside Settings shows it.
+/// says what's shown may be out of date, and to update Turnscope once a newer one has written
+/// to it, or to start it again once it was updated while it ran. While the agents' history is first read, it says that. When a scheduled check found
+/// an update, a button beside Settings shows it. The words are cut short before the buttons
+/// are: beside "Update available", they ran past the panel's edge and hid Quit.
 fn footer(s: &State, ink: &Ink) -> El {
     let mut footer = row().key("footer").gap(2.0).w_full().center_y();
     if s.status.is_some()
@@ -863,14 +865,20 @@ fn footer(s: &State, ink: &Ink) -> El {
     {
         let said = if s.trying_again {
             "Not up to date · trying again"
+        } else if failure == turnscope::db::UPDATED_SINCE {
+            // This copy was replaced while it ran, as an update by hand does.
+            "Not up to date · start Turnscope again"
         } else {
-            "Not up to date"
+            "Not up to date · update Turnscope"
         };
         footer = footer.child(appears(
             text(said)
                 .key("stale")
                 .font(SMALL)
                 .color(ink.secondary)
+                .truncate()
+                .shrink()
+                .min_w(0.0)
                 .help(failure)
                 .label(format!(
                     "Not up to date: {failure}.{}",
@@ -885,9 +893,18 @@ fn footer(s: &State, ink: &Ink) -> El {
                 .key("reading")
                 .gap(6.0)
                 .center_y()
+                .shrink()
+                .min_w(0.0)
                 .pl(12.0)
                 .child(spinner(ink))
-                .child(text("Reading your agents' history…").font(SMALL).color(ink.secondary))
+                .child(
+                    text("Reading your agents' history…")
+                        .font(SMALL)
+                        .color(ink.secondary)
+                        .truncate()
+                        .shrink()
+                        .min_w(0.0),
+                )
                 .help("Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.")
                 .label("Reading your agents' history"),
         ));

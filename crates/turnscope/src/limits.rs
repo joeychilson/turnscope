@@ -19,9 +19,17 @@ pub const DUE: i64 = 5 * crate::time::MINUTE;
 pub const BACKED_OFF: i64 = 30 * crate::time::MINUTE;
 
 /// How long an account waits for its next read after `reads` reads in a
-/// row found its provider out of reach, busy or not understood: [`DUE`],
-/// doubled with each read after the first, up to [`BACKED_OFF`], and as
-/// long as the provider asked, up to that too. A read that works ends it.
+/// row found its provider busy or not understood: [`DUE`], doubled with
+/// each read after the first, up to [`BACKED_OFF`], and as long as the
+/// provider asked, up to that too. A read that works ends it.
+///
+/// Only a provider that answered is backed off. With no answer, as when the
+/// Mac is offline, the next read is in five minutes: backed off too, limits
+/// stayed unread for up to half an hour after the Mac was back online. With
+/// a stand-in provider out of reach for 36 minutes, the first read that
+/// worked was at minute 65 (measured 2026-11-18). The cost: a provider
+/// that takes the read's 15 s without answering is asked every five
+/// minutes, as before.
 ///
 /// Chosen over asking again in five minutes whatever the answer, as before:
 /// a provider down, or answering 429, was asked every five minutes for as
@@ -35,6 +43,19 @@ pub const BACKED_OFF: i64 = 30 * crate::time::MINUTE;
 fn backoff(reads: i64, retry_after: Option<i64>) -> i64 {
     let doubled = DUE.saturating_mul(1_i64 << (reads - 1).clamp(0, 8));
     doubled.max(retry_after.unwrap_or(0)).min(BACKED_OFF)
+}
+
+/// Whether `problem` came with an answer, and how long it asked to be left:
+/// of two, the one kept (`keys`).
+fn asked_for(problem: &Problem) -> (bool, Option<i64>) {
+    match problem {
+        Problem::Unavailable {
+            answered,
+            retry_after,
+            ..
+        } => (*answered, *retry_after),
+        Problem::SignIn | Problem::Expired => (false, None),
+    }
 }
 
 /// How long an account's read is waited for, all its requests together.
@@ -381,13 +402,25 @@ fn failing(
     let (was, reads, said) = before.unwrap_or_default();
     let again = was.as_deref() == Some(problem_name(problem));
     let reads = if again { reads.unwrap_or(0) + 1 } else { 1 };
-    let (why, retry_at) = match problem {
-        // Some keys read, the provider answered: it isn't backed off.
-        Problem::Unavailable { why, .. } if read.limits.is_some() => (Some(why.as_str()), None),
-        Problem::Unavailable { why, retry_after } => {
-            (Some(why.as_str()), Some(now + backoff(reads, *retry_after)))
-        }
-        _ => (None, None),
+    // Some keys read, the provider answered: it isn't backed off. Nor is
+    // one that didn't answer. Neither is counted, so the first read backed
+    // off after them waits five minutes: counted, one after an hour offline
+    // waited thirty.
+    let (why, retry_at, reads) = match problem {
+        Problem::Unavailable {
+            why,
+            answered: false,
+            ..
+        } => (Some(why.as_str()), None, 0),
+        Problem::Unavailable { why, .. } if read.limits.is_some() => (Some(why.as_str()), None, 0),
+        Problem::Unavailable {
+            why, retry_after, ..
+        } => (
+            Some(why.as_str()),
+            Some(now + backoff(reads, *retry_after)),
+            reads,
+        ),
+        _ => (None, None, reads),
     };
     tx.execute(
         "INSERT OR REPLACE INTO failing (account, reads, why, retry_at) VALUES (?1, ?2, ?3, ?4)",
@@ -697,21 +730,14 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
             limits.plan = limits.plan.take().or(read.plan);
             limits.readings.extend(read.readings);
         }
-        // A refusal is kept over any other problem, and the longest
-        // `Retry-After` over none or a shorter one.
+        // A refusal is kept over any other problem. Of two others, an answer
+        // is kept over none, then the longest `Retry-After` over none or a
+        // shorter one, with its reason, so the log says why it waits. Only
+        // an answer has a `Retry-After`, so the one kept waits longest.
         Err(error) => {
             problem = Some(match (problem.take(), error) {
                 (Some(Problem::SignIn), _) | (_, Problem::SignIn) => Problem::SignIn,
-                (
-                    Some(Problem::Unavailable {
-                        retry_after: before,
-                        ..
-                    }),
-                    Problem::Unavailable { why, retry_after },
-                ) => Problem::Unavailable {
-                    why,
-                    retry_after: retry_after.max(before),
-                },
+                (Some(before), error) if asked_for(&before) > asked_for(&error) => before,
                 (_, error) => error,
             })
         }
@@ -822,6 +848,7 @@ mod tests {
                 busy if busy.contains("busy") => Err(Problem::Unavailable {
                     why: "busy".to_owned(),
                     retry_after: Some(600_000),
+                    answered: true,
                 }),
                 key => Ok(Limits {
                     plan: None,
@@ -927,7 +954,7 @@ mod tests {
     /// A key that can't be read leaves its limit out, so the account isn't
     /// shown as read in full; what was read is kept. A refusal is said over
     /// a provider out of reach, and the longest wait a provider asked for
-    /// over none.
+    /// over none, with its reason, whichever key it was.
     #[test]
     fn a_key_that_cant_be_read_is_said() {
         let (_, mut held) = fake(Kind::ApiKey, &["a", "down b"]);
@@ -936,14 +963,15 @@ mod tests {
         assert_eq!(limits.problem, Some(Problem::unavailable("down")));
         let (_, mut held) = fake(Kind::ApiKey, &["down a", "refused b", "down c"]);
         assert_eq!(read(&mut held, now()).problem, Some(Problem::SignIn));
-        let (_, mut held) = fake(Kind::ApiKey, &["busy a", "down b"]);
-        assert_eq!(
-            read(&mut held, now()).problem,
-            Some(Problem::Unavailable {
-                why: "down".to_owned(),
-                retry_after: Some(600_000),
-            })
-        );
+        let busy = Some(Problem::Unavailable {
+            why: "busy".to_owned(),
+            retry_after: Some(600_000),
+            answered: true,
+        });
+        for keys in [["busy a", "down b"], ["down a", "busy b"]] {
+            let (_, mut held) = fake(Kind::ApiKey, &keys);
+            assert_eq!(read(&mut held, now()).problem, busy);
+        }
     }
 
     /// The fake provider's account, as signed in to in one folder.
@@ -1013,6 +1041,7 @@ mod tests {
         let asks = |seconds: i64| Problem::Unavailable {
             why: "busy".to_owned(),
             retry_after: Some(seconds * 1000),
+            answered: true,
         };
         let (_, held) = fake(Kind::Subscription, &[]);
         record(
@@ -1035,6 +1064,20 @@ mod tests {
         let (_, held) = fake(Kind::ApiKey, &[]);
         record(&mut db, signed_in(), vec![(some, held)], at).unwrap();
         assert_eq!(retry_at(&db), None);
+        // Nor is a provider that didn't answer, as when the Mac is offline,
+        // however long it lasts.
+        for _ in 0..6 {
+            let offline = Problem::Unavailable {
+                why: "host not found".to_owned(),
+                retry_after: None,
+                answered: false,
+            };
+            failed(&mut db, offline, at);
+            assert_eq!(retry_at(&db), None);
+        }
+        // And the first that answers after them waits five minutes.
+        failed(&mut db, Problem::unavailable("down"), at);
+        assert_eq!(retry_at(&db), Some(at + 5 * minute));
         // A refused login isn't backed off.
         failed(&mut db, Problem::SignIn, at);
         failed(&mut db, Problem::SignIn, at + 5 * minute);

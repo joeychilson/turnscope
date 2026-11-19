@@ -158,7 +158,7 @@ INSERT INTO state (id) VALUES (1);
 -- An account whose last read failed, until a read works (`limits::record`).
 CREATE TABLE failing (
     account TEXT PRIMARY KEY,
-    reads INTEGER NOT NULL,        -- reads in a row that failed as `account.problem` says
+    reads INTEGER NOT NULL,        -- reads in a row that failed as `account.problem` says; of `unavailable`, those backed off
     why TEXT,                      -- what the last one met, as the log says it
     retry_at INTEGER               -- not read again before then
 ) STRICT, WITHOUT ROWID;
@@ -206,18 +206,23 @@ pub fn open(dir: &Path) -> Result<Connection> {
     // Attached outside the transaction, which SQLite requires.
     let importing = done == 0 && old.exists();
     if importing {
-        db.execute("ATTACH DATABASE ?1 AS old", [old.to_string_lossy()])?;
+        db.execute("ATTACH DATABASE ?1 AS old", [old.to_string_lossy()])
+            .map_err(|error| untaken(&old, error))?;
     }
-    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
+    // Exclusive locks the old file too, and reads it first.
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)
+        .map_err(|error| match importing {
+            true => untaken(&old, error),
+            false => error.into(),
+        })?;
     for (revision, script) in (1..).zip(REVISIONS).skip(done as usize) {
         tx.execute_batch(script)?;
         tx.pragma_update(None, "user_version", revision)?;
     }
     tx.pragma_update(None, "application_id", APPLICATION_ID)?;
     if importing {
-        import(&tx).map_err(|error| {
-            Error::Failed(format!("{} can't be taken in: {error}", old.display()))
-        })?;
+        import(&tx).map_err(|error| untaken(&old, error))?;
     }
     tx.commit()?;
     if importing {
@@ -241,6 +246,25 @@ pub fn read(dir: &Path) -> Option<Connection> {
     (revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
 }
 
+/// Why the old database at `old` can't be taken in. Unless another process
+/// held it a moment, that lasts, and every process waits on it, so it says
+/// what to do.
+fn untaken(old: &Path, error: rusqlite::Error) -> Error {
+    let busy = matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    );
+    Error::Failed(format!(
+        "{} can't be taken in: {error}{}",
+        old.display(),
+        if busy {
+            ""
+        } else {
+            ". To start without what it holds, move it elsewhere"
+        }
+    ))
+}
+
 /// The database of Turnscope 0.1 and 0.2, at any of its six revisions.
 const OLD: &str = "turnscope.sqlite";
 const OLD_REVISIONS: i64 = 6;
@@ -256,30 +280,41 @@ const OLD_REVISIONS: i64 = 6;
 /// made-up 0.2.1 database of 240 MB, 467,000 responses and 100,000
 /// readings, took 6.9 s: 2.3 s of it user and 4.4 s system (November 2026).
 ///
-/// Its schema's revision is raised past 0.2's last, so a Turnscope 0.1 or
-/// 0.2 still running, as an agent's MCP server started before the update,
-/// writes nothing more there and says to start it again. Left alone, it
-/// went on reading history and limits into a file no one else reads.
+/// Its schema's revision is raised past 0.2's last, so a Turnscope 0.2
+/// still running, as an agent's MCP server started before the update,
+/// writes nothing more there and says why. Left alone, it went on reading
+/// history and limits into a file no one else reads. 0.1 doesn't look:
+/// 0.1.7 and 0.1.8 went on reading into it (November 2026).
 ///
 /// Chosen over keeping the old file and its six revisions, two of which
 /// dropped tables and columns, so the schema is one script. A copy, not a
 /// fresh read of the agents' history: agents delete their own (Claude Code
 /// after 30 days), and limit readings, prices, sign-ins, hidden accounts and
 /// alerts exist only here.
-fn import(tx: &Transaction) -> Result<()> {
-    let has = |table: &str, column: &str| -> Result<bool> {
+///
+/// A file with no revision, as one that's empty, never held 0.1's or 0.2's
+/// data, which set its revision with its first tables: there's nothing to
+/// take in. 0.2 started such a file anew.
+fn import(tx: &Transaction) -> rusqlite::Result<()> {
+    let revision: i64 = tx.query_row("PRAGMA old.user_version", [], |row| row.get(0))?;
+    if revision == 0 {
+        return Ok(());
+    }
+    let has = |table: &str, column: &str| -> rusqlite::Result<bool> {
         Ok(tx.query_row(
             "SELECT count(*) FROM pragma_table_info(?1, 'old') WHERE name = ?2",
             [table, column],
             |row| row.get::<_, i64>(0),
         )? > 0)
     };
-    let or = |table: &str, column: &str, otherwise: &str| -> Result<String> {
+    let or = |table: &str, column: &str, otherwise: &str| -> rusqlite::Result<String> {
         Ok(match has(table, column)? {
             true => column.to_owned(),
             false => otherwise.to_owned(),
         })
     };
+    // 0.2 said to sign in again at the first refused login, and 0.3 at the
+    // second in a row (`status`): one 0.2 said it of, 0.3 says it of too.
     // Before 0.2.0 a parent was a fork's or a continuation's too, and a
     // session's title was kept whole. `chat_history.jsonl` was read for what
     // was said, and no reader lists it now: a session it alone held would
@@ -302,6 +337,8 @@ fn import(tx: &Transaction) -> Result<()> {
              web_searches, priority, recorded, cost, account FROM old.response;
          INSERT INTO account SELECT id, provider, kind, title, label, hidden, read_at, problem
              FROM old.account;
+         INSERT INTO failing (account, reads)
+             SELECT id, 2 FROM old.account WHERE problem = 'signIn';
          INSERT INTO reading SELECT account, limit_key, at, name, scope, used, size, starts, resets
              FROM old.reading;
          INSERT INTO sign_in SELECT agent, folder, provider, since, account, key FROM old.sign_in;
@@ -452,12 +489,16 @@ pub fn newer() -> Error {
     );
     Error::Newer(
         match updated {
-            true => "Turnscope was updated after this one started; start it again",
+            true => UPDATED_SINCE,
             false => "a newer Turnscope has updated this data; update Turnscope",
         }
         .to_owned(),
     )
 }
+
+/// What `newer` says when the file this process runs was replaced since it
+/// started, which the app's footer shortens.
+pub const UPDATED_SINCE: &str = "Turnscope was updated after this one started; start it again";
 
 /// Tokens from six columns of `row` starting at `from`, in `response`'s
 /// order: `input` to `reasoning`. A sum of no rows is NULL, which is 0.
@@ -703,6 +744,36 @@ mod tests {
         assert_eq!(rows(&db, "SELECT count(*) FROM response"), ["1"]);
     }
 
+    /// An old file with no revision, empty or another's, has nothing to take
+    /// in. One that can't be read says what to do, every time it's opened.
+    #[test]
+    fn an_old_file_that_never_held_turnscopes_data_is_passed_over() {
+        for another in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(OLD), b"").unwrap();
+            if another {
+                Connection::open(dir.path().join(OLD))
+                    .unwrap()
+                    .execute_batch("CREATE TABLE note (text TEXT)")
+                    .unwrap();
+            }
+            let db = open(dir.path()).unwrap();
+            assert_eq!(revision(&db).unwrap(), REVISIONS.len() as i64);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(OLD), [7_u8; 8192]).unwrap();
+        for _ in 0..2 {
+            let error = open(dir.path()).unwrap_err().to_string();
+            assert!(
+                error.ends_with(
+                    "turnscope.sqlite can't be taken in: file is not a database. To start \
+                     without what it holds, move it elsewhere"
+                ),
+                "{error}"
+            );
+        }
+    }
+
     /// 0.2.1's last revision: the columns 0.2.0 dropped are gone, and the
     /// ones it and 0.2.1 added are there.
     #[test]
@@ -720,6 +791,9 @@ mod tests {
              INSERT INTO file (id, path, agent, size, modified, inode, cursor, failed, readers)
                  VALUES (1, '/home/.claude/projects/-w/s.jsonl', 'claude-code', 5, 2, 3, '4', 'locked', 7);
              INSERT INTO session (id, agent, title, parent) VALUES ('claude-code:s', 'claude-code', 'Fix.', 'claude-code:p');
+             INSERT INTO account (id, provider, kind, title, problem) VALUES
+                 ('xai:a', 'xai', 'subscription', 'SuperGrok', 'signIn'),
+                 ('openai:b', 'openai', 'subscription', 'ChatGPT Pro', 'unavailable');
              UPDATE state SET readers = 7, version = 2001;
              PRAGMA user_version = 6;",
         )
@@ -741,5 +815,7 @@ mod tests {
             ["claude-code:s|claude-code:p"]
         );
         assert_eq!(rows(&db, "SELECT readers, version FROM state"), ["7|2001"]);
+        // A refused login 0.2 said to sign in again for still says it.
+        assert_eq!(rows(&db, "SELECT account, reads FROM failing"), ["xai:a|2"]);
     }
 }

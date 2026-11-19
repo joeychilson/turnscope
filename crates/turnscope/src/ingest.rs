@@ -130,13 +130,19 @@ pub fn waits(db: &Connection) -> Option<&'static str> {
         Ok(None) => return Some("Waiting while another Turnscope reads your agents' history…"),
         Err(_) => return None,
     }
-    let all = db.query_row(
-        "SELECT history_at IS NULL OR readers < ?1 FROM state",
+    matches!(all_read(db), Ok(false)).then_some("Reading your agents' history…")
+}
+
+/// Whether all of history was read with this Turnscope's readers: not
+/// during the first read, nor while all of it is read again after
+/// `READERS` was raised. Until then, what's in the data is only part of
+/// it, as what an older reader made of a file is taken out first (`due`).
+pub fn all_read(db: &Connection) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT history_at IS NOT NULL AND readers >= ?1 FROM state",
         [READERS],
         |row| row.get(0),
-    );
-    all.unwrap_or(false)
-        .then_some("Reading your agents' history…")
+    )?)
 }
 
 /// The files under `home` that are new, changed, or last read with an older
@@ -238,7 +244,7 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     let _lock = match patience {
         None => lock(db)?,
         Some(wait) => crate::db::lock_within(&lock_path(db), wait)?.ok_or_else(|| {
-            Error::Failed("another Turnscope is reading your agents' history".to_owned())
+            Error::Busy("another Turnscope is reading your agents' history".to_owned())
         })?,
     };
     // Again: a newer one may have written while this waited for the lock.
