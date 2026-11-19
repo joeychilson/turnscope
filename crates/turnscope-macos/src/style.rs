@@ -156,8 +156,8 @@ pub struct Ink {
 /// |---|---|---|---|---|
 /// | Amber | #8A5303, 4.7:1 | #ED941A, 4.7:1 | #6B3E00, 7.2:1 | #FFB76B, 7.2:1 |
 /// | Red | #C1070E, 4.7:1 | #FE8375, 4.7:1 | #970007, 7.2:1 | #FFB3A8, 7.2:1 |
-pub const AMBER: [u32; 4] = [0x8A5303, 0xED941A, 0x6B3E00, 0xFFB76B];
-pub const RED: [u32; 4] = [0xC1070E, 0xFE8375, 0x970007, 0xFFB3A8];
+const AMBER: [u32; 4] = [0x8A5303, 0xED941A, 0x6B3E00, 0xFFB76B];
+const RED: [u32; 4] = [0xC1070E, 0xFE8375, 0x970007, 0xFFB3A8];
 
 fn srgb(hex: u32) -> Color {
     let channel = |shift: u32| rune::color::srgb_decode(((hex >> shift) & 0xFF) as f32 / 255.0);

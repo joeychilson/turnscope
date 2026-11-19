@@ -833,13 +833,18 @@ fn connect_offer(s: &State, w: &Words, ink: &Ink) -> Option<El> {
                 agent.name
             )
         };
-        let connect_id = id.clone();
-        line.child(
-            pill("connect", verb, true, !s.stopped(), ink)
-                .label(format!("{verb} {}", agent.name))
-                .help(help)
-                .on_press_tx(move |s: &mut State, _: &mut Tx| crate::connect(s, &connect_id, true)),
-        )
+        // Off once the engine has stopped for good. Rune's `disabled` doesn't stop a press,
+        // so it's asked only while on, as Show is.
+        let enabled = !s.stopped();
+        let mut connect = pill("connect", verb, true, enabled, ink)
+            .label(format!("{verb} {}", agent.name))
+            .help(help);
+        if enabled {
+            let connect_id = id.clone();
+            connect = connect
+                .on_press_tx(move |s: &mut State, _: &mut Tx| crate::connect(s, &connect_id, true));
+        }
+        line.child(connect)
     };
     let dismiss = round_button("dismiss-connect", "xmark", ink)
         .help("Don't suggest this again")
