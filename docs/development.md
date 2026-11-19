@@ -9,35 +9,44 @@ the rules and what to update when you change something.
 - macOS 26, on Apple silicon or Intel. It's the app's deployment target.
 - Rust 1.98.1. `rust-toolchain.toml` pins it with clippy, rustfmt and both
   Mac targets, and rustup installs it on first use.
-- Xcode 26, for the app and the Swift tests.
+- Xcode 26, to bundle the app: `actool` compiles its icon. Signing a
+  release also uses its `notarytool`, `stapler` and `swift`. The command
+  line and the app's binary build with Cargo alone.
 - `shellcheck`, `actionlint` and `cargo-deny`, only to run CI's lint job
   yourself.
+
+## Layout
+
+```
+crates/turnscope/        the engine, the command line and the MCP server
+crates/turnscope-macos/  the menu bar app
+docs/                    how it works, and how to change it
+scripts/                 building, signing and checking the app
+```
 
 ## Build
 
 ```sh
-cargo build            # target/debug/turnscope
-scripts/build-app.sh   # target/xcode/Build/Products/Debug/Turnscope.app
+cargo build       # target/debug/turnscope and target/debug/turnscope-app
+scripts/app.sh    # target/debug/Turnscope.app, signed ad hoc
 ```
-
-The Xcode project builds its own `turnscope` in a build phase that runs
-`scripts/build-cli.sh`, and puts it in `Contents/Helpers`. You can also open
-`macos/Turnscope.xcodeproj` in Xcode and run the Turnscope scheme.
 
 Run either on a scratch data directory, so your own data is left alone:
 
 ```sh
 target/debug/turnscope --data /tmp/ts status
-open target/xcode/Build/Products/Debug/Turnscope.app --args --data /tmp/ts --open
+cargo run -p turnscope-macos -- --data /tmp/ts --open
+open target/debug/Turnscope.app --args --data /tmp/ts --open
 ```
+
+The app posts notifications and updates itself only from a bundle.
 
 Both still read your agents' history and logins, and ask the providers for
 your limits. To leave your agents out too, add `--home` with a copy of a
-home, or the test fixture's: `--home "$PWD/tests/fixtures/home"`. OpenCode's
-and Antigravity's sessions are SQL there; `cargo test --test cli` builds
-their databases in a copy you can use instead:
-`--home "$PWD/target/tmp/home"`. To keep
-the command line off the network, set `TURNSCOPE_OFFLINE=1`
+home, or the test fixture's. OpenCode's and Antigravity's sessions are SQL
+in `crates/turnscope/tests/fixtures/home`; `cargo test --test cli` builds
+their databases in a copy you can use: `--home "$PWD/target/tmp/home"`. To
+keep off the network, set `TURNSCOPE_OFFLINE=1`
 ([cli.md](cli.md#environment)).
 
 `connect <agent>` and `disconnect` still run your agent's own command, with
@@ -52,33 +61,34 @@ The app's other launch arguments are in
 Before every commit, run what CI runs:
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
-TURNSCOPE_BINARY="$PWD/target/debug/turnscope" swift test --package-path macos/TurnscopeKit -Xswiftc -warnings-as-errors
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 shellcheck scripts/*.sh
 actionlint
 cargo deny check advisories
 ```
 
-CI runs the Rust tests in the `America/Chicago` time zone, so a test that
-takes local time for UTC fails there. Run `TZ=America/Chicago cargo test`
-to see it here.
+CI runs the tests in the `America/Chicago` time zone, so a test that takes
+local time for UTC fails there. Run `TZ=America/Chicago cargo test` to see
+it here.
 
 | Tests | Where | Cover |
 |---|---|---|
-| Unit | `#[cfg(test)]` in each module | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database, prices, the forecast, each provider's answers, alerts, time, the contract's examples |
-| End to end | `tests/cli.rs` | The text of `status`, `usage`, `accounts`, `connect` and `doctor`, and the `--json` of `status`, `usage`, `usage --limit`, `accounts` and `connect`, by snapshot, with a session of every agent in the usage; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session; `serve` over a real socket |
-| Swift | `macos/TurnscopeKit/Tests/` | Decoding and encoding every contract example, the client against a stand-in `serve` and a real one, launch arguments, the wording |
+| Unit | `#[cfg(test)]` in each module of `crates/turnscope` | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database and taking in 0.1's and 0.2's, prices, the forecast, each provider's answers, alerts, time, the engine an app runs |
+| End to end | `crates/turnscope/tests/cli.rs` | The text of `status`, `usage`, `accounts`, `connect` and `doctor`, and the `--json` of `status`, `usage`, `usage --limit`, `accounts` and `connect`, by snapshot, with a session of every agent in the usage; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session |
+| App | `#[cfg(test)]` in `crates/turnscope-macos` | The wording, what the panel lists, launch arguments |
 
 **Fixtures.** `tests/cli.rs` reads a home (`tests/fixtures/home`) with two
 synthetic Claude Code sessions and one of each other agent, and writes a
 database of four synthetic accounts in SQL. It copies the home to
 `target/tmp/home` once a run and builds each database there from the `.sql`
 file beside it, as OpenCode's `opencode.db` from `opencode.sql`, so no
-binary database is kept in the repository. Fixtures never hold real ids,
-emails, keys or session text.
+binary database is kept in the repository. `tests/fixtures/status.json` is
+a made-up status, which the app's tests, `--fixture` and the README's
+screenshots use. Fixtures never hold real ids, emails, keys or session
+text.
 
 **Snapshots.** The end-to-end tests compare each answer with its file in
 `tests/snapshots/`. After a deliberate change to output, write them again
@@ -96,9 +106,10 @@ so each end-to-end test runs `turnscope` under a shell named as an agent's
 command: `claude`, or another agent's in a test about that agent. The tests
 answer the same in a terminal, in CI and in any agent.
 
-**The real engine from Swift.** `EngineTests.swift` runs only with
-`TURNSCOPE_BINARY` set, to an absolute path, since `swift test` runs in the
-package's folder.
+**The panel.** What needs a screen is checked by drawing it:
+`--snapshot` with `--fixture` draws the panel headless
+([app.md](app.md#launch-arguments)), and `scripts/check-app.sh` has a
+built app draw it.
 
 **Variables.** `TURNSCOPE_NOW` and `TURNSCOPE_OFFLINE` are in
 [cli.md](cli.md#environment). These are for development only:
@@ -106,7 +117,6 @@ package's folder.
 | Variable | Does |
 |---|---|
 | `TURNSCOPE_BLESS` | Writes the snapshots instead of comparing them |
-| `TURNSCOPE_BINARY` | The `turnscope` that the Swift engine test and a Debug build of the app run, instead of the bundled one |
 | `TURNSCOPE_BACKTEST` | The copy of a data directory the forecast backtest replays |
 
 ## Forecast backtest
@@ -118,7 +128,7 @@ copy of a data directory, never the real one:
 
 ```sh
 cp -cR ~/Library/Application\ Support/com.joeychilson.turnscope /tmp/ts-copy
-TURNSCOPE_BACKTEST=/tmp/ts-copy cargo test --release backtest -- --ignored --nocapture
+TURNSCOPE_BACKTEST=/tmp/ts-copy cargo test --release -p turnscope backtest -- --ignored --nocapture
 ```
 
 `forecast.rs` records what the forecast chose and what it was compared
@@ -128,15 +138,15 @@ with.
 
 | Script | Does |
 |---|---|
-| `scripts/build-app.sh` | Builds the app for this Mac into `target/xcode/Build/Products/Debug/Turnscope.app`: Debug, signed ad hoc, warnings as errors, with the version in `Cargo.toml`. Swift packages are resolved into `target/swiftpm/`. |
-| `scripts/build-cli.sh` | The Xcode project's "Build turnscope" phase ([app.md](app.md#the-xcode-project)). Run by hand, it builds for this Mac in debug into `target/helper/`. |
-| `scripts/build-release.sh` | Builds the app for release into `target/dist/Turnscope.app`, for Apple silicon and Intel, unsigned, with `SPARKLE_PUBLIC_KEY` in it, and resolves the Xcode project's packages into `target/swiftpm/`. |
-| `scripts/sign-release.sh` | Signs the app `build-release.sh` built, notarizes it, and makes `Turnscope-<version>.dmg` and `appcast.xml` beside it, with Sparkle's `sign_update` from `target/swiftpm/`. Its header lists the environment variables it reads. |
-| `scripts/check-app.sh [app]` | Checks that a built app's `turnscope`, `serve`, `mcp` and panel work, for each architecture this Mac can run, off the network and in throwaway folders. The default app is `target/dist/Turnscope.app`. |
-| `scripts/screenshots.sh` | Builds the app with `build-app.sh`, then draws the README's screenshots, light and dark, from `contract/status.notification.json` into `.github/screenshots/`. |
+| `scripts/app.sh` | Builds `target/debug/Turnscope.app` for this Mac, signed ad hoc, with the version in `Cargo.toml`. It's the one place the bundle's layout is written. |
+| `scripts/app.sh --release` | Builds `target/dist/Turnscope.app` for Apple silicon and Intel, unsigned, with `SPARKLE_PUBLIC_KEY` in it. |
+| `scripts/sparkle.sh` | Fetches Sparkle's framework and tools into `target/sparkle/`, at the version it names, checked against its checksum. `app.sh` runs it. |
+| `scripts/sign-release.sh` | Signs the app `app.sh --release` built, notarizes it, and makes `Turnscope-<version>.dmg` and `appcast.xml` beside it. Its header lists the environment variables it reads. |
+| `scripts/check-app.sh [app]` | Checks that a built app's `turnscope`, `mcp` and panel work, for each architecture this Mac can run, off the network and in throwaway folders. The default app is `target/dist/Turnscope.app`. |
+| `scripts/screenshots.sh` | Draws the README's screenshots, light and dark, from `tests/fixtures/status.json` into `.github/screenshots/`. |
 | `scripts/release-notes.sh X.Y.Z` | Prints the version's section of `CHANGELOG.md`, without its heading. Fails if the section is missing or empty. |
 
-To build and sign a release on a Mac, run `scripts/build-release.sh &&
+To build and sign a release on a Mac, run `scripts/app.sh --release &&
 scripts/sign-release.sh`. Without `SIGN_IDENTITY`, `sign-release.sh` signs
 ad hoc and notarizes nothing: a build to try here.
 
@@ -146,14 +156,13 @@ ad hoc and notarizes nothing: a build to try here.
 its checks are required to merge. On pushes to `main` it runs unless only
 Markdown, `docs/` or `.github/screenshots/` changed; a change to
 `docs/cli.md` runs it, since a test checks its examples. The release runs
-it too. A new push to a pull request cancels its earlier
-run.
+it too. A new push to a pull request cancels its earlier run.
 
 | Job | Runner | Steps |
 |---|---|---|
-| `lint` | Ubuntu 24.04 | `shellcheck scripts/*.sh`, `actionlint`, then `cargo deny check advisories`, which fails when a crate in `Cargo.lock` has a [RustSec](https://rustsec.org) advisory |
-| `rust` | macOS 26, in `America/Chicago` | `cargo fmt --check`, clippy, `cargo test` and `cargo doc`, warnings as errors |
-| `app` | macOS 26, Xcode 26.6 | `cargo build`, then `swift test` with warnings as errors and the engine test run on that build; `scripts/build-release.sh` and `scripts/sign-release.sh` signed ad hoc, then `scripts/check-app.sh`. On a tag, only the tests: the release builds and checks its own app, signed. |
+| `lint` | Ubuntu 24.04 | `shellcheck scripts/*.sh`, `actionlint`, then `cargo deny check advisories`, which fails when a crate built for either Mac (`deny.toml`) has a [RustSec](https://rustsec.org) advisory |
+| `rust` | macOS 26, in `America/Chicago` | `cargo fmt --all --check`, clippy, `cargo test` and `cargo doc` for the workspace, warnings as errors |
+| `app` | macOS 26, Xcode 26.6 | `scripts/app.sh --release` and `scripts/sign-release.sh` signed ad hoc, then `scripts/check-app.sh`. Not on a tag: the release builds and checks its own app, signed. |
 
 The `main` ruleset (Settings → Rules) takes changes only by squashed pull
 request, once Verify's `lint`, `rust` and `app` pass.
@@ -163,8 +172,9 @@ crate. Update the crate it names.
 
 Actions are pinned by commit. Dependabot (`.github/dependabot.yml`) opens
 one pull request a week for the actions and one for the Rust crates, with
-versions at least 7 days old. Sparkle is pinned to an exact version in the
-Xcode project, and actionlint and cargo-deny to a version and checksum in
+versions at least 7 days old. Sparkle is pinned to a version and checksum
+in `scripts/sparkle.sh`, Rune to a commit in the root `Cargo.toml`, with
+its patches, and actionlint and cargo-deny to a version and checksum in
 `ci.yml`. These are updated by hand.
 
 The `app` job and the release use Xcode 26.6, named in both workflows. A
@@ -190,14 +200,15 @@ is the repository's.
 | `SPARKLE_PRIVATE_KEY` | Secret | The update signing key, from `generate_keys -x <file>` |
 | `SPARKLE_PUBLIC_KEY` | Variable | Its public half, from `generate_keys -p` |
 
-Sparkle's `generate_keys` is in `target/swiftpm/artifacts/sparkle/Sparkle/bin/`
-after a build. It keeps the key in your login Keychain. Keep the private
-key safe: without it, no installed copy will accept an update.
+Sparkle's `generate_keys` is in `target/sparkle/bin/` after a build. It
+keeps the key in your login Keychain. Keep the private key safe: without
+it, no installed copy will accept an update.
 
 **Each release:**
 
-1. Set `version` in `Cargo.toml`, and run `cargo build` so `Cargo.lock`
-   has it too. The app takes its version from the crate.
+1. Set `version` under `[workspace.package]` in `Cargo.toml`, and run
+   `cargo build` so `Cargo.lock` has it too. The command line and the app
+   take their version from it.
 2. Add a `## X.Y.Z` section to `CHANGELOG.md`. It becomes the release
    notes.
 3. Merge to `main`, then push the tag `vX.Y.Z` on that commit. The
@@ -210,12 +221,12 @@ The tag starts **Release** (`.github/workflows/release.yml`):
 |---|---|
 | `check` | Checks that the tag matches `Cargo.toml`, is on `main` and isn't released yet; that `CHANGELOG.md` has the version's notes; and that every secret and the variable are set |
 | `verify` | All of Verify |
-| `build` | Runs `scripts/build-release.sh`, and hands the app to `publish` as an artifact |
-| `publish` | Resolves Sparkle's tools at the versions `Package.resolved` pins, imports the certificate into a keychain made for the run, runs `scripts/sign-release.sh` with the keys, removes the keychain and the notary key, runs `scripts/check-app.sh` on the result, and publishes the release with the disk image and `appcast.xml` |
+| `build` | Runs `scripts/app.sh --release`, and hands the app to `publish` as an artifact |
+| `publish` | Fetches Sparkle's tools with `scripts/sparkle.sh`, imports the certificate into a keychain made for the run, runs `scripts/sign-release.sh` with the keys, removes the keychain and the notary key, runs `scripts/check-app.sh` on the result, and publishes the release with the disk image and `appcast.xml` |
 
 The build and the keys are on separate runners. Whatever the build runs,
 such as a dependency's build script, has no key to reach. The job that
-holds the keys builds nothing, and resolves Sparkle before the keys are
+holds the keys builds nothing, and fetches Sparkle before the keys are
 there.
 
 Installed copies read `appcast.xml` from the latest release, so publishing

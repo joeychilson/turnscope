@@ -1,9 +1,7 @@
 # Architecture
 
-How the `turnscope` binary works: its data, its code, the processes that
-run, and how it decides what to show. The menu bar app is in
-[app.md](app.md). It talks to `turnscope serve` over the protocol in
-[protocol.md](protocol.md).
+How Turnscope works: its data, its code, the processes that run, and how
+it decides what to show. The menu bar app is in [app.md](app.md).
 
 ## What it does
 
@@ -19,8 +17,9 @@ that cost money. Turnscope does three things:
    needs signing in again.
 
 It answers through the command line ([cli.md](cli.md)), an MCP server for
-agents ([mcp.md](mcp.md)), and `serve`, the daemon the app talks to. Most of
-the code stores and queries data. The hard parts are reading six agents'
+agents ([mcp.md](mcp.md)), and the menu bar app ([app.md](app.md)), which
+runs the engine in its own process. Most of the code stores and queries
+data. The hard parts are reading six agents'
 formats correctly, and the forecast.
 
 ## Glossary
@@ -36,13 +35,14 @@ formats correctly, and the forecast.
 | Reset | When a window ends and its limit is full again. |
 | Outlook | Where a limit is headed by its reset: `lasts`, `runsOut`, `usedUp` or `unknown`. |
 | Pace | Percentage points of a limit used per hour of clock time in the current window. |
-| Work left | Hours of agent work a limit has left, from the points it used per hour that agents worked. |
+| Work rate | Percentage points of a limit used per hour that agents worked, as `40.9% an hour of work`. Pace counts hours of the clock instead. |
+| Work left | Hours of agent work a limit has left, at its work rate. |
 | Session | One conversation in an agent, with id `<agent>:<the agent's own id>`. A subagent is a session with a parent, and its usage counts toward that parent. A fork (a conversation branched off another) or a continuation is a session of its own. Turnscope keeps a session's title, project and usage, not what was said in it. |
-| Response | The usage of one model call as the agent records it: tokens, cost, and the account it drew on. Grok Build records one per model per turn. |
+| Response | The usage of a model call as the agent records it: tokens, cost, and the account it drew on. Some cover several calls: Grok Build records one per model per turn, Claude Code one with its calls listed in `iterations`, and Codex one for each growth of its running total beyond its records. |
 | Reading | A limit as its provider reported it at one time. |
 | Sign-in | What an agent folder held for a provider from a given time. It says which account a response drew on. |
-| Data directory | Where Turnscope keeps its database, locks, socket and `serve.log`: `~/Library/Application Support/com.joeychilson.turnscope`, or `--data`. |
-| Engine | `turnscope serve`, the daemon the app talks to. |
+| Data directory | Where Turnscope keeps its database, its locks and `app.log`: `~/Library/Application Support/com.joeychilson.turnscope`, or `--data`. |
+| Engine | The `turnscope` crate: it reads history, logins, limits and prices, and works out what every front end shows. The command line, the MCP server and each app run it. |
 
 ## Data
 
@@ -53,9 +53,9 @@ formats correctly, and the forecast.
 | Providers' APIs | Readings |
 | models.dev | Prices |
 
-Everything is kept in one SQLite file, `turnscope.sqlite`, in the data
+Everything is kept in one SQLite file, `turnscope.db`, in the data
 directory. Times are UTC milliseconds and money is dollars. The schema is
-`db::REVISIONS` in `src/db.rs`:
+`db::REVISIONS` in `crates/turnscope/src/db.rs`:
 
 | Table | Holds |
 |---|---|
@@ -64,9 +64,10 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 | `session_file` | Which files tell of each session |
 | `response` | One row per response: tokens, prompt size, the cost the agent recorded, its cost, its account, and the file that last reported it |
 | `account` | Each account: provider, kind, title, label, whether it's hidden, the last read that worked, and what went wrong with the last read |
+| `failing` | Each account whose last read failed: how many reads in a row failed that way, what the last met, and when it's read next |
 | `reading` | Each limit at each read: name, scope, percent used, size in dollars, the window's start and reset |
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
-| `alert` | Each alert raised, what it says, and whether a client acknowledged it |
+| `alert` | Each alert raised, what it says, and whether the app acknowledged it |
 | `price` | models.dev's prices for each model, each from when it was read |
 | `state` | One row: the latest reader version that read the history, the newest Turnscope version that has written, when its first read finished, when limits and prices were last read, and the settings |
 
@@ -75,6 +76,12 @@ shipped script is never edited, and a change is a new script at the end.
 Before creating its tables in a file that has none of Turnscope's yet,
 `db::open` checks the file's SQLite application id, so it never writes
 into another program's database.
+
+Turnscope 0.1 and 0.2 kept `turnscope.sqlite`, with six revisions of their
+own. A new `turnscope.db` takes in all of it once, by its columns' names
+(`db::import`), and leaves it as it was. `serve.lock`, `serve.log`
+and `serve.sock`, which their `serve` kept beside it, are removed then. A later release
+removes the import, and the old file with it.
 
 - **History is read incrementally.** Each file keeps its reader's cursor,
   so only what was appended is read, and an unchanged file is only
@@ -90,17 +97,23 @@ into another program's database.
 - **Cost and account are set when a response is written**: its cost at the
   price in force when it ran, and its account from its agent folder's
   sign-in in force then (before the first sign-in recorded, the first).
-  `ingest::derive` works them out again only for the responses a change
-  touches: a model priced for the first time, or an agent folder whose
-  sign-in to a provider changed.
+  They're worked out again only for the responses a change touches, in the
+  write that records the change, so a process that ends between the two
+  can't lose it: a model priced for the first time (`ingest::price_again`),
+  or an agent folder whose sign-in to a provider changed
+  (`limits::record`). A read of history takes in the prices and sign-ins
+  at each of its writes, so it writes none gone stale, and neither a price
+  refresh nor a hook reading limits waits out a read of history.
 - **Some tables can't be rebuilt.** Accounts, readings, sign-ins, past
   prices, alerts and settings exist only here, so they're never deleted.
   History can be read again.
 - **When a reader changes, `ingest::READERS` is raised.** Each file keeps
   the version it was last read with, and one read with an older one is
   read again from the start when it's next found: where it was, moved, or
-  back after it was gone. Its responses, the sessions only such files
-  hold, and which sessions it holds are taken out first. Responses and
+  back after it was gone. Its responses, and which sessions it holds, are
+  taken out first. The sessions only such files hold lose their title and
+  parent, and keep their project, worked out from the folders when the
+  session was first seen: a worktree may be gone since. Responses and
   sessions from files the agent has since deleted stay.
 - **An older Turnscope still running**, such as an agent's MCP server
   started before an update, writes nothing once a newer one has written:
@@ -108,21 +121,28 @@ into another program's database.
   writes checks it first (`db::writing`). It answers from what's there,
   where its queries still fit the schema. If an update has replaced its
   binary since it started, it says to start it again; otherwise, to update
-  Turnscope. `serve` stops instead, and one started then says so before it
-  listens. `guard` guards by the limits read before. A function that waits
-  before it writes, for `ingest.lock` or for a provider, checks again inside
-  its write. One started after the schema changed doesn't open the data,
-  and says to update (`db::open`).
+  Turnscope. An app's engine stops keeping the data current instead, and
+  the app says why. `guard` guards by the limits read before. Each write
+  of more than one statement checks again inside it (`db::write`), as one
+  may have waited, for `ingest.lock` or for a provider. One started after
+  the schema changed doesn't open the data, and says to update
+  (`db::open`).
 
 ## Code
 
-One crate and one binary. Each module holds its own data, SQL and text.
-There's no central object, store layer or view types.
+Two crates. `crates/turnscope` is the engine, a library every front end
+uses, and the `turnscope` binary: the command line and the MCP server.
+`crates/turnscope-macos` is the menu bar app ([app.md](app.md)); an app
+for another platform would be a crate beside it. Each module holds its own
+data, SQL and text. There's no central object, store layer or view types.
 
 ```
-src/
-  main.rs             the command line: commands, catch_up, guard, statusline, doctor, exit codes
-  db.rs               the schema, opening and migrating
+crates/turnscope/src/
+  lib.rs              the engine's root: catch_up, places, errors
+  main.rs             the command line: commands, guard, statusline, doctor, exit codes
+  mcp.rs              the MCP server: who is asking, the tools, the stdio loop
+  engine.rs           what an app runs: keeping the data current, and telling the app what to show
+  db.rs               the schema, opening and migrating, taking in 0.2's database
   ingest.rs           agents' files → responses and sessions; each response's cost and account
   limits.rs           logins → accounts, sign-ins and readings
   prices.rs           models.dev's prices over time, and what a response cost
@@ -131,10 +151,9 @@ src/
   status/text.rs      the status in words, for the command line and MCP
   alerts.rs           which alerts a status raises, which wait to be shown, and the settings for them
   usage.rs            usage grouped by time, model, project, agent, account or session; what used a limit; a session's account
-  mcp.rs              the MCP server: who is asking, the tools, the stdio loop
-  serve.rs            the app's daemon: JSON-RPC on a Unix socket, keeping the data current
   connect.rs          adding and removing the MCP server with the agent's own command, and whether it's there
   time.rs             local time as people read and write it
+  process.rs          running another program with a time limit
   agents/
     mod.rs            the Agent trait, agents::ALL, what readers return, shared helpers
     claude_code.rs    Claude Code
@@ -159,14 +178,14 @@ Each kind of extension lives in one place.
 
 | To add | Write | Also |
 |---|---|---|
-| An agent | `src/agents/<agent>.rs`, implementing `Agent` | A line in `agents::ALL` ([adding-an-agent.md](adding-an-agent.md)) |
-| A provider | `src/providers/<provider>.rs`, implementing `Provider` | A line in `providers::ALL` ([adding-a-provider.md](adding-a-provider.md)) |
-| An MCP tool | A function `fn(&Server, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
+| An agent | `crates/turnscope/src/agents/<agent>.rs`, implementing `Agent` | A line in `agents::ALL` ([adding-an-agent.md](adding-an-agent.md)) |
+| A provider | `crates/turnscope/src/providers/<provider>.rs`, implementing `Provider` | A line in `providers::ALL` ([adding-a-provider.md](adding-a-provider.md)) |
+| An MCP tool | A function `fn(&Ask, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
 | A CLI command | A variant of `main::Command` | Its arm in `main::answer`, and whether it catches up first |
-| A `serve` method | Its arm in `serve::Server::answer` | Its example in `contract/` ([protocol.md](protocol.md)) |
+| Something an app shows or asks | An `engine::Event`, or a method of `engine::Engine` | Its handling in each app's `engine.rs` |
 | A database change | A new script at the end of `db::REVISIONS` | |
 
-The two traits, from `src/agents/mod.rs` and `src/providers/mod.rs`:
+The two traits, from `agents/mod.rs` and `providers/mod.rs`:
 
 ```rust
 pub trait Agent: Sync {
@@ -182,7 +201,9 @@ pub trait Agent: Sync {
 pub trait Provider: Sync {
     fn info(&self) -> &'static Info;
     fn account(&self, credential: &Credential) -> Option<Account>;
-    fn limits(&self, credential: &Credential, now: i64) -> std::result::Result<Limits, Problem>;
+    fn limits(&self, credential: &Credential, now: i64, by: Instant) -> std::result::Result<Limits, Problem>;
+    fn account_limits(&self, _credential: &Credential, _now: i64, _by: Instant) -> std::result::Result<Vec<Reading>, Problem> { Ok(Vec::new()) }
+    fn rolls(&self, _key: &str) -> Option<i64> { None }
     fn plan_mark(&self, _limits: &Limits) -> Option<i64> { None }
 }
 ```
@@ -191,11 +212,15 @@ pub trait Provider: Sync {
 
 ### Catching up
 
-`main::catch_up` brings the database up to date, in this order:
+`turnscope::catch_up` brings the database up to date, in this order:
 
 1. Prices, when six hours have passed since any process last asked
-   models.dev, or ten minutes after a failed try.
+   models.dev, or ten minutes after models.dev couldn't be read.
 2. Limits, when five minutes have passed since any process last read them.
+   An account whose provider was out of reach, busy or not understood
+   waits longer: 5 minutes, then 10, 20 and 30 at most, or as long as
+   the provider asks, up to 30 (`limits::backoff`). A read that fails
+   differently from the one before is added to `app.log`.
 3. The agents' history, every time.
 
 With `TURNSCOPE_OFFLINE` set to anything but `0`, it skips prices and
@@ -207,27 +232,29 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call. |
-| `serve` | On a thread of its own: at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. |
+| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. |
 
-While `serve` runs, the other processes rarely find anything new to read.
+While an app runs, the other processes rarely find anything new to read.
 
 A catch-up reads all of history the first time, and again after
 `ingest::READERS` is raised. That can take minutes. A CLI command says so
 on standard error, and says when it waits for another process that reads
 history (`ingest::waits`), as [cli.md](cli.md#global-options) shows. `mcp`
-and `serve` say nothing, since no one reads their standard error: a tool
-call waits the read out.
+and the app say nothing there, since no one reads their standard error. A
+tool call waits a second at most for another process's read
+(`mcp::PATIENCE`), then answers from what was read and says so. When no
+other process reads, the call reads history itself, all of it the first
+time, and answers after. The panel says the history is being read.
 
 ### Locks
 
 Three files in the data directory keep processes apart:
 
 - `turnscope.lock` while the database is created or migrated.
-- `ingest.lock` while history is read, or costs and accounts are worked out
-  again, so a first run isn't read twice at once and no response is written
-  with stale prices or sign-ins.
-- `serve.lock`, so only one `serve` runs per data directory. A second one
-  says so and exits.
+- `ingest.lock` while history is read, so a first run isn't read twice at
+  once.
+- `app.lock`, while an app keeps the data current. A second app shows what
+  the first writes, and takes over once it's gone.
 
 Limits and prices are claimed with one `UPDATE` of `state`, so no two
 processes ask a provider at once.
@@ -237,46 +264,52 @@ for its turn. History is written a second at a time, with 110 ms between,
 so a long read never makes another process's write wait more than a second
 or so.
 
-### serve
+### The app's engine
 
-`turnscope serve` listens on a Unix socket: `serve.sock` in the data
-directory, or one under `$TMPDIR` when that path is too long for macOS
-([protocol.md](protocol.md)).
+`engine::Engine` is what an app runs ([app.md](app.md#how-data-flows)).
+It's in the engine crate, so an app for another platform only draws.
 
-- The main thread answers requests one at a time and pushes the status. One
-  thread accepts connections, and one per client reads its lines.
-- One thread keeps the data current: it watches every agent folder that
-  was there when it started, an agent's own only if the agent was installed
-  then, and catches up as above. A write to a SQLite database's `-shm` file
-  alone starts no catch-up: Turnscope writes it itself by opening the
-  database. After a catch-up that read anything new, ran in a
-  new minute, or followed another process's write to the database, the main
-  thread works out the status. If anything it shows changed, it raises
-  alerts and sends `status`, then each new `alert`, to every client that
-  said `hello`.
-- At start, that thread reads the limits, when they're due, before its
-  first catch-up, and the main thread works out the status then too. On a
-  first launch the catch-up reads all of history, so the app shows the
-  accounts while it does, and the status says the history isn't read yet
-  (`historyRead`).
-- `settings.set`, `account.hide`, and an `agent.connect` or
-  `agent.disconnect` that worked push the status too. Connecting runs the
-  agent's own command on a thread of its own, as it can take a minute.
-- If the thread that keeps the data current stops, `serve` tells each
-  client why (`stopped`) and exits with an error, so the app says why and
-  starts one that works. It stops once a newer Turnscope has written to
-  the data: the `serve` started next says to update before it listens.
-- Why it couldn't start or stopped, and each error it meets keeping the
-  data current, is added to `serve.log` in the data directory: once the
-  app has connected, no one reads its standard error.
-- It exits 60 seconds after its last client leaves.
+- One thread keeps the data current while it holds `app.lock`: it watches
+  every agent folder, an agent's own only once the agent is installed, and
+  catches up as above. A write to a SQLite database's `-shm` file alone
+  starts no catch-up: Turnscope writes it itself by opening the database.
+- After a catch-up that read anything new, ran in a new minute, or
+  followed another process's write to the database, it works out the
+  status. If anything it shows changed, it raises alerts and tells the app
+  the status with the alerts (`Event::Shown`). A status that differs from
+  the last told only in the minute it's as of isn't told: the app counts
+  down on its own clock. Each agent's MCP settings are read once a minute
+  and after a connect, not with every status.
+- At start, it reads the limits, when they're due, before its first
+  catch-up, and tells the status then too. On a first launch the catch-up
+  reads all of history, so the app shows the accounts while it does, and
+  the status says the history isn't read yet (`historyRead`).
+- Requests (hiding an account, saving the settings, acknowledging alerts,
+  asking what used a limit) run one at a time, in the order asked, on a
+  thread of their own; connecting an agent, on another, as the agent's
+  command can take a minute. The status is told again after a hide, a
+  save of the settings and a connect, changed or not, so a change the app
+  showed at once goes back if the request failed. Whichever thread works
+  out a status, statuses are told in the order they're worked out.
+- The data is said to be current (`Event::Kept`) once a catch-up has read
+  every agent. If one fails, it tells the app why and tries again: at the
+  next change in the agents' folders, or the next minute. If keeping the
+  data current can't start, it tries again every 5 s.
+- Once a newer Turnscope has written to the data, it stops for good, and
+  the app says to update. It then writes nothing and raises no alert: a
+  hide or a save of the settings changes nothing and the last status is
+  told again, an acknowledgment is dropped, and a connect runs no command
+  and says why.
+- What goes wrong is added to `app.log` in the data directory, which
+  `turnscope doctor` shows: an app is started from its icon, where no one
+  reads its standard error.
 
 ## Status
 
 `status::status` works out everything the app, the CLI and the MCP server
 show, with every decision already made. Its fields are documented on its
-types, which [protocol.md](protocol.md#status) lists. The agents in it are worked out apart,
-by `status::agents`, for the app and `turnscope connect` only: whether an
+types. The agents are worked out apart, by `status::agents`, for the app
+and `turnscope connect` only: whether an
 agent is connected is read from its MCP settings, and Claude Code's can be
 megabytes.
 
@@ -293,10 +326,12 @@ megabytes.
 - An account's **state** says whether its limits were read at the last
   try, and if not, why (`status::State`).
 - A limit's outlook is `unknown` (`stale`) once its latest reading is over
-  30 minutes old.
+  30 minutes old, unless it was used up: it stays `usedUp` until its
+  reset, as nothing gives use back sooner but an early reset, which a read
+  shows.
 - The **deciding limit** says how an account stands. It's chosen from the
   limits not reset since they were read, and of those, from the limits on
-  all of the account's usage (not one model's or one key's) where there are
+  all of the account's usage (not one model's, other apps', or one key's) where there are
   any. The most urgent wins (used up, then running out), then the soonest
   out, then the least left (at the reset for a limit that lasts, where
   that's forecast, or else now). Of several used up, the last back wins,
@@ -310,7 +345,10 @@ megabytes.
 - A **fit** (`status --hours`, `check_limits` with `hours`) and
   `check_limits`' verdict go by the limit on all of an account's usage
   with the fewest likely hours of work left. A limit that reset since it
-  was read counts, with a new window's work left.
+  was read counts, with a new window's work left. A fit counts work past
+  a limit's reset in the windows after it, and can't be told while a
+  limit on all its usage has no work rate measured. The verdict says
+  what's left of the deciding limit when that one has none.
 - Each **agent** is `installed` when its own folder exists, and its
   connection says whether each of its folders runs this binary's MCP
   server (`status::Connection`).
@@ -369,8 +407,8 @@ and what the backtest measured on this Mac's real limit history
   - `lasts`: with what will be left at the reset, as a range, or nothing
     when none of it has been used. After use was given back, with none
     since, that's what it has now.
-  - `unknown`: not enough data, `stale` (read over 30 minutes ago, or the
-    window reset since), `rolling` (no start to pace from) or `noReset`
+  - `unknown`: not enough data, `stale` (read over 30 minutes ago and not
+    used up, or the window reset since), `rolling` (no start to pace from) or `noReset`
     (credits).
 - **Range.** The pace is scaled by the 80% range of how the pace that
   followed compared with it in the backtest, by window length and the
@@ -379,7 +417,8 @@ and what the backtest measured on this Mac's real limit history
   most.
 - **Work left.** The rate is the points a limit rose per hour of work. An
   hour of work is twelve 5-minute slots that each hold a response on the
-  account. The rate walks back over the limit's readings, across windows
+  account, of the limit's models for a limit on some, and made with the
+  key for a key's own limit. The rate walks back over the limit's readings, across windows
   and up to 14 days, until it has 3 hours of work (5 for windows longer
   than a day), and needs at least an hour of work and 2 points. Work counts
   only from when the account's first sign-in was read, so work on another
@@ -396,10 +435,10 @@ and what the backtest measured on this Mac's real limit history
 | `runningOut` | A limit of an account in use runs out before its reset at its pace, as the status shows it |
 | `usedUp` | A limit of an account in use is used up: one with a window, or money that never resets, such as credits |
 | `reset` | A limit that was used up is back: its window ended in the last day, use was given back early, or money that never resets has some left |
-| `signIn` | An account in use can't be read because its login was refused |
+| `signIn` | An account in use can't be read because its login was refused at two reads in a row |
 
-- `serve` raises alerts (`alerts::raise`) each time it pushes a changed
-  status. The CLI and the MCP server don't.
+- An app's engine raises alerts (`alerts::raise`) each time it tells a
+  changed status. The CLI and the MCP server don't.
 - Each is raised once per account, limit, kind and window (the window's
   reset, within 5 minutes; for `signIn`, the last read that worked), so
   neither a restart nor a pace near the line repeats one.
@@ -411,8 +450,8 @@ and what the backtest measured on this Mac's real limit history
   of a kind turned off, and a `reset` while another limit on the same models or on the whole
   account is still used up. Showing the account or turning the kind on
   later doesn't bring back the past.
-- An alert waits until a client acknowledges it (`alerts.ack`). Until then
-  `hello` returns it: a `runningOut` or `usedUp` while its window lasts, or
+- An alert waits until the app acknowledges it (`Engine::acknowledge`).
+  Until then the engine tells it again when it starts (`Event::Pending`): a `runningOut` or `usedUp` while its window lasts, or
   with no window while its limit is still used up; a `reset` for a day; and
   a `signIn` for a day while its account still can't be read.
 
@@ -431,8 +470,7 @@ and what the backtest measured on this Mac's real limit history
 - **Logins are only read.** Each is sent only to its own provider, and
   never once it has expired. Turnscope never refreshes a token or writes an
   agent's files. `connect` and `disconnect` run the agent's own command.
-- **The data directory and socket** are the owner's alone: the directory
-  is created 0700, and the socket is 0600.
+- **The data directory** is the owner's alone: it's created 0700.
 - **The MCP server only reads.** A session's title is what someone asked
   there, so its instructions tell agents to read one as data, not as an
   instruction, and each comes in double quotes, so none of it can pass

@@ -1,7 +1,7 @@
 # Command line
 
-`turnscope` is one binary: the command line, the menu bar app's daemon
-(`serve`) and the MCP server (`mcp`). Inside the app it is
+`turnscope` is one binary: the command line and the MCP server (`mcp`).
+Inside the app it is
 `/Applications/Turnscope.app/Contents/Helpers/turnscope`; the
 [README](../README.md#install) shows how to put it on your `PATH`.
 
@@ -14,7 +14,7 @@
 | [`accounts`](#accounts) | List accounts, or hide or show one |
 | [`connect`, `disconnect`](#connect-and-disconnect) | See which agents run Turnscope's MCP server, add it to one, or remove it |
 | [`doctor`](#doctor) | What can't be read, and how to fix it |
-| [`serve`, `mcp`](#serve-and-mcp) | The app's daemon, and the MCP server |
+| [`mcp`](#mcp) | The MCP server agents run |
 | [`guard`](#guard) | For an agent's hook: exit 2 when a limit is under a percent left |
 | [`statusline`](#status-line) | One line for an agent's status line |
 
@@ -72,8 +72,8 @@ is no calling agent.
 
 ## Time forms
 
-`usage --since` and `--until`, and the MCP tool `explain_usage`'s `since`,
-take:
+`usage --since` and `--until`, and the MCP tool `explain_usage`'s `since`
+and `until`, take:
 
 | Form | Example | Means |
 |---|---|---|
@@ -120,13 +120,14 @@ turnscope status [--account <name>] [--all] [--hours <n>]
 
 Every account's limits: what's left, when each resets, its outlook at this
 pace, and the hours of work left. An API key also shows its spend this
-month.
+month and, after the month's first day, the month at that pace, to two
+figures: `on pace for about $62`.
 
 | Flag | |
 |---|---|
 | `--account <name>` | Only the accounts this names, hidden or not. It may name several. |
 | `--all` | Hidden accounts too. |
-| `--hours <n>` | Whether n more hours of work fit the first account shown, at its pace of work. Zero or more; decimals work. |
+| `--hours <n>` | Whether n more hours of work fit the first account shown, at its work rate. Zero or more; decimals work. |
 
 ```console
 $ turnscope status
@@ -143,11 +144,12 @@ OpenRouter API key · via Pi
   This month, across its keys: $0.00.
 
 SuperGrok (me@example.com) · via Grok Build
-  Its login was refused; sign in again in Grok Build.
+  Its login was refused; open Grok Build to sign in again.
 ```
 
 "At this pace" uses clock time, breaks included. "Of work" counts only the
-hours your agents were working. Ranges are 80% ranges.
+hours your agents were working: the work rate, `40.9% an hour of work`, is
+how much of the limit an hour of it uses. Ranges are 80% ranges.
 [architecture.md](architecture.md#forecast) says how both are worked out.
 
 With no account to show, it says why in one line: no account's limits have
@@ -183,7 +185,7 @@ counted as unpriced, not free.
 | `--agent <id>` | every agent | Only this agent's usage. Not with `--limit`. |
 | `--account <name>` | every account | Only this account's usage. The name must match one account. |
 | `--limit <name>` | | What used this limit (below). |
-| `--top <n>` | 20 | How many rows to show. By time, the latest n, with the earlier ones added up in a first row. Otherwise the n that cost most, with the rest added up in a last row. |
+| `--top <n>` | 20 | How many rows to show, 1 or more. By time, the latest n, with the earlier ones added up in a first row. Otherwise the n that cost most, with the rest added up in a last row. |
 
 ```console
 $ turnscope usage --since 2026-09-29 --by model
@@ -216,9 +218,12 @@ if it has the limit, or else the first account shown that has it. `--since`
 moves the start, and then rows get no share. A limit whose window reset
 since it was read counts from the reset, or from one window's length ago
 when the reset is longer ago than that, and its rows get no share either:
-how much of the new window is used isn't known. With `--json`,
-`sharePercents` holds each row's share in the rows' order, or `null` when
-rows get none.
+how much of the new window is used isn't known. Nor do they while some of
+the usage has no known price, since a share is of cost: a line says so.
+A key's own limit counts only the usage made with that key. With `--json`,
+`sharePercents` holds each row's share in the rows' order, and
+`restSharePercent` the share of the row adding up the rest, each `null`
+when rows get none.
 
 ```console
 $ turnscope usage --account claude --limit week
@@ -261,7 +266,8 @@ SuperGrok (me@example.com) · xai:user-3
 
 A hidden account ends with `· hidden`. With no account yet, it says that
 no account's limits have been read, as `status` does, and `--json` prints
-an empty list.
+an empty list. With `--json`, an account's `title` and `label` are apart,
+as `status --json` has them: `Claude Max` and `me@example.com`.
 
 ## Connect and disconnect
 
@@ -275,6 +281,8 @@ turnscope disconnect <agent>
 `connect <agent>` adds it with the agent's own command, and `disconnect
 <agent>` removes it, in each of the agent's folders, a second account's
 included. [mcp.md](mcp.md#connect-an-agent) has each agent's command.
+Neither writes Turnscope's data, so both work before Turnscope has made
+its database, and after a newer Turnscope has changed it.
 
 ```console
 $ turnscope connect
@@ -304,25 +312,17 @@ turnscope doctor
 Lists what can't be read and how to fix it: logins that can't be read or
 were refused, providers that haven't answered, history files and lines
 that couldn't be read, models with no known price, prices not read yet,
-and `serve` not running. When all is well it prints `Nothing to fix.`
+and what was logged in the last day: what went wrong in the app, and why
+an account's limits couldn't be read. When all is well it prints
+`Nothing to fix.`
 
-## Serve and MCP
+## MCP
 
 ```text
-turnscope serve [--socket]
 turnscope mcp
 ```
 
-`serve` is the daemon the menu bar app talks to, over a Unix socket
-([protocol.md](protocol.md)). The app starts it. Only one runs per data
-directory; a second one exits at once. It exits 60 seconds after its last
-client leaves.
-
-| Flag | |
-|---|---|
-| `--socket` | Print the socket's path and exit. |
-
-`mcp` is the MCP server on standard input and output, which agents start
+The MCP server on standard input and output, which agents start
 ([mcp.md](mcp.md)).
 
 ## Guard
@@ -356,7 +356,7 @@ the weekly limit has under 10% left:
 
 | Exit | Means |
 |---|---|
-| 0 | There's room, or the standing isn't known, such as when there is no calling agent. A guard never blocks for want of data. |
+| 0 | There's room, or the standing isn't known, such as when there is no calling agent or no database yet. A guard never blocks for want of data. |
 | 1 | It can't follow its command line: a flag missing or mistyped, or a limit your account doesn't have. It blocks nothing. |
 | 2 | Under the threshold. The reason is on standard error, which Claude Code shows the model. |
 
@@ -371,7 +371,9 @@ A hook waits for the guard, so it reads no history and no prices. It reads
 the limits only when five minutes have passed since any process did, and
 not once a newer Turnscope has written to the data: then it guards by the
 limits read before. While
-the app runs, its daemon always has. Each read of a login's limits gives
+the app runs, it always has. Nor does it make the database or take in
+0.2's: before Turnscope has, or after an update until the new version has
+opened it, the standing isn't known. Each read of a login's limits gives
 up after 15 seconds, whether its provider takes one request or two, or
 after 5 if it can't connect.
 
@@ -414,5 +416,7 @@ Without `--account`, it takes the account of the session Claude Code names
 on standard input (`session_id`), then the calling agent's, then the first
 account in use. A new session isn't read yet, so the calling agent's
 account shows for it. It answers from the database alone, so it never
-waits on the network. It always exits 0: when nothing is known, it prints
+waits on the network, and never writes it: before Turnscope has made the
+database, or after an update until the new version has opened it, it
+prints nothing. It always exits 0: when nothing is known, it prints
 nothing.

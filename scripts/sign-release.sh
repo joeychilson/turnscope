@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sign the app scripts/build-release.sh built in target/dist, notarize and
+# Sign the app scripts/app.sh --release built in target/dist, notarize and
 # staple it, and make its disk image, the same, and the Sparkle appcast that
 # offers it to every copy already installed:
 #
@@ -23,10 +23,9 @@
 # The app is signed inside out, as Sparkle asks of an app that isn't
 # sandboxed: Sparkle's helpers, its framework, the command line, then the
 # app, each with the hardened runtime and a secure timestamp. Sparkle's
-# tools, which sign the update, are those resolved into target/swiftpm/, as
-# scripts/build-release.sh or the release workflow resolves them: the version
-# Package.resolved pins, checked against the checksum Sparkle's package gives,
-# and never built.
+# tools, which sign the update, are those scripts/sparkle.sh fetches into
+# target/sparkle/: the version it names, checked against its checksum, and
+# never built.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -42,7 +41,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 if [ ! -d "$app" ]; then
-  echo "sign-release.sh: no app at $app; scripts/build-release.sh builds it" >&2
+  echo "sign-release.sh: no app at $app; scripts/app.sh --release builds it" >&2
   exit 2
 fi
 version=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
@@ -81,9 +80,9 @@ fi
 
 # Sparkle's tools. Checked on every run, so a missing tool shows up in a
 # local or CI build, not first in a release.
-sign_update=target/swiftpm/artifacts/sparkle/Sparkle/bin/sign_update
+sign_update=target/sparkle/bin/sign_update
 if [ ! -x "$sign_update" ]; then
-  echo "sign-release.sh: no Sparkle tools at $sign_update; scripts/build-release.sh resolves them" >&2
+  echo "sign-release.sh: no Sparkle tools at $sign_update; scripts/sparkle.sh fetches them" >&2
   exit 1
 fi
 rm -f "$dist"/*.dmg "$dist/appcast.xml"

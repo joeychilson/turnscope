@@ -1,5 +1,144 @@
 # Changelog
 
+## 0.3.0
+
+The app is rebuilt in Rust, with the engine inside it. It looks and works
+as before, but for what's below.
+
+- **One process instead of two.** The app runs the engine itself, so it
+  no longer starts `turnscope serve`.
+- **Removed: `turnscope serve`.** A script that runs it now fails with
+  exit code 2.
+- **A new database, `turnscope.db`.** The first time 0.3.0 opens your
+  data, it takes in everything in `turnscope.sqlite`: history, limits,
+  accounts and which are hidden, alerts and settings. The old file is
+  left as it was, and a later version deletes it. `serve.lock`,
+  `serve.log` and `serve.sock`, which `turnscope serve` kept beside it,
+  are removed. Then all of history is read again once, which can take a
+  few minutes. An older Turnscope still running, such as an agent's MCP
+  server started before the update, then writes nothing more and says to
+  start it again.
+- **Turnscope keeps a log:** `app.log` in the data directory, with why it
+  couldn't keep the data current or read an account's limits. `turnscope
+  doctor` shows what it logged in the last day.
+- **An agent installed while the app runs** is watched from the next
+  minute. Its sessions showed only each minute until the app started
+  again.
+- **An MCP tool call waits at most a second for another Turnscope reading
+  history,** then answers from what was read before and says so. It waited
+  out the whole read, minutes at the app's first launch.
+- **`check_limits` with `hours` and several accounts gives a line for
+  each,** named, so one call compares them. It judged the first account
+  alone, and with no account known it left `hours` out.
+- **When the calling agent's account isn't known,** `check_limits` and
+  `explain_usage` say so and show every account. `explain_usage` failed.
+- **`explain_usage` takes `until`, and `by` takes `day`, `week` and
+  `month`.** When your session isn't among the rows shown, a line after
+  the table gives its cost and share.
+- **A `|` in a session's title stays in its cell** of `explain_usage`'s
+  table. It ended the cell, so a title could add cells of its own.
+- **The MCP server answers a message it can't take with an error and goes
+  on:** a line that isn't UTF-8 ended it, and a batch or an id of `null`
+  got no reply. It now opens its database at the first tool call, so the
+  handshake works when the database can't be opened, and the call says
+  why.
+- **The MCP server accepts protocol versions `2025-03-26` and
+  `2024-11-05`,** and both tools are marked `openWorldHint: true`, as
+  each reads limits from providers.
+- **`turnscope statusline` only reads.** It created the database, or took
+  in the old one, when it ran before anything else had; it now prints
+  nothing then.
+- **`usage --limit --json` gives `restSharePercent`,** the share of the
+  row adding up the rest. **`usage --top 0`** is refused.
+- **Usage on no account, in no project, or of no model named** is labelled
+  so: `no account`. It was `(none)`. In `explain_usage`, the lines after
+  the table read `By project: /work/api: $0.47; /work/app: $0.03`.
+- **When an agent's sign-in changes, its usage since moves to the new
+  account in the same write that records the change.** Done after, it
+  could be lost for good when a Turnscope quit between the two, and a
+  `guard` hook waited out another Turnscope's read of history. The same
+  holds for pricing a model models.dev lists for the first time.
+- **Reading OpenCode's history leaves nothing in its folder.** With
+  OpenCode closed, a read left an empty `opencode.db-wal` and
+  `opencode.db-shm` beside its database, and read it again a minute later.
+- **`check_limits` and `status --hours` count work past a limit's reset
+  in the window after it.** 6 hours of work on a 5 hours resetting in 30
+  minutes were said to fit; the window after runs out 4 hours into them.
+- **A window that rolls, as OpenCode Go's 5 hours, means whether hours of
+  work fit can't be told,** with what's left of it. They were said to fit,
+  with a note, at 4% left. When such a limit, or one with too little work
+  measured, decides the account, the verdict says what's left of it, not
+  another limit's hours of work.
+- **A limit is back as soon as a provider resets it early.** Turnscope
+  waited for the old window's reset, days later, to say so, and kept
+  showing it used up.
+- **A key's own limit is counted by that key's usage alone** in what used
+  it, and in its work rate. The usage of every key to the provider
+  counted, so another agent's key showed among what used it.
+- **A limit on some models is paced by work on those models,** as Weekly
+  (Opus) by Opus. Work on every model counted, so after hours of Sonnet,
+  an hour of Opus that used 8 points read as 2% an hour.
+- **No shares of a limit are given while some of its usage has no known
+  price,** and the answer says so. A model not yet priced took `<1%` and
+  the priced rows its points, at each model's launch.
+- **An OpenCode Go key swapped for a new one to the same plan stays one
+  account,** with its history, alerts and whether it's hidden. The new key
+  made a second account, and the first showed as signed out.
+- **`turnscope doctor` before prices are read** says only that. It also
+  listed each model as having no known price.
+
+- **The panel works from the keyboard.** Tab reaches the rows, Up and
+  Down move between them, and Return or Space opens one. Left and Right
+  switch Settings' tabs. VoiceOver reads a row as one button, with its
+  name, line and figure, and says whether it's open.
+- **Increase Contrast strengthens the grays, the panel's edge, an open row
+  and a bar's track,** as well as amber and red.
+- **A row darkens while pressed. A status that comes while the panel is
+  open moves into place:** figures fade to their new values, and a row
+  moving between the accounts in use and "Used this week" slides there.
+- **An account's label, such as an email, sits on its title's line,** and
+  reads a little darker. A Settings tab that scrolls fades at its edge.
+- **An expired login says to open its agent to renew it,** in the app and
+  on the command line. The offer to connect an agent reads as a row, its
+  name over what's wrong, and its button says Reconnect for an agent that
+  uses another copy of Turnscope. A refused login says to open its agent to sign in again
+  everywhere too.
+- **Claude's "Other apps weekly" counts only what other apps used.** Used
+  up, it decided the account, held back the other limits' "back"
+  notifications, and listed Claude Code's sessions as what used it.
+- **"Sign in again" waits for a second refused read in a row,** 5 minutes
+  after the first. A login its agent was renewing mid-read asked you to
+  sign in again for nothing.
+- **A provider that keeps failing is asked less often:** after 5, 10, 20,
+  then every 30 minutes, or when its `Retry-After` says, up to 30. One
+  that answers is asked every 5 minutes again.
+- **An account's API keys are read at once, in 15 seconds all told,** and
+  OpenRouter's credits once. A key that can't be read shows the account as
+  not read, with the other keys' limits; it was left out without a word.
+- **A Claude plan whose answer has a window Turnscope can't read** is read
+  without it. The whole plan went unread.
+- **A Grok Build session is counted right when its subagent works across
+  several of its turns,** and a subagent stopped before it finished is no
+  longer counted twice. A subagent's history that can't be read is tried
+  again, not counted twice.
+- **Codex usage missing a count shows as a skipped line in `turnscope
+  doctor`,** not as a response with no tokens. A response a subagent's
+  history repeats from its parent is counted for the parent.
+- **A response with no tokens and no cost isn't counted,** for every
+  agent.
+- **An OpenCode session titled `New session - <time>` keeps that title.**
+  Turnscope titled such sessions, written by older OpenCode versions, by
+  their first message.
+- **A session from a git worktree since removed keeps its repository as
+  its project** when its history is read again.
+- **`accounts --json` gives `label` apart from `title`,** as `status
+  --json` does: `title` no longer ends with the label.
+- **An API key's forecast for the month has two figures:** "on pace for
+  about $62". When what's spent already reads the same, it's left out.
+- **`turnscope guard`, `connect` and `disconnect` never create the
+  database or take in the old one.** `guard` says its standing is unknown
+  until something else has.
+
 ## 0.2.1
 
 - **When Turnscope's engine stops or can't start, the app says why:**

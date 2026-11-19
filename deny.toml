@@ -1,0 +1,5 @@
+# `cargo deny check advisories` (CI's lint job) checks only the crates built
+# for the app's two Macs. Rune, winit and wgpu bring Windows, Linux and
+# Wayland crates into Cargo.lock, which no build here compiles.
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]

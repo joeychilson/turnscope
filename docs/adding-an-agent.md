@@ -7,6 +7,7 @@ the agent's name from the status.
 
 The steps use an agent called Acme, with id `acme`. Pi
 (`src/agents/pi.rs`) is the shortest complete agent to read alongside.
+Paths are in the engine's crate, `crates/turnscope/`, but for the logo.
 
 ## 1. Measure the agent's files
 
@@ -133,6 +134,10 @@ fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
 }
 ```
 
+Claude Code's, Codex's and Grok Build's readers parse a line into a struct
+that borrows from it, not a `Value`: for a file that grows large, that
+takes less than half the time (`grok_build.rs` says what was measured).
+
 An agent that keeps a SQLite database, as OpenCode does, is opened read-only
 and read on from a little before the latest `time_updated` seen, since a
 row can be committed after one stamped later, and from no later than now,
@@ -151,9 +156,9 @@ find the account, and with models.dev's provider ids for the price.
 Rules:
 
 - **Tokens.** If the agent's input count includes cache reads and writes,
-  subtract them. If its output count leaves reasoning out, add it in. Skip
-  a response whose counts are all zero, such as one aborted before it
-  wrote anything.
+  subtract them. If its output count leaves reasoning out, add it in.
+  `read.respond` passes over a report with no tokens and no charge, such as
+  one stopped before it wrote anything.
 - **One response, many reports.** A response can be written several times:
   a line rewritten as it streams, a fork's copy of its parent's history, a
   continuation's. Give every report the same `id` and pass each to
@@ -162,7 +167,9 @@ Rules:
 - **Titles.** A session the agent or the user named takes that title.
   Otherwise offer the first thing the user asked, as `Title::Prompt`, and
   read no more of what was said: Turnscope keeps none of it. Offer what
-  the user typed, not what the agent adds itself. `without_tags(text, tags)`
+  the user typed, not what the agent adds itself. `texts(content)` gives a
+  message's text, whether its content is a string or parts with `text`.
+  `without_tags(text, tags)`
   takes the agent's blocks out of a message sent as the user's, and
   `inner(text, tag)` gives what one tag holds. A tag with no closing one is
   taken as the agent's only where the text opens with it: further in, the
@@ -204,7 +211,8 @@ The doc comments of `Login` and `Credential` say what each field holds.
 the account.
 
 The helpers `json_file`, `kept_login` and `claims` in `src/agents/mod.rs`,
-and `crate::output_within`, read what agents keep. `keychain(home, service,
+and `crate::process::output_within`, read what agents keep. An agent's
+SQLite database is read with `opened`, which leaves nothing beside it. `keychain(home, service,
 account, parse)` reads a Keychain item with `/usr/bin/security`, as Claude
 Code's and Antigravity's readers do. `parse` reads the item's bytes and
 returns why it couldn't. Its error names the item, and it's `Ok(None)`
@@ -250,8 +258,7 @@ a day before the tests' clock, as the other agents' sessions are. An agent
 whose history is a database, as OpenCode's is, gets the SQL that builds it
 beside where the database goes, named as the database with `.sql` for
 `.db`: `home()` in `tests/cli.rs` builds each, as it does `opencode.db`
-from `opencode.sql`. In `tests/cli.rs`, add the agent's id to the ids
-`serve_says_hello_with_the_status_and_answers_in_turn` expects.
+from `opencode.sql`.
 
 The new agent and its session change the snapshots that list every agent or
 its usage, such as `connect`, `usage`, `usage-model`, `status.json` and
@@ -265,8 +272,9 @@ TURNSCOPE_BLESS=1 cargo test --test cli
 
 ## 6. Add its logo
 
-Add a one-color SVG (`currentColor`) at `macos/Logos/agents/acme.svg`, and
-say where it came from in `macos/Logos/README.md`. Without one, the app
+Add a one-color SVG (`currentColor`) at
+`crates/turnscope-macos/assets/logos/agents/acme.svg`, and say where it
+came from in that folder's `README.md`. Without one, the app
 draws a generic mark.
 
 ## 7. Update the docs

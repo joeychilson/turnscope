@@ -4,19 +4,18 @@
 #   scripts/check-app.sh [Turnscope.app]   (default: target/dist/Turnscope.app)
 #
 # Its `turnscope`, off the network, creates a database from an empty home
-# (`doctor`), answers a hello with a status (`serve`), and answers an MCP
-# handshake and tool list with the bundle's version. Then the menu bar app,
-# with no engine, draws its panel from the contract's example status and
-# quits. All of it runs for each architecture the app was built for that
-# this Mac can run: on Apple silicon, Intel's runs under Rosetta, if Rosetta
-# is installed. Everything runs in folders made for the run, HOME included,
-# so nothing of yours or the CI runner's is read or written.
+# (`doctor`), and answers an MCP handshake and tool list with the bundle's
+# version. Then the menu bar app draws its panel and quits: from what its own
+# engine reads in that database, and from the example status in
+# crates/turnscope/tests/fixtures/status.json. All of it runs for each
+# architecture the app was built for that this Mac can run: on Apple
+# silicon, Intel's runs under Rosetta, if Rosetta is installed. Everything
+# runs in folders made for the run, HOME included, so nothing of yours or the
+# CI runner's is read or written.
 set -euo pipefail
 
 root="$(dirname "$0")/.."
 app=${1:-"$root/target/dist/Turnscope.app"}
-# The app's hello, as the contract has it.
-hello=$(jq -c . "$root/contract/hello.request.json")
 executable="$app/Contents/Helpers/turnscope"
 for needed in "$executable" "$app/Contents/MacOS/Turnscope"; do
   if [ ! -x "$needed" ]; then
@@ -27,17 +26,7 @@ done
 version=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
 
 work=$(mktemp -d)
-serve=
-# `$serve` is the subshell that runs the `turnscope` function in the
-# background, so serve is its child.
-stop_serve() {
-  if [ -n "$serve" ]; then
-    pkill -P "$serve" 2>/dev/null || true
-    wait "$serve" 2>/dev/null || true
-    serve=
-  fi
-}
-trap 'stop_serve; rm -rf "$work"' EXIT
+trap 'rm -rf "$work"' EXIT
 mkdir "$work/home"
 # `turnscope` as built for `$slice`, with that architecture's own data.
 turnscope() {
@@ -45,7 +34,7 @@ turnscope() {
     --home "$work/home" --data "$work/$slice" "$@"
 }
 
-example="$root/contract/status.notification.json"
+example="$root/crates/turnscope/tests/fixtures/status.json"
 slices=$(lipo -archs "$executable")
 checked=0
 echo "Turnscope $version from $app:"
@@ -60,28 +49,10 @@ for slice in $slices; do
     printf 'check-app.sh: doctor (%s) failed:\n%s\n' "$slice" "$(cat "$work/doctor.err")" >&2
     exit 1
   fi
-  if [ ! -s "$work/$slice/turnscope.sqlite" ]; then
+  if [ ! -s "$work/$slice/turnscope.db" ]; then
     printf 'check-app.sh: doctor (%s) kept no store. It said:\n%s\n' "$slice" "$report" >&2
     exit 1
   fi
-
-  # The app's hello is answered with a status, by the engine of the
-  # bundle's version, which is what the app checks.
-  socket=$(turnscope serve --socket)
-  turnscope serve 2>/dev/null &
-  serve=$!
-  for _ in $(seq 50); do
-    [ -S "$socket" ] && break
-    sleep 0.1
-  done
-  if ! answer=$(printf '%s\n' "$hello" | nc -U -w 2 "$socket" | head -n 1) ||
-    ! jq -e --arg server "turnscope $version" \
-      '.result.server == $server and (.result.status.accounts | type == "array")' \
-      <<<"$answer" >/dev/null; then
-    printf 'check-app.sh: serve (%s) answered no hello:\n%s\n' "$slice" "$(cut -c 1-300 <<<"${answer:-}")" >&2
-    exit 1
-  fi
-  stop_serve
 
   # The handshake an MCP client opens with, then the tools it asks for. The
   # notification between them needs no answer, so two come back.
@@ -108,26 +79,30 @@ for slice in $slices; do
     exit 1
   fi
 
-  # The app itself, off-screen and with no engine: it draws the panel from
-  # a status file, light and dark, as PNGs, and quits.
-  panel="$work/panel-$slice"
-  if ! HOME="$work/home" arch "-$slice" "$app/Contents/MacOS/Turnscope" \
-    --snapshot "$panel" --fixture "$example" 2>"$work/app.err"; then
-    printf 'check-app.sh: the app (%s) failed to draw its panel:\n%s\n' "$slice" "$(cat "$work/app.err")" >&2
-    exit 1
-  fi
-  for look in light dark; do
-    if [ ! -s "$panel/panel-$look.png" ]; then
-      printf 'check-app.sh: the app (%s) drew no %s panel. It said:\n%s\n' \
-        "$slice" "$look" "$(cat "$work/app.err")" >&2
+  # The app itself, off-screen: it draws the panel as PNGs, light and dark,
+  # and quits. First from what its engine reads in the database doctor made,
+  # then from a status file.
+  for from in data example; do
+    panel="$work/panel-$slice-$from"
+    given=(--data "$work/$slice" --home "$work/home")
+    [ "$from" = example ] && given=(--fixture "$example")
+    if ! HOME="$work/home" TURNSCOPE_OFFLINE=1 arch "-$slice" "$app/Contents/MacOS/Turnscope" \
+      --snapshot "$panel" "${given[@]}" 2>"$work/app.err"; then
+      printf 'check-app.sh: the app (%s) failed to draw its panel from the %s:\n%s\n' "$slice" "$from" "$(cat "$work/app.err")" >&2
       exit 1
     fi
+    for look in light dark; do
+      if [ ! -s "$panel/panel-$look.png" ]; then
+        printf 'check-app.sh: the app (%s) drew no %s panel from the %s. It said:\n%s\n' \
+          "$slice" "$look" "$from" "$(cat "$work/app.err")" >&2
+        exit 1
+      fi
+    done
   done
 
   echo "  $slice doctor: $(head -n 1 <<<"$report")"
-  echo "  $slice serve: turnscope $version answered a hello with a status"
   echo "  $slice mcp: $tools"
-  echo "  $slice app: drew its panel, light and dark, from the contract's example status"
+  echo "  $slice app: drew its panel, light and dark, from its engine's status and the example status"
   checked=$((checked + 1))
 done
 if [ "$checked" -eq 0 ]; then
