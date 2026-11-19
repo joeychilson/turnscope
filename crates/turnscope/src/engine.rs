@@ -1242,10 +1242,12 @@ mod tests {
         }
     }
 
-    /// A request that panics takes only itself down: the next still runs.
+    /// A request that panics takes only itself down: it's logged, and the
+    /// next still runs.
     #[test]
     fn a_request_that_panics_leaves_the_next_to_run() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        drop(read_just_now(data.path()));
         let (engine, _told) = start(data.path(), home.path());
         Engine::ask(&engine.requests, |_| panic!("a made-up failure"));
         let (ran, answered) = mpsc::channel();
@@ -1253,5 +1255,13 @@ mod tests {
             let _ = ran.send(());
         });
         answered.recv_timeout(Duration::from_secs(10)).unwrap();
+        // Logged before the next request ran, on the same thread.
+        let logged = std::fs::read_to_string(data.path().join("app.log")).unwrap();
+        assert!(
+            logged
+                .lines()
+                .any(|line| line.ends_with(" answering a request panicked")),
+            "{logged}"
+        );
     }
 }
