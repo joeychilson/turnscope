@@ -1,10 +1,5 @@
 /target
 .DS_Store
-# Xcode's and SwiftPM's own, per person and per build.
-xcuserdata/
-*.xcuserstate
-.build/
-.swiftpm/
 # Claude Code worktrees, at the root only: test fixtures hold agents'
 # own .claude folders.
 /.claude/

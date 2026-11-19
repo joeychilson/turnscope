@@ -1,8 +1,0 @@
-{
-  "error": {
-    "code": -32000,
-    "message": "no limit seven_day of openrouter:api"
-  },
-  "id": 3,
-  "jsonrpc": "2.0"
-}

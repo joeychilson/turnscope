@@ -18,9 +18,8 @@ Use made-up logins, keys and session text, never real ones.
 
 ## What's covered
 
-- `turnscope`: the command line, the MCP server, and `serve`, the app's
-  daemon, with its socket.
-- The menu bar app.
+- `turnscope`: the command line and the MCP server.
+- The menu bar app, and the engine it runs.
 - Updates: the appcast, the signature the app checks, and how it installs
   an update.
 - Releases: how they're built, signed and notarized, and the workflows that

@@ -8,8 +8,6 @@ trim_trailing_whitespace = true
 indent_style = space
 indent_size = 2
 
-[*.{rs,swift}]
+[*.rs]
 indent_size = 4
 
-[*.pbxproj]
-indent_style = tab

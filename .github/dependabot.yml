@@ -16,6 +16,15 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    # Rune and the crates patched from its repository move together, by hand
+    # (docs/development.md).
+    ignore:
+      - dependency-name: rune
+      - dependency-name: winit
+      - dependency-name: wgpu-hal
+      - dependency-name: parley_engine
+      - dependency-name: accesskit_macos
+      - dependency-name: accesskit_windows
     groups:
       rust:
         patterns: ["*"]

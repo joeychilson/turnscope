@@ -90,7 +90,8 @@ Claude Code calls from.
 | Account | The account of the session's latest response. Otherwise the account of the agent's latest response from its agent folder: the one `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` points to, or else its default folder. |
 
 When the account isn't known, `check_limits` lists every account, and
-`explain_usage` asks for `account`.
+`explain_usage` answers with every account's usage; given `limit`, it asks
+for `account`.
 
 The command line's `guard` and `statusline` work out the caller the same
 way.
@@ -99,8 +100,7 @@ way.
 
 - Every answer is one markdown text block: the verdict in sentences, then
   lists and tables.
-- There is no `structuredContent`: programs should use the CLI's `--json`
-  or the [serve protocol](protocol.md).
+- There is no `structuredContent`: programs should use the CLI's `--json`.
 - Times are local, on a 24-hour clock: `10:37` today, `Wed 09:00` within a
   week, `Sep 12 09:30` beyond. A limit's times also say how far off they
   are: `15:00 (in 3h)`.
@@ -119,9 +119,11 @@ way.
   ```
 
 - Each call first reads what's new: history, and limits and prices when
-  they're due. If that fails, as when a provider can't be reached or a
-  newer Turnscope has written to the data since the server started, the
-  tool still answers from what's known, and ends by saying it's as of the
+  they're due. A provider that can't be reached leaves its account as it
+  was last read. If reading fails, as when a newer Turnscope has written
+  to the data since the server started, or another Turnscope has been
+  reading history for over a second, as the app does at its first launch,
+  the tool still answers from what's known, and ends by saying it's as of the
   last read, and why: once an update has replaced the binary the server
   runs, `Turnscope was updated after this one started; start it again`. A call that then fails says why first, since its query
   may no longer fit a schema a newer Turnscope changed: `What's new
@@ -137,8 +139,8 @@ way.
 
 Every input is optional. An input the schema doesn't list is an error.
 
-The examples come from `tests/snapshots/mcp.json`: synthetic accounts and
-sessions, with the clock at Thu Oct 1 12:00 UTC.
+The examples come from `crates/turnscope/tests/snapshots/mcp.json`:
+synthetic accounts and sessions, with the clock at Thu Oct 1 12:00 UTC.
 
 ### `check_limits`
 
@@ -146,7 +148,7 @@ An agent calls it before costly work, such as starting several subagents or
 a long task, with the hours of work it plans. The answer says whether they
 fit and how much work is left before each limit runs out. With `all`, it
 compares every account, to choose where to work. Hours are at the user's
-usual pace of work, so for several agents at once an agent gives their
+usual work rate, so for several agents at once an agent gives their
 hours added up. An answer that can't tell
 is not a yes.
 
@@ -158,20 +160,28 @@ is not a yes.
 
 The answer has three parts:
 
-1. With `hours`, whether they fit at the working pace. Only the first
-   account's limits on all its usage count, not a limit on one model or one
-   key. When too little work has been measured, it says so. A window that
-   rolls, as OpenCode Go's 5 hours does, has no start to measure work
-   from, so the answer leaves it out and says so.
+1. With `hours`, whether they fit at the work rate: of several
+   accounts, a line for each, named. Only an account's limits on all its
+   usage count, not a limit on one model or one key. Work past a limit's
+   reset counts in the windows after it. A limit with too little work
+   measured, or a window that rolls, as OpenCode Go's 5 hours does, which
+   has no start to measure work from, means it can't be told: the answer
+   names the limit and what's left of it, then what the others would
+   leave.
 2. A one-sentence verdict on the first account: how much work is left
-   before which limit runs out, and when that limit resets. A used-up
+   before which limit runs out, and when that limit resets. When the
+   limit that decides the account has no work rate measured, it says
+   what's left of that limit instead. When the
+   caller's account isn't known and `account` and `all` aren't given,
+   every account is shown and this line says so instead. A used-up
    account says which limit is used up and when it's back: of several, the
    last back.
 3. Each account, the caller's first and marked `yours`, with the agents
    that use it (`via OpenCode and Pi`), and `in use` and `hidden` where
    they apply. Then a note if its limits couldn't be read, a
    line per limit with what's left, the reset, the outlook and the work
-   left, and for an API key, the spend this month across its keys.
+   left, and for an API key, the spend this month across its keys and the
+   month at that pace, to two figures.
 
 [cli.md](cli.md#status) says what "at this pace" and "of work" count.
 
@@ -182,7 +192,11 @@ account is hidden, and then to name one with `account`.
 Called with `{"all": true, "hours": 2}`:
 
 ```markdown
-2 more hours of work don't fit: 5 hours runs out after about 40m of work.
+- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work.
+- ChatGPT Plus (me@example.com): Whether 2 more hours of work fit can't be told: Weekly has 80% left, and too little work on it has been measured.
+- OpenRouter API key: Whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, and too little work on them has been measured.
+- SuperGrok (me@example.com): Whether 2 more hours of work fit can't be told: no limit on all its usage was read.
+
 Claude Max (me@example.com): about 40m of work left (20m–1h 10m) before 5 hours runs out; it resets 14:00 (in 2h).
 
 Claude Max (me@example.com) · via Claude Code · yours · in use
@@ -198,14 +212,15 @@ OpenRouter API key · via Pi
   This month, across its keys: $0.00.
 
 SuperGrok (me@example.com) · via Grok Build
-  Its login was refused; sign in again in Grok Build.
+  Its login was refused; open Grok Build to sign in again.
 ```
 
 ### `explain_usage`
 
 An agent calls it when you ask what used a limit or what something cost. It
 breaks down one account's usage in a limit's current window, or since a
-time, by session, project, model or agent; or, with `all`, every account's
+time, by session, project, model, agent, day, week or month; or, with
+`all`, every account's
 together, as for "what did I spend across my agents".
 
 | Input | Type | Default | Meaning |
@@ -214,7 +229,8 @@ together, as for "what did I spend across my agents".
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
 | `limit` | string | the limit that decides how the account stands | Text in a limit's name or key, any case, such as `week` or `5 hours`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
 | `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. A `since` at or after now is an error, as it is for the command line's `usage`. |
-| `by` | `session`, `project`, `model` or `agent` | `session` | How to group the rows. |
+| `until` | string | now | With `since`: up to when, in the same forms. Without `since`, the usage runs to now, and `until` is an error. |
+| `by` | `session`, `project`, `model`, `agent`, `day`, `week` or `month` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
 
 The answer:
@@ -237,7 +253,14 @@ line's `usage --limit` ([cli.md](cli.md#usage)). Shares are
 approximate, and known only over the limit's current window: with any
 other `since`, the column is left out, and a line says from when the
 window runs and to leave `since` out for them. A limit whose window reset
-since it was read gives no shares, so no line says how to get them.
+since it was read gives no shares, so no line says how to get them. Usage
+with no known price gives none either, as a share is of cost, and a line
+says so. A key's own limit counts only the usage made with that key.
+
+When the caller's account isn't known and neither `account` nor `all` is
+given, the answer is every account's, and opens by saying so; with
+`limit`, it's an error. When the caller's session isn't among the rows,
+a line after the table gives its cost, responses and share.
 
 An account with no limit read, such as one whose login expired, still has
 its usage broken down, without the limit's line or shares: unless `since`
@@ -254,7 +277,7 @@ Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at th
 |---|--:|--:|--:|
 | claude-opus-5 | $0.50 | 27 | 44% |
 
-By project: /work/api ($0.47), /work/app ($0.03).
+By project: /work/api: $0.47; /work/app: $0.03.
 ```
 
 ## Protocol
@@ -265,10 +288,11 @@ notification, which has no `id`, gets no reply.
 | Revision | How a client starts |
 |---|---|
 | `2026-07-28` | `server/discover`. Each request carries `_meta["io.modelcontextprotocol/protocolVersion"]`. |
-| `2025-11-25`, `2025-06-18` | `initialize` |
+| `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05` | `initialize` |
 
-`initialize` answers with the client's revision when it's one of these two,
-and with `2025-11-25` otherwise.
+`initialize` answers with the client's revision when it's one of these,
+and with `2025-11-25` otherwise. The two oldest are taken because nothing
+here is newer than tools with annotations, which an older client ignores.
 
 | Method | Result |
 |---|---|
@@ -287,8 +311,8 @@ and with `2025-11-25` otherwise.
   descriptions until the model looks for them, but it always shows the
   instructions, so they say when to check unasked; `explain_usage` answers
   what the person asks, as its name says.
-- Each tool has a `title` and the annotation `readOnlyHint: true`.
-  `check_limits` alone has `openWorldHint: true`.
+- Each tool has a `title` and the annotations `readOnlyHint: true` and
+  `openWorldHint: true`: each call reads limits from providers first.
 - A request with the `2026-07-28` `_meta` gets `resultType: "complete"` and
   `_meta["io.modelcontextprotocol/serverInfo"]` in its result. Its
   `tools/list` result also gets `ttlMs: 3600000` and
@@ -298,14 +322,14 @@ and with `2025-11-25` otherwise.
 
 | Code | When |
 |---|---|
-| `-32700` | The line isn't JSON. The reply's `id` is `null`. |
-| `-32600` | A request has no `method`. |
+| `-32700` | The line isn't UTF-8 or JSON. The reply's `id` is `null`. |
+| `-32600` | A message isn't one JSON object, as a batch, or its `id` is neither a string nor an integer (the reply's `id` is `null`), or a request has no `method`. |
 | `-32601` | The method is unknown. |
 | `-32602` | The tool is unknown. |
 | `-32022` | `_meta` gives a protocol version other than `2026-07-28`. `data.supported` lists the revisions spoken, and `data.requested` gives the one asked for. |
 
 ```json
-{"error":{"code":-32022,"data":{"requested":"2024-01-01","supported":["2026-07-28","2025-11-25","2025-06-18"]},"message":"Unsupported protocol version"},"id":10,"jsonrpc":"2.0"}
+{"error":{"code":-32022,"data":{"requested":"2024-01-01","supported":["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"]},"message":"Unsupported protocol version"},"id":10,"jsonrpc":"2.0"}
 ```
 
 A tool that fails isn't a protocol error: see [Answers](#answers).

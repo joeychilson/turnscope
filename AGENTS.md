@@ -1,9 +1,10 @@
 # Working on Turnscope
 
-One Rust binary, `turnscope` (the command line, an MCP server, and `serve`,
-a daemon), and a macOS app in `macos/` that talks to `serve`.
+Two Rust crates: `crates/turnscope`, the engine, with the `turnscope`
+binary (the command line and an MCP server), and `crates/turnscope-macos`,
+the menu bar app, which runs the engine in its own process.
 [docs/development.md](docs/development.md#test) has the full check CI
-runs, Swift tests included.
+runs.
 
 ## Never use the user's real data
 
@@ -34,15 +35,15 @@ runs, Swift tests included.
 
 | When you change | Also update |
 |---|---|
-| A command or flag of the command line, or its output | `docs/cli.md`; its case in `tests/cli.rs`; the README's command line section if it's shown there |
+| A command or flag of the command line, or its output | `docs/cli.md`; its case in `crates/turnscope/tests/cli.rs`; the README's command line section if it's shown there |
 | An MCP tool, its description or inputs, or its answer | `docs/mcp.md` |
-| The status, an alert, or any `serve` message | In one commit: `contract/`, the Rust types and their doc comments, `Contract.swift`, and `docs/protocol.md` for a method, notification or error ([how](docs/protocol.md#change-the-protocol)) |
+| The status, an alert, or what the engine tells an app | The Rust types and their doc comments; `crates/turnscope/tests/fixtures/status.json` for a status field; each app's `engine.rs` for an `engine::Event` |
 | An agent, or how an agent's files are read | [docs/adding-an-agent.md](docs/adding-an-agent.md), which lists the docs to update. Raise `ingest::READERS` when a reader would read a file it read before differently |
 | A provider | [docs/adding-a-provider.md](docs/adding-a-provider.md), which lists the docs to update |
 | The forecast | The decision written in `forecast.rs`, [architecture.md](docs/architecture.md#forecast); run the backtest |
 | The database schema | A new script at the end of `db::REVISIONS`: a shipped one is never edited. The tables in [architecture.md](docs/architecture.md#data) |
-| An alert kind or a notification setting | `alerts.rs`; the `CHECK` on `alert.kind`, in a new revision; `alerts::Notify`; the contract (above); `Words+Notes.swift`; `Settings/GeneralTab.swift`; [architecture.md](docs/architecture.md#alerts) |
-| Text the app shows | `Words` and its tests; run `scripts/screenshots.sh` if the panel looks different |
+| An alert kind or a notification setting | `alerts.rs`; the `CHECK` on `alert.kind`, in a new revision; `alerts::Notify`; the app's `Words::note` and `settings.rs`; [architecture.md](docs/architecture.md#alerts) |
+| Text the app shows | `Words` and its tests, or the view that shows a fixed label; run `scripts/screenshots.sh` if the panel looks different |
 | An app setting or launch argument | [docs/app.md](docs/app.md), which says how to add one |
 | A time form | `src/time.rs`, the flags' help in `main.rs`, the MCP tools' descriptions, [cli.md](docs/cli.md#time-forms) |
 | An environment variable | [cli.md](docs/cli.md#environment) if the binary reads it, otherwise `docs/development.md` |

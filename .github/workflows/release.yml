@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           tagged="${GITHUB_REF_NAME#v}"
-          declared=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          declared=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           if [ "$tagged" != "$declared" ]; then
             echo "::error::Tag $GITHUB_REF_NAME and Cargo.toml's version, $declared, disagree."
             exit 1
@@ -99,7 +99,7 @@ jobs:
       - name: Build the app, unsigned
         env:
           SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
-        run: scripts/build-release.sh
+        run: scripts/app.sh --release
       # An artifact keeps neither symlinks nor file modes, which the app's
       # framework needs, so the app goes in a zip that keeps both.
       - name: Pack the app
@@ -136,14 +136,11 @@ jobs:
         run: |
           mkdir -p target/dist
           ditto -x -k "$RUNNER_TEMP/unsigned/Turnscope.zip" target/dist
-      # Before the keys are here, since resolving runs each package's
-      # manifest, and only at the versions Package.resolved pins, since
-      # Sparkle's sign_update is handed the update's private key.
-      - name: Resolve Sparkle's tools
-        run: |
-          xcodebuild -resolvePackageDependencies -onlyUsePackageVersionsFromResolvedFile \
-            -project macos/Turnscope.xcodeproj -scheme Turnscope \
-            -clonedSourcePackagesDirPath target/swiftpm -quiet
+      # Before the keys are here, and only the version scripts/sparkle.sh
+      # names, checked against its checksum, since Sparkle's sign_update is
+      # handed the update's private key.
+      - name: Fetch Sparkle's tools
+        run: scripts/sparkle.sh
       - name: Set up signing
         env:
           DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}

@@ -1,7 +1,11 @@
-[package]
-name = "turnscope"
-description = "The limits and usage of the coding agents on this Mac: a CLI, an MCP server, and the menu bar app's daemon"
-version = "0.2.1"
+[workspace]
+members = ["crates/turnscope", "crates/turnscope-macos"]
+resolver = "3"
+
+# One version for the engine, the command line and every app: a release is
+# one version.
+[workspace.package]
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
@@ -9,24 +13,15 @@ authors = ["Joey Chilson"]
 repository = "https://github.com/joeychilson/turnscope"
 publish = false
 
-[dependencies]
-base64 = "0.23.1"
-clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
+[workspace.dependencies]
 jiff = "0.2.37"
-notify = "8.2.0"
-rayon = "1.12.0"
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+# Rune has no release: a commit, the same as its patches' below.
+rune = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.151", features = ["raw_value"] }
-sha2 = "0.11.0"
-
-[dev-dependencies]
+serde_json = "1.0.151"
 tempfile = "3.27.0"
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
+[workspace.lints.clippy]
 dbg_macro = "deny"
 todo = "deny"
 unwrap_used = "deny"
@@ -35,3 +30,17 @@ unwrap_used = "deny"
 codegen-units = 1
 lto = "thin"
 strip = true
+
+# Rune's fixes to these crates, which it has no release for yet: at Rune's
+# commit above.
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
+
+# Dependencies optimized in debug builds too: unoptimized, Rune's layout and
+# drawing dropped frames while a row opened.
+[profile.dev.package."*"]
+opt-level = 2

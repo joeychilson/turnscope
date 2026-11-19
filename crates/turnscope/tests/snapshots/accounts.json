@@ -1,0 +1,30 @@
+[
+  {
+    "hidden": false,
+    "id": "anthropic:acct-1:org-1",
+    "kind": "subscription",
+    "label": "me@example.com",
+    "title": "Claude Max"
+  },
+  {
+    "hidden": false,
+    "id": "openai:acct-2",
+    "kind": "subscription",
+    "label": "me@example.com",
+    "title": "ChatGPT Plus"
+  },
+  {
+    "hidden": false,
+    "id": "openrouter:api",
+    "kind": "apiKey",
+    "label": null,
+    "title": "OpenRouter API key"
+  },
+  {
+    "hidden": false,
+    "id": "xai:user-3",
+    "kind": "subscription",
+    "label": "me@example.com",
+    "title": "SuperGrok"
+  }
+]

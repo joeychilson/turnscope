@@ -1,0 +1,3 @@
+SuperGrok (me@example.com): its login was refused; open Grok Build to sign in again.
+gpt-5.5: 4 responses with no known price; models.dev doesn't list it.
+gemini-3.8-flash: 2 responses with no known price; models.dev doesn't list it.

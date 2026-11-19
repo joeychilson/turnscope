@@ -114,8 +114,8 @@ defaults delete com.joeychilson.turnscope
 To work on Turnscope:
 
 - [Development](docs/development.md): build, test and release
-- [Architecture](docs/architecture.md): how the binary works
-- [The macOS app](docs/app.md) and [its protocol](docs/protocol.md)
+- [Architecture](docs/architecture.md): how the engine works
+- [The macOS app](docs/app.md)
 - Adding [an agent](docs/adding-an-agent.md) or
   [a provider](docs/adding-a-provider.md)
 
