@@ -64,16 +64,8 @@ impl<'a> Words<'a> {
             (value + hair).floor()
         } else {
             value.round()
-        } as i64;
-        let digits = whole.to_string();
-        let mut out = String::new();
-        for (i, c) in digits.chars().enumerate() {
-            if i > 0 && (digits.len() - i).is_multiple_of(3) {
-                out.push(',');
-            }
-            out.push(c);
-        }
-        format!("${out}")
+        } as u64;
+        format!("${}", turnscope::usage::count(whole))
     }
 
     pub fn left(&self, limit: &Limit) -> String {
@@ -215,10 +207,15 @@ impl<'a> Words<'a> {
 
     fn when(&self, ms: i64) -> String {
         let part = self.part_of_day(ms);
-        let mut day = ms;
-        if part == "night" && self.zoned(ms).hour() < 5 && !self.same_day(ms, self.now) {
-            day = ms - 86_400_000;
-        }
+        let zoned = self.zoned(ms);
+        // Before 5 AM is the night of the date before. By the date, not 24
+        // hours back, which after a 23-hour day lands two dates back.
+        let day = match zoned.yesterday() {
+            Ok(before) if part == "night" && zoned.hour() < 5 && !self.same_day(ms, self.now) => {
+                before.timestamp().as_millisecond()
+            }
+            _ => ms,
+        };
         let today = self.same_day(day, self.now);
         if part == "noon" {
             return if today {
@@ -1163,6 +1160,13 @@ mod tests {
             w.at(&moment("2026-10-03T19:50:00Z", ThisWeek)),
             "Sat 2:50 PM"
         );
+        // Past midnight is the night before, also after a 23-hour day: the
+        // clocks spring forward on Sunday 14 March 2027.
+        let w = as_of_in(
+            at("2027-03-11T18:00:00Z"),
+            TimeZone::get("America/Chicago").unwrap(),
+        );
+        assert_eq!(w.when(at("2027-03-15T05:30:00Z")), "Sunday night");
     }
 
     #[test]

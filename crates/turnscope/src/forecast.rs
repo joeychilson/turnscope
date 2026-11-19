@@ -185,8 +185,11 @@ pub fn work_rate(
     enough: f64,
 ) -> Option<f64> {
     let hours = |from: i64, to: i64| {
-        let slots =
-            worked.partition_point(|at| *at <= to) - worked.partition_point(|at| *at <= from);
+        // None where `from` is after `to`, as a window's start drifted past
+        // its first reading is.
+        let slots = worked
+            .partition_point(|at| *at <= to)
+            .saturating_sub(worked.partition_point(|at| *at <= from));
         (slots as i64 * SLOT) as f64 / HOUR as f64
     };
     let (mut rose, mut worked_hours) = (0.0, 0.0);
@@ -359,6 +362,18 @@ mod tests {
         // Nor can work from before whose account was known.
         assert_eq!(work_rate(&readings, &worked, Some(at(0.5)), 5.0), Some(4.5));
         assert_eq!(work_rate(&readings, &worked, None, 5.0), Some(4.5));
+        // A window's start, as its reset gives it, can drift past its first
+        // reading by seconds: no work between them, not less than none.
+        let drifted = [(10.0, 1.0), (12.0, 9.0)].map(|(hours, used)| Reading {
+            at: at(hours),
+            used,
+            starts: Some(at(10.0) + 30_000),
+            resets: Some(at(15.0)),
+        });
+        let worked: Vec<i64> = (0..24)
+            .map(|slot| at(10.0) + 10_000 + slot * SLOT)
+            .collect();
+        assert_eq!(work_rate(&drifted, &worked, Some(0), 5.0), Some(4.5));
         let (low, likely, high) =
             work_left(14.0, 4.0, work_band(Some(at(168.0))), Some(164.0)).unwrap();
         assert_eq!(likely, 21.5);

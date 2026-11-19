@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1
+
+- **A forecast after midnight names the right night when the clocks have
+  just sprung forward.** In the hour after midnight on the Monday after, it
+  said "Saturday night" for "Sunday night".
+- **One request that crashes no longer stops the panel's others.** What
+  used a limit most, hiding an account and saving settings went unanswered
+  until Turnscope was started again; connecting an agent too. The crash is
+  noted in `app.log`.
+
 ## 0.3.0
 
 The app is rebuilt in Rust, with the engine inside it. It looks and works
