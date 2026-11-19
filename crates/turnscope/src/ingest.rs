@@ -244,7 +244,7 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     let _lock = match patience {
         None => lock(db)?,
         Some(wait) => crate::db::lock_within(&lock_path(db), wait)?.ok_or_else(|| {
-            Error::Failed("another Turnscope is reading your agents' history".to_owned())
+            Error::Busy("another Turnscope is reading your agents' history".to_owned())
         })?,
     };
     // Again: a newer one may have written while this waited for the lock.

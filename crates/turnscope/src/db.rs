@@ -158,7 +158,7 @@ INSERT INTO state (id) VALUES (1);
 -- An account whose last read failed, until a read works (`limits::record`).
 CREATE TABLE failing (
     account TEXT PRIMARY KEY,
-    reads INTEGER NOT NULL,        -- reads in a row that failed as `account.problem` says
+    reads INTEGER NOT NULL,        -- reads in a row that failed as `account.problem` says; of `unavailable`, those backed off
     why TEXT,                      -- what the last one met, as the log says it
     retry_at INTEGER               -- not read again before then
 ) STRICT, WITHOUT ROWID;
@@ -489,12 +489,16 @@ pub fn newer() -> Error {
     );
     Error::Newer(
         match updated {
-            true => "Turnscope was updated after this one started; start it again",
+            true => UPDATED_SINCE,
             false => "a newer Turnscope has updated this data; update Turnscope",
         }
         .to_owned(),
     )
 }
+
+/// What `newer` says when the file this process runs was replaced since it
+/// started, which the app's footer shortens.
+pub const UPDATED_SINCE: &str = "Turnscope was updated after this one started; start it again";
 
 /// Tokens from six columns of `row` starting at `from`, in `response`'s
 /// order: `input` to `reasoning`. A sum of no rows is NULL, which is 0.

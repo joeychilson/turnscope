@@ -48,6 +48,11 @@ pub enum Error {
     /// nothing more (`db::newer`). Exit 1. A variant, over comparing the
     /// message, which changes once an update replaces the binary.
     Newer(String),
+    /// Another Turnscope was reading history for longer than this one
+    /// waited (`ingest::ingest`). Exit 1. A variant, so an MCP answer can say
+    /// its usage is only part of it while all of history is read, over
+    /// saying so for any error then: it hid "start it again".
+    Busy(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -57,7 +62,8 @@ impl std::fmt::Display for Error {
         let (Error::Usage(message)
         | Error::NotFound(message)
         | Error::Failed(message)
-        | Error::Newer(message)) = self;
+        | Error::Newer(message)
+        | Error::Busy(message)) = self;
         f.write_str(message)
     }
 }

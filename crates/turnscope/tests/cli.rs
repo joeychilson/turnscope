@@ -910,7 +910,8 @@ fn with_no_account_to_show_every_front_end_says_why() {
 }
 
 /// A tool call that finds all of history being read, as after an update,
-/// says its usage is only part of it, over "as of the last read".
+/// says its usage is only part of it, over "as of the last read". Only when
+/// it waited for that read: any other reason is said as before.
 #[test]
 fn a_tool_call_says_its_usage_is_part_of_it_while_all_of_history_is_read() {
     let data = store();
@@ -926,21 +927,32 @@ fn a_tool_call_says_its_usage_is_part_of_it_while_all_of_history_is_read() {
         .spawn()
         .unwrap();
     let mut stdin = mcp.stdin.take().unwrap();
-    let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
-    writeln!(stdin, "{request}").unwrap();
-    let reply: serde_json::Value = serde_json::from_str(
-        &BufReader::new(mcp.stdout.take().unwrap())
-            .lines()
-            .next()
+    let mut replies = BufReader::new(mcp.stdout.take().unwrap()).lines();
+    let mut usage = || {
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
+        writeln!(stdin, "{request}").unwrap();
+        let reply: serde_json::Value =
+            serde_json::from_str(&replies.next().unwrap().unwrap()).unwrap();
+        reply["result"]["content"][0]["text"]
+            .as_str()
             .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            .to_owned()
+    };
+    let text = usage();
     assert!(
         text.ends_with(
             "\n\nYour agents' history is still being read, so the usage here is only part of \
              it: ask again in a few minutes."
+        ),
+        "{text}"
+    );
+    db.execute("UPDATE state SET version = 99000000", [])
+        .unwrap();
+    let text = usage();
+    assert!(
+        text.ends_with(
+            "\n\nWhat's new couldn't be read first, so this is as of the last read: a newer \
+             Turnscope has updated this data; update Turnscope"
         ),
         "{text}"
     );

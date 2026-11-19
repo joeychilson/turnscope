@@ -423,7 +423,8 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
     // While all of history is read, the first time or after an update, what
     // was read before is only part of it: 450,000 responses read again
     // after an update gave 153,450 at one call, then 383,724 (2026-11-18).
-    let partial = matches!(turnscope::ingest::all_read(db), Ok(false));
+    let partial = matches!(caught, Err(turnscope::Error::Busy(_)))
+        && matches!(turnscope::ingest::all_read(db), Ok(false));
     let ask = Ask {
         db,
         home: &server.home,

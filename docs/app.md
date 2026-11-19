@@ -189,8 +189,9 @@ the top:
    agent. It stands apart from the accounts, as a group of its own.
 6. **The footer**: "Not up to date · trying again" while the data can't be
    kept current, "Not up to date · update Turnscope" once a newer Turnscope
-   has written to it, or "Reading your agents' history…" during the first
-   read. Then "Update available" when a scheduled check found one
+   has written to it ("· start Turnscope again" when it was this one,
+   updated while it ran), or "Reading your agents' history…" during the
+   first read. Then "Update available" when a scheduled check found one
    ([Updates](#updates)), Settings (⌘,) and Quit (⌘Q). The words are cut
    short before the buttons are.
 

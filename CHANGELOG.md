@@ -20,13 +20,13 @@ as before, but for what's below.
   server started before the update, then writes nothing more and says
   why. One from 0.1 goes on writing to the old file, which nothing reads
   now: start its agent again.
-- **Once a newer Turnscope has written to the data, the panel's footer
-  says to update Turnscope,** in each copy of the app open: "Not up to date
-  · update Turnscope". It said it was trying again, with why only on
-  hover, and a second copy open beside the first went on for good, logging
-  a failure every 5 seconds. A change asked for then says so at once, and
-  Connect is off, as Hide is: it went back with no word why, for up to a
-  minute.
+- **Once a newer Turnscope has written to the data, the panel's footer says
+  to update Turnscope,** in each copy of the app open: "Not up to date ·
+  update Turnscope", or to start it again when it was updated while it ran.
+  It said it was trying again, with why only on hover, and a second copy
+  open beside the first went on for good, logging a failure every 5 seconds.
+  A change asked for then says so at once, and Connect is off, as Hide is:
+  it went back with no word why, for up to a minute.
 - **Turnscope keeps a log:** `app.log` in the data directory, with why it
   couldn't keep the data current or read an account's limits. `turnscope
   doctor` shows what it logged in the last day.
