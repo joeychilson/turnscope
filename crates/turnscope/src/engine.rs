@@ -265,13 +265,18 @@ impl Engine {
 }
 
 /// A thread that runs what's sent to it, in the order sent, until the
-/// `Engine` is dropped.
+/// `Engine` is dropped. A request that panics is logged and the next runs:
+/// unguarded, the panic ended the thread, and every later request went
+/// unanswered until the app restarted.
 fn queue(inner: &Arc<Inner>) -> Sender<Work> {
     let (send, received) = mpsc::channel::<Work>();
     let inner = Arc::clone(inner);
     std::thread::spawn(move || {
         for work in received {
-            work(&inner);
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&inner)));
+            if ran.is_err() {
+                log(&inner.data, "answering a request panicked");
+            }
         }
     });
     send
@@ -1235,5 +1240,18 @@ mod tests {
                 .collect();
             assert_eq!(shown, [first, second], "round {round}");
         }
+    }
+
+    /// A request that panics takes only itself down: the next still runs.
+    #[test]
+    fn a_request_that_panics_leaves_the_next_to_run() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (engine, _told) = start(data.path(), home.path());
+        Engine::ask(&engine.requests, |_| panic!("a made-up failure"));
+        let (ran, answered) = mpsc::channel();
+        Engine::ask(&engine.requests, move |_| {
+            let _ = ran.send(());
+        });
+        answered.recv_timeout(Duration::from_secs(10)).unwrap();
     }
 }
