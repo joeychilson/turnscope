@@ -214,12 +214,14 @@ pub trait Provider: Sync {
 
 `turnscope::catch_up` brings the database up to date, in this order:
 
-1. Prices, when six hours have passed since any process last asked
-   models.dev, or ten minutes after models.dev couldn't be read.
+1. Prices, when six hours have passed since any process last took
+   models.dev's catalog in, ten minutes after models.dev couldn't be read,
+   or two minutes after a process asked it and ended before the answer.
 2. Limits, when five minutes have passed since any process last read them.
-   An account whose provider was out of reach, busy or not understood
+   An account whose provider answered but was busy or not understood
    waits longer: 5 minutes, then 10, 20 and 30 at most, or as long as
-   the provider asks, up to 30 (`limits::backoff`). A read that fails
+   the provider asks, up to 30 (`limits::backoff`). One that didn't
+   answer, as while the Mac is offline, doesn't. A read that fails
    differently from the one before is added to `app.log`.
 3. The agents' history, every time.
 
@@ -242,7 +244,9 @@ on standard error, and says when it waits for another process that reads
 history (`ingest::waits`), as [cli.md](cli.md#global-options) shows. `mcp`
 and the app say nothing there, since no one reads their standard error. A
 tool call waits a second at most for another process's read
-(`mcp::PATIENCE`), then answers from what was read and says so. When no
+(`mcp::PATIENCE`), then answers from what was read and says so: while
+all of history is read, that its usage is only part of it
+(`ingest::all_read`). When no
 other process reads, the call reads history itself, all of it the first
 time, and answers after. The panel says the history is being read.
 

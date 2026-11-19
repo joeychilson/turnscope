@@ -132,10 +132,13 @@ pub enum Problem {
     /// Out of reach, busy, or an answer not understood. `why` says which, in
     /// words that are the same each time it fails the same way, for the
     /// log; `retry_after` is how long the provider asked to be left, in
-    /// milliseconds, if it did.
+    /// milliseconds, if it did. `answered` unless no answer came, as when
+    /// the Mac is offline: only a provider that answered is backed off
+    /// (`limits::backoff`).
     Unavailable {
         why: String,
         retry_after: Option<i64>,
+        answered: bool,
     },
     /// Every login to it has expired, so none was sent: its agent renews one
     /// when next used. Set by `limits`, never by a provider.
@@ -143,10 +146,21 @@ pub enum Problem {
 }
 
 impl Problem {
+    /// An answer that can't be used, or a read that failed some other way.
     pub fn unavailable(why: impl Into<String>) -> Problem {
         Problem::Unavailable {
             why: why.into(),
             retry_after: None,
+            answered: true,
+        }
+    }
+
+    /// No answer from the provider.
+    fn unanswered(why: String) -> Problem {
+        Problem::Unavailable {
+            why,
+            retry_after: None,
+            answered: false,
         }
     }
 
@@ -208,7 +222,7 @@ fn asked(
     // Under a millisecond, curl's `--max-time` would be 0.000: no limit.
     let left = by.saturating_duration_since(Instant::now());
     if left < Duration::from_millis(1) {
-        return Err(Problem::unavailable(format!(
+        return Err(Problem::unanswered(format!(
             "{url}: not asked, as the read's time was spent"
         )));
     }
@@ -220,7 +234,7 @@ fn asked(
     lines.extend(headers);
     let body = body.map(Value::to_string);
     let answered = requested(url, &lines, body.as_deref(), left)
-        .map_err(|why| Problem::unavailable(format!("{url}: {why}")))?;
+        .map_err(|why| Problem::unanswered(format!("{url}: {why}")))?;
     answer(url, &answered, refused)
 }
 
@@ -240,6 +254,7 @@ fn answer(url: &str, answered: &Answered, refused: &[u16]) -> Result<Value, Prob
         status => Err(Problem::Unavailable {
             why: format!("{url}: answered {status}"),
             retry_after: answered.retry_after,
+            answered: true,
         }),
     }
 }
@@ -491,8 +506,8 @@ mod tests {
         let asked = super::ask("http://example.invalid/", &credential, &[], spent);
         assert_eq!(
             asked,
-            Err(Problem::unavailable(
-                "http://example.invalid/: not asked, as the read's time was spent"
+            Err(Problem::unanswered(
+                "http://example.invalid/: not asked, as the read's time was spent".to_owned()
             ))
         );
     }

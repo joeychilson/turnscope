@@ -19,9 +19,17 @@ pub const DUE: i64 = 5 * crate::time::MINUTE;
 pub const BACKED_OFF: i64 = 30 * crate::time::MINUTE;
 
 /// How long an account waits for its next read after `reads` reads in a
-/// row found its provider out of reach, busy or not understood: [`DUE`],
-/// doubled with each read after the first, up to [`BACKED_OFF`], and as
-/// long as the provider asked, up to that too. A read that works ends it.
+/// row found its provider busy or not understood: [`DUE`], doubled with
+/// each read after the first, up to [`BACKED_OFF`], and as long as the
+/// provider asked, up to that too. A read that works ends it.
+///
+/// Only a provider that answered is backed off. With no answer, as when the
+/// Mac is offline, the next read is in five minutes: backed off too, limits
+/// stayed unread for up to half an hour after the Mac was back online. With
+/// a stand-in provider out of reach for 36 minutes, the first read that
+/// worked was at minute 65 (measured 2026-11-18). The cost: a provider
+/// that takes the read's 15 s without answering is asked every five
+/// minutes, as before.
 ///
 /// Chosen over asking again in five minutes whatever the answer, as before:
 /// a provider down, or answering 429, was asked every five minutes for as
@@ -382,11 +390,17 @@ fn failing(
     let again = was.as_deref() == Some(problem_name(problem));
     let reads = if again { reads.unwrap_or(0) + 1 } else { 1 };
     let (why, retry_at) = match problem {
-        // Some keys read, the provider answered: it isn't backed off.
+        // Some keys read, the provider answered: it isn't backed off. Nor
+        // is one that didn't answer.
+        Problem::Unavailable {
+            why,
+            answered: false,
+            ..
+        } => (Some(why.as_str()), None),
         Problem::Unavailable { why, .. } if read.limits.is_some() => (Some(why.as_str()), None),
-        Problem::Unavailable { why, retry_after } => {
-            (Some(why.as_str()), Some(now + backoff(reads, *retry_after)))
-        }
+        Problem::Unavailable {
+            why, retry_after, ..
+        } => (Some(why.as_str()), Some(now + backoff(reads, *retry_after))),
         _ => (None, None),
     };
     tx.execute(
@@ -697,20 +711,26 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
             limits.plan = limits.plan.take().or(read.plan);
             limits.readings.extend(read.readings);
         }
-        // A refusal is kept over any other problem, and the longest
-        // `Retry-After` over none or a shorter one.
+        // A refusal is kept over any other problem, the longest
+        // `Retry-After` over none or a shorter one, and an answer over none.
         Err(error) => {
             problem = Some(match (problem.take(), error) {
                 (Some(Problem::SignIn), _) | (_, Problem::SignIn) => Problem::SignIn,
                 (
                     Some(Problem::Unavailable {
                         retry_after: before,
+                        answered: answered_before,
                         ..
                     }),
-                    Problem::Unavailable { why, retry_after },
+                    Problem::Unavailable {
+                        why,
+                        retry_after,
+                        answered,
+                    },
                 ) => Problem::Unavailable {
                     why,
                     retry_after: retry_after.max(before),
+                    answered: answered || answered_before,
                 },
                 (_, error) => error,
             })
@@ -822,6 +842,7 @@ mod tests {
                 busy if busy.contains("busy") => Err(Problem::Unavailable {
                     why: "busy".to_owned(),
                     retry_after: Some(600_000),
+                    answered: true,
                 }),
                 key => Ok(Limits {
                     plan: None,
@@ -942,6 +963,7 @@ mod tests {
             Some(Problem::Unavailable {
                 why: "down".to_owned(),
                 retry_after: Some(600_000),
+                answered: true,
             })
         );
     }
@@ -1013,6 +1035,7 @@ mod tests {
         let asks = |seconds: i64| Problem::Unavailable {
             why: "busy".to_owned(),
             retry_after: Some(seconds * 1000),
+            answered: true,
         };
         let (_, held) = fake(Kind::Subscription, &[]);
         record(
@@ -1035,6 +1058,17 @@ mod tests {
         let (_, held) = fake(Kind::ApiKey, &[]);
         record(&mut db, signed_in(), vec![(some, held)], at).unwrap();
         assert_eq!(retry_at(&db), None);
+        // Nor is a provider that didn't answer, as when the Mac is offline,
+        // however long it lasts.
+        for _ in 0..6 {
+            let offline = Problem::Unavailable {
+                why: "host not found".to_owned(),
+                retry_after: None,
+                answered: false,
+            };
+            failed(&mut db, offline, at);
+            assert_eq!(retry_at(&db), None);
+        }
         // A refused login isn't backed off.
         failed(&mut db, Problem::SignIn, at);
         failed(&mut db, Problem::SignIn, at + 5 * minute);

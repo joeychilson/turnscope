@@ -156,10 +156,10 @@ A failure is a `Problem`:
 - `Problem::Unavailable`: the provider is out of reach or busy, or its
   answer isn't understood. It says why, in words that are the same each
   time it fails the same way, as the log adds a line only when they
-  change, and how long the provider asked to be left (`Retry-After`).
-  `ask` and `asked` fill both in. For an answer `parse` doesn't
-  understand, use `Problem::not_understood(url)`; for anything else,
-  `Problem::unavailable(why)`.
+  change, how long the provider asked to be left (`Retry-After`), and
+  whether it answered at all. `ask` and `asked` fill these in. For an
+  answer `parse` doesn't understand, use `Problem::not_understood(url)`;
+  for anything else, `Problem::unavailable(why)`.
 
 The helpers in `src/providers/mod.rs` each have a doc comment:
 `account(provider, credential, identity)` and `api_account(provider)`;
@@ -168,8 +168,8 @@ body, refused, by)` and `request(url, headers, body, seconds)`; and
 `absent(window)`, `reset(value)`, `window_name(length)` and `words(key)`
 for reading an answer.
 
-How Turnscope calls it, every five minutes, or less often while it's
-unavailable (`limits::backoff`):
+How Turnscope calls it, every five minutes, or less often while it
+answers but is unavailable (`limits::backoff`):
 
 - Every login the agents hold goes to `account`. Logins to one account are
   read together, in 15 s all told.

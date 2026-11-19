@@ -14,15 +14,19 @@ as before, but for what's below.
   accounts and which are hidden, alerts and settings. The old file is
   left as it was, and a later version deletes it. `serve.lock`,
   `serve.log` and `serve.sock`, which `turnscope serve` kept beside it,
-  are removed. Then all of history is read again once, which can take a
-  few minutes. An older Turnscope still running, such as an agent's MCP
-  server started before the update, then writes nothing more and says to
-  start it again.
-- **A second copy of the app, open beside another, says to update once a
-  newer Turnscope has written to the data,** as the first does. It went on
-  for good, logging a failure every 5 seconds. A change asked for then
-  says so at once, and Connect is off, as Hide is: it went back with no
-  word why, for up to a minute.
+  are removed, though a `serve` still running writes `serve.log` again
+  as it stops. Then all of history is read again once, which can take a
+  few minutes. A Turnscope 0.2 still running, such as an agent's MCP
+  server started before the update, then writes nothing more and says
+  why. One from 0.1 goes on writing to the old file, which nothing reads
+  now: start its agent again.
+- **Once a newer Turnscope has written to the data, the panel's footer
+  says to update Turnscope,** in each copy of the app open: "Not up to date
+  · update Turnscope". It said it was trying again, with why only on
+  hover, and a second copy open beside the first went on for good, logging
+  a failure every 5 seconds. A change asked for then says so at once, and
+  Connect is off, as Hide is: it went back with no word why, for up to a
+  minute.
 - **Turnscope keeps a log:** `app.log` in the data directory, with why it
   couldn't keep the data current or read an account's limits. `turnscope
   doctor` shows what it logged in the last day.
@@ -31,7 +35,9 @@ as before, but for what's below.
   again.
 - **An MCP tool call waits at most a second for another Turnscope reading
   history,** then answers from what was read before and says so. It waited
-  out the whole read, minutes at the app's first launch.
+  out the whole read, minutes at the app's first launch. While all of
+  history is read, at the first launch and after this update, it says its
+  usage is only part of it.
 - **`check_limits` with `hours` and several accounts gives a line for
   each,** named, so one call compares them. It judged the first account
   alone, and with no account known it left `hours` out.
@@ -102,6 +108,9 @@ as before, but for what's below.
   panel is open moves into place:** figures fade to their new values, and
   a row moving between the accounts in use and "Used this week" slides
   there.
+- **A click just beside or below the open panel closes it, and goes no
+  further.** It went through to the window under it. A click anywhere else
+  closes the panel and reaches what it was on, as before.
 - **An account's label, such as an email, sits on its title's line,** and
   reads a little darker. A Settings tab that scrolls fades at its edge.
 - **An expired login says to open its agent to renew it,** in the app and
@@ -117,7 +126,12 @@ as before, but for what's below.
   sign in again for nothing.
 - **A provider that keeps failing is asked less often:** after 5, 10, 20,
   then every 30 minutes, or when its `Retry-After` says, up to 30. One
-  that answers is asked every 5 minutes again.
+  that answers is asked every 5 minutes again. One that doesn't answer at
+  all, as while the Mac is offline, is still asked every 5 minutes, so
+  limits are back within 5 minutes of the network.
+- **Prices are asked for again 2 minutes later** when Turnscope quits
+  while models.dev is asked, as when the app is quit in its first minute.
+  Every cost was unknown for 6 hours.
 - **An account's API keys are read at once, in 15 seconds all told,** and
   OpenRouter's credits once. A key that can't be read shows the account as
   not read, with the other keys' limits; it was left out without a word.
@@ -141,10 +155,10 @@ as before, but for what's below.
   --json` does: `title` no longer ends with the label.
 - **An API key's forecast for the month has two figures:** "on pace for
   about $62". When what's spent already reads the same, it's left out.
-- **`turnscope guard`, `connect` and `disconnect` never create the
-  database or take in the old one.** `guard` says its standing is unknown
-  until something else has. When reading the limits again fails, `guard`
-  guards by those read before: it failed with exit code 1.
+- **`turnscope guard`, `connect` and `disconnect` never create the database
+  or take in the old one.** Until something else has, `guard` blocks
+  nothing, as its standing isn't known. When reading the limits again fails,
+  `guard` guards by those read before: it failed with exit code 1.
 - **Credits used up or running out are said as plural** after a limit
   that lasts: "Credits are used up". The panel's countdowns round to the
   nearest minute, as the command line's do.

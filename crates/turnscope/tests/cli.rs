@@ -909,6 +909,45 @@ fn with_no_account_to_show_every_front_end_says_why() {
     );
 }
 
+/// A tool call that finds all of history being read, as after an update,
+/// says its usage is only part of it, over "as of the last read".
+#[test]
+fn a_tool_call_says_its_usage_is_part_of_it_while_all_of_history_is_read() {
+    let data = store();
+    assert!(turnscope(data.path(), &["usage"], None).status.success());
+    // As when `ingest::READERS` was raised, with another Turnscope reading.
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    db.execute("UPDATE state SET readers = 0", []).unwrap();
+    let reading = std::fs::File::create(data.path().join("ingest.lock")).unwrap();
+    reading.lock().unwrap();
+    let mut mcp = command(data.path(), &["mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = mcp.stdin.take().unwrap();
+    let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
+    writeln!(stdin, "{request}").unwrap();
+    let reply: serde_json::Value = serde_json::from_str(
+        &BufReader::new(mcp.stdout.take().unwrap())
+            .lines()
+            .next()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.ends_with(
+            "\n\nYour agents' history is still being read, so the usage here is only part of \
+             it: ask again in a few minutes."
+        ),
+        "{text}"
+    );
+    drop(stdin);
+    assert!(mcp.wait().unwrap().success());
+}
+
 /// An MCP server left running while a newer Turnscope changes the schema,
 /// as an agent's is through an update of the app. It reads nothing more
 /// into the data, and answers from what it read, saying why.

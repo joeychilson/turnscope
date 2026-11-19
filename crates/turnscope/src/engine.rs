@@ -810,10 +810,12 @@ fn same(a: &Shown, b: &Shown) -> bool {
         && a.agents == b.agents
 }
 
-/// What the app shows of the data in `data` now, read once: no alert is
-/// raised and nothing is caught up. For a picture of the panel.
+/// What the app shows of the data in `data` now, read once and only read:
+/// no database is made or taken in, no alert is raised and nothing is
+/// caught up. For a picture of the panel.
 pub fn shown(data: &Path, home: &Path, binary: &Path) -> Result<Shown> {
-    let db = crate::db::open(data)?;
+    let db = crate::db::read(data)
+        .ok_or_else(|| Error::NotFound("there's no database this Turnscope reads".to_owned()))?;
     let status = status::status(&db, crate::now())?;
     Ok(Shown {
         agents: status::agents(home, binary, |id| status::in_use(&status.accounts, id)),

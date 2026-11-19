@@ -48,8 +48,9 @@ Costs are at list prices; an unknown cost is usage with no known price, not free
 approximate.";
 
 /// How long a tool call waits for another Turnscope reading history before
-/// it answers from what was read: the app's first read of a made-up history
-/// of 5,000 files took 12 s, a real one minutes, and Codex gives a tool 60 s.
+/// it answers from what was read, and says so: the app's first read of a
+/// made-up history of 5,000 files took 12 s, a real one minutes, and Codex
+/// gives a tool 60 s.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(1);
 
 struct Tool {
@@ -419,6 +420,10 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
     };
     // Each answer is as of now: what changed since is read first.
     let caught = turnscope::catch_up(db, &server.home, Some(PATIENCE));
+    // While all of history is read, the first time or after an update, what
+    // was read before is only part of it: 450,000 responses read again
+    // after an update gave 153,450 at one call, then 383,724 (2026-11-18).
+    let partial = matches!(turnscope::ingest::all_read(db), Ok(false));
     let ask = Ask {
         db,
         home: &server.home,
@@ -426,6 +431,13 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
     };
     match ((tool.answer)(&ask, arguments), caught) {
         (Ok(text), Ok(_)) => answer(text, false),
+        (Ok(text), Err(_)) if partial => answer(
+            format!(
+                "{text}\n\nYour agents' history is still being read, so the usage here is only \
+                 part of it: ask again in a few minutes."
+            ),
+            false,
+        ),
         (Ok(text), Err(why)) => answer(
             format!(
                 "{text}\n\nWhat's new couldn't be read first, so this is as of the last read: {why}"
