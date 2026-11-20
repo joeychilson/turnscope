@@ -24,6 +24,27 @@ struct Rates {
     reasoning: Option<f64>,
 }
 
+#[derive(Deserialize)]
+struct Cost {
+    #[serde(flatten)]
+    base: Rates,
+    #[serde(default)]
+    tiers: Vec<Tiered>,
+    context_over_200k: Option<Rates>,
+}
+
+#[derive(Deserialize)]
+struct Tiered {
+    #[serde(flatten)]
+    rates: Rates,
+    tier: Threshold,
+}
+
+#[derive(Deserialize)]
+struct Threshold {
+    size: u64,
+}
+
 struct Model {
     base: Rates,
     /// Each tier's rates, from the prompt size it starts above, smallest first.
@@ -37,24 +58,6 @@ pub struct Prices(HashMap<(String, String), History<Model>>);
 
 impl Prices {
     pub fn load(db: &Connection) -> Result<Prices> {
-        #[derive(Deserialize)]
-        struct Cost {
-            #[serde(flatten)]
-            base: Rates,
-            #[serde(default)]
-            tiers: Vec<Tiered>,
-            context_over_200k: Option<Rates>,
-        }
-        #[derive(Deserialize)]
-        struct Tiered {
-            #[serde(flatten)]
-            rates: Rates,
-            tier: Threshold,
-        }
-        #[derive(Deserialize)]
-        struct Threshold {
-            size: u64,
-        }
         let mut models: HashMap<(String, String), History<Model>> = HashMap::new();
         let mut rows =
             db.prepare("SELECT provider, model, since, cost, fast FROM price ORDER BY since")?;
@@ -187,6 +190,10 @@ const CLAIMED: i64 = 2 * crate::time::MINUTE;
 /// at once, a process that ended while models.dev was asked, as when the
 /// app is quit in its first minute, left every cost unknown until then.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
+    let at: Option<i64> = db.query_row("SELECT prices_at FROM state", [], |row| row.get(0))?;
+    if at.is_some_and(|at| at > now - 6 * crate::time::HOUR && at <= now + crate::limits::DUE) {
+        return Ok(false);
+    }
     let tx = crate::db::write(db)?;
     // Claimed up to `limits::DUE` ahead of now is another process's, which
     // read the time a moment later; further ahead, as for limits, a clock
@@ -210,7 +217,22 @@ fn catalog() -> Result<Catalog> {
     if status != 200 {
         return Err(Error::Failed(format!("models.dev answered {status}")));
     }
-    let providers: HashMap<String, Value> = serde_json::from_slice(&json)
+    let catalog = parse_catalog(&json)?;
+    // A catalog cut short would leave most usage unpriced.
+    if catalog.len() < 1000 {
+        return Err(Error::Failed(format!(
+            "models.dev's catalog listed only {} priced models",
+            catalog.len()
+        )));
+    }
+    Ok(catalog)
+}
+
+/// Priced models from models.dev's JSON, skipping entries whose `cost` can't
+/// be read as rates: storing an empty `{}` would stop `take` from pricing
+/// earlier responses once real rates appear.
+fn parse_catalog(json: &[u8]) -> Result<Catalog> {
+    let providers: HashMap<String, Value> = serde_json::from_slice(json)
         .map_err(|error| Error::Failed(format!("models.dev's catalog didn't read: {error}")))?;
     let mut catalog = Catalog::new();
     for (provider, listing) in providers {
@@ -218,7 +240,10 @@ fn catalog() -> Result<Catalog> {
             continue;
         };
         for (id, model) in models {
-            let Some(cost) = model.get("cost").filter(|cost| cost.is_object()) else {
+            let Some(cost) = model
+                .get("cost")
+                .filter(|cost| Cost::deserialize(*cost).is_ok())
+            else {
                 continue;
             };
             let fast = model["experimental"]["modes"]
@@ -226,20 +251,15 @@ fn catalog() -> Result<Catalog> {
                 .and_then(|modes| {
                     modes.values().find_map(|mode| {
                         let body = &mode["provider"]["body"];
-                        let cost = mode.get("cost").filter(|cost| cost.is_object())?;
+                        let cost = mode
+                            .get("cost")
+                            .filter(|cost| Rates::deserialize(*cost).is_ok())?;
                         (body["speed"] == "fast" || body["service_tier"] == "priority")
                             .then(|| cost.to_string())
                     })
                 });
             catalog.push(((provider.clone(), id.clone()), (cost.to_string(), fast)));
         }
-    }
-    // A catalog cut short would leave most usage unpriced.
-    if catalog.len() < 1000 {
-        return Err(Error::Failed(format!(
-            "models.dev's catalog listed only {} priced models",
-            catalog.len()
-        )));
     }
     Ok(catalog)
 }
@@ -555,5 +575,47 @@ mod tests {
             taking.join().unwrap().unwrap();
             assert!(waited < patience, "waited {waited:?}");
         });
+    }
+
+    #[test]
+    fn claim_does_not_take_a_write_lock_when_prices_are_not_due() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let now = crate::now();
+        db.execute("UPDATE state SET prices_at = ?1", [now])
+            .unwrap();
+        let mut other = crate::db::open(dir.path()).unwrap();
+        let _held = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        db.busy_timeout(std::time::Duration::ZERO).unwrap();
+        assert!(!claim(&mut db, now).unwrap());
+    }
+
+    #[test]
+    fn parse_catalog_skips_incomplete_cost_objects() {
+        let json = serde_json::json!({
+            "anthropic": {
+                "models": {
+                    "incomplete": {"cost": {}},
+                    "partial": {"cost": {"input": 2}},
+                    "complete": {
+                        "cost": {"input": 3, "output": 15},
+                        "experimental": {
+                            "modes": {
+                                "fast": {
+                                    "provider": {"body": {"speed": "fast"}},
+                                    "cost": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let parsed = parse_catalog(json.to_string().as_bytes()).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, ("anthropic".to_owned(), "complete".to_owned()));
+        assert_eq!(parsed[0].1.1, None);
     }
 }
