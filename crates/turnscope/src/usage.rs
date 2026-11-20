@@ -45,6 +45,20 @@ impl By {
             By::Session => "Session",
         }
     }
+
+    /// What one row is, singular, for the rest row's label.
+    fn noun(self) -> &'static str {
+        match self {
+            By::Day => "day",
+            By::Week => "week",
+            By::Month => "month",
+            By::Model => "model",
+            By::Project => "project",
+            By::Agent => "agent",
+            By::Account => "account",
+            By::Session => "session",
+        }
+    }
 }
 
 pub struct Query {
@@ -361,8 +375,8 @@ pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>) -> 
     out + "\nCosts are at list prices: what the same tokens cost on each provider's API."
 }
 
-/// Usage by anything but time as a Markdown table. The asking session,
-/// `yours`, is marked, where its agent names it.
+/// Usage as a Markdown table. The asking session, `yours`, is marked, where
+/// its agent names it.
 pub fn markdown(
     usage: &Usage,
     shares: Option<(&crate::status::Limit, &Shares)>,
@@ -379,6 +393,24 @@ pub fn markdown(
     let cell = |points: Option<f64>| {
         points.map_or(String::new(), |points| format!(" {} |", share(points)))
     };
+    let rest_line = usage.rest.as_ref().map(|rest| {
+        let points = cell(shares.and_then(|(_, shares)| shares.rest));
+        // Its key, made in `usage`, counts the rows it adds up: `3 more` or `3 earlier`.
+        let noun = usage.by.noun();
+        let rows = match rest.key.as_str() {
+            "1 more" | "1 earlier" => format!("{} {noun}", rest.key),
+            other => format!("{other} {noun}s"),
+        };
+        format!(
+            "| {rows} | {} | {} |{points}\n",
+            cost(rest.cost_usd, rest.unpriced),
+            count(rest.responses)
+        )
+    });
+    let time = usage.by.period().is_some();
+    if time && let Some(line) = &rest_line {
+        out += line;
+    }
     for (at, row) in usage.rows.iter().enumerate() {
         let name = match usage.by {
             // Its name is its title, which a session may not have yet.
@@ -404,18 +436,8 @@ pub fn markdown(
             count(row.responses)
         );
     }
-    if let Some(rest) = &usage.rest {
-        let points = cell(shares.and_then(|(_, shares)| shares.rest));
-        // Its key, made in `usage`, counts the rows it adds up: `3 more`.
-        let rows = match rest.key.as_str() {
-            "1 more" => format!("1 more {}", what.to_lowercase()),
-            more => format!("{more} {}s", what.to_lowercase()),
-        };
-        out += &format!(
-            "| {rows} | {} | {} |{points}\n",
-            cost(rest.cost_usd, rest.unpriced),
-            count(rest.responses)
-        );
+    if !time && let Some(line) = &rest_line {
+        out += line;
     }
     out
 }
@@ -889,5 +911,36 @@ mod tests {
     fn a_title_is_quoted_as_json_writes_a_string() {
         assert_eq!(title(None), "(untitled)");
         assert_eq!(title(Some("Say \"hi\"\n  now")), r#""Say \"hi\" now""#);
+    }
+
+    #[test]
+    fn markdown_by_time_puts_earlier_first_with_its_period_name() {
+        let row = |key: &str, cost_usd: f64, responses: u64| Row {
+            key: key.to_owned(),
+            cost_usd,
+            responses,
+            ..Row::default()
+        };
+        for (by, rest_key, expected_rest) in [
+            (By::Day, "1 earlier", "| 1 earlier day | $1.00 | 1 |"),
+            (By::Week, "2 earlier", "| 2 earlier weeks | $1.00 | 1 |"),
+            (By::Month, "3 earlier", "| 3 earlier months | $1.00 | 1 |"),
+        ] {
+            let usage = Usage {
+                since: 0,
+                until: 1,
+                by,
+                total: row("total", 3.0, 2),
+                rows: vec![row("2026-10-01", 2.0, 1)],
+                rest: Some(row(rest_key, 1.0, 1)),
+            };
+            let table = markdown(&usage, None, None);
+            let lines: Vec<&str> = table.lines().collect();
+            assert_eq!(
+                &lines[2..],
+                [expected_rest, "| 2026-10-01 | $2.00 | 1 |"],
+                "{table}"
+            );
+        }
     }
 }

@@ -323,17 +323,18 @@ fn requested(
         .map_err(|error| error.to_string())?;
     let request: String = headers.iter().map(|header| format!("{header}\n")).collect();
     // The headers are far smaller than a pipe holds, so writing them first
-    // can't wait on curl's output.
-    if let Some(mut stdin) = curl.stdin.take() {
-        stdin
-            .write_all(request.as_bytes())
-            .map_err(|error| error.to_string())?;
-    }
+    // can't wait on curl's output. Still reap curl and prefer its error when
+    // it exited before reading them.
+    let write = curl
+        .stdin
+        .take()
+        .map_or(Ok(()), |mut stdin| stdin.write_all(request.as_bytes()));
     let output = curl.wait_with_output().map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         return Err(unanswered(output.status.code(), &stderr));
     }
+    write.map_err(|error| error.to_string())?;
     // What curl writes last on standard error is the status and the
     // `Retry-After`, if any.
     let last = stderr.trim().rsplit('\n').next().unwrap_or_default();
@@ -525,5 +526,21 @@ mod tests {
         assert_eq!(super::window_name(28 * DAY), "Monthly");
         assert_eq!(super::window_name(31 * DAY), "Monthly");
         assert_eq!(super::window_name(32 * DAY), "32 days");
+    }
+
+    #[test]
+    fn a_curl_that_exits_before_reading_headers_reports_curls_error() {
+        // Bigger than the pipe buffer, so `write_all` fails if curl exits
+        // before reading `--header @-`.
+        let big = format!("X-Test: {}", "a".repeat(256 * 1024));
+        let error = super::requested(
+            "https://example.invalid/",
+            &[&big],
+            None,
+            std::time::Duration::MAX,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("--max-time"), "{error}");
     }
 }
