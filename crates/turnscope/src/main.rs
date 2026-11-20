@@ -493,7 +493,10 @@ fn limit_of<'a>(
 fn doctor(db: &rusqlite::Connection, data: &Path, home: &Path, now: i64) -> Result<Vec<String>> {
     let mut notes = Vec::new();
     for agent in agents::ALL {
-        for folder in agent.folders(home).iter().filter(|folder| folder.exists()) {
+        for (n, folder) in agent.folders(home).iter().enumerate() {
+            if n == 0 && !agent.installed(folder) {
+                continue;
+            }
             if let Err(error) = agent.logins(folder, home) {
                 notes.push(format!(
                     "{}'s logins in {} can't be read: {error}",

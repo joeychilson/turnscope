@@ -435,6 +435,15 @@ impl Agent for ClaudeCode {
     }
 
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
+        // Without an account and organization in settings, Anthropic's account
+        // isn't known anyway; check it first so a signed-out folder doesn't
+        // spawn `/usr/bin/security`.
+        let Some(identity) = identity(&settings(folder, home))? else {
+            return Ok(vec![Login {
+                provider: "anthropic".to_owned(),
+                credential: None,
+            }]);
+        };
         // Its own folder's login is the item `Claude Code-credentials`;
         // another folder's adds the first 8 hex digits of the SHA-256 of its
         // path (Claude Code 2.1.284's code, read 2026-09-29).
@@ -451,7 +460,7 @@ impl Agent for ClaudeCode {
         .unwrap_or_default();
         Ok(vec![Login {
             provider: "anthropic".to_owned(),
-            credential: credential(&kept, &settings(folder, home))?,
+            credential: credential(&kept, identity),
         }])
     }
 
@@ -602,17 +611,9 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
     });
 }
 
-/// The sign-in that the Keychain item's value `kept` holds, and whose it is
-/// from the settings at `settings`.
-fn credential(kept: &Value, settings: &Path) -> Result<Option<Credential>> {
-    let Some(token) = kept
-        .pointer("/claudeAiOauth/accessToken")
-        .and_then(Value::as_str)
-    else {
-        return Ok(None);
-    };
-    // Whose it is: a plan belongs to an organization, and one account can be
-    // in several.
+/// Whose sign-in `settings` names: a plan belongs to an organization, and one
+/// account can be in several.
+fn identity(settings: &Path) -> Result<Option<(String, Option<String>)>> {
     let config = super::json_file(settings)?.unwrap_or_default();
     let part = |pointer: &str| {
         config
@@ -620,29 +621,38 @@ fn credential(kept: &Value, settings: &Path) -> Result<Option<Credential>> {
             .and_then(Value::as_str)
             .filter(|part| !part.is_empty())
     };
-    let identity = match (
-        part("/oauthAccount/accountUuid"),
-        part("/oauthAccount/organizationUuid"),
-    ) {
-        (Some(account), Some(organization)) => Some((
-            format!("{account}:{organization}"),
-            part("/oauthAccount/emailAddress").map(str::to_owned),
-        )),
-        _ => None,
-    };
-    Ok(Some(Credential {
+    Ok(
+        match (
+            part("/oauthAccount/accountUuid"),
+            part("/oauthAccount/organizationUuid"),
+        ) {
+            (Some(account), Some(organization)) => Some((
+                format!("{account}:{organization}"),
+                part("/oauthAccount/emailAddress").map(str::to_owned),
+            )),
+            _ => None,
+        },
+    )
+}
+
+/// The sign-in that the Keychain item's value `kept` holds, with its `identity`.
+fn credential(kept: &Value, identity: (String, Option<String>)) -> Option<Credential> {
+    let token = kept
+        .pointer("/claudeAiOauth/accessToken")
+        .and_then(Value::as_str)?;
+    Some(Credential {
         provider: "anthropic",
         secret: Secret::new(token),
         key: false,
         expires: kept
             .pointer("/claudeAiOauth/expiresAt")
             .and_then(Value::as_i64),
-        identity,
+        identity: Some(identity),
         plan: kept
             .pointer("/claudeAiOauth/subscriptionType")
             .and_then(Value::as_str)
             .map(str::to_owned),
-    }))
+    })
 }
 
 fn begun_lately(file: &Path) -> bool {
@@ -830,20 +840,18 @@ mod tests {
 
         let kept = json!({"claudeAiOauth": {"accessToken": "made-up-token",
             "expiresAt": 1_790_000_000_000_i64, "subscriptionType": "max"}});
-        let whose = |account: Value| {
-            std::fs::write(&config, json!({"oauthAccount": account}).to_string()).unwrap();
-            let credential = credential(&kept, &config).unwrap().unwrap();
-            assert_eq!(credential.secret.expose(), "made-up-token");
-            (
-                credential.identity,
-                credential.plan,
-                credential.expires,
-                credential.key,
-            )
-        };
+        std::fs::write(
+            &config,
+            json!({"oauthAccount": {"accountUuid": "acct-1", "organizationUuid": "org-1",
+                "emailAddress": "someone@example.com"}})
+            .to_string(),
+        )
+        .unwrap();
+        let id = identity(&config).unwrap().unwrap();
+        let cred = credential(&kept, id.clone()).unwrap();
+        assert_eq!(cred.secret.expose(), "made-up-token");
         assert_eq!(
-            whose(json!({"accountUuid": "acct-1", "organizationUuid": "org-1",
-                "emailAddress": "someone@example.com"})),
+            (cred.identity, cred.plan, cred.expires, cred.key),
             (
                 Some((
                     "acct-1:org-1".to_owned(),
@@ -855,11 +863,16 @@ mod tests {
             )
         );
         // Without its organization, whose it is isn't known.
-        let partial =
-            whose(json!({"accountUuid": "acct-1", "emailAddress": "someone@example.com"}));
-        assert_eq!(partial.0, None);
+        std::fs::write(
+            &config,
+            json!({"oauthAccount": {"accountUuid": "acct-1",
+                "emailAddress": "someone@example.com"}})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(identity(&config).unwrap(), None);
         // Signed out.
-        assert!(credential(&json!({}), &config).unwrap().is_none());
+        assert!(credential(&json!({}), id).is_none());
     }
 
     #[test]
@@ -972,5 +985,24 @@ mod tests {
         let review = typed("<command-name>/review</command-name><command-args>src</command-args>");
         assert_eq!(review, "/review src");
         assert!(asks(&review));
+    }
+
+    #[test]
+    fn logins_reads_settings_before_the_keychain() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join(".claude");
+        std::fs::create_dir(&folder).unwrap();
+        // Half-written `.claude.json`: must fail before touching the Keychain,
+        // rather than treating a missing Keychain item as signed out.
+        std::fs::write(home.path().join(".claude.json"), "{").unwrap();
+        assert!(ClaudeCode.logins(&folder, home.path()).is_err());
+
+        // Valid settings with no OAuth account: signed out without needing a
+        // Keychain item.
+        std::fs::write(home.path().join(".claude.json"), "{}").unwrap();
+        let logins = ClaudeCode.logins(&folder, home.path()).unwrap();
+        assert_eq!(logins.len(), 1);
+        assert_eq!(logins[0].provider, "anthropic");
+        assert!(logins[0].credential.is_none());
     }
 }
