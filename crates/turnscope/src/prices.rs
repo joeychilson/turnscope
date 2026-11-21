@@ -193,9 +193,8 @@ const CLAIMED: i64 = 2 * crate::time::MINUTE;
 /// at once, a process that ended while models.dev was asked, as when the
 /// app is quit in its first minute, left every cost unknown until then.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
-    // Looked at first: claiming waits for the write lock, which an online
-    // catch-up shouldn't when nothing is due (an MCP call otherwise blocks
-    // here behind a long history read before `ingest`'s patience applies).
+    // Looked at first: claiming waits for the write lock, which a catch-up
+    // shouldn't when nothing is due.
     let at: Option<i64> = db.query_row("SELECT prices_at FROM state", [], |row| row.get(0))?;
     if at.is_some_and(|at| at > now - DUE && at <= now + crate::limits::DUE) {
         return Ok(false);
