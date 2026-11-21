@@ -639,7 +639,8 @@ fn identity(settings: &Path) -> Result<Option<(String, Option<String>)>> {
 fn credential(kept: &Value, identity: (String, Option<String>)) -> Option<Credential> {
     let token = kept
         .pointer("/claudeAiOauth/accessToken")
-        .and_then(Value::as_str)?;
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())?;
     Some(Credential {
         provider: "anthropic",
         secret: Secret::new(token),
@@ -1005,5 +1006,15 @@ mod tests {
         assert_eq!(logins.len(), 1);
         assert_eq!(logins[0].provider, "anthropic");
         assert!(logins[0].credential.is_none());
+    }
+
+    #[test]
+    fn an_empty_oauth_token_counts_as_signed_out() {
+        let identity = ("acct-1:org-1".to_owned(), Some("me@example.com".to_owned()));
+        let empty = json!({"claudeAiOauth": {"accessToken": ""}});
+        assert!(credential(&empty, identity.clone()).is_none());
+
+        let token = json!({"claudeAiOauth": {"accessToken": "tok-1"}});
+        assert!(credential(&token, identity).is_some());
     }
 }
