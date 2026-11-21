@@ -171,13 +171,16 @@ fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> R
             let tx = crate::db::write(db)?;
             tx.execute(
                 "UPDATE state SET prices_at = ?1",
-                [now - 6 * crate::time::HOUR + 10 * crate::time::MINUTE],
+                [now - DUE + 10 * crate::time::MINUTE],
             )?;
             tx.commit()?;
             Err(error)
         }
     }
 }
+
+/// How long models.dev's catalog is kept before it's asked again.
+const DUE: i64 = 6 * crate::time::HOUR;
 
 /// How long a claim to ask models.dev holds before it's taken in.
 const CLAIMED: i64 = 2 * crate::time::MINUTE;
@@ -190,8 +193,11 @@ const CLAIMED: i64 = 2 * crate::time::MINUTE;
 /// at once, a process that ended while models.dev was asked, as when the
 /// app is quit in its first minute, left every cost unknown until then.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
+    // Looked at first: claiming waits for the write lock, which an online
+    // catch-up shouldn't when nothing is due (an MCP call otherwise blocks
+    // here behind a long history read before `ingest`'s patience applies).
     let at: Option<i64> = db.query_row("SELECT prices_at FROM state", [], |row| row.get(0))?;
-    if at.is_some_and(|at| at > now - 6 * crate::time::HOUR && at <= now + crate::limits::DUE) {
+    if at.is_some_and(|at| at > now - DUE && at <= now + crate::limits::DUE) {
         return Ok(false);
     }
     let tx = crate::db::write(db)?;
@@ -201,7 +207,7 @@ fn claim(db: &mut Connection, now: i64) -> Result<bool> {
     let claimed = tx.execute(
         "UPDATE state SET prices_at = ?1 - ?2 + ?4
          WHERE prices_at IS NULL OR prices_at <= ?1 - ?2 OR prices_at > ?1 + ?3",
-        params![now, 6 * crate::time::HOUR, crate::limits::DUE, CLAIMED],
+        params![now, DUE, crate::limits::DUE, CLAIMED],
     )?;
     tx.commit()?;
     Ok(claimed > 0)
