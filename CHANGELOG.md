@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- **Antigravity's limits stay current with its app 2.34.0.** That version
+  stopped putting its token in the list of running programs, so Turnscope
+  couldn't find the open app and said to open Antigravity to renew its
+  login while it was open. Turnscope now reads the token where 2.34.0 keeps
+  it.
+
 ## 0.3.1
 
 - **Resets and run-outs a week or more off show the date instead of a

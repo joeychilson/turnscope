@@ -218,9 +218,11 @@ fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
 }
 
 /// The app's `language_server` while it runs, which answers for the app's
-/// sign-in on 127.0.0.1: its token for that, from its command line, and the
+/// sign-in on 127.0.0.1: its token for that, from its environment, and the
 /// ports it listens on, from `lsof`. Only the person's own processes are
-/// looked at: another's app answers for another's account.
+/// looked at: another's app answers for another's account. Of
+/// environments, only the server's is read: every process's would hold what
+/// each was started with, keys among them.
 ///
 /// Asked in the Keychain item's place, as the app 2.33.1 renews its sign-in
 /// without writing it back: measured 2026-11-21, the item was last written
@@ -233,36 +235,41 @@ fn running() -> Option<(Secret, Vec<u16>)> {
     let mut ps = Command::new("/bin/ps");
     ps.args(["-x", "-ww", "-o", "pid=,args="]);
     let table = crate::process::output_within(&mut ps, wait).ok()?;
-    let (pid, token) = server(&String::from_utf8_lossy(&table.stdout))?;
+    let pid = server(&String::from_utf8_lossy(&table.stdout))?.to_string();
+    let mut ps = Command::new("/bin/ps");
+    ps.args(["-E", "-ww", "-o", "command=", "-p", &pid]);
+    let started = crate::process::output_within(&mut ps, wait).ok()?;
+    let token = token(&String::from_utf8_lossy(&started.stdout))?;
     let mut lsof = Command::new("/usr/sbin/lsof");
-    lsof.args([
-        "-nP",
-        "-a",
-        "-p",
-        &pid.to_string(),
-        "-i4TCP",
-        "-sTCP:LISTEN",
-        "-Fn",
-    ]);
+    lsof.args(["-nP", "-a", "-p", &pid, "-i4TCP", "-sTCP:LISTEN", "-Fn"]);
     let open = crate::process::output_within(&mut lsof, wait).ok()?;
     let ports = listening(&String::from_utf8_lossy(&open.stdout));
     (!ports.is_empty()).then_some((token, ports))
 }
 
-/// The process and token of the app's `language_server` in `table`, rows of
-/// `pid args` as `ps` lists them. The token is the one after
-/// `--csrf_token`, as 2.33.1 passes it.
-fn server(table: &str) -> Option<(u32, Secret)> {
+/// The process of the app's `language_server` in `table`, rows of
+/// `pid args` as `ps` lists them.
+fn server(table: &str) -> Option<u32> {
     let app = INFO.app?;
     table.lines().find_map(|row| {
         let mut words = row.split_whitespace();
         let pid = words.next()?.parse().ok()?;
-        if !Path::new(words.next()?).ends_with(app) {
-            return None;
-        }
-        let token = words.skip_while(|word| *word != "--csrf_token").nth(1)?;
-        Some((pid, Secret::new(token)))
+        Path::new(words.next()?).ends_with(app).then_some(pid)
     })
+}
+
+/// The server's token in `command`, its arguments and then its environment
+/// as `ps -E` lists them: `ANTIGRAVITY_SERVER_CSRF_TOKEN`, where the app
+/// 2.34.0 puts it. 2.33.1 passed it as `--csrf_token`, and 2.34.0 passes
+/// no such argument (measured 2026-11-21). The last is taken, as the
+/// environment comes after the arguments.
+fn token(command: &str) -> Option<Secret> {
+    command
+        .split_whitespace()
+        .rev()
+        .find_map(|word| word.strip_prefix("ANTIGRAVITY_SERVER_CSRF_TOKEN="))
+        .filter(|token| !token.is_empty())
+        .map(Secret::new)
 }
 
 /// The ports `lsof -F n` lists that 127.0.0.1 reaches, in lines such as
@@ -1044,14 +1051,18 @@ mod tests {
     fn the_running_app_is_its_language_server_with_its_token_and_ports() {
         let table = "\
               310 /Applications/Antigravity.app/Contents/MacOS/Antigravity
-              315 /opt/Other.app/Contents/Resources/bin/language_server --csrf_token other-token
-              320 /Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone --csrf_token made-up-token --app_data_dir antigravity
+              315 /opt/Other.app/Contents/Resources/bin/language_server --standalone
+              320 /Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone --app_data_dir antigravity
         ";
-        let (pid, token) = server(table).unwrap();
-        assert_eq!((pid, token.expose()), (320, "made-up-token"));
+        assert_eq!(server(table), Some(320));
+
+        let command = "/Applications/Antigravity.app/Contents/Resources/bin/language_server \
+            --standalone --app_data_dir antigravity HOME=/Users/someone \
+            ANTIGRAVITY_SERVER_CSRF_TOKEN=made-up-token TMPDIR=/tmp";
+        assert_eq!(token(command).unwrap().expose(), "made-up-token");
         // Without its token, it can't be asked.
-        let tokenless = "320 /Applications/Antigravity.app/Contents/Resources/bin/language_server";
-        assert!(server(tokenless).is_none());
+        assert!(token("language_server --standalone HOME=/Users/someone").is_none());
+        assert!(token("language_server ANTIGRAVITY_SERVER_CSRF_TOKEN= HOME=/").is_none());
 
         // Only ports 127.0.0.1 reaches are asked: not one on another
         // address, where another program may hold the same port at
