@@ -567,7 +567,7 @@ impl Words {
     pub fn welcome(
         &self,
         agents: &[&Agent],
-        reads: &[String],
+        reads: &[&str],
         reading: bool,
     ) -> (String, String, Standing) {
         if reading {
@@ -741,10 +741,10 @@ impl Words {
     /// the headline it can't point to a row. Only an account in use counts: an idle account
     /// with the same title can't be taken for one in use.
     fn called_among(&self, account: &Account, accounts: &[Account]) -> String {
-        let twinned = accounts
-            .iter()
-            .any(|a| a.in_use && a.id != account.id && !a.hidden && a.title == account.title);
-        self.called(account, twinned)
+        self.called(
+            account,
+            account.twinned(accounts.iter().filter(|a| a.in_use)),
+        )
     }
 
     /// What VoiceOver says for the menu bar item: each account it shows, with its figure.
@@ -901,14 +901,11 @@ fn back_at(limit: &Limit) -> i64 {
     }
 }
 
-fn list<S: AsRef<str>>(names: &[S], last: &str) -> String {
+fn list(names: &[&str], last: &str) -> String {
     match names {
         [] => String::new(),
-        [one] => one.as_ref().to_owned(),
-        [rest @ .., final_] => {
-            let head: Vec<&str> = rest.iter().map(AsRef::as_ref).collect();
-            format!("{} {last} {}", head.join(", "), final_.as_ref())
-        }
+        [one] => (*one).to_owned(),
+        [rest @ .., final_] => format!("{} {last} {final_}", rest.join(", ")),
     }
 }
 
@@ -1670,7 +1667,7 @@ mod tests {
     #[test]
     fn before_any_account_the_welcome_says_why() {
         let w = words();
-        let reads = ["Claude Code".to_owned(), "Codex".to_owned()];
+        let reads = ["Claude Code", "Codex"];
         assert_eq!(w.welcome(&[], &reads, true).0, "Getting your limits");
         assert_eq!(
             w.welcome(&[], &reads, false).1,

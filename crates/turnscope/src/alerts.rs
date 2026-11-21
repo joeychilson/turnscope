@@ -9,7 +9,8 @@ use crate::status::{Account, Limit, Moment, Outlook, State, Status};
 use crate::time::DAY;
 use crate::{Result, forecast};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Kind {
     RunningOut,
     UsedUp,
@@ -205,9 +206,9 @@ pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>>
     let mut rows = statement.query([])?;
     let mut pending = Vec::new();
     while let Some(row) = rows.next()? {
-        let kind = parse_kind(&row.get::<_, String>(1)?);
+        let kind = serde_json::from_value::<Kind>(row.get::<_, String>(1)?.into());
         let detail = serde_json::from_str::<Detail>(&row.get::<_, String>(5)?);
-        let (Some(kind), Ok(detail)) = (kind, detail) else {
+        let (Ok(kind), Ok(detail)) = (kind, detail) else {
             continue;
         };
         let (id, at, account, limit): (i64, i64, String, String) =
@@ -290,16 +291,6 @@ fn kind_name(kind: Kind) -> &'static str {
         Kind::UsedUp => "usedUp",
         Kind::Reset => "reset",
         Kind::SignIn => "signIn",
-    }
-}
-
-fn parse_kind(name: &str) -> Option<Kind> {
-    match name {
-        "runningOut" => Some(Kind::RunningOut),
-        "usedUp" => Some(Kind::UsedUp),
-        "reset" => Some(Kind::Reset),
-        "signIn" => Some(Kind::SignIn),
-        _ => None,
     }
 }
 

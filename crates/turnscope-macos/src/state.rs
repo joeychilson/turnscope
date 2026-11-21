@@ -220,8 +220,8 @@ impl State {
     }
 
     /// The names of every agent Turnscope reads, installed or not.
-    pub fn agent_names(&self) -> Vec<String> {
-        self.agents.iter().map(|a| a.name.clone()).collect()
+    pub fn agent_names(&self) -> Vec<&str> {
+        self.agents.iter().map(|a| a.name.as_str()).collect()
     }
 
     /// Words as of the panel's `now`, or a fixed status's time.
