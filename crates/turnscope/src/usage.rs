@@ -514,8 +514,7 @@ pub fn breakdown(
     let used = limit
         .filter(|_| between.is_none() && window.is_some() && usage.total.cost_usd > 0.0)
         .filter(|_| usage.total.unpriced == 0)
-        .and_then(|limit| limit.left_percent)
-        .map(|left| f64::from(100 - left));
+        .map(|limit| f64::from(100 - limit.left_percent));
     let shares = used.map(|used| {
         let points = |row: &Row| row.cost_usd / usage.total.cost_usd * used;
         Shares {
@@ -683,10 +682,7 @@ mod tests {
         let (usage, shares) =
             breakdown(&db, account, Some(opus), None, By::Model, 10, now).unwrap();
         assert_eq!(keys(&usage), ["claude-opus-5"]);
-        assert_eq!(
-            shares.unwrap().rows,
-            [f64::from(100 - opus.left_percent.unwrap())]
-        );
+        assert_eq!(shares.unwrap().rows, [f64::from(100 - opus.left_percent)]);
 
         // A limit on several counts any of them.
         let mut either = opus.clone();

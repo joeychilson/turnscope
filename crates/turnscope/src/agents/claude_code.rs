@@ -454,17 +454,13 @@ impl Agent for ClaudeCode {
             let hex = crate::sha256_hex(folder.as_os_str().as_encoded_bytes(), 4);
             format!("Claude Code-credentials-{hex}")
         };
-        let keychain = super::keychain(home, &item, None, |kept| {
+        let kept = super::keychain(home, &item, None, |kept| {
             serde_json::from_slice::<Value>(kept).map_err(|error| error.to_string())
-        })
-        .map(|kept| kept.and_then(|kept| credential(&kept, identity.clone())));
-        // When the Keychain isn't available, as over SSH, Claude Code writes
-        // the same JSON to `.credentials.json` inside its folder.
-        let file = super::json_file(&folder.join(".credentials.json"))
-            .map(|kept| kept.and_then(|kept| credential(&kept, identity.clone())));
+        })?
+        .unwrap_or_default();
         Ok(vec![Login {
             provider: "anthropic".to_owned(),
-            credential: super::fresher(keychain, file)?,
+            credential: credential(&kept, identity),
         }])
     }
 
@@ -656,7 +652,7 @@ fn credential(kept: &Value, identity: (String, Option<String>)) -> Option<Creden
             .pointer("/claudeAiOauth/subscriptionType")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        refresh: None,
+        app_ports: Vec::new(),
     })
 }
 
@@ -1009,30 +1005,5 @@ mod tests {
         assert_eq!(logins.len(), 1);
         assert_eq!(logins[0].provider, "anthropic");
         assert!(logins[0].credential.is_none());
-
-        // With an OAuth account and no Keychain item, `.credentials.json`
-        // inside the folder holds the login.
-        std::fs::write(
-            home.path().join(".claude.json"),
-            json!({"oauthAccount": {"accountUuid": "acct-1", "organizationUuid": "org-1",
-                "emailAddress": "someone@example.com"}})
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            folder.join(".credentials.json"),
-            json!({"claudeAiOauth": {"accessToken": "file-token",
-                "expiresAt": 1_790_000_000_000_i64, "subscriptionType": "max"}})
-            .to_string(),
-        )
-        .unwrap();
-        let logins = ClaudeCode.logins(&folder, home.path()).unwrap();
-        let cred = logins[0].credential.as_ref().unwrap();
-        assert_eq!(cred.secret.expose(), "file-token");
-        assert_eq!(cred.plan.as_deref(), Some("max"));
-
-        // A half-written `.credentials.json` fails rather than signing out.
-        std::fs::write(folder.join(".credentials.json"), "{").unwrap();
-        assert!(ClaudeCode.logins(&folder, home.path()).is_err());
     }
 }

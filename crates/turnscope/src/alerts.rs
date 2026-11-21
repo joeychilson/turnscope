@@ -151,7 +151,7 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             if let Some(ended) = used_up {
                 let left = match limit.money {
                     Some(money) => money.left_usd > 0.0,
-                    None => limit.left_percent.is_some_and(|left| left > 0),
+                    None => limit.left_percent > 0,
                 };
                 let this = limit.window.is_some_and(|window| {
                     forecast::same_reset(Some(ended), Some(window.resets.at))
@@ -159,9 +159,7 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
                 // Reset early, a read shows a new window with a new reset:
                 // waiting for the old one told it days late.
                 let moved = limit.window.is_some() && !this;
-                if (left && (ended <= now || moved))
-                    || (this && limit.left_percent.is_some_and(|left| left > 1))
-                {
+                if (left && (ended <= now || moved)) || (this && limit.left_percent > 1) {
                     raise(account, Some(limit), Kind::Reset, ended, None)?;
                 }
             }
@@ -374,7 +372,7 @@ mod tests {
                 horizon: Horizon::Later,
             },
         });
-        (limit.left_percent, limit.outlook) = (Some(left), outlook);
+        (limit.left_percent, limit.outlook) = (left, outlook);
         status
     }
 
@@ -444,7 +442,7 @@ mod tests {
         // $5 more: under 1% of all ever bought, so 0% left, and back all the
         // same. Told once, for the two.
         let bought = credits(DAY + 2 * MINUTE, 1015.0, 5.0);
-        assert_eq!(bought.accounts[0].limits[0].left_percent, Some(0));
+        assert_eq!(bought.accounts[0].limits[0].left_percent, 0);
         assert_eq!(kinds(&raise(&mut db, &bought).unwrap()), [Kind::Reset]);
         assert!(raise(&mut db, &bought).unwrap().is_empty(), "told once");
         // Those used up too.
@@ -617,7 +615,7 @@ mod tests {
         );
         let mut five_back = used_up.clone();
         five_back.at = 10 * DAY + MINUTE;
-        five_back.accounts[0].limits[0].left_percent = Some(100);
+        five_back.accounts[0].limits[0].left_percent = 100;
         five_back.accounts[0].limits[0].outlook = LASTS;
         assert!(raise(&mut db, &five_back).unwrap().is_empty());
     }

@@ -148,13 +148,6 @@ account, and the folders and usage of the rest move to it. OpenCode Go's is
 the instant its monthly window resets, which keys to one plan report to the
 second. The default, `None`, never merges.
 
-If the provider's OAuth refresh tokens don't rotate on use, as Google's
-don't, implement `refreshes` returning `true` to exchange an expired
-login's `credential.refresh` in memory with `post_form`, caching the
-refreshed access token in memory only. Never return `true` for a provider
-whose refresh tokens rotate on use: refreshing would invalidate the agent's
-own login.
-
 A failure is a `Problem`:
 
 - `Problem::SignIn`: the provider refused the login. Refused at two reads
@@ -171,9 +164,8 @@ A failure is a `Problem`:
 The helpers in `src/providers/mod.rs` each have a doc comment:
 `account(provider, credential, identity)` and `api_account(provider)`;
 `ask(url, credential, headers, by)`, `asked(url, credential, headers,
-body, refused, by)`, `asked_bearer(url, token, headers, body, refused,
-by)`, `post_form(url, fields, by)` and `request(url, headers, body,
-seconds)`; and
+body, refused, by)`, `sent(url, headers, body, refused, by)` and
+`request(url, headers, body, seconds)`; and
 `absent(window)`, `reset(value)`, `window_name(length)` and `words(key)`
 for reading an answer.
 
@@ -189,19 +181,16 @@ answers but is unavailable (`limits::backoff`):
   `account_limits` beside them. Their readings are put together. A key
   that can't be read is the account's problem, beside what the others
   read.
-- A login within a minute of its `expires` is never sent unless
-  `refreshes` is true and the login carries a `refresh` token: otherwise it
-  would expire on the way.
+- A login within a minute of its `expires` is never sent: it would expire
+  on the way.
 
 Rules:
 
-- **Never write a login or refresh a rotating token.** Turnscope never
-  writes an agent's files or Keychain and never stores tokens on disk. Only
-  a non-rotating refresh token may be exchanged in memory.
-- **Requests** go only through `ask`, `asked`, `asked_bearer`, `post_form`
-  or `request`: curl with credentials and secret bodies on standard input,
-  Turnscope's only way to the network. A request changes nothing at the
-  provider.
+- **Never refresh a token** or write a login. Turnscope waits for the agent
+  to refresh it.
+- **Requests** go only through `ask`, `asked`, `sent` or `request`: curl
+  with the credential on standard input, Turnscope's only way to the
+  network. A request changes nothing at the provider.
 - **An answer that isn't understood** is `Problem::not_understood`, not an
   empty list of readings, which would read as a plan without limits. A
   window whose time won't parse fails the whole answer, as the rest would

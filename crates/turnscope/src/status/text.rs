@@ -67,23 +67,6 @@ pub fn none(status: &Status, show: &str) -> String {
     }
 }
 
-/// The agents that haven't refreshed `account`'s expired login while it's in
-/// use, and the verb agreeing with their count: `("Antigravity", "hasn't")` or
-/// `("OpenCode and Pi", "haven't")`.
-fn active_agents(account: &Account) -> (String, &'static str) {
-    let ids = if account.used_by.is_empty() {
-        &account.agents
-    } else {
-        &account.used_by
-    };
-    let names: Vec<&str> = ids.iter().map(|id| agents::name(id)).collect();
-    match names.as_slice() {
-        [] => ("its agent".to_owned(), "hasn't"),
-        [one] => ((*one).to_owned(), "hasn't"),
-        [rest @ .., last] => (format!("{} and {last}", rest.join(", ")), "haven't"),
-    }
-}
-
 /// Why `account`'s limits aren't read now, and what to do about it: `its
 /// login was refused; open Codex to sign in again`. Read before, it says since
 /// when, or only `since` when the time of that read is `dated` beside it.
@@ -97,11 +80,7 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
     Some(match why {
         Stale::SignedOut => "no agent here is signed in to it now".to_owned(),
         Stale::SignIn => format!("its login was refused; open {agents} to sign in again"),
-        Stale::Expired if account.in_use => {
-            let (who, hasnt) = active_agents(account);
-            format!("its saved login expired; {who} {hasnt} refreshed it")
-        }
-        Stale::Expired => format!("its login expired; use {agents} to update"),
+        Stale::Expired => format!("its login expired; open {agents} to renew it"),
         Stale::ReadFailed => format!(
             "it couldn't be read {}; it's tried again every {} to {} minutes",
             match read_at {
@@ -181,39 +160,28 @@ fn forecast_dollars(usd: f64) -> String {
     }
 }
 
-/// What's left of `limit`: `25%`, or of money, `$11.00 of $20.00`. `None`
-/// once its window reset and it was used here since.
-fn left(limit: &Limit) -> Option<String> {
-    match (limit.money, limit.left_percent) {
-        (Some(money), _) => Some(format!(
+/// What's left of `limit`: `25%`, or of money, `$11.00 of $20.00`.
+fn left(limit: &Limit) -> String {
+    match limit.money {
+        Some(money) => format!(
             "{} of {}",
             crate::usage::dollars(money.left_usd),
             crate::usage::dollars(money.size_usd)
-        )),
-        (None, Some(percent)) => Some(format!("{percent}%")),
-        (None, None) => None,
+        ),
+        None => format!("{}%", limit.left_percent),
     }
 }
 
 /// One limit as a line: what's left, the reset, the outlook, and the work
 /// left at the work rate.
 pub fn limit_text(limit: &Limit, now: i64) -> String {
-    let left_text = left(limit);
-    let mut out = match &left_text {
-        Some(left) => format!("{}: {left} left", limit.named()),
-        None => match limit.reset_since {
-            Some(reset) => format!("{}: reset {}", limit.named(), time::ago(reset, now)),
-            None => format!("{}: unknown", limit.named()),
-        },
-    };
-    if left_text.is_some() {
-        match (&limit.window, limit.reset_since) {
-            (Some(_), Some(reset)) => out += &format!(", reset {}", time::ago(reset, now)),
-            (Some(window), None) if !matches!(limit.outlook, Outlook::UsedUp { .. }) => {
-                out += &format!(", resets {}", time::ahead(window.resets.at, now))
-            }
-            _ => {}
+    let mut out = format!("{}: {} left", limit.named(), left(limit));
+    match (&limit.window, limit.reset_since) {
+        (Some(_), Some(reset)) => out += &format!(", reset {}", time::ago(reset, now)),
+        (Some(window), None) if !matches!(limit.outlook, Outlook::UsedUp { .. }) => {
+            out += &format!(", resets {}", time::ahead(window.resets.at, now))
         }
+        _ => {}
     }
     out += ". ";
     out += &match &limit.outlook {
@@ -255,12 +223,6 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
         Outlook::UsedUp { back: None } => "Used up.".to_owned(),
         Outlook::Unknown { reason } => match reason {
             Unknown::NotEnoughData => "No forecast yet.".to_owned(),
-            Unknown::Stale if limit.reset_since.is_some() && limit.left_percent.is_none() => {
-                format!(
-                    "Used since the reset; not read since {}.",
-                    time::clock(limit.read_at, now)
-                )
-            }
             Unknown::Stale if limit.reset_since.is_some() => {
                 "Full since the reset, unless used on the web or another device.".to_owned()
             }
@@ -355,40 +317,31 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
     let mut after = Vec::new();
     let mut untold = None;
     for limit in account.limits.iter().filter(|limit| limit.whole()) {
-        let (Some(work), Some(left_pct)) = (&limit.work, limit.left_percent) else {
-            let why = match left(limit) {
-                Some(left) => {
-                    // A window that rolls has no start to measure work from.
-                    let rolls = limit
-                        .window
-                        .is_some_and(|window| window.starts_at.is_none());
-                    let why = match rolls {
-                        true => format!(
-                            "{} a window that rolls, so it isn't forecast",
-                            agree(limit, "is", "are")
-                        ),
-                        false => format!(
-                            "too little work on {} has been measured",
-                            agree(limit, "it", "them")
-                        ),
-                    };
-                    format!(
-                        "{} {} {left} left, and {why}",
-                        limit.name,
-                        agree(limit, "has", "have")
-                    )
-                }
-                None => format!(
-                    "{} {} used since the reset and {} been read since",
-                    limit.name,
-                    agree(limit, "was", "were"),
-                    agree(limit, "hasn't", "haven't")
+        let Some(work) = &limit.work else {
+            // A window that rolls has no start to measure work from.
+            let rolls = limit
+                .window
+                .is_some_and(|window| window.starts_at.is_none());
+            let why = match rolls {
+                true => format!(
+                    "{} a window that rolls, so it isn't forecast",
+                    agree(limit, "is", "are")
+                ),
+                false => format!(
+                    "too little work on {} has been measured",
+                    agree(limit, "it", "them")
                 ),
             };
+            let why = format!(
+                "{} {} {} left, and {why}",
+                limit.name,
+                agree(limit, "has", "have"),
+                left(limit)
+            );
             untold = untold.or(Some(why));
             continue;
         };
-        match ends(limit, work, left_pct, hours, now) {
+        match ends(limit, work, hours, now) {
             End::Out(at) if out.is_none_or(|(_, first)| at < first) => out = Some((limit, at)),
             End::Out(_) => {}
             End::Leaves(left) => after.push(format!("about {left:.0}% of {}", limit.name)),
@@ -429,7 +382,7 @@ enum End {
 /// hours resetting in 30 minutes left 16% of it, where the window after
 /// runs out 4 hours into it, and a minute after the reset the same limit
 /// was said to run out.
-fn ends(limit: &Limit, work: &crate::status::Work, left_pct: u8, hours: f64, now: i64) -> End {
+fn ends(limit: &Limit, work: &crate::status::Work, hours: f64, now: i64) -> End {
     let rate = work.rate_per_hour;
     // Out before its reset, as forecast with the spread of work's pace.
     if let Some(left) = work.left_hours
@@ -437,7 +390,7 @@ fn ends(limit: &Limit, work: &crate::status::Work, left_pct: u8, hours: f64, now
     {
         return End::Out(left.likely);
     }
-    let left = f64::from(left_pct);
+    let left = f64::from(limit.left_percent);
     let Some(until) = limit.hours_to_reset(now).filter(|until| *until < hours) else {
         return End::Leaves((left - rate * hours).max(0.0));
     };
@@ -523,17 +476,6 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     let Some(limit) = account.deciding_limit() else {
         return format!("{title}: no limit of it was read.");
     };
-    let Some(left) = left(limit) else {
-        return match limit.reset_since {
-            Some(reset) => format!(
-                "{title}: {} reset {} and {} used since.",
-                limit.name,
-                time::ago(reset, now),
-                agree(limit, "was", "were"),
-            ),
-            None => format!("{title}: what's left of {} isn't known.", limit.name),
-        };
-    };
     let resets = limit.resets().map(|resets| time::ahead(resets, now));
     let ahead = match (&limit.outlook, resets) {
         (Outlook::RunsOut { likely, .. }, Some(resets)) => format!(
@@ -549,7 +491,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
         (_, None) => String::new(),
     };
     let has = agree(limit, "has", "have");
-    format!("{title}: {} {has} {left} left{ahead}.", limit.name)
+    format!("{title}: {} {has} {} left{ahead}.", limit.name, left(limit))
 }
 
 /// `account` as one line, for an agent's status line: its title, its limits
@@ -606,10 +548,9 @@ pub fn line(account: &Account, now: i64) -> String {
 /// used up, back Sun 00:00`.
 fn short(limit: &Limit, now: i64) -> String {
     let name = limit.lowercase("h");
-    let left = match (limit.money, limit.left_percent) {
-        (Some(money), _) => crate::usage::dollars(money.left_usd),
-        (None, Some(percent)) => format!("{percent}%"),
-        (None, None) => "—".to_owned(),
+    let left = match limit.money {
+        Some(money) => crate::usage::dollars(money.left_usd),
+        None => format!("{}%", limit.left_percent),
     };
     let at = |moment: Moment| match moment.horizon {
         Horizon::Soon => format!("in {}", time::span(moment.at - now)),
@@ -914,52 +855,14 @@ mod tests {
             let verdict = verdict(account, status.at);
             assert!(verdict.ends_with(&format!(": {why}")), "{verdict}");
         }
-        // Its agent refreshes an expired login when next used; while it's in
-        // use already, say that its agent hasn't refreshed its saved login.
+        // Its agent renews an expired login when next used.
         let mut expired = status.accounts[0].clone();
         expired.state = State::Unread {
             why: Stale::Expired,
         };
         assert_eq!(
             verdict(&expired, status.at),
-            "Claude Max (me@example.com): its saved login expired; Claude Code hasn't refreshed it."
+            "Claude Max (me@example.com): its login expired; open Claude Code to renew it."
         );
-        expired.in_use = false;
-        assert_eq!(
-            verdict(&expired, status.at),
-            "Claude Max (me@example.com): its login expired; use Claude Code to update."
-        );
-
-        // A limit that reset since it was read and was used here since never
-        // claims 100% left or room to keep going.
-        let mut used = status.accounts[0].clone();
-        let reset = status.at - 10 * MINUTE;
-        used.limits.truncate(1);
-        used.limits[0].left_percent = None;
-        used.limits[0].reset_since = Some(reset);
-        used.limits[0].outlook = Outlook::Unknown {
-            reason: Unknown::Stale,
-        };
-        used.limits[0].work = None;
-        let line_text = limit_text(&used.limits[0], status.at);
-        assert!(
-            line_text.starts_with(&format!(
-                "5 hours: reset {}. Used since the reset; not read since ",
-                time::ago(reset, status.at)
-            )),
-            "{line_text}"
-        );
-        assert_eq!(
-            fit(&used, 1.0, status.at).unwrap(),
-            "Whether 1 more hour of work fits can't be told: 5 hours was used since the reset and hasn't been read since."
-        );
-        assert_eq!(
-            verdict(&used, status.at),
-            format!(
-                "Claude Max (me@example.com): 5 hours reset {} and was used since.",
-                time::ago(reset, status.at)
-            )
-        );
-        assert_eq!(line(&used, status.at), "Claude Max · 5h —");
     }
 }

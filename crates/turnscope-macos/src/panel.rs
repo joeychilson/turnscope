@@ -340,10 +340,12 @@ fn account_row(s: &State, w: &Words, a: &Account, headlined: bool, ink: &Ink) ->
     if !lines {
         let (figure, then) = w.row_figure(a);
         let then = then.map(|t| format!(" {t}")).unwrap_or_default();
-        let spoken = match a.deciding_limit() {
-            Some(limit) => w.spoken_left(limit),
-            None => format!("{figure}{then}"),
+        let left = if a.deciding_limit().is_some() {
+            " left"
+        } else {
+            ""
         };
+        let spoken = format!("{figure}{then}{left}");
         said = format!("{said}, {spoken}");
         header = header.child(appears(
             el().key("figure").child(
@@ -572,7 +574,7 @@ fn limit_line(w: &Words, limit: &Limit, last: bool, grown: bool, ink: &Ink) -> E
     ];
     let figure = changes(&format!("{left}{size}"), spans(&figure_parts))
         .font(SMALL_DIGITS)
-        .label(w.spoken_left(limit));
+        .label(format!("{} left", w.left_of(limit)));
     // If both times don't fit beside the figure, only when it runs out shows, or else the
     // other time, cut short if it must be. The 24 points are the two 8-point gaps either side
     // of the spacer, and the spacer's own 8.
@@ -587,9 +589,7 @@ fn limit_line(w: &Words, limit: &Limit, last: bool, grown: bool, ink: &Ink) -> E
             .shrink()
             .min_w(0.0)
     };
-    let level = limit
-        .left_percent
-        .map_or(0.0, |percent| (percent as f32 / 100.0).clamp(0.0, 1.0));
+    let level = (limit.left_percent as f32 / 100.0).clamp(0.0, 1.0);
     let mut fill = el()
         .key("level")
         .h(5.0)

@@ -629,10 +629,7 @@ fn guard(
         },
     };
     let found = account.limit(limit)?;
-    let Some(left) = found.left_percent else {
-        return Ok(None);
-    };
-    if left >= below {
+    if found.left_percent >= below {
         return Ok(None);
     }
     // As a sentence names it: "weekly limit", "5-hour limit", "Opus weekly
@@ -652,7 +649,7 @@ fn guard(
             ))
         ),
         outlook => {
-            let mut said = format!("{called} has {left}% left, under {below}%.");
+            let mut said = format!("{called} has {}% left, under {below}%.", found.left_percent);
             if let Some(resets) = found.resets() {
                 said += &format!(" It resets {}", ahead(resets));
                 if let status::Outlook::RunsOut { likely, .. } = outlook {

@@ -222,9 +222,7 @@ Hovering shows a Hide button, and right-clicking offers Hide too. Hide and
 Show name the account as its row does (`Words::called`), so two with the
 same title are told apart. Once the engine has stopped for good, as after a
 newer Turnscope wrote the data, Hide and Show are off. A login that expired
-says to use its agent to update, or that the agent hasn't refreshed its
-saved login while it's in use. A limit that reset since it was read and was
-used here since shows `—` instead of `100%`.
+says to open its agent to renew it.
 
 Tab comes to the rows once, and Up and Down move between them and the
 folds. Return or Space opens a row. With Full Keyboard Access on, Tab goes

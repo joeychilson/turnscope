@@ -58,10 +58,9 @@ impl Words {
     }
 
     pub fn left(&self, limit: &Limit) -> String {
-        match (&limit.money, limit.left_percent) {
-            (Some(money), _) => self.dollars(money.left_usd, true),
-            (None, Some(percent)) => format!("{percent}%"),
-            (None, None) => "—".into(),
+        match &limit.money {
+            Some(money) => self.dollars(money.left_usd, true),
+            None => format!("{}%", limit.left_percent),
         }
     }
 
@@ -70,15 +69,6 @@ impl Words {
         match self.size(limit) {
             Some(size) => format!("{} {size}", self.left(limit)),
             None => self.left(limit),
-        }
-    }
-
-    /// What's left of `limit` as VoiceOver reads it: "87% left", "$10 of $20 left", or "unknown".
-    pub fn spoken_left(&self, limit: &Limit) -> String {
-        if limit.money.is_none() && limit.left_percent.is_none() {
-            "unknown".into()
-        } else {
-            format!("{} left", self.left_of(limit))
         }
     }
 
@@ -334,15 +324,10 @@ impl Words {
         }
         if account.state.why() == Some(Stale::Expired) {
             let agent = account
-                .used_by
+                .agents
                 .first()
-                .or_else(|| account.agents.first())
                 .map_or("its agent", |a| turnscope::agents::name(a));
-            return if account.in_use {
-                format!("{agent} hasn't refreshed its login")
-            } else {
-                format!("Use {agent} to update")
-            };
+            return format!("Open {agent} to renew its login");
         }
         if let Some(limit) = account.deciding_limit() {
             return match limit.reset_since {
@@ -482,12 +467,6 @@ impl Words {
                     .map_or(String::new(), |w| format!("Back {}.", self.at(&w.resets)));
                 (headline, back, Standing::RunningOut)
             }
-            Outlook::Unknown { .. } if limit.left_percent.is_none() => (
-                format!("{}'s limits are unknown", account.title),
-                self.trouble(account)
-                    .unwrap_or_else(|| "Used since the reset, and not read since.".into()),
-                Standing::Lasts,
-            ),
             Outlook::Unknown { reason } => (
                 "You can keep going".into(),
                 self.unforecast(limit, account, *reason),
@@ -579,9 +558,6 @@ impl Words {
         if account.refilled_at().is_some() {
             return Some("Full since the reset, unless used on the web or another device.".into());
         }
-        if account.limits.iter().any(|l| l.left_percent.is_none()) {
-            return Some("Used since the reset, and not read since.".into());
-        }
         if !account.limits.is_empty() {
             return None;
         }
@@ -627,20 +603,11 @@ impl Words {
             .agents
             .first()
             .map_or("its agent", |a| turnscope::agents::name(a));
-        let active = account
-            .used_by
-            .first()
-            .map_or(with, |a| turnscope::agents::name(a));
         Some(match &account.state {
             State::Unread { why: Stale::SignIn } => format!("Open {with} to sign in again."),
             State::Unread {
                 why: Stale::Expired,
-            } if account.in_use => {
-                format!("Its saved login expired, and {active} hasn't refreshed it.")
-            }
-            State::Unread {
-                why: Stale::Expired,
-            } => format!("Its login expired. Use {with} to update."),
+            } => format!("Its login expired. Open {with} to renew it."),
             State::Unread {
                 why: Stale::ReadFailed,
             } => "It couldn't be read yet.".into(),
@@ -662,17 +629,11 @@ impl Words {
             State::AsOf {
                 read_at,
                 why: Stale::Expired,
-            } if account.in_use => {
+            } => {
                 format!(
-                    "Last read {}. {active} hasn't refreshed its saved login.",
+                    "Last read {}. Open {with} to renew its login.",
                     self.ago(*read_at)
                 )
-            }
-            State::AsOf {
-                read_at,
-                why: Stale::Expired,
-            } => {
-                format!("Last read {}. Use {with} to update.", self.ago(*read_at))
             }
             State::AsOf {
                 read_at,
@@ -823,13 +784,7 @@ impl Words {
                 format!("runs out in {}", self.spoken(likely.at))
             }
             Outlook::RunsOut { .. } => format!("{} left, running out", self.left(limit)),
-            Outlook::Lasts { .. } | Outlook::Unknown { .. } => {
-                if limit.money.is_none() && limit.left_percent.is_none() {
-                    "unknown".into()
-                } else {
-                    format!("{} left", self.left(limit))
-                }
-            }
+            Outlook::Lasts { .. } | Outlook::Unknown { .. } => format!("{} left", self.left(limit)),
         }
     }
 
@@ -922,9 +877,7 @@ impl Words {
                 body: back,
             },
             AlertKind::Reset => {
-                let room = limit
-                    .filter(|l| l.money.is_some() || l.left_percent.is_some())
-                    .map_or(String::new(), |l| format!("{} left.", self.left_of(l)));
+                let room = limit.map_or(String::new(), |l| format!("{} left.", self.left_of(l)));
                 Note {
                     title,
                     subtitle: format!("{name} {be} back"),
@@ -1044,7 +997,7 @@ mod tests {
             scope: None,
             window: window("2026-09-30T15:00:00Z", Soon),
             read_at: noon(),
-            left_percent: Some(20),
+            left_percent: 20,
             money: None,
             reset_since: None,
             held_by: vec![],
@@ -1058,7 +1011,7 @@ mod tests {
         Limit {
             key: "seven_day".into(),
             name: "Weekly".into(),
-            left_percent: Some(left),
+            left_percent: left,
             window: window("2026-10-04T00:00:00Z", ThisWeek),
             ..limit(outlook)
         }
@@ -1070,7 +1023,7 @@ mod tests {
             key: "credits".into(),
             name: "Credits".into(),
             window: None,
-            left_percent: Some(left),
+            left_percent: left,
             money: Some(Money {
                 size_usd: size,
                 left_usd,
@@ -1204,21 +1157,21 @@ mod tests {
         assert_eq!(w.of(&week), "this week");
         // Used up: when it's back replaces when it resets, and there's no "Runs out".
         let spent = Limit {
-            left_percent: Some(0),
+            left_percent: 0,
             ..limit(used_up(Some(moment("2026-09-30T15:00:00Z", Soon))))
         };
         assert_eq!(w.window(&spent), some("Back in 3h"));
         assert_eq!(w.ahead(&spent), None);
         assert_eq!(
             w.ahead(&Limit {
-                left_percent: Some(99),
+                left_percent: 99,
                 ..limit(unknown(Unknown::NotEnoughData))
             }),
             None
         );
         // Reset since it was read, so it's full, as the engine says.
         let reset = Limit {
-            left_percent: Some(100),
+            left_percent: 100,
             reset_since: Some(at("2026-09-30T11:00:00Z")),
             ..limit(unknown(Unknown::Stale))
         };
@@ -1235,7 +1188,7 @@ mod tests {
     fn an_account_whose_every_limit_reset_speaks_for_the_last_to_reset() {
         let w = words();
         let five = Limit {
-            left_percent: Some(100),
+            left_percent: 100,
             reset_since: Some(at("2026-09-30T11:00:00Z")),
             ..limit(unknown(Unknown::Stale))
         };
@@ -1255,25 +1208,6 @@ mod tests {
         assert_eq!(
             w.opened(&full, false),
             some("Full since the reset, unless used on the web or another device.")
-        );
-        // Once used locally since the reset, it isn't refilled or 100%.
-        let mut used = full;
-        used.limits[1].left_percent = None;
-        assert_eq!(used.refilled_at(), None);
-        assert_eq!(w.row_figure(&used), ("—".into(), None));
-        assert_eq!(w.spoken_left(&used.limits[1]), "unknown");
-        assert_eq!(w.spoken_figure(&used), "unknown");
-        assert_eq!(
-            w.opened(&used, false),
-            some("Used since the reset, and not read since.")
-        );
-        assert_eq!(
-            w.verdict(&[&used], false),
-            (
-                "Claude Max's limits are unknown".into(),
-                "Used since the reset, and not read since.".into(),
-                Standing::Lasts
-            )
         );
     }
 
@@ -1297,7 +1231,7 @@ mod tests {
         assert_eq!(headline, "Claude Max runs out Saturday\u{a0}morning");
         assert_eq!(detail, "Back Sun 12 AM.");
         let used = account(vec![Limit {
-            left_percent: Some(0),
+            left_percent: 0,
             ..limit(used_up(Some(moment("2026-09-30T15:00:00Z", Soon))))
         }]);
         assert_eq!(
@@ -1309,7 +1243,7 @@ mod tests {
             )
         );
         let fine = account(vec![Limit {
-            left_percent: Some(80),
+            left_percent: 80,
             ..limit(lasts())
         }]);
         assert_eq!(
@@ -1361,7 +1295,7 @@ mod tests {
             id: "anthropic:b".into(),
             label: some("work@example.com"),
             ..account(vec![Limit {
-                left_percent: Some(90),
+                left_percent: 90,
                 ..limit(lasts())
             }])
         };
@@ -1410,27 +1344,27 @@ mod tests {
         let w = words();
         assert_eq!(
             w.figure(&account(vec![Limit {
-                left_percent: Some(67),
+                left_percent: 67,
                 ..limit(lasts())
             }])),
             "67%"
         );
         let used = account(vec![Limit {
-            left_percent: Some(0),
+            left_percent: 0,
             ..limit(used_up(Some(moment("2026-09-30T15:00:00Z", Soon))))
         }]);
         assert_eq!(w.figure(&used), "Back 3 PM");
         // Back soon, but after midnight, so the day is given, in the spoken figure too.
         let late = as_of(at("2026-09-30T22:30:00Z"));
         let overnight = account(vec![Limit {
-            left_percent: Some(0),
+            left_percent: 0,
             ..limit(used_up(Some(moment("2026-10-01T01:00:00Z", Soon))))
         }]);
         assert_eq!(late.figure(&overnight), "Back tomorrow 1 AM");
         assert_eq!(late.spoken_figure(&overnight), "back tomorrow 1 AM");
         // Back days later: the menu bar keeps the day short, and VoiceOver says it in full.
         let days = account(vec![Limit {
-            left_percent: Some(0),
+            left_percent: 0,
             ..limit(used_up(Some(moment("2026-10-03T09:00:00Z", ThisWeek))))
         }]);
         assert_eq!(w.figure(&days), "Back Sat 9 AM");
@@ -1546,7 +1480,7 @@ mod tests {
             ..account(vec![limit])
         };
         let half = || Limit {
-            left_percent: Some(50),
+            left_percent: 50,
             ..limit(lasts())
         };
         assert_eq!(
@@ -1560,7 +1494,7 @@ mod tests {
                 Stale::SignedOut,
                 at("2026-09-30T09:00:00Z"),
                 Limit {
-                    left_percent: Some(50),
+                    left_percent: 50,
                     ..limit(unknown(Unknown::Stale))
                 },
             )
@@ -1573,50 +1507,25 @@ mod tests {
             w.opened(&as_of(Stale::SignIn, noon(), half()), false),
             some("Last read 12 PM. Open Claude Code to sign in.")
         );
-        // Every login expired: while in use, say the agent hasn't refreshed
-        // its saved login; when idle, tell the user to use the agent to update.
-        let expired_in_use = as_of(Stale::Expired, noon(), half());
+        // Every login expired. An agent renews it when next used, so no sign-in is needed.
+        let expired = as_of(Stale::Expired, noon(), half());
         assert_eq!(
-            w.opened(&expired_in_use, false),
-            some("Last read 12 PM. Claude Code hasn't refreshed its saved login.")
+            w.opened(&expired, false),
+            some("Last read 12 PM. Open Claude Code to renew its login.")
         );
-        assert_eq!(
-            w.status(&expired_in_use),
-            "Claude Code hasn't refreshed its login"
-        );
-        assert!(!expired_in_use.refused());
-        let expired_idle = Account {
-            in_use: false,
-            ..expired_in_use
-        };
-        assert_eq!(
-            w.opened(&expired_idle, false),
-            some("Last read 12 PM. Use Claude Code to update.")
-        );
-        assert_eq!(w.status(&expired_idle), "Use Claude Code to update");
+        assert_eq!(w.status(&expired), "Open Claude Code to renew its login");
+        assert!(!expired.refused());
         // Never read, each says why, and what to do where there's something.
-        let lapsed_in_use = Account {
+        let lapsed = Account {
             state: State::Unread {
                 why: Stale::Expired,
             },
             ..account(vec![])
         };
+        assert_eq!(w.status(&lapsed), "Open Claude Code to renew its login");
         assert_eq!(
-            w.status(&lapsed_in_use),
-            "Claude Code hasn't refreshed its login"
-        );
-        assert_eq!(
-            w.opened(&lapsed_in_use, false),
-            some("Its saved login expired, and Claude Code hasn't refreshed it.")
-        );
-        let lapsed_idle = Account {
-            in_use: false,
-            ..lapsed_in_use
-        };
-        assert_eq!(w.status(&lapsed_idle), "Use Claude Code to update");
-        assert_eq!(
-            w.opened(&lapsed_idle, false),
-            some("Its login expired. Use Claude Code to update.")
+            w.opened(&lapsed, false),
+            some("Its login expired. Open Claude Code to renew it.")
         );
         let unreachable = Account {
             state: State::Unread {
@@ -1807,7 +1716,7 @@ mod tests {
         let held = Limit {
             key: "key-1".into(),
             name: "Daily".into(),
-            left_percent: Some(60),
+            left_percent: 60,
             held_by: vec!["pi".into()],
             ..limit(lasts())
         };
@@ -1852,7 +1761,7 @@ mod tests {
             ),
         ] {
             let unknown = account(vec![Limit {
-                left_percent: Some(50),
+                left_percent: 50,
                 ..limit(unknown(reason))
             }]);
             assert_eq!(
@@ -1862,7 +1771,7 @@ mod tests {
         }
         // When it's back is worded for its horizon, as in the row.
         let spent = account(vec![Limit {
-            left_percent: Some(0),
+            left_percent: 0,
             ..limit(used_up(Some(moment("2026-10-03T09:00:00Z", ThisWeek))))
         }]);
         assert_eq!(w.verdict(&[&spent], false).1, "Back Sat 9 AM.");
@@ -1880,7 +1789,7 @@ mod tests {
         };
         let five = |outlook| Limit {
             key: "5h:3p-5h".into(),
-            left_percent: Some(0),
+            left_percent: 0,
             scope: some("Claude and GPT"),
             window: window("2026-09-30T13:00:00Z", Soon),
             ..limit(outlook)

@@ -203,7 +203,7 @@ impl Agent for GrokBuild {
                 identity: text("user_id")
                     .map(|id| (id.to_owned(), text("email").map(str::to_owned))),
                 plan: None,
-                refresh: None,
+                app_ports: Vec::new(),
             }),
         }])
     }
