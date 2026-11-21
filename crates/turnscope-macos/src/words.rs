@@ -455,10 +455,9 @@ impl Words {
                 )
             }
             Outlook::RunsOut { likely, .. } => {
-                let when = if likely.horizon == Horizon::Soon {
-                    self.at(likely)
-                } else {
-                    self.when(likely.at)
+                let when = match likely.horizon {
+                    Horizon::Soon | Horizon::Later => self.at(likely),
+                    Horizon::Today | Horizon::ThisWeek => self.when(likely.at),
                 };
                 let headline = format!("{} runs out {}", account.title, unbroken(&when));
                 let back = limit
@@ -1850,5 +1849,23 @@ mod tests {
             ..limit(lasts())
         };
         assert_eq!(w.name(&held), "Codex and Pi's key");
+    }
+
+    #[test]
+    fn a_run_out_a_week_or_more_off_names_its_date() {
+        let w = words();
+        let monthly = Account {
+            title: "OpenCode Go".into(),
+            ..account(vec![Limit {
+                key: "monthly".into(),
+                name: "Monthly".into(),
+                window: window("2026-10-30T12:00:00Z", Later),
+                ..limit(runs_out_at(moment("2026-10-08T06:00:00Z", Later)))
+            }])
+        };
+        let (headline, detail, standing) = w.verdict(&[&monthly], false);
+        assert_eq!(headline, "OpenCode Go runs out Oct\u{a0}8");
+        assert_eq!(detail, "Back Oct 30.");
+        assert_eq!(standing, Standing::RunningOut);
     }
 }

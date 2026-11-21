@@ -345,12 +345,15 @@ impl Moment {
         let at = (at + MINUTE / 2).div_euclid(MINUTE) * MINUTE;
         let horizon = if at - now < 3 * HOUR {
             Horizon::Soon
-        } else if time::today(at, now) {
-            Horizon::Today
-        } else if at - now < 7 * DAY {
-            Horizon::ThisWeek
         } else {
-            Horizon::Later
+            // By local calendar days, not 7 * 24 hours: right after a weekly
+            // reset, the next reset is under seven days away on today's
+            // weekday, so naming the weekday would read as today.
+            match (time::local(at).date() - time::local(now).date()).get_days() {
+                0 => Horizon::Today,
+                1..7 => Horizon::ThisWeek,
+                _ => Horizon::Later,
+            }
         };
         Moment { at, horizon }
     }
@@ -1402,5 +1405,23 @@ mod tests {
         let status = status(&db, HOUR).unwrap();
         let limit = &status.accounts[0].limits[0];
         assert_eq!(limit.held_by, ["pi"]);
+    }
+
+    #[test]
+    fn a_time_on_next_weeks_same_weekday_is_later() {
+        // Noon on 2026-10-15 in the local time zone, clear of DST changes.
+        let noon = time::start_of(time::Period::Day, 1_792_065_600_000) + 12 * HOUR;
+        // Two hours after a weekly reset, the next reset is 6d 22h away: under
+        // 7 * DAY in milliseconds, but 7 calendar days ahead on today's weekday.
+        assert_eq!(
+            Moment::of(noon + 7 * DAY - 2 * HOUR, noon).horizon,
+            Horizon::Later
+        );
+        assert_eq!(
+            Moment::of(noon + 6 * DAY + 6 * HOUR, noon).horizon,
+            Horizon::ThisWeek
+        );
+        assert_eq!(Moment::of(noon + 4 * HOUR, noon).horizon, Horizon::Today);
+        assert_eq!(Moment::of(noon + 2 * HOUR, noon).horizon, Horizon::Soon);
     }
 }

@@ -2,6 +2,10 @@
 
 ## 0.3.1
 
+- **Resets and run-outs a week or more off show the date instead of a
+  weekday.** Right after a weekly reset, the panel and notifications named
+  today's weekday for next week's reset, and a monthly run-out a week or
+  more ahead read in the headline as this week's weekday.
 - **`explain_usage` by day, week or month** puts the row adding up earlier
   periods first and labels it by the period (`1 earlier day`, `2 earlier
   weeks`). It put that row last and wrote `1 earlier days` or `2 earlier
