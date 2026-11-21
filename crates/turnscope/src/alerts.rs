@@ -9,7 +9,7 @@ use crate::status::{Account, Limit, Moment, Outlook, State, Status};
 use crate::time::DAY;
 use crate::{Result, forecast};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
     RunningOut,
@@ -21,8 +21,7 @@ pub enum Kind {
 /// An alert, as sent: when each kind is raised is in
 /// docs/architecture.md#alerts. The horizons of `resets` and `runs_out` are
 /// worked out when it's sent, not when it was raised.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Alert {
     /// The id to acknowledge it by.
     pub id: i64,

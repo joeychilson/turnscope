@@ -32,7 +32,7 @@ pub struct Shown {
 }
 
 /// A session that used a limit, as the panel lists it under an open account.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UsedMost {
     /// `claude-code:0f6e3f6a-713c`.
     pub session: String,

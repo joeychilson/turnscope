@@ -31,7 +31,7 @@ impl LimitStanding for Limit {
 pub trait AccountStanding {
     fn standing(&self) -> Standing;
     fn refilled_at(&self) -> Option<i64>;
-    fn twinned(&self, among: &[Account]) -> bool;
+    fn twinned<'a>(&self, among: impl IntoIterator<Item = &'a Account>) -> bool;
 }
 
 impl AccountStanding for Account {
@@ -44,9 +44,9 @@ impl AccountStanding for Account {
         self.deciding_limit().and_then(|l| l.reset_since)
     }
 
-    fn twinned(&self, among: &[Account]) -> bool {
+    fn twinned<'a>(&self, among: impl IntoIterator<Item = &'a Account>) -> bool {
         among
-            .iter()
+            .into_iter()
             .any(|a| a.id != self.id && !a.hidden && a.title == self.title)
     }
 }
