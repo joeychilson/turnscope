@@ -415,6 +415,7 @@ impl Agent for Codex {
                 key,
                 identity: None,
                 plan: None,
+                refresh: None,
             }),
         }])
     }

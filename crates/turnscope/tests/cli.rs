@@ -800,9 +800,9 @@ fn what_used_a_limit_whose_window_reset_since_its_read_counts_from_the_reset() {
     let output = turnscope(data.path(), &limit, None);
     let text = String::from_utf8_lossy(&output.stdout);
     // What it used before the reset is no part of the window it's in, and
-    // how much of that one is used isn't known: no shares.
+    // how much of that one is used isn't known: no shares and no fake 100%.
     assert!(
-        text.contains("5 hours: 100% left, reset 11:00 (1h ago).")
+        text.contains("5 hours: reset 11:00 (1h ago). Used since the reset; not read since 10:20.")
             && text.contains("Thu Oct 1 11:00 to Thu Oct 1 12:00: 12 responses, $0.23\n")
             && text.contains(" Responses   Cost\n"),
         "{text}"

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::Error;
-use crate::agents::Credential;
+use crate::agents::{Credential, Secret};
 use crate::time::{DAY, HOUR};
 
 /// Every provider, in the order they're listed.
@@ -66,6 +66,13 @@ pub trait Provider: Sync {
     /// whose limits give the same mark are one plan.
     fn plan_mark(&self, _limits: &Limits) -> Option<i64> {
         None
+    }
+    /// Whether `limits` refreshes an expired access token in memory using a
+    /// non-rotating refresh token. Never true for a provider whose refresh
+    /// tokens rotate on use: refreshing would invalidate the agent's own
+    /// login.
+    fn refreshes(&self) -> bool {
+        false
     }
 }
 
@@ -155,8 +162,9 @@ impl Problem {
         }
     }
 
-    /// No answer from the provider.
-    fn unanswered(why: String) -> Problem {
+    /// No answer from the provider, or an agent's login store couldn't be
+    /// read.
+    pub(crate) fn unanswered(why: String) -> Problem {
         Problem::Unavailable {
             why,
             retry_after: None,
@@ -219,14 +227,20 @@ fn asked(
     refused: &[u16],
     by: Instant,
 ) -> Result<Value, Problem> {
-    // Under a millisecond, curl's `--max-time` would be 0.000: no limit.
-    let left = by.saturating_duration_since(Instant::now());
-    if left < Duration::from_millis(1) {
-        return Err(Problem::unanswered(format!(
-            "{url}: not asked, as the read's time was spent"
-        )));
-    }
-    let authorization = format!("Authorization: Bearer {}", credential.secret.expose());
+    asked_bearer(url, &credential.secret, headers, body, refused, by)
+}
+
+/// As [`asked`], authorizing with `token`.
+fn asked_bearer(
+    url: &str,
+    token: &Secret,
+    headers: &[&str],
+    body: Option<&Value>,
+    refused: &[u16],
+    by: Instant,
+) -> Result<Value, Problem> {
+    let left = time_left(url, by)?;
+    let authorization = format!("Authorization: Bearer {}", token.expose());
     let mut lines = vec![authorization.as_str()];
     if body.is_some() {
         lines.push("Content-Type: application/json");
@@ -236,6 +250,65 @@ fn asked(
     let answered = requested(url, &lines, body.as_deref(), left)
         .map_err(|why| Problem::unanswered(format!("{url}: {why}")))?;
     answer(url, &answered, refused)
+}
+
+/// POST `fields` as `application/x-www-form-urlencoded` to `url` over HTTPS,
+/// by `by`. The form body goes to curl on standard input (`--data-binary @-`),
+/// so secrets such as a refresh token or OAuth client secret never appear in
+/// curl's arguments or environment.
+fn post_form(url: &str, fields: &[(&str, &str)], by: Instant) -> Result<Answered, Problem> {
+    let left = time_left(url, by)?;
+    let body = form_body(fields);
+    curl(
+        url,
+        &[
+            "--header",
+            "Content-Type: application/x-www-form-urlencoded",
+            "--data-binary",
+            "@-",
+        ],
+        body.as_bytes(),
+        left,
+    )
+    .map_err(|why| Problem::unanswered(format!("{url}: {why}")))
+}
+
+/// Time left until `by`, or an error when under a millisecond: curl's
+/// `--max-time` would be `0.000`, which means no limit.
+fn time_left(url: &str, by: Instant) -> Result<Duration, Problem> {
+    let left = by.saturating_duration_since(Instant::now());
+    if left < Duration::from_millis(1) {
+        return Err(Problem::unanswered(format!(
+            "{url}: not asked, as the read's time was spent"
+        )));
+    }
+    Ok(left)
+}
+
+fn form_body(fields: &[(&str, &str)]) -> String {
+    let mut out = String::new();
+    for (at, (key, value)) in fields.iter().enumerate() {
+        if at > 0 {
+            out.push('&');
+        }
+        percent_encode(key, &mut out);
+        out.push('=');
+        percent_encode(value, &mut out);
+    }
+    out
+}
+
+fn percent_encode(text: &str, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for &byte in text.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
 }
 
 /// The JSON `url` answered, or why there's none. A refusal is a refused
@@ -300,6 +373,20 @@ fn requested(
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err("a header holds a line break, so nothing was sent".to_owned());
     }
+    let mut args = vec!["--header", "@-"];
+    if let Some(body) = body {
+        args.extend(["--data-raw", body]);
+    }
+    let request: String = headers.iter().map(|header| format!("{header}\n")).collect();
+    curl(url, &args, request.as_bytes(), time)
+}
+
+fn curl(
+    url: &str,
+    args: &[&str],
+    stdin: &[u8],
+    time: Duration,
+) -> std::result::Result<Answered, String> {
     let mut curl = Command::new("/usr/bin/curl")
         .args([
             "-q",
@@ -312,23 +399,21 @@ fn requested(
         .args(["--connect-timeout", "5"])
         .args(["--max-time", &format!("{:.3}", time.as_secs_f64())])
         .args(["--max-filesize", "67108864", "--user-agent", "Turnscope"])
-        .args(["--header", "@-"])
+        .args(args)
         .args(["--write-out", "%{stderr}%{http_code} %header{retry-after}"])
-        .args(body.into_iter().flat_map(|body| ["--data-raw", body]))
         .arg(url)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
-    let request: String = headers.iter().map(|header| format!("{header}\n")).collect();
-    // The headers are far smaller than a pipe holds, so writing them first
-    // can't wait on curl's output. Still reap curl and prefer its error when
-    // it exited before reading them.
+    // Headers and form bodies are far smaller than a pipe holds, so writing
+    // them first can't wait on curl's output. Still reap curl and prefer its
+    // error when it exited before reading them.
     let write = curl
         .stdin
         .take()
-        .map_or(Ok(()), |mut stdin| stdin.write_all(request.as_bytes()));
+        .map_or(Ok(()), |mut pipe| pipe.write_all(stdin));
     let output = curl.wait_with_output().map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -501,6 +586,7 @@ mod tests {
             expires: None,
             identity: None,
             plan: None,
+            refresh: None,
         };
         let spent = std::time::Instant::now();
         // Not HTTPS, so curl, were it run, would send nothing either.
@@ -510,6 +596,28 @@ mod tests {
             Err(Problem::unanswered(
                 "http://example.invalid/: not asked, as the read's time was spent".to_owned()
             ))
+        );
+        let posted = super::post_form(
+            "http://example.invalid/",
+            &[("grant_type", "refresh_token")],
+            spent,
+        );
+        assert_eq!(
+            posted.err(),
+            Some(Problem::unanswered(
+                "http://example.invalid/: not asked, as the read's time was spent".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn form_fields_are_percent_encoded() {
+        assert_eq!(
+            super::form_body(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", "1//a+b=c&d e\n"),
+            ]),
+            "grant_type=refresh_token&refresh_token=1%2F%2Fa%2Bb%3Dc%26d%20e%0A"
         );
     }
 

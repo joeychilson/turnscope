@@ -205,6 +205,7 @@ pub trait Provider: Sync {
     fn account_limits(&self, _credential: &Credential, _now: i64, _by: Instant) -> std::result::Result<Vec<Reading>, Problem> { Ok(Vec::new()) }
     fn rolls(&self, _key: &str) -> Option<i64> { None }
     fn plan_mark(&self, _limits: &Limits) -> Option<i64> { None }
+    fn refreshes(&self) -> bool { false }
 }
 ```
 
@@ -320,7 +321,9 @@ megabytes.
 - A status is worked out as of the minute, so between readings it changes
   at most once a minute.
 - Percent left is rounded down, so it's never overstated. A limit whose
-  window reset since it was read counts as full.
+  window reset since it was read counts as full unless usage on it was
+  recorded here since the reset (or within one window's length back when
+  the reset was longer ago), in which case what's left is unknown (`null`).
 - Each time to come is rounded to the minute and carries how soon it is, a
   `Moment`.
 - An account is **in use** when a response drew on it in the last 30
@@ -466,14 +469,22 @@ and what the backtest measured on this Mac's real limit history
   printed, serialized or cloned. An API key is known by its fingerprint,
   the first 16 hex digits of its SHA-256.
 - **One way to the network.** Every request goes through `/usr/bin/curl`
-  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. Headers, with any
-  credential, go to curl on standard input, never in its arguments or
-  environment. A header with a line break isn't sent. A request is a GET,
-  but for Google's limits, which answer only a POST: its body is an
-  argument, and holds no secret.
-- **Logins are only read.** Each is sent only to its own provider, and
-  never once it has expired. Turnscope never refreshes a token or writes an
-  agent's files. `connect` and `disconnect` run the agent's own command.
+  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. Headers with any
+  credential, and form bodies carrying a refresh token or OAuth client
+  secret (`--data-binary @-`), go to curl on standard input, never in its
+  arguments or environment. A header with a line break isn't sent. A
+  request is a GET, except for Google's limits and OAuth token refresh: the
+  limit POST body is an argument and holds no secret, and the refresh body
+  goes on standard input.
+- **Logins are only read.** Each is sent only to its own provider.
+  Turnscope never writes an agent's files or Keychain and never stores a
+  token on disk. For providers whose refresh tokens rotate on use
+  (Anthropic, OpenAI, xAI), an expired login is never refreshed or sent:
+  Turnscope waits for the agent to renew it. For Google, whose refresh
+  tokens don't rotate, Turnscope exchanges an expired Antigravity login's
+  refresh token in memory using the OAuth client read from Antigravity's
+  binary, and keeps the refreshed access token in memory only. `connect`
+  and `disconnect` run the agent's own command.
 - **The data directory** is the owner's alone: it's created 0700.
 - **The MCP server only reads.** A session's title is what someone asked
   there, so its instructions tell agents to read one as data, not as an

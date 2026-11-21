@@ -41,7 +41,9 @@ impl AccountStanding for Account {
     }
 
     fn refilled_at(&self) -> Option<i64> {
-        self.deciding_limit().and_then(|l| l.reset_since)
+        self.deciding_limit()
+            .filter(|l| l.left_percent.is_some())
+            .and_then(|l| l.reset_since)
     }
 
     fn twinned<'a>(&self, among: impl IntoIterator<Item = &'a Account>) -> bool {

@@ -205,8 +205,9 @@ pub struct Limit {
     pub window: Option<LimitWindow>,
     pub read_at: i64,
     /// Percent left, 0 to 100, rounded down; 100 once its window reset
-    /// since it was read.
-    pub left_percent: u8,
+    /// since it was read with no usage recorded here since, and None once it
+    /// reset and was used here since.
+    pub left_percent: Option<u8>,
     /// For a limit of money, its size and what's left.
     pub money: Option<Money>,
     /// When its window reset, if it has since it was read.
@@ -533,8 +534,9 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
                 why: why.unwrap_or(Stale::ReadFailed),
             },
         };
+        let provider: String = row.get(1)?;
         let (limits, rose) = match read_at {
-            Some(read_at) => limits(db, &id, read_at, &keys, now)?,
+            Some(read_at) => limits(db, &id, &provider, read_at, &keys, now)?,
             None => (Vec::new(), false),
         };
         let used_by = used.remove(&id).unwrap_or_default();
@@ -550,7 +552,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             deciding: deciding(&limits).map(|limit| limit.key.clone()),
             in_use: !used_by.is_empty() || rose,
             recent: !used_by.is_empty() || rose || row.get(8)?,
-            provider: row.get(1)?,
+            provider,
             title: row.get(3)?,
             label: row.get(4)?,
             hidden: row.get(5)?,
@@ -651,6 +653,7 @@ fn hours_to_reset(starts: Option<i64>, resets: i64, reset: bool, now: i64) -> Op
 fn limits(
     db: &rusqlite::Connection,
     account: &str,
+    provider: &str,
     read_at: i64,
     keys: &BTreeMap<String, Vec<String>>,
     now: i64,
@@ -745,10 +748,25 @@ fn limits(
             rose |= last.1 > before.1 && now - last.0 <= IN_USE;
         }
         let reset_since = resets.filter(|resets| *resets <= now);
-        let left = if reset_since.is_some() {
-            100.0
-        } else {
-            (100.0 - used).clamp(0.0, 100.0)
+        let length = starts.zip(resets).map(|(starts, resets)| resets - starts);
+        let window_length = length.or_else(|| {
+            crate::providers::by_id(provider).and_then(|provider| provider.rolls(&key))
+        });
+        let models = crate::usage::models(scope.as_deref());
+        let held = crate::usage::key(&key);
+        let used_since = match reset_since {
+            Some(reset) => {
+                // Count from the reset, or at most one window length back when
+                // the reset began a window that has already ended too.
+                let since = window_length.map_or(reset, |length| reset.max(now - length));
+                used_since(db, account, &models, held.as_ref(), since)?
+            }
+            None => false,
+        };
+        let left = match (reset_since.is_some(), used_since) {
+            (true, true) => None,
+            (true, false) => Some(100.0),
+            (false, _) => Some((100.0 - used).clamp(0.0, 100.0)),
         };
         let stale = reset_since.is_some() || now - read_at > STALE;
         let outlook = match (starts, resets) {
@@ -773,7 +791,6 @@ fn limits(
                 reason: Unknown::NoReset,
             },
         };
-        let length = starts.zip(resets).map(|(starts, resets)| resets - starts);
         let rolling = starts.is_none() && resets.is_some();
         // Work is known only for the last two weeks: a rise before then
         // would count with no hours of work beside it.
@@ -781,10 +798,8 @@ fn limits(
         // A limit on some models, or one key's, by the work that used it:
         // by all the account's, 1h of Opus that rose Weekly (Opus) 8 points
         // after 3h of Sonnet read as 2% an hour.
-        let models = crate::usage::models(scope.as_deref());
-        let held = crate::usage::key(&key);
         let own;
-        let worked = if rolling {
+        let worked = if rolling || left.is_none() {
             &[][..]
         } else if models.is_empty() && held.is_none() {
             if all_worked.is_none() {
@@ -795,25 +810,29 @@ fn limits(
             own = self::worked(db, account, &models, held.as_ref(), now)?;
             &own
         };
-        // None for a window that rolls, with no start to measure work from.
-        let work = forecast::work_rate(walked, worked, known, forecast::enough_work(length))
-            .filter(|_| !rolling)
-            .map(|rate| {
-                let tenths = |value: f64| (value * 10.0).round() / 10.0;
-                let until = resets
-                    .and_then(|resets| hours_to_reset(starts, resets, reset_since.is_some(), now));
-                let left_hours =
-                    forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
-                        .map(|(low, likely, high)| HoursLeft {
-                            low: tenths(low),
-                            likely: tenths(likely),
-                            high: tenths(high),
-                        });
-                Work {
-                    rate_per_hour: tenths(rate),
-                    left_hours,
-                }
-            });
+        // None for a window that rolls, or once a reset limit was used here
+        // since, where what's left isn't known.
+        let work = left.and_then(|left| {
+            forecast::work_rate(walked, worked, known, forecast::enough_work(length))
+                .filter(|_| !rolling)
+                .map(|rate| {
+                    let tenths = |value: f64| (value * 10.0).round() / 10.0;
+                    let until = resets.and_then(|resets| {
+                        hours_to_reset(starts, resets, reset_since.is_some(), now)
+                    });
+                    let left_hours =
+                        forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
+                            .map(|(low, likely, high)| HoursLeft {
+                                low: tenths(low),
+                                likely: tenths(likely),
+                                high: tenths(high),
+                            });
+                    Work {
+                        rate_per_hour: tenths(rate),
+                        left_hours,
+                    }
+                })
+        });
         limits.push(Limit {
             held_by: keys.get(&key).cloned().unwrap_or_default(),
             key,
@@ -824,11 +843,11 @@ fn limits(
                 resets: Moment::of(resets, now),
             }),
             read_at,
-            left_percent: left.floor() as u8,
+            left_percent: left.map(|left| left.floor() as u8),
             // What's left of money, from what was used rather than the
             // percent shown; a millionth of a cent over, as 66.6% of $50 is
             // 3329.99… cents in floating point.
-            money: size.map(|size| Money {
+            money: left.zip(size).map(|(left, size)| Money {
                 size_usd: size,
                 left_usd: ((size * left + 1e-6).floor() / 100.0),
             }),
@@ -838,6 +857,29 @@ fn limits(
         });
     }
     Ok((limits, rose))
+}
+
+/// Whether any response on `account` matching `models` and `key` was recorded
+/// at or after `since`.
+fn used_since(
+    db: &rusqlite::Connection,
+    account: &str,
+    models: &[String],
+    key: Option<&String>,
+    since: i64,
+) -> Result<bool> {
+    let (filters, values) = crate::usage::limited(models, key);
+    let and: String = filters
+        .iter()
+        .map(|filter| format!(" AND {filter}"))
+        .collect();
+    let sql =
+        format!("SELECT EXISTS (SELECT 1 FROM response r WHERE r.account = ? AND r.at >= ?{and})");
+    let mut given: Vec<rusqlite::types::Value> = vec![account.to_owned().into(), since.into()];
+    given.extend(values);
+    Ok(db
+        .prepare_cached(&sql)?
+        .query_row(rusqlite::params_from_iter(given), |row| row.get(0))?)
 }
 
 /// The start of each slot of work on `account` in the last two weeks, by
@@ -954,7 +996,7 @@ fn deciding(limits: &[Limit]) -> Option<&Limit> {
                 Outlook::Lasts {
                     left_at_reset: Some(spread),
                 } => spread.likely,
-                _ => limit.left_percent,
+                _ => limit.left_percent.unwrap_or(u8::MAX),
             };
             (
                 !limit.whole(),
@@ -979,7 +1021,7 @@ fn rank(accounts: &mut [Account], history_read: bool) {
     accounts.sort_by_cached_key(|account| {
         let in_use = account.in_use || !history_read;
         let deciding = account.deciding_limit();
-        let left = deciding.map_or(i32::MAX, |limit| i32::from(limit.left_percent));
+        let left = deciding.and_then(|limit| limit.left_percent);
         let group = match () {
             () if in_use => 0,
             () if account.refused() => 2,
@@ -987,11 +1029,17 @@ fn rank(accounts: &mut [Account], history_read: bool) {
             () => 3,
         };
         let urgent = deciding.filter(|_| in_use);
+        let by_left = match (in_use, left) {
+            (true, Some(left)) => i32::from(left),
+            (true, None) => i32::MAX,
+            (false, Some(left)) => -i32::from(left),
+            (false, None) => 1,
+        };
         (
             group,
             Reverse(urgent.map_or(0, Limit::urgency)),
             urgent.and_then(Limit::runs_out).unwrap_or(i64::MAX),
-            if in_use { left } else { -left },
+            by_left,
             account.id.clone(),
         )
     });
@@ -1196,7 +1244,7 @@ mod tests {
             likely: 60,
             high: 60,
         });
-        assert_eq!(limit.left_percent, 60);
+        assert_eq!(limit.left_percent, Some(60));
         assert_eq!(
             limit.outlook,
             Outlook::Lasts {
@@ -1402,5 +1450,48 @@ mod tests {
         let status = status(&db, HOUR).unwrap();
         let limit = &status.accounts[0].limits[0];
         assert_eq!(limit.held_by, ["pi"]);
+    }
+
+    #[test]
+    fn a_limit_reset_since_its_read_and_used_locally_has_unknown_percent_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        // Read at 4h of a 5h window resetting at 5h, plus an Opus-scoped weekly
+        // limit resetting at 5h.
+        db.execute_batch(
+            "INSERT INTO account (id, provider, kind, title, read_at, problem)
+                 VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', 14400000, 'expired');
+             INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('claude-code', '/a', 'anthropic', 0, 'anthropic:a');
+             INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets) VALUES
+                 ('anthropic:a', 'five_hour', 14400000, '5 hours', NULL, 40, 0, 18000000),
+                 ('anthropic:a', 'seven_day_opus', 14400000, 'Weekly', 'Opus', 50, -586800000, 18000000);",
+        )
+        .unwrap();
+        // At 6h (1h after reset) with no responses yet: both count as 100%.
+        let at_6h = status(&db, 6 * HOUR).unwrap();
+        assert_eq!(at_6h.accounts[0].limits[0].left_percent, Some(100));
+        assert_eq!(at_6h.accounts[0].limits[1].left_percent, Some(100));
+
+        // A Sonnet response at 5h 30m: 5 hours is now unknown, while Opus
+        // weekly had no Opus usage and stays 100%.
+        db.execute(
+            "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+                 web_searches, priority, account)
+             VALUES ('claude-code', 'r1', 's', 0, 1, '/a', ?1, 'anthropic', 'claude-sonnet-5',
+                 1, 0, 0, 0, 1, 0, 1, 0, 0, 'anthropic:a')",
+            [5 * HOUR + 30 * MINUTE],
+        )
+        .unwrap();
+        let used = status(&db, 6 * HOUR).unwrap();
+        assert_eq!(used.accounts[0].limits[0].left_percent, None);
+        assert_eq!(used.accounts[0].limits[0].work, None);
+        assert_eq!(used.accounts[0].limits[1].left_percent, Some(100));
+
+        // At 12h (more than one 5-hour window after the 5h30m response):
+        // 5 hours has no usage in the last 5h and counts as 100% again.
+        let later = status(&db, 12 * HOUR).unwrap();
+        assert_eq!(later.accounts[0].limits[0].left_percent, Some(100));
     }
 }

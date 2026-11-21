@@ -2,6 +2,27 @@
 
 ## 0.3.1
 
+- **Google AI limits stay current even when Antigravity leaves its saved
+  token expired.** Antigravity's desktop app skips writing hourly refreshes
+  back to the Keychain once its `writer_id` no longer matches, and falls
+  back to `~/.gemini/jetski-standalone-oauth-token` when Keychain writes
+  fail. Turnscope now reads both stores and refreshes Google's non-rotating
+  refresh token in memory without writing Antigravity's files or Keychain,
+  or storing any token on disk.
+- **Claude Code's fallback login file** (`<folder>/.credentials.json`) is
+  read alongside the Keychain, picking whichever token is fresher.
+- **A limit that reset since it was last read no longer shows 100% once
+  local usage drew on it.** Its percent left is shown as unknown (`—` in
+  the app and status line, `null` in `--json`) until the provider is read
+  again, and `check_limits` and the app no longer claim there's room to
+  keep going.
+- **A login store that can't be read**, such as a locked Keychain or a
+  half-written login file, now marks its account unavailable and logs the
+  reason to `app.log` without signing the account out, instead of leaving
+  an older status (such as an expired login) frozen in place.
+- **An expired login no longer says "open <agent> to renew its login".**
+  While the agent is idle it says to use the agent to update; while the
+  agent is in use it says the agent hasn't refreshed its saved login.
 - **`explain_usage` by day, week or month** puts the row adding up earlier
   periods first and labels it by the period (`1 earlier day`, `2 earlier
   weeks`). It put that row last and wrote `1 earlier days` or `2 earlier

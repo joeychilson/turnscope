@@ -317,6 +317,17 @@ pub struct Credential {
     pub identity: Option<(String, Option<String>)>,
     /// The plan, where the agent's files say, such as `max`.
     pub plan: Option<String>,
+    /// What a provider whose refresh tokens don't rotate needs to ask for a
+    /// fresh access token in memory when `secret` has expired.
+    pub refresh: Option<Refresh>,
+}
+
+/// How a provider refreshes an expired access token in memory without writing
+/// the agent's files or storing a token.
+pub struct Refresh {
+    pub token: Secret,
+    /// The agent's binary copies holding its OAuth client, in preference order.
+    pub binaries: Vec<PathBuf>,
 }
 
 /// A token or key. It can't be printed, serialized or cloned, so it can't
@@ -477,8 +488,32 @@ pub fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> 
             expires: kept["expires"].as_i64(),
             identity: None,
             plan: None,
+            refresh: None,
         }),
         provider: provider.to_owned(),
+    }
+}
+
+/// The fresher of two login stores, primary first. One store's error yields to
+/// a login read from the other, and never passes for signed out when the other
+/// holds none.
+pub fn fresher(
+    primary: Result<Option<Credential>>,
+    fallback: Result<Option<Credential>>,
+) -> Result<Option<Credential>> {
+    match (primary, fallback) {
+        (Ok(Some(mut first)), Ok(Some(mut second))) => {
+            if first.expires < second.expires {
+                std::mem::swap(&mut first, &mut second);
+            }
+            if first.refresh.is_none() && first.identity == second.identity {
+                first.refresh = second.refresh;
+            }
+            Ok(Some(first))
+        }
+        (Ok(Some(credential)), _) | (_, Ok(Some(credential))) => Ok(Some(credential)),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        (Ok(None), Ok(None)) => Ok(None),
     }
 }
 
@@ -906,5 +941,54 @@ mod tests {
             found(ended(1, "", "")),
             Err("security gave no reason (exit status: 1)".to_owned())
         );
+    }
+
+    #[test]
+    fn the_fresher_of_two_login_stores_wins_and_an_error_never_signs_out() {
+        let cred = |secret: &str, expires: i64, id: &str, refresh: Option<&str>| Credential {
+            provider: "google",
+            secret: Secret::new(secret),
+            key: false,
+            expires: Some(expires),
+            identity: Some((id.to_owned(), Some(id.to_owned()))),
+            plan: None,
+            refresh: refresh.map(|token| Refresh {
+                token: Secret::new(token),
+                binaries: Vec::new(),
+            }),
+        };
+        // Later expiry wins, and keeps the same account's refresh token when
+        // the fresher store lacks one.
+        let picked = fresher(
+            Ok(Some(cred("old", 100, "a@example.com", Some("ref")))),
+            Ok(Some(cred("new", 200, "a@example.com", None))),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(picked.secret.expose(), "new");
+        assert_eq!(picked.refresh.as_ref().unwrap().token.expose(), "ref");
+
+        // A refresh token from another account isn't mixed in.
+        let picked = fresher(
+            Ok(Some(cred("old", 100, "a@example.com", Some("ref")))),
+            Ok(Some(cred("new", 200, "b@example.com", None))),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(picked.secret.expose(), "new");
+        assert!(picked.refresh.is_none());
+
+        // A working store overrides an error in the other; an error beside
+        // nothing stays an error so the account isn't signed out.
+        let picked = fresher(
+            Err(Error::Failed("locked".to_owned())),
+            Ok(Some(cred("fallback", 100, "a@example.com", None))),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(picked.secret.expose(), "fallback");
+        assert!(fresher(Err(Error::Failed("locked".to_owned())), Ok(None)).is_err());
+        assert!(fresher(Ok(None), Err(Error::Failed("half written".to_owned()))).is_err());
+        assert!(fresher(Ok(None), Ok(None)).unwrap().is_none());
     }
 }

@@ -201,6 +201,7 @@ fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
             expires: kept["expires_at"].as_i64(),
             identity: None,
             plan: None,
+            refresh: None,
         }),
     }])
 }
@@ -210,7 +211,7 @@ The doc comments of `Login` and `Credential` say what each field holds.
 `Login.provider` must match `Response.provider` for usage to count toward
 the account.
 
-The helpers `json_file`, `kept_login` and `claims` in `src/agents/mod.rs`,
+The helpers `json_file`, `kept_login`, `fresher` and `claims` in `src/agents/mod.rs`,
 and `crate::process::output_within`, read what agents keep. An agent's
 SQLite database is read with `opened`, which leaves nothing beside it. `keychain(home, service,
 account, parse)` reads a Keychain item with `/usr/bin/security`, as Claude
