@@ -201,6 +201,7 @@ fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
             expires: kept["expires_at"].as_i64(),
             identity: None,
             plan: None,
+            app_ports: Vec::new(),
         }),
     }])
 }

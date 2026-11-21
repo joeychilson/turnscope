@@ -652,6 +652,7 @@ fn credential(kept: &Value, identity: (String, Option<String>)) -> Option<Creden
             .pointer("/claudeAiOauth/subscriptionType")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        app_ports: Vec::new(),
     })
 }
 

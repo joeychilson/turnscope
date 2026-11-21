@@ -49,8 +49,8 @@ formats correctly, and the forecast.
 | Source | Gives |
 |---|---|
 | Agents' history files | Responses and sessions |
-| Agents' login files and the Keychain | Which account each agent folder is signed in to, and the logins to read limits with |
-| Providers' APIs | Readings |
+| Agents' login files, the Keychain, and Antigravity's running app | Which account each agent folder is signed in to, and the logins to read limits with |
+| Providers' APIs, and Antigravity's app while it runs | Readings |
 | models.dev | Prices |
 
 Everything is kept in one SQLite file, `turnscope.db`, in the data
@@ -466,14 +466,18 @@ and what the backtest measured on this Mac's real limit history
   printed, serialized or cloned. An API key is known by its fingerprint,
   the first 16 hex digits of its SHA-256.
 - **One way to the network.** Every request goes through `/usr/bin/curl`
-  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. Headers, with any
-  credential, go to curl on standard input, never in its arguments or
-  environment. A header with a line break isn't sent. A request is a GET,
-  but for Google's limits, which answer only a POST: its body is an
-  argument, and holds no secret.
+  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. The one
+  exception is Antigravity's app on this Mac, asked over HTTP at
+  127.0.0.1, never through a proxy. Headers, with any credential, go to
+  curl on standard input, never in its arguments or environment. A header
+  with a line break isn't sent. A request is a GET, but for Google's
+  limits, which answer only a POST: its body is an argument, and holds no
+  secret.
 - **Logins are only read.** Each is sent only to its own provider, and
-  never once it has expired. Turnscope never refreshes a token or writes an
-  agent's files. `connect` and `disconnect` run the agent's own command.
+  never once it has expired. While Antigravity's app runs, its own token
+  is sent to the app instead, and nothing to Google. Turnscope never
+  refreshes a token or writes an agent's files. `connect` and
+  `disconnect` run the agent's own command.
 - **The data directory** is the owner's alone: it's created 0700.
 - **The MCP server only reads.** A session's title is what someone asked
   there, so its instructions tell agents to read one as data, not as an

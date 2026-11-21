@@ -2,6 +2,11 @@
 
 ## 0.3.1
 
+- **Antigravity's limits stay current while its app is open.** Antigravity
+  2.33.1 stopped saving the login it renews, so the one Turnscope read
+  expired: the limits stopped updating, and Turnscope said to open
+  Antigravity while it was open. Turnscope now asks the open app, on your
+  Mac.
 - **`explain_usage` by day, week or month** puts the row adding up earlier
   periods first and labels it by the period (`1 earlier day`, `2 earlier
   weeks`). It put that row last and wrote `1 earlier days` or `2 earlier
