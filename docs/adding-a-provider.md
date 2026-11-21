@@ -164,7 +164,8 @@ A failure is a `Problem`:
 The helpers in `src/providers/mod.rs` each have a doc comment:
 `account(provider, credential, identity)` and `api_account(provider)`;
 `ask(url, credential, headers, by)`, `asked(url, credential, headers,
-body, refused, by)` and `request(url, headers, body, seconds)`; and
+body, refused, by)`, `sent(url, headers, body, refused, by)` and
+`request(url, headers, body, seconds)`; and
 `absent(window)`, `reset(value)`, `window_name(length)` and `words(key)`
 for reading an answer.
 
@@ -187,9 +188,9 @@ Rules:
 
 - **Never refresh a token** or write a login. Turnscope waits for the agent
   to refresh it.
-- **Requests** go only through `ask`, `asked` or `request`: curl with the
-  credential on standard input, Turnscope's only way to the network. A
-  request changes nothing at the provider.
+- **Requests** go only through `ask`, `asked`, `sent` or `request`: curl
+  with the credential on standard input, Turnscope's only way to the
+  network. A request changes nothing at the provider.
 - **An answer that isn't understood** is `Problem::not_understood`, not an
   empty list of readings, which would read as a plan without limits. A
   window whose time won't parse fails the whole answer, as the rest would

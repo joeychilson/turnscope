@@ -905,6 +905,7 @@ mod tests {
                 expires: Some(now() + crate::time::DAY - at as i64),
                 identity: None,
                 plan: None,
+                app_ports: Vec::new(),
             })
             .collect();
         let held = Held {
@@ -1226,6 +1227,7 @@ mod tests {
                 expires: None,
                 identity: None,
                 plan: None,
+                app_ports: Vec::new(),
             });
         }
         assert_eq!(held.credentials.len(), 2);
@@ -1241,6 +1243,7 @@ mod tests {
             expires: Some(1_000_000 + 30_000),
             identity: None,
             plan: None,
+            app_ports: Vec::new(),
         });
         assert_eq!(read(&mut held, 1_000_000).problem, Some(Problem::Expired));
     }
@@ -1297,6 +1300,7 @@ mod tests {
                             expires: None,
                             identity: None,
                             plan: None,
+                            app_ports: Vec::new(),
                         }),
                 })
                 .collect())

@@ -44,6 +44,23 @@
 //! status lists limits by key, and by id the Claude and GPT pool's came
 //! before the plan's own.
 //!
+//! **Antigravity's app.** While the app runs, Antigravity's login is the
+//! app's own (`agents::antigravity`), and the app is asked in Google's
+//! place, on 127.0.0.1: it renews its sign-in itself, and the Keychain
+//! item's token has expired. Measured 2026-11-21 with the app 2.33.1, each
+//! a POST of `{}` answered in under 5 ms:
+//!
+//! - `GetUserStatus` gives the account's address, `email`, and the tier
+//!   paid for, `userTier`, named as `paidTier` is.
+//! - `RetrieveUserQuotaSummary` gives Google's answer, in `response`: the
+//!   same groups, with as much of the Gemini week left as the app showed.
+//! - The app's token goes in `X-Codeium-Csrf-Token`. A wrong one was
+//!   answered 401, `invalid CSRF token`, which signing in again wouldn't
+//!   fix, so no status is a refused login.
+//! - Its `language_server` listened on three ports: the service over HTTP
+//!   on one, HTTPS on another (400 over HTTP), and 401 on the third. So
+//!   each is asked until one answers (`from_app`).
+//!
 //! **Not measured.** A refused sign-in: only a 401 is taken for one, since a
 //! 403 from this service can mean a client or an account it doesn't serve.
 //! An account that pays for no plan. A group for one model, which OpenUsage
@@ -56,7 +73,7 @@
 //! it says nothing of what's left and is passed over, as OpenUsage does,
 //! over reading it as used up.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -96,6 +113,9 @@ impl Provider for Google {
     }
 
     fn limits(&self, credential: &Credential, _now: i64, by: Instant) -> Result<Limits, Problem> {
+        if !credential.app_ports.is_empty() {
+            return from_app(credential, by);
+        }
         let client = json!({"metadata": {
             "ideType": "ANTIGRAVITY",
             "platform": "PLATFORM_UNSPECIFIED",
@@ -126,15 +146,92 @@ impl Provider for Google {
     }
 }
 
-/// The plan a sign-in is on: the name of the tier paid for, without the
-/// `Google AI` it begins with, over a name from its id: `Google AI Ultra`'s
-/// was `g1-ultra-lite-tier`. For an account that pays for none, its tier's
-/// id, `free-tier` as `free`.
+/// The service in Antigravity's app.
+const APP: &str = "exa.language_server_pb.LanguageServerService";
+
+/// The limits Antigravity's app reads, asked of it on each port it listens
+/// on until one answers for its sign-in.
+///
+/// A port gets 2 s to answer, over the read's whole time: each answered in
+/// under 5 ms, and one that held the request would otherwise spend it all
+/// before the service's port was asked. When none answers, that's said the
+/// same way however each failed: the ports change each time the app
+/// starts, and a lasting failure is then logged once.
+fn from_app(credential: &Credential, by: Instant) -> Result<Limits, Problem> {
+    let token = format!("X-Codeium-Csrf-Token: {}", credential.secret.expose());
+    let mut answered = false;
+    for port in &credential.app_ports {
+        let ask = |method: &str, by: Instant| {
+            let url = format!("http://127.0.0.1:{port}/{APP}/{method}");
+            super::sent(&url, &[&token], Some(&json!({})), &[], by)
+        };
+        match ask(
+            "GetUserStatus",
+            by.min(Instant::now() + Duration::from_secs(2)),
+        ) {
+            Ok(status) => {
+                let quota = ask("RetrieveUserQuotaSummary", by)?;
+                return app_limits(credential, &status, &quota);
+            }
+            Err(problem) => {
+                answered |= matches!(problem, Problem::Unavailable { answered: true, .. })
+            }
+        }
+    }
+    Err(Problem::Unavailable {
+        why: "no port of Antigravity's app answered for its sign-in".to_owned(),
+        retry_after: None,
+        answered,
+    })
+}
+
+/// The limits in the app's answers, `GetUserStatus`'s and
+/// `RetrieveUserQuotaSummary`'s, when it's signed in to `credential`'s
+/// account.
+fn app_limits(credential: &Credential, status: &Value, quota: &Value) -> Result<Limits, Problem> {
+    let status = &status["userStatus"];
+    let signed_in = status["email"]
+        .as_str()
+        .filter(|email| !email.is_empty())
+        .ok_or_else(|| Problem::not_understood("Antigravity's app"))?;
+    if credential.identity.as_ref().map(|(id, _)| id.as_str()) != Some(signed_in) {
+        return Err(Problem::unavailable(
+            "Antigravity's app is signed in to another account than its Keychain item",
+        ));
+    }
+    let readings = parse(&quota["response"])
+        .filter(|readings| !readings.is_empty())
+        .ok_or_else(|| Problem::not_understood("Antigravity's app"))?;
+    let tier = &status["userTier"];
+    Ok(Limits {
+        // Only a Google AI plan's name: a free account's tier isn't
+        // measured, and `loadCodeAssist` named the free tier `Antigravity`.
+        plan: named(
+            tier["name"].as_str().filter(|name| name.starts_with(PLANS)),
+            tier["id"].as_str(),
+        ),
+        readings,
+    })
+}
+
+/// The plan in `loadCodeAssist`'s answer: the tier paid for, or for an
+/// account that pays for none, the tier it's on.
 fn plan(signed_in: &Value) -> Option<String> {
-    let plan = match signed_in["paidTier"]["name"].as_str() {
+    named(
+        signed_in["paidTier"]["name"].as_str(),
+        signed_in["currentTier"]["id"].as_str(),
+    )
+}
+
+/// A plan by the name of the tier paid for, `paid`, without the `Google AI`
+/// it begins with, over a name from its id: `Google AI Ultra`'s was
+/// `g1-ultra-lite-tier`. Without one, by the id of the `tier` it's on,
+/// `free-tier` as `free`.
+fn named(paid: Option<&str>, tier: Option<&str>) -> Option<String> {
+    let plan = match paid {
         Some(name) => name.strip_prefix(PLANS).unwrap_or(name).trim(),
         None => {
-            let tier = signed_in["currentTier"]["id"].as_str()?;
+            let tier = tier?;
             tier.strip_suffix("-tier").unwrap_or(tier)
         }
     };
@@ -199,6 +296,8 @@ fn scope(group: &str) -> &str {
 mod tests {
     use serde_json::{Value, json};
 
+    use crate::agents::{Credential, Secret};
+    use crate::providers::Problem;
     use crate::time::{DAY, HOUR, millis};
 
     /// A bucket as the service writes one.
@@ -309,5 +408,62 @@ mod tests {
         // What a client the service doesn't know gets.
         let unknown = json!({"allowedTiers": [{"id": "standard-tier"}], "ineligibleTiers": [{"reasonCode": "UNSUPPORTED_CLIENT"}]});
         assert_eq!(super::plan(&unknown), None);
+    }
+
+    #[test]
+    fn the_app_answers_for_its_own_account_as_google_does() {
+        let login = Credential {
+            provider: "google",
+            secret: Secret::new("made-up-token"),
+            key: false,
+            expires: None,
+            identity: Some((
+                "me@example.com".to_owned(),
+                Some("me@example.com".to_owned()),
+            )),
+            plan: None,
+            app_ports: vec![52353],
+        };
+        let status = json!({"userStatus": {
+            "email": "me@example.com",
+            "userTier": {"id": "g1-ultra-lite-tier", "name": "Google AI Ultra"},
+        }});
+        let quota = json!({"response": {"groups": [{
+            "displayName": "Gemini Models",
+            "buckets": [bucket("gemini-weekly", "weekly", 0.75, "2026-11-25T02:10:47Z")],
+        }]}});
+        let limits = super::app_limits(&login, &status, &quota).unwrap();
+        assert_eq!(limits.plan.as_deref(), Some("Ultra"));
+        let read: Vec<_> = limits
+            .readings
+            .iter()
+            .map(|reading| (reading.key.as_str(), reading.used))
+            .collect();
+        assert_eq!(read, [("weekly", 25.0)]);
+
+        // A tier that isn't a Google AI plan is named by its id.
+        let mut free = status.clone();
+        free["userStatus"]["userTier"] = json!({"id": "free-tier", "name": "Antigravity"});
+        let limits = super::app_limits(&login, &free, &quota).unwrap();
+        assert_eq!(limits.plan.as_deref(), Some("free"));
+
+        // Another account's limits aren't taken for the login's.
+        let mut other = status.clone();
+        other["userStatus"]["email"] = json!("someone@example.com");
+        let error = super::app_limits(&login, &other, &quota).err();
+        assert!(
+            matches!(error, Some(Problem::Unavailable { .. })),
+            "{error:?}"
+        );
+        // An empty address isn't taken for another account.
+        let mut none = status.clone();
+        none["userStatus"]["email"] = json!("");
+        let error = super::app_limits(&login, &none, &quota).err();
+        assert_eq!(error, Some(Problem::not_understood("Antigravity's app")));
+
+        // Google's answer, without the app's `response` around it, isn't
+        // the app's.
+        let error = super::app_limits(&login, &status, &quota["response"]).err();
+        assert_eq!(error, Some(Problem::not_understood("Antigravity's app")));
     }
 }

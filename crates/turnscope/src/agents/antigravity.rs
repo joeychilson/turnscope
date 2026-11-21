@@ -37,6 +37,8 @@
 //! **Not read.** The Antigravity IDE's history, which this Mac doesn't have.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
 use base64::Engine as _;
 use rusqlite::{Connection, OptionalExtension};
@@ -141,7 +143,15 @@ impl Agent for Antigravity {
 
     fn logins(&self, _folder: &Path, home: &Path) -> Result<Vec<Login>> {
         let (service, account) = SIGN_IN;
-        let credential = super::keychain(home, service, Some(account), signed_in)?.flatten();
+        let mut credential = super::keychain(home, service, Some(account), signed_in)?.flatten();
+        // The Keychain item still says whose account it is.
+        if let Some(credential) = &mut credential
+            && let Some((token, ports)) = running()
+        {
+            credential.secret = token;
+            credential.expires = None;
+            credential.app_ports = ports;
+        }
         Ok(vec![Login {
             provider: "google".to_owned(),
             credential,
@@ -165,10 +175,11 @@ impl Agent for Antigravity {
 ///
 /// Read 2026-11-10, the value was base64 JSON: `token` with its
 /// `access_token` and `expiry`, `auth_method`, and `id_token_email`, the
-/// only name of the account, so its id and its label. Antigravity writes
-/// each token it renews back to the item (one had 22 minutes left, hours
-/// after sign-in). Turnscope never renews one, so once the last has expired
-/// the account waits for Antigravity to be used again.
+/// only name of the account, so its id and its label. The app 2.31.0 wrote
+/// each token it renewed back to the item (one had 22 minutes left, hours
+/// after sign-in); 2.33.1 doesn't, so while it runs it's asked instead
+/// ([`running`]). Turnscope never renews a token, so once the last has
+/// expired and the app is closed, the account waits for it to be opened.
 ///
 /// Only `auth_method` `consumer`, a Google account's, is read: Google
 /// answers a token of Antigravity's other client with limits nothing has
@@ -202,7 +213,70 @@ fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
             .and_then(crate::time::millis),
         identity: email.map(|email| (email.to_owned(), Some(email.to_owned()))),
         plan: None,
+        app_ports: Vec::new(),
     }))
+}
+
+/// The app's `language_server` while it runs, which answers for the app's
+/// sign-in on 127.0.0.1: its token for that, from its command line, and the
+/// ports it listens on, from `lsof`. Only the person's own processes are
+/// looked at: another's app answers for another's account.
+///
+/// Asked in the Keychain item's place, as the app 2.33.1 renews its sign-in
+/// without writing it back: measured 2026-11-21, the item was last written
+/// the day before the app started, and 17 hours on the app still hadn't.
+/// Chosen over renewing the expired token as the app does, which takes the
+/// app's OAuth client secret from its binary and acts as the app toward
+/// Google, where Turnscope only reads.
+fn running() -> Option<(Secret, Vec<u16>)> {
+    let wait = Duration::from_secs(5);
+    let mut ps = Command::new("/bin/ps");
+    ps.args(["-x", "-ww", "-o", "pid=,args="]);
+    let table = crate::process::output_within(&mut ps, wait).ok()?;
+    let (pid, token) = server(&String::from_utf8_lossy(&table.stdout))?;
+    let mut lsof = Command::new("/usr/sbin/lsof");
+    lsof.args([
+        "-nP",
+        "-a",
+        "-p",
+        &pid.to_string(),
+        "-i4TCP",
+        "-sTCP:LISTEN",
+        "-Fn",
+    ]);
+    let open = crate::process::output_within(&mut lsof, wait).ok()?;
+    let ports = listening(&String::from_utf8_lossy(&open.stdout));
+    (!ports.is_empty()).then_some((token, ports))
+}
+
+/// The process and token of the app's `language_server` in `table`, rows of
+/// `pid args` as `ps` lists them. The token is the one after
+/// `--csrf_token`, as 2.33.1 passes it.
+fn server(table: &str) -> Option<(u32, Secret)> {
+    let app = INFO.app?;
+    table.lines().find_map(|row| {
+        let mut words = row.split_whitespace();
+        let pid = words.next()?.parse().ok()?;
+        if !Path::new(words.next()?).ends_with(app) {
+            return None;
+        }
+        let token = words.skip_while(|word| *word != "--csrf_token").nth(1)?;
+        Some((pid, Secret::new(token)))
+    })
+}
+
+/// The ports `lsof -F n` lists that 127.0.0.1 reaches, in lines such as
+/// `n127.0.0.1:52353`: the token is sent to no other. The server listens on
+/// several, and only one is the service.
+fn listening(lsof: &str) -> Vec<u16> {
+    lsof.lines()
+        .filter_map(|line| {
+            let port = line
+                .strip_prefix("n127.0.0.1:")
+                .or_else(|| line.strip_prefix("n*:"))?;
+            port.parse().ok()
+        })
+        .collect()
 }
 
 /// What the person typed, of a `USER_INPUT` line's `content`: it's in
@@ -964,5 +1038,25 @@ mod tests {
         assert!(signed_in(kept.to_string().as_bytes()).is_err());
         assert!(signed_in(format!("{WRAPPED}not base64").as_bytes()).is_err());
         assert!(signed_in(format!("{WRAPPED}{}", STANDARD.encode("not JSON")).as_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_running_app_is_its_language_server_with_its_token_and_ports() {
+        let table = "\
+              310 /Applications/Antigravity.app/Contents/MacOS/Antigravity
+              315 /opt/Other.app/Contents/Resources/bin/language_server --csrf_token other-token
+              320 /Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone --csrf_token made-up-token --app_data_dir antigravity
+        ";
+        let (pid, token) = server(table).unwrap();
+        assert_eq!((pid, token.expose()), (320, "made-up-token"));
+        // Without its token, it can't be asked.
+        let tokenless = "320 /Applications/Antigravity.app/Contents/Resources/bin/language_server";
+        assert!(server(tokenless).is_none());
+
+        // Only ports 127.0.0.1 reaches are asked: not one on another
+        // address, where another program may hold the same port at
+        // 127.0.0.1.
+        let lsof = "p320\nf7\nn127.0.0.1:52353\nf8\nn*:52360\nf9\nn192.168.1.5:52370\n";
+        assert_eq!(listening(lsof), [52353, 52360]);
     }
 }

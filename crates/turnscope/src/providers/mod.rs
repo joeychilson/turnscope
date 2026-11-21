@@ -219,6 +219,21 @@ fn asked(
     refused: &[u16],
     by: Instant,
 ) -> Result<Value, Problem> {
+    let authorization = format!("Authorization: Bearer {}", credential.secret.expose());
+    let mut lines = vec![authorization.as_str()];
+    lines.extend(headers);
+    sent(url, &lines, body, refused, by)
+}
+
+/// As [`asked`], with the login in `headers`, for a server that takes it in
+/// a header of its own.
+fn sent(
+    url: &str,
+    headers: &[&str],
+    body: Option<&Value>,
+    refused: &[u16],
+    by: Instant,
+) -> Result<Value, Problem> {
     // Under a millisecond, curl's `--max-time` would be 0.000: no limit.
     let left = by.saturating_duration_since(Instant::now());
     if left < Duration::from_millis(1) {
@@ -226,8 +241,7 @@ fn asked(
             "{url}: not asked, as the read's time was spent"
         )));
     }
-    let authorization = format!("Authorization: Bearer {}", credential.secret.expose());
-    let mut lines = vec![authorization.as_str()];
+    let mut lines = Vec::new();
     if body.is_some() {
         lines.push("Content-Type: application/json");
     }
@@ -268,7 +282,11 @@ struct Answered {
 }
 
 /// Ask `url` over HTTPS with `headers`, giving the status and body, or
-/// giving up after `seconds`: a GET, or a POST of `body`.
+/// giving up after `seconds`: a GET, or a POST of `body`. Only an app on
+/// this Mac, at `http://127.0.0.1:`, is asked over HTTP, and never through
+/// a proxy, which would be sent its token and couldn't reach it: curl
+/// sent a request for 127.0.0.1 to the proxy in `http_proxy` (8.7.1,
+/// measured 2026-11-21).
 ///
 /// Headers go to curl on standard input, so a credential among them is in
 /// no process listing; `-q` keeps a `~/.curlrc` from adding a trace. A
@@ -300,15 +318,13 @@ fn requested(
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err("a header holds a line break, so nothing was sent".to_owned());
     }
+    let protocol = match url.starts_with("http://127.0.0.1:") {
+        true => "=http",
+        false => "=https",
+    };
     let mut curl = Command::new("/usr/bin/curl")
-        .args([
-            "-q",
-            "--silent",
-            "--show-error",
-            "--compressed",
-            "--proto",
-            "=https",
-        ])
+        .args(["-q", "--silent", "--show-error", "--compressed"])
+        .args(["--proto", protocol, "--noproxy", "127.0.0.1"])
         .args(["--connect-timeout", "5"])
         .args(["--max-time", &format!("{:.3}", time.as_secs_f64())])
         .args(["--max-filesize", "67108864", "--user-agent", "Turnscope"])
@@ -501,6 +517,7 @@ mod tests {
             expires: None,
             identity: None,
             plan: None,
+            app_ports: Vec::new(),
         };
         let spent = std::time::Instant::now();
         // Not HTTPS, so curl, were it run, would send nothing either.

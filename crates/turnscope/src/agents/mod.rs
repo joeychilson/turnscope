@@ -317,6 +317,11 @@ pub struct Credential {
     pub identity: Option<(String, Option<String>)>,
     /// The plan, where the agent's files say, such as `max`.
     pub plan: Option<String>,
+    /// Where the agent's app, while it runs, is asked in the provider's
+    /// place: the ports it listens on at 127.0.0.1, with `secret` the app's
+    /// own token. Such a login has no `expires`, as the app renews its
+    /// sign-in itself. Empty for a login sent to the provider.
+    pub app_ports: Vec<u16>,
 }
 
 /// A token or key. It can't be printed, serialized or cloned, so it can't
@@ -477,6 +482,7 @@ pub fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> 
             expires: kept["expires"].as_i64(),
             identity: None,
             plan: None,
+            app_ports: Vec::new(),
         }),
         provider: provider.to_owned(),
     }
