@@ -652,6 +652,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     // The caller's own session, when it isn't among the rows: what an
     // agent most often asks of its own work.
     if by == By::Session
+        && used.rest.is_some()
         && let Some(yours) = yours
         && !used.rows.iter().any(|row| row.key == yours)
     {

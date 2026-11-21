@@ -190,16 +190,17 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
         .collect();
 
     let mut due = Vec::new();
+    let mut renames = Vec::new();
     let mut older = Vec::new();
     for (agent, folder, path, stat) in found {
         let was = match known.remove(path.as_os_str()) {
             Some(was) => Some(was),
             None => match moved.remove(&stat.inode) {
                 Some((from, was)) if was.agent == agent.info().id => {
-                    db.execute(
-                        "UPDATE file SET path = ?1 WHERE path = ?2",
-                        params![path.to_string_lossy(), from.to_string_lossy()],
-                    )?;
+                    renames.push((
+                        from.to_string_lossy().into_owned(),
+                        path.to_string_lossy().into_owned(),
+                    ));
                     Some(was)
                 }
                 _ => None,
@@ -230,8 +231,18 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
             stat,
         });
     }
-    if !older.is_empty() {
-        read_again(db, &older)?;
+    if !renames.is_empty() || !older.is_empty() {
+        let tx = crate::db::write(db)?;
+        if !renames.is_empty() {
+            let mut rename = tx.prepare("UPDATE file SET path = ?1 WHERE path = ?2")?;
+            for (from, to) in &renames {
+                rename.execute(params![to, from])?;
+            }
+        }
+        if !older.is_empty() {
+            read_again(&tx, &older)?;
+        }
+        tx.commit()?;
     }
     Ok(due)
 }
@@ -499,31 +510,43 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     if models.is_empty() {
         return Ok(());
     }
-    // Of the thousands of models a catalog lists, the few used here.
-    let used: HashSet<(String, String)> = tx
-        .prepare("SELECT DISTINCT provider, model FROM response")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    // One scan of `response`, over a query per model: `response` has no
+    // index on `(provider, model)`, so querying per model scanned the whole
+    // table for each. On 50,000 responses and 20 newly priced models, this
+    // took 12 ms (11–17 ms) against 72 ms (71–74 ms) with a query per model
+    // (2026-11-20).
+    tx.execute(
+        "CREATE TEMP TABLE repriced (
+             provider TEXT NOT NULL,
+             model TEXT NOT NULL,
+             PRIMARY KEY (provider, model)
+         )",
+        [],
+    )?;
+    let mut add = tx.prepare("INSERT OR IGNORE INTO repriced (provider, model) VALUES (?1, ?2)")?;
+    for (provider, model) in models {
+        add.execute(params![provider, model])?;
+    }
+    drop(add);
+    let rows: Vec<(String, Response)> = tx
+        .prepare(&format!(
+            "SELECT {RESPONSE_COLUMNS}, agent FROM response
+             WHERE EXISTS (
+                 SELECT 1 FROM repriced
+                 WHERE repriced.provider = response.provider
+                   AND repriced.model = response.model
+             )"
+        ))?
+        .query_map([], |row| Ok((row.get(16)?, stored(row)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let models: Vec<&(String, String)> =
-        models.iter().filter(|model| used.contains(model)).collect();
-    if models.is_empty() {
+    tx.execute("DROP TABLE repriced", [])?;
+    if rows.is_empty() {
         return Ok(());
     }
     let prices = Prices::load(tx)?;
-    let mut select = tx.prepare(&format!(
-        "SELECT {RESPONSE_COLUMNS}, agent FROM response
-         WHERE provider = ?1 AND model = ?2"
-    ))?;
     let mut update = tx.prepare("UPDATE response SET cost = ?3 WHERE agent = ?1 AND id = ?2")?;
-    for (provider, model) in models {
-        let rows: Vec<(String, Response)> = select
-            .query_map(params![provider, model], |row| {
-                Ok((row.get(16)?, stored(row)?))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        for (agent, response) in &rows {
-            update.execute(params![agent, response.id, prices.cost(agent, response)])?;
-        }
+    for (agent, response) in &rows {
+        update.execute(params![agent, response.id, prices.cost(agent, response)])?;
     }
     Ok(())
 }
@@ -537,12 +560,11 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
 /// as one `git worktree add` made beside its repository, is a project of its
 /// own, and the repository's usage splits in two. The cost: a project worked
 /// out from a working directory an older reader got wrong stays wrong.
-fn read_again(db: &mut Connection, files: &[i64]) -> Result<()> {
+fn read_again(tx: &Transaction, files: &[i64]) -> Result<()> {
     // One transaction, not split as reading is: it held the lock 0.62 to
     // 0.80 s on the history `HOLD` was measured on, 123,140 responses, and
     // 0.75 to 1.24 s on 3,000 files and 120,000 responses (2026-11-14), far
     // under the 10 s another write waits.
-    let tx = crate::db::write(db)?;
     tx.execute("CREATE TEMP TABLE again (file INTEGER PRIMARY KEY)", [])?;
     let mut again = tx.prepare("INSERT INTO again (file) VALUES (?1)")?;
     for file in files {
@@ -560,7 +582,6 @@ fn read_again(db: &mut Connection, files: &[i64]) -> Result<()> {
          DELETE FROM session_file WHERE file IN (SELECT file FROM again);
          DROP TABLE again;",
     )?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -1071,5 +1092,67 @@ mod tests {
         let error = reading.join().unwrap().unwrap_err();
         assert_eq!(error, crate::db::newer().to_string());
         assert_eq!(count(&db, "SELECT count(*) FROM file"), 0);
+    }
+
+    #[test]
+    fn moved_files_are_not_renamed_once_a_newer_turnscope_has_written() {
+        let (_dir, home, mut db, folder) = store();
+        let first = folder.join("s1.jsonl");
+        std::fs::write(&first, turn("a")).unwrap();
+        ingest(&mut db, home.path(), None).unwrap();
+
+        let moved = folder.join("s2.jsonl");
+        std::fs::rename(&first, &moved).unwrap();
+        db.execute("UPDATE state SET version = ?1", [i64::MAX])
+            .unwrap();
+        let error = due(&mut db, home.path()).err().unwrap();
+        assert_eq!(error.to_string(), crate::db::newer().to_string());
+        let stored: String = db
+            .query_row("SELECT path FROM file", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(Path::new(&stored), first);
+    }
+
+    #[test]
+    fn price_again_updates_only_matching_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        db.execute_batch(
+            "INSERT INTO price VALUES
+                 ('anthropic', 'm1', 0, '{\"input\":2,\"output\":10}', NULL),
+                 ('anthropic', 'm2', 0, '{\"input\":4,\"output\":20}', NULL);
+             INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+                 web_searches, priority, cost) VALUES
+                 ('claude-code', 'r1', 's', 0, 1, '/w', 0, 'anthropic', 'm1', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
+                 ('claude-code', 'r2', 's', 0, 1, '/w', 0, 'anthropic', 'm2', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
+                 ('claude-code', 'r3', 's', 0, 1, '/w', 0, 'anthropic', 'm3', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, 9.0);",
+        )
+        .unwrap();
+        let tx = crate::db::write(&mut db).unwrap();
+        price_again(
+            &tx,
+            &[
+                ("anthropic".to_owned(), "m1".to_owned()),
+                ("anthropic".to_owned(), "m2".to_owned()),
+            ],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let costs: Vec<(String, Option<f64>)> = db
+            .prepare("SELECT id, cost FROM response ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            costs,
+            [
+                ("r1".to_owned(), Some(2.0)),
+                ("r2".to_owned(), Some(4.0)),
+                ("r3".to_owned(), Some(9.0)),
+            ]
+        );
     }
 }

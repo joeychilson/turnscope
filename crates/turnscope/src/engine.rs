@@ -187,8 +187,8 @@ impl Engine {
             if inner.newer().is_some() {
                 return;
             }
-            let done = match inner.showing().as_ref() {
-                Some(showing) => alerts::acknowledge(&showing.db, &ids).map(|_| ()),
+            let done = match inner.showing().as_mut() {
+                Some(showing) => alerts::acknowledge(&mut showing.db, &ids).map(|_| ()),
                 None => return,
             };
             if let Err(error) = done {

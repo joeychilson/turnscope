@@ -257,14 +257,19 @@ fn moved(status: &Status, account: &str, limit: &str, resets: i64) -> bool {
 }
 
 /// Mark alerts shown, so they aren't sent again.
-pub fn acknowledge(db: &Connection, ids: &[i64]) -> Result<usize> {
-    crate::db::writing(db)?;
+pub fn acknowledge(db: &mut Connection, ids: &[i64]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let tx = crate::db::write(db)?;
     let mut statement =
-        db.prepare("UPDATE alert SET acknowledged = 1 WHERE id = ?1 AND acknowledged = 0")?;
+        tx.prepare("UPDATE alert SET acknowledged = 1 WHERE id = ?1 AND acknowledged = 0")?;
     let mut done = 0;
     for id in ids {
         done += statement.execute([id])?;
     }
+    drop(statement);
+    tx.commit()?;
     Ok(done)
 }
 
@@ -390,7 +395,7 @@ mod tests {
         assert_eq!(raised[0].replaces, "limit:anthropic:acct-1:org-1:five_hour");
         assert!(raise(&mut db, &used_up).unwrap().is_empty(), "told once");
         assert_eq!(pending(&db, &used_up, DAY).unwrap().len(), 1);
-        assert_eq!(acknowledge(&db, &[raised[0].id]).unwrap(), 1);
+        assert_eq!(acknowledge(&mut db, &[raised[0].id]).unwrap(), 1);
         assert!(pending(&db, &used_up, DAY).unwrap().is_empty());
         // Use given back within the window: it's back.
         let back = status(DAY + MINUTE, 60, LASTS);
