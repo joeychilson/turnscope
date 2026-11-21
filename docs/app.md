@@ -113,11 +113,10 @@ The engine is the same for every app: an app starts
   run a `turnscope` that's gone once the image is ejected.
 - **`Words`** writes every figure and sentence made from the status: what's
   left, times, a limit's line, the headline, the menu bar's figures,
-  notifications and what VoiceOver says. Views get one from `State::words`,
-  which uses the agents' names, gathered as the status is taken. A page
-  makes one each time it's drawn, and hands it to what it shows. Fixed
-  labels, such as headings, button titles and setting names, are written in
-  the view that shows them.
+  notifications and what VoiceOver says. Views get one from `State::words`
+  each time a page is drawn, and hand it to what they show. Fixed labels,
+  such as headings, button titles and setting names, are written in the
+  view that shows them.
   Everything is in English, dates are on the Gregorian calendar, and times
   are on a 12-hour clock, in the Mac's time zone.
 - **A standing** is lasts, running out or used up. `style.rs` maps it to a
