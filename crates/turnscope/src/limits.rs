@@ -191,16 +191,10 @@ fn gather(
          AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
     )?;
     for &agent in agents {
-        let folders = agent.folders(home);
+        let folders = agent.installed_folders(home);
         // Each folder whose logins were read, with the providers they name.
         let mut read: Vec<(String, Vec<String>)> = Vec::new();
-        for (n, folder) in folders.iter().enumerate() {
-            if n == 0 && !agent.installed(folder) {
-                if listable {
-                    read.push((folder.to_string_lossy().into_owned(), Vec::new()));
-                }
-                continue;
-            }
+        for folder in &folders {
             // A folder whose logins can't be read keeps what it held.
             let Ok(logins) = agent.logins(folder, home) else {
                 continue;

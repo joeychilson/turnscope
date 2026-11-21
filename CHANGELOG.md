@@ -2,11 +2,6 @@
 
 ## 0.3.1
 
-- **Uninstalled agents are skipped when reading logins** (and in `turnscope
-  doctor`), and Claude Code checks `.claude.json` before asking the Keychain.
-  Refreshing limits used to spawn `security` for Claude Code when it wasn't
-  installed or signed in, and recorded an empty sign-in row for uninstalled
-  agents.
 - **A forecast after midnight names the right night when the clocks have
   just sprung forward.** In the hour after midnight on the Monday after, it
   said "Saturday night" for "Sunday night".

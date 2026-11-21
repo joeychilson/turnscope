@@ -567,13 +567,10 @@ fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Resul
     let mut watched: Vec<PathBuf> = Vec::new();
     let mut watch = |watcher: &mut notify::RecommendedWatcher| {
         for agent in agents::ALL {
-            for (n, folder) in agent.folders(home).into_iter().enumerate() {
-                // The agent's own folder may be another program's, as
-                // `~/.gemini` is the Gemini command line's too: every write
-                // there would start a catch-up. Until the agent is installed
-                // it's looked through each minute, as a folder not there yet
-                // is, and watched from the first minute it is.
-                if watched.contains(&folder) || (n == 0 && !agent.installed(&folder)) {
+            // Uninstalled agents are left out until they appear, then watched
+            // from the next minute.
+            for folder in agent.installed_folders(home) {
+                if watched.contains(&folder) {
                     continue;
                 }
                 if watcher
