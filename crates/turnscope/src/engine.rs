@@ -32,7 +32,7 @@ pub struct Shown {
 }
 
 /// A session that used a limit, as the panel lists it under an open account.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UsedMost {
     /// `claude-code:0f6e3f6a-713c`.
     pub session: String,
@@ -187,8 +187,8 @@ impl Engine {
             if inner.newer().is_some() {
                 return;
             }
-            let done = match inner.showing().as_ref() {
-                Some(showing) => alerts::acknowledge(&showing.db, &ids).map(|_| ()),
+            let done = match inner.showing().as_mut() {
+                Some(showing) => alerts::acknowledge(&mut showing.db, &ids).map(|_| ()),
                 None => return,
             };
             if let Err(error) = done {

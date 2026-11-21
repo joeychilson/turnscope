@@ -242,7 +242,8 @@ The answer:
    prices and the number of responses, with how many have no known price.
 2. The limit's line, as `check_limits` gives it.
 3. A table of the top rows, each with its cost, responses and share of the
-   limit in percentage points, then a row adding up the rest. A session
+   limit in percentage points, with a row adding up the rest (first for
+   time periods, last otherwise). A session
    shows as the first 8 characters of its agent's own id for it, and its
    title in quotes, or `(untitled)`. The caller's own is marked `(yours)`
    when its agent names it, as Claude Code does.

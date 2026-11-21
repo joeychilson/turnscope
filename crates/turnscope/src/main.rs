@@ -556,22 +556,23 @@ fn doctor(db: &rusqlite::Connection, data: &Path, home: &Path, now: i64) -> Resu
             "Prices haven't been read from models.dev yet: costs are unknown until they are."
                 .to_owned(),
         );
-    }
-    let unpriced: Vec<(String, i64)> = db
-        .prepare("SELECT model, count(*) FROM response WHERE cost IS NULL GROUP BY model ORDER BY count(*) DESC LIMIT 5")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (model, count) in unpriced.into_iter().filter(|_| priced) {
-        let model = if model.is_empty() {
-            "no model named".to_owned()
-        } else {
-            model
-        };
-        let responses = if count == 1 { "response" } else { "responses" };
-        notes.push(format!(
-            "{model}: {} {responses} with no known price; models.dev doesn't list it.",
-            usage::count(count as u64)
-        ));
+    } else {
+        let unpriced: Vec<(String, i64)> = db
+            .prepare("SELECT model, count(*) FROM response WHERE cost IS NULL GROUP BY model ORDER BY count(*) DESC LIMIT 5")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (model, count) in unpriced {
+            let model = if model.is_empty() {
+                "no model named".to_owned()
+            } else {
+                model
+            };
+            let responses = if count == 1 { "response" } else { "responses" };
+            notes.push(format!(
+                "{model}: {} {responses} with no known price; models.dev doesn't list it.",
+                usage::count(count as u64)
+            ));
+        }
     }
     // What went wrong in the last day, the latest five: the app is started
     // from its icon, and limits are read in agents' hooks, where no one sees
@@ -615,7 +616,7 @@ fn guard(
     // The limits read before still guard when this one can't read them
     // again, as once a newer Turnscope has written here, or does while they
     // are read: a hook that fails guards nothing.
-    if online() && db::writing(&db).is_ok() {
+    if online() {
         let _ = limits::refresh(&mut db, home);
     }
     let now = now();

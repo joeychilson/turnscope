@@ -105,7 +105,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
             resets,
         });
     }
-    Some(readings)
+    (!readings.is_empty()).then_some(readings)
 }
 
 #[cfg(test)]
@@ -157,5 +157,10 @@ mod tests {
         assert!(super::parse(&answer).is_none());
         let answer = json!({"usage": {"monthly": {"percent": 9, "resetsAt": null}}});
         assert_eq!(super::parse(&answer).unwrap()[0].resets, None);
+    }
+
+    #[test]
+    fn an_answer_with_no_windows_fails() {
+        assert!(super::parse(&json!({"usage": {}})).is_none());
     }
 }

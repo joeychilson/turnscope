@@ -43,9 +43,6 @@ pub struct State {
     pub status: Option<Status>,
     /// Every agent Turnscope reads, installed or not, with whether it runs Turnscope.
     pub agents: Vec<Agent>,
-    /// Each agent's name, by its id, for `Words`: gathered as the status is taken, rather than
-    /// each time a view runs.
-    names: HashMap<String, String>,
     /// Why the data isn't kept current, or None while it is.
     pub failure: Option<String>,
     /// The agents being connected or disconnected right now, by id, with the connection each
@@ -117,7 +114,6 @@ impl State {
         State {
             status: None,
             agents: Vec::new(),
-            names: HashMap::new(),
             failure: None,
             changing_agents: HashMap::new(),
             agent_errors: HashMap::new(),
@@ -160,11 +156,6 @@ impl State {
     /// Takes in a status the engine gave.
     pub fn take(&mut self, shown: Shown) {
         self.status = Some(shown.status);
-        self.names = shown
-            .agents
-            .iter()
-            .map(|a| (a.id.clone(), a.name.clone()))
-            .collect();
         self.agents = shown.agents;
     }
 
@@ -229,20 +220,19 @@ impl State {
     }
 
     /// The names of every agent Turnscope reads, installed or not.
-    pub fn agent_names(&self) -> Vec<String> {
-        self.agents.iter().map(|a| a.name.clone()).collect()
+    pub fn agent_names(&self) -> Vec<&str> {
+        self.agents.iter().map(|a| a.name.as_str()).collect()
     }
 
-    /// Words as of the panel's `now`, or a fixed status's time, with agents named as in the
-    /// status.
-    pub fn words(&self) -> Words<'_> {
-        Words::new(self.frozen.unwrap_or(self.now), &self.names)
+    /// Words as of the panel's `now`, or a fixed status's time.
+    pub fn words(&self) -> Words {
+        Words::new(self.frozen.unwrap_or(self.now))
     }
 
     /// Words as of now, or a fixed status's time, for what's shown whether the panel is open
     /// or not: the menu bar item and notifications.
-    pub fn words_now(&self) -> Words<'_> {
-        Words::new(self.frozen.unwrap_or_else(turnscope::now), &self.names)
+    pub fn words_now(&self) -> Words {
+        Words::new(self.frozen.unwrap_or_else(turnscope::now))
     }
 
     /// Whether the engine stopped for good, as once a newer Turnscope has written to the data.

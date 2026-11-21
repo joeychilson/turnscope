@@ -2,10 +2,9 @@
 //! says. Times are in the Mac's own time zone, as of the minute the panel last ticked.
 
 use crate::standing::*;
-use jiff::civil::{Date, Weekday};
+use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
-use std::collections::HashMap;
 use turnscope::alerts::{Alert, Kind as AlertKind};
 use turnscope::engine::UsedMost;
 
@@ -20,28 +19,18 @@ pub struct Note {
     pub body: String,
 }
 
-pub struct Words<'a> {
+pub struct Words {
     /// The minute it is, in milliseconds.
     pub(crate) now: i64,
     tz: TimeZone,
-    /// Each agent's name, by its id.
-    names: &'a HashMap<String, String>,
 }
 
-impl<'a> Words<'a> {
-    pub fn new(now_ms: i64, names: &'a HashMap<String, String>) -> Words<'a> {
+impl Words {
+    pub fn new(now_ms: i64) -> Words {
         Words {
             now: now_ms.div_euclid(60_000) * 60_000,
             tz: TimeZone::system(),
-            names,
         }
-    }
-
-    fn agent(&self, id: &str) -> String {
-        self.names
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| id.to_string())
     }
 
     // Figures
@@ -247,51 +236,25 @@ impl<'a> Words<'a> {
 
     fn time(&self, ms: i64) -> String {
         let z = self.zoned(ms);
-        let hour = match z.hour() % 12 {
-            0 => 12,
-            h => h,
-        };
-        let period = if z.hour() < 12 { "AM" } else { "PM" };
-        if z.minute() == 0 {
-            format!("{hour} {period}")
+        let format = if z.minute() == 0 {
+            "%-I %p"
         } else {
-            format!("{hour}:{:02} {period}", z.minute())
-        }
+            "%-I:%M %p"
+        };
+        z.strftime(format).to_string()
     }
 
     fn weekday(&self, ms: i64, full: bool) -> String {
-        let name = match self.zoned(ms).weekday() {
-            Weekday::Monday => "Monday",
-            Weekday::Tuesday => "Tuesday",
-            Weekday::Wednesday => "Wednesday",
-            Weekday::Thursday => "Thursday",
-            Weekday::Friday => "Friday",
-            Weekday::Saturday => "Saturday",
-            Weekday::Sunday => "Sunday",
-        };
-        if full { name.into() } else { name[..3].into() }
+        self.zoned(ms)
+            .strftime(if full { "%A" } else { "%a" })
+            .to_string()
     }
 
     /// "Oct 30", or "October 30" if `full`.
     fn month_day(&self, ms: i64, full: bool) -> String {
-        const MONTHS: [&str; 12] = [
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        ];
-        let z = self.zoned(ms);
-        let month = MONTHS[(z.month() - 1) as usize];
-        let month = if full { month } else { &month[..3] };
-        format!("{month} {}", z.day())
+        self.zoned(ms)
+            .strftime(if full { "%B %-d" } else { "%b %-d" })
+            .to_string()
     }
 
     fn counted(&self, count: usize, word: &str) -> String {
@@ -302,7 +265,11 @@ impl<'a> Words<'a> {
 
     pub fn name(&self, limit: &Limit) -> String {
         if !limit.held_by.is_empty() {
-            let names: Vec<String> = limit.held_by.iter().map(|a| self.agent(a)).collect();
+            let names: Vec<&str> = limit
+                .held_by
+                .iter()
+                .map(|a| turnscope::agents::name(a))
+                .collect();
             return format!("{}'s key", list(&names, "and"));
         }
         match &limit.scope {
@@ -359,7 +326,7 @@ impl<'a> Words<'a> {
             let agent = account
                 .agents
                 .first()
-                .map_or("its agent".into(), |a| self.agent(a));
+                .map_or("its agent", |a| turnscope::agents::name(a));
             return format!("Open {agent} to renew its login");
         }
         if let Some(limit) = account.deciding_limit() {
@@ -452,7 +419,7 @@ impl<'a> Words<'a> {
                 let open = account
                     .agents
                     .first()
-                    .map(|a| format!("Open {} to sign in.", self.agent(a)));
+                    .map(|a| format!("Open {} to sign in.", turnscope::agents::name(a)));
                 return (
                     format!("Sign in to {} again", account.title),
                     open.unwrap_or("Its limits can't be read until then.".into()),
@@ -600,7 +567,7 @@ impl<'a> Words<'a> {
     pub fn welcome(
         &self,
         agents: &[&Agent],
-        reads: &[String],
+        reads: &[&str],
         reading: bool,
     ) -> (String, String, Standing) {
         if reading {
@@ -620,7 +587,7 @@ impl<'a> Words<'a> {
                 Standing::Lasts,
             );
         }
-        let names: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
+        let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
         (
             "No accounts found yet".into(),
             format!(
@@ -635,7 +602,7 @@ impl<'a> Words<'a> {
         let with = account
             .agents
             .first()
-            .map_or("its agent".into(), |a| self.agent(a));
+            .map_or("its agent", |a| turnscope::agents::name(a));
         Some(match &account.state {
             State::Unread { why: Stale::SignIn } => format!("Open {with} to sign in again."),
             State::Unread {
@@ -734,7 +701,11 @@ impl<'a> Words<'a> {
         if account.agents.is_empty() {
             return None;
         }
-        let names: Vec<String> = account.agents.iter().map(|a| self.agent(a)).collect();
+        let names: Vec<&str> = account
+            .agents
+            .iter()
+            .map(|a| turnscope::agents::name(a))
+            .collect();
         Some(format!("via {}", list(&names, "and")))
     }
 
@@ -746,7 +717,7 @@ impl<'a> Words<'a> {
         [
             used.share_percent.map(turnscope::usage::share),
             used.project.clone(),
-            agents.then(|| self.agent(&used.agent)),
+            agents.then(|| turnscope::agents::name(&used.agent).to_owned()),
         ]
         .into_iter()
         .flatten()
@@ -758,9 +729,10 @@ impl<'a> Words<'a> {
     /// it (`labelled`), "Claude Max (me@example.com)", so two accounts with the same title are
     /// told apart as their rows are.
     pub fn called(&self, account: &Account, labelled: bool) -> String {
-        match (&account.label, labelled) {
-            (Some(label), true) => format!("{} ({label})", account.title),
-            _ => account.title.clone(),
+        if labelled {
+            account.full_title()
+        } else {
+            account.title.clone()
         }
     }
 
@@ -769,8 +741,10 @@ impl<'a> Words<'a> {
     /// the headline it can't point to a row. Only an account in use counts: an idle account
     /// with the same title can't be taken for one in use.
     fn called_among(&self, account: &Account, accounts: &[Account]) -> String {
-        let in_use: Vec<Account> = accounts.iter().filter(|a| a.in_use).cloned().collect();
-        self.called(account, account.twinned(&in_use))
+        self.called(
+            account,
+            account.twinned(accounts.iter().filter(|a| a.in_use)),
+        )
     }
 
     /// What VoiceOver says for the menu bar item: each account it shows, with its figure.
@@ -879,7 +853,7 @@ impl<'a> Words<'a> {
             AlertKind::SignIn => {
                 let agent = account
                     .and_then(|a| a.agents.first())
-                    .map(|a| self.agent(a));
+                    .map(|a| turnscope::agents::name(a));
                 Note {
                     title,
                     subtitle: "Sign in again".into(),
@@ -927,10 +901,10 @@ fn back_at(limit: &Limit) -> i64 {
     }
 }
 
-fn list(names: &[String], last: &str) -> String {
+fn list(names: &[&str], last: &str) -> String {
     match names {
         [] => String::new(),
-        [one] => one.clone(),
+        [one] => (*one).to_owned(),
         [rest @ .., final_] => format!("{} {last} {final_}", rest.join(", ")),
     }
 }
@@ -956,35 +930,20 @@ mod tests {
         at("2026-09-30T12:00:00Z")
     }
 
-    /// The agents' names, as a status gives them.
-    fn names() -> &'static HashMap<String, String> {
-        static NAMES: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
-        NAMES.get_or_init(|| {
-            [
-                ("claude-code", "Claude Code"),
-                ("codex", "Codex"),
-                ("pi", "Pi"),
-            ]
-            .into_iter()
-            .map(|(id, name)| (id.to_owned(), name.to_owned()))
-            .collect()
-        })
-    }
-
     /// Words as of `now`, in `tz`.
-    fn as_of_in(now: i64, tz: TimeZone) -> Words<'static> {
+    fn as_of_in(now: i64, tz: TimeZone) -> Words {
         Words {
             tz,
-            ..Words::new(now, names())
+            ..Words::new(now)
         }
     }
 
     /// Words as of `now`, in UTC.
-    fn as_of(now: i64) -> Words<'static> {
+    fn as_of(now: i64) -> Words {
         as_of_in(now, TimeZone::UTC)
     }
 
-    fn words() -> Words<'static> {
+    fn words() -> Words {
         as_of(noon())
     }
 
@@ -1708,7 +1667,7 @@ mod tests {
     #[test]
     fn before_any_account_the_welcome_says_why() {
         let w = words();
-        let reads = ["Claude Code".to_owned(), "Codex".to_owned()];
+        let reads = ["Claude Code", "Codex"];
         assert_eq!(w.welcome(&[], &reads, true).0, "Getting your limits");
         assert_eq!(
             w.welcome(&[], &reads, false).1,

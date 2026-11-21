@@ -655,7 +655,35 @@ fn limits(
     keys: &BTreeMap<String, Vec<String>>,
     now: i64,
 ) -> Result<(Vec<Limit>, bool)> {
-    let worked = worked(db, account, &[], None, now)?;
+    struct Latest {
+        key: String,
+        name: String,
+        scope: Option<String>,
+        used: f64,
+        size: Option<f64>,
+        starts: Option<i64>,
+        resets: Option<i64>,
+    }
+    let latest: Vec<Latest> = db
+        .prepare_cached(
+            "SELECT limit_key, name, scope, used, size, starts, resets FROM reading
+             WHERE account = ?1 AND at = ?2 ORDER BY limit_key",
+        )?
+        .query_map(params![account, read_at], |row| {
+            Ok(Latest {
+                key: row.get(0)?,
+                name: row.get(1)?,
+                scope: row.get(2)?,
+                used: row.get(3)?,
+                size: row.get(4)?,
+                starts: row.get(5)?,
+                resets: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    if latest.is_empty() {
+        return Ok((Vec::new(), false));
+    }
     let known: Option<i64> = db.query_row(
         "SELECT min(since) FROM sign_in WHERE account = ?1",
         [account],
@@ -667,17 +695,18 @@ fn limits(
     // last in `reading`'s primary key, so each such query reads every
     // limit's rows. With five limits read every 5 minutes for 30 days, made
     // up, that took 6.6 ms an account, and this 2.7 ms.
-    let from: Option<i64> = db.query_row(
-        "SELECT min(coalesce(starts, ?2 - ?3)) FROM reading WHERE account = ?1 AND at = ?2",
-        params![account, read_at, DAY],
-        |row| row.get(0),
-    )?;
+    let from = latest
+        .iter()
+        .map(|row| row.starts.unwrap_or(read_at - DAY))
+        .min()
+        .unwrap_or(now)
+        .min(now - WORKED);
     let mut histories: BTreeMap<String, Vec<forecast::Reading>> = BTreeMap::new();
     let mut rows = db.prepare_cached(
         "SELECT limit_key, at, used, starts, resets FROM reading
          WHERE account = ?1 AND at >= ?2 ORDER BY at",
     )?;
-    let mut rows = rows.query(params![account, from.unwrap_or(now).min(now - WORKED)])?;
+    let mut rows = rows.query(params![account, from])?;
     while let Some(row) = rows.next()? {
         histories
             .entry(row.get(0)?)
@@ -689,18 +718,19 @@ fn limits(
                 resets: row.get(4)?,
             });
     }
-    let mut latest = db.prepare(
-        "SELECT limit_key, name, scope, used, size, starts, resets FROM reading
-         WHERE account = ?1 AND at = ?2 ORDER BY limit_key",
-    )?;
-    let mut latest = latest.query(params![account, read_at])?;
+    let mut all_worked: Option<Vec<i64>> = None;
     let mut rose = false;
     let mut limits = Vec::new();
-    while let Some(row) = latest.next()? {
-        let (key, name, scope): (String, String, Option<String>) =
-            (row.get(0)?, row.get(1)?, row.get(2)?);
-        let (used, size): (f64, Option<f64>) = (row.get(3)?, row.get(4)?);
-        let (starts, resets): (Option<i64>, Option<i64>) = (row.get(5)?, row.get(6)?);
+    for Latest {
+        key,
+        name,
+        scope,
+        used,
+        size,
+        starts,
+        resets,
+    } in latest
+    {
         let history = histories.get(&key).map_or(&[][..], Vec::as_slice);
         // Its current window's: those that reset with it.
         let readings: Vec<(i64, f64)> = history
@@ -754,13 +784,16 @@ fn limits(
         let models = crate::usage::models(scope.as_deref());
         let held = crate::usage::key(&key);
         let own;
-        let worked = match models.is_empty() && held.is_none() {
-            _ if rolling => &[][..],
-            true => &worked,
-            false => {
-                own = self::worked(db, account, &models, held.as_ref(), now)?;
-                &own
+        let worked = if rolling {
+            &[][..]
+        } else if models.is_empty() && held.is_none() {
+            if all_worked.is_none() {
+                all_worked = Some(self::worked(db, account, &[], None, now)?);
             }
+            all_worked.as_deref().unwrap_or(&[])
+        } else {
+            own = self::worked(db, account, &models, held.as_ref(), now)?;
+            &own
         };
         // None for a window that rolls, with no start to measure work from.
         let work = forecast::work_rate(walked, worked, known, forecast::enough_work(length))
