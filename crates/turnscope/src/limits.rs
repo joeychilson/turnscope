@@ -525,9 +525,13 @@ fn title(held: &Held, read: &Read) -> String {
 /// `plan_mark`, with the account that stands for them: one already known,
 /// so its history is kept, or else the first, accounts being in order.
 ///
-/// An account known from before and not read now counts by the mark of its
-/// last read: a key swapped for a new one to the same plan made the plan a
-/// second account, the first signed out, with no readings behind the new.
+/// An account known from before and not read now, or whose login was
+/// refused (`Problem::SignIn`), counts by the mark of its last read: a key
+/// swapped for a new one to the same plan made the plan a second account,
+/// the first signed out or refused, with no readings behind the new. Other
+/// failures don't merge: `merge` can't be undone, and `plan` stops at the
+/// first failure that isn't a refused login, so an old key failing another
+/// way would stop the working key from being read.
 fn same_plan(
     tx: &Transaction,
     answers: &[(Read, Held)],
@@ -549,13 +553,13 @@ fn same_plan(
                 .push(held.account.id.clone());
         }
     }
-    let read_ok: HashSet<&str> = answers
+    let skip_stored: HashSet<&str> = answers
         .iter()
-        .filter(|(read, _)| read.limits.is_some())
+        .filter(|(read, _)| read.limits.is_some() || read.problem != Some(Problem::SignIn))
         .map(|(_, held)| held.account.id.as_str())
         .collect();
     for (id, provider) in stored(tx, &marked)? {
-        if read_ok.contains(id.as_str()) {
+        if skip_stored.contains(id.as_str()) {
             continue;
         }
         let mark = stored_limits(tx, &id)?.and_then(|limits| marked[provider].plan_mark(&limits));
@@ -1584,5 +1588,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(readings, 2);
+
+        // Another failure (not `SignIn`) does not merge: `plan` stops at the
+        // first non-`SignIn` failure, so merging would block the working key.
+        record(
+            &mut db,
+            vec![signed("/f1", "fake:key-a"), signed("/f3", "fake:key-c")],
+            vec![
+                (
+                    Read::failed(Problem::unavailable("down")),
+                    held("fake:key-a"),
+                ),
+                (monthly(1), held("fake:key-c")),
+            ],
+            3_000,
+        )
+        .unwrap();
+        let accounts: Vec<(String, Option<i64>, Option<String>)> = db
+            .prepare("SELECT id, read_at, problem FROM account ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            accounts,
+            [
+                (
+                    "fake:key-a".to_owned(),
+                    Some(2_000),
+                    Some("unavailable".to_owned())
+                ),
+                ("fake:key-c".to_owned(), Some(3_000), None),
+            ]
+        );
     }
 }

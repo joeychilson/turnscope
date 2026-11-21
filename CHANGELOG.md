@@ -6,9 +6,9 @@
   periods first and labels it by the period (`1 earlier day`, `2 earlier
   weeks`). It put that row last and wrote `1 earlier days` or `2 earlier
   week ofs`.
-- **An OpenCode Go plan stays one account when one key fails while another
-  key works.** The new key made a second account instead of keeping the
-  plan's history, and an answer with no windows cleared the account's
+- **An OpenCode Go plan stays one account when one key is refused while
+  another key works.** The new key made a second account instead of keeping
+  the plan's history, and an answer with no windows cleared the account's
   limits instead of failing the read.
 - **A forecast after midnight names the right night when the clocks have
   just sprung forward.** In the hour after midnight on the Monday after, it
