@@ -240,7 +240,7 @@ fn running() -> Option<(Secret, Vec<u16>)> {
         "-a",
         "-p",
         &pid.to_string(),
-        "-iTCP",
+        "-i4TCP",
         "-sTCP:LISTEN",
         "-Fn",
     ]);
@@ -265,16 +265,18 @@ fn server(table: &str) -> Option<(u32, Secret)> {
     })
 }
 
-/// The ports `lsof -F n` lists, in lines such as `n127.0.0.1:52353`, each
-/// once. The server listens on several, and only one is the service.
+/// The ports `lsof -F n` lists that 127.0.0.1 reaches, in lines such as
+/// `n127.0.0.1:52353`: the token is sent to no other. The server listens on
+/// several, and only one is the service.
 fn listening(lsof: &str) -> Vec<u16> {
-    let mut ports: Vec<u16> = lsof
-        .lines()
-        .filter_map(|line| line.strip_prefix('n')?.rsplit_once(':')?.1.parse().ok())
-        .collect();
-    ports.sort_unstable();
-    ports.dedup();
-    ports
+    lsof.lines()
+        .filter_map(|line| {
+            let port = line
+                .strip_prefix("n127.0.0.1:")
+                .or_else(|| line.strip_prefix("n*:"))?;
+            port.parse().ok()
+        })
+        .collect()
 }
 
 /// What the person typed, of a `USER_INPUT` line's `content`: it's in
@@ -1051,7 +1053,10 @@ mod tests {
         let tokenless = "320 /Applications/Antigravity.app/Contents/Resources/bin/language_server";
         assert!(server(tokenless).is_none());
 
-        let lsof = "p320\nf7\nn127.0.0.1:52352\nf8\nn127.0.0.1:52353\nf9\nn[::1]:52353\n";
-        assert_eq!(listening(lsof), [52352, 52353]);
+        // Only ports 127.0.0.1 reaches are asked: not one on another
+        // address, where another program may hold the same port at
+        // 127.0.0.1.
+        let lsof = "p320\nf7\nn127.0.0.1:52353\nf8\nn*:52360\nf9\nn192.168.1.5:52370\n";
+        assert_eq!(listening(lsof), [52353, 52360]);
     }
 }

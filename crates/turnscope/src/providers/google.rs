@@ -59,7 +59,7 @@
 //!   fix, so no status is a refused login.
 //! - Its `language_server` listened on three ports: the service over HTTP
 //!   on one, HTTPS on another (400 over HTTP), and 401 on the third. So
-//!   each is asked until one answers.
+//!   each is asked until one answers (`from_app`).
 //!
 //! **Not measured.** A refused sign-in: only a 401 is taken for one, since a
 //! 403 from this service can mean a client or an account it doesn't serve.
@@ -73,7 +73,7 @@
 //! it says nothing of what's left and is passed over, as OpenUsage does,
 //! over reading it as used up.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -150,23 +150,39 @@ impl Provider for Google {
 const APP: &str = "exa.language_server_pb.LanguageServerService";
 
 /// The limits Antigravity's app reads, asked of it on each port it listens
-/// on until one answers.
+/// on until one answers for its sign-in.
+///
+/// A port gets 2 s to answer, over the read's whole time: each answered in
+/// under 5 ms, and one that held the request would otherwise spend it all
+/// before the service's port was asked. When none answers, that's said the
+/// same way however each failed: the ports change each time the app
+/// starts, and a lasting failure is then logged once.
 fn from_app(credential: &Credential, by: Instant) -> Result<Limits, Problem> {
     let token = format!("X-Codeium-Csrf-Token: {}", credential.secret.expose());
-    let mut problem = None;
+    let mut answered = false;
     for port in &credential.app_ports {
-        let ask = |method: &str| {
+        let ask = |method: &str, by: Instant| {
             let url = format!("http://127.0.0.1:{port}/{APP}/{method}");
             super::sent(&url, &[&token], Some(&json!({})), &[], by)
         };
-        match ask("GetUserStatus") {
+        match ask(
+            "GetUserStatus",
+            by.min(Instant::now() + Duration::from_secs(2)),
+        ) {
             Ok(status) => {
-                return app_limits(credential, &status, &ask("RetrieveUserQuotaSummary")?);
+                let quota = ask("RetrieveUserQuotaSummary", by)?;
+                return app_limits(credential, &status, &quota);
             }
-            Err(other) => problem = Some(other),
+            Err(problem) => {
+                answered |= matches!(problem, Problem::Unavailable { answered: true, .. })
+            }
         }
     }
-    Err(problem.unwrap_or_else(|| Problem::unavailable("Antigravity's app listens on no port")))
+    Err(Problem::Unavailable {
+        why: "no port of Antigravity's app answered for its sign-in".to_owned(),
+        retry_after: None,
+        answered,
+    })
 }
 
 /// The limits in the app's answers, `GetUserStatus`'s and
@@ -176,6 +192,7 @@ fn app_limits(credential: &Credential, status: &Value, quota: &Value) -> Result<
     let status = &status["userStatus"];
     let signed_in = status["email"]
         .as_str()
+        .filter(|email| !email.is_empty())
         .ok_or_else(|| Problem::not_understood("Antigravity's app"))?;
     if credential.identity.as_ref().map(|(id, _)| id.as_str()) != Some(signed_in) {
         return Err(Problem::unavailable(
@@ -438,6 +455,11 @@ mod tests {
             matches!(error, Some(Problem::Unavailable { .. })),
             "{error:?}"
         );
+        // An empty address isn't taken for another account.
+        let mut none = status.clone();
+        none["userStatus"]["email"] = json!("");
+        let error = super::app_limits(&login, &none, &quota).err();
+        assert_eq!(error, Some(Problem::not_understood("Antigravity's app")));
 
         // Google's answer, without the app's `response` around it, isn't
         // the app's.
