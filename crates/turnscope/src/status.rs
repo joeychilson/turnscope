@@ -366,9 +366,9 @@ pub enum Horizon {
     Soon,
     /// Later today, in local time.
     Today,
-    /// Within a week.
+    /// On one of the next six days, by local calendar days.
     ThisWeek,
-    /// Further off.
+    /// Seven or more local calendar days ahead.
     Later,
 }
 

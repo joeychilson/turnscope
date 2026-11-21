@@ -286,7 +286,10 @@ struct Answered {
 /// this Mac, at `http://127.0.0.1:`, is asked over HTTP, and never through
 /// a proxy, which would be sent its token and couldn't reach it: curl
 /// sent a request for 127.0.0.1 to the proxy in `http_proxy` (8.7.1,
-/// measured 2026-11-21).
+/// measured 2026-11-21). Only that request is told so: `--noproxy`
+/// replaces the environment's `NO_PROXY`, and given to every request, it
+/// sent one for a host `NO_PROXY` named to the proxy (measured the same
+/// day).
 ///
 /// Headers go to curl on standard input, so a credential among them is in
 /// no process listing; `-q` keeps a `~/.curlrc` from adding a trace. A
@@ -318,13 +321,13 @@ fn requested(
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err("a header holds a line break, so nothing was sent".to_owned());
     }
-    let protocol = match url.starts_with("http://127.0.0.1:") {
-        true => "=http",
-        false => "=https",
+    let to: &[&str] = match url.starts_with("http://127.0.0.1:") {
+        true => &["--proto", "=http", "--noproxy", "127.0.0.1"],
+        false => &["--proto", "=https"],
     };
     let mut curl = Command::new("/usr/bin/curl")
         .args(["-q", "--silent", "--show-error", "--compressed"])
-        .args(["--proto", protocol, "--noproxy", "127.0.0.1"])
+        .args(to)
         .args(["--connect-timeout", "5"])
         .args(["--max-time", &format!("{:.3}", time.as_secs_f64())])
         .args(["--max-filesize", "67108864", "--user-agent", "Turnscope"])

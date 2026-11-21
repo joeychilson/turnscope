@@ -621,14 +621,17 @@ fn stored_limits(tx: &Transaction, account: &str) -> Result<Option<Limits>> {
     }))
 }
 
-/// Make `other` part of `first`.
+/// Make `other` part of `first`. The plan stays shown unless both were
+/// hidden, over hidden if either was: of two accounts to one plan, the one
+/// hidden is most likely the one someone took for a copy, as a refused
+/// key's was. An `other` new this read leaves `first` as it was.
 fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
     for moved in [
         "UPDATE sign_in SET account = ?2 WHERE account = ?1",
         "UPDATE response SET account = ?2 WHERE account = ?1",
         "UPDATE OR IGNORE reading SET account = ?2 WHERE account = ?1",
         "UPDATE OR IGNORE alert SET account = ?2 WHERE account = ?1",
-        "UPDATE account SET hidden = hidden OR coalesce((SELECT hidden FROM account WHERE id = ?1), 0)
+        "UPDATE account SET hidden = hidden AND coalesce((SELECT hidden FROM account WHERE id = ?1), hidden)
          WHERE id = ?2",
     ] {
         tx.execute(moved, params![other, first])?;
@@ -1626,6 +1629,62 @@ mod tests {
                 ("fake:key-c".to_owned(), Some(3_000), None),
             ]
         );
+    }
+
+    /// Two accounts to one plan, as 0.3.0 made one when a key was refused,
+    /// the refused one hidden: once they're one, the plan still shows.
+    #[test]
+    fn a_plan_made_one_with_a_hidden_copy_still_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let signed = |folder: &str, account: &str| SignedIn {
+            agent: "fake",
+            folder: folder.to_owned(),
+            provider: "fake".to_owned(),
+            account: Some(account.to_owned()),
+            key: Some(account.trim_start_matches("fake:key-").to_owned()),
+        };
+        let both = || vec![signed("/f1", "fake:key-a"), signed("/f2", "fake:key-b")];
+        record(
+            &mut db,
+            vec![signed("/f1", "fake:key-a")],
+            vec![(monthly(1), held("fake:key-a"))],
+            1_000,
+        )
+        .unwrap();
+        record(
+            &mut db,
+            both(),
+            vec![
+                (
+                    Read::failed(Problem::unavailable("down")),
+                    held("fake:key-a"),
+                ),
+                (monthly(1), held("fake:key-b")),
+            ],
+            2_000,
+        )
+        .unwrap();
+        db.execute("UPDATE account SET hidden = 1 WHERE id = 'fake:key-a'", [])
+            .unwrap();
+        record(
+            &mut db,
+            both(),
+            vec![
+                (Read::failed(Problem::SignIn), held("fake:key-a")),
+                (monthly(1), held("fake:key-b")),
+            ],
+            3_000,
+        )
+        .unwrap();
+        let accounts: Vec<(String, i64)> = db
+            .prepare("SELECT id, hidden FROM account ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(accounts, [("fake:key-b".to_owned(), 0)]);
     }
 
     #[test]

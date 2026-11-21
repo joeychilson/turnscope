@@ -5,7 +5,8 @@
 - **Resets and run-outs a week or more off show the date instead of a
   weekday.** Right after a weekly reset, the panel and notifications named
   today's weekday for next week's reset, and a monthly run-out a week or
-  more ahead read in the headline as this week's weekday.
+  more ahead read in the headline as this week's weekday. In
+  `status --json`, such a moment's `horizon` is `later`, not `thisWeek`.
 - **`explain_usage` by day, week or month** puts the row adding up earlier
   periods first and labels it by the period (`1 earlier day`, `2 earlier
   weeks`). It put that row last and wrote `1 earlier days` or `2 earlier
@@ -13,7 +14,8 @@
 - **An OpenCode Go plan stays one account when one key is refused while
   another key works.** The new key made a second account instead of keeping
   the plan's history, and an answer with no windows cleared the account's
-  limits instead of failing the read.
+  limits instead of failing the read. A second account made this way joins
+  the plan's again, which stays shown if only one of them was hidden.
 - **A forecast after midnight names the right night when the clocks have
   just sprung forward.** In the hour after midnight on the Monday after, it
   said "Saturday night" for "Sunday night".
@@ -25,7 +27,11 @@
   2.33.1 stopped saving the login it renews, so the one Turnscope read
   expired: the limits stopped updating, and Turnscope said to open
   Antigravity while it was open. Turnscope now asks the open app, on your
-  Mac.
+  Mac, finding it and its token in the list of running programs.
+- **An agent whose folder is gone is no longer signed in.** Turnscope
+  stops asking it for logins and `doctor` stops reporting on it. An empty
+  Claude Code login counts as signed out too, instead of asking you to sign
+  in again.
 
 ## 0.3.0
 
