@@ -139,10 +139,7 @@ impl Agent for Antigravity {
         }
     }
 
-    fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
-        if !self.installed(folder) {
-            return Ok(Vec::new());
-        }
+    fn logins(&self, _folder: &Path, home: &Path) -> Result<Vec<Login>> {
         let (service, account) = SIGN_IN;
         let credential = super::keychain(home, service, Some(account), signed_in)?.flatten();
         Ok(vec![Login {
@@ -821,7 +818,6 @@ mod tests {
         std::fs::create_dir_all(folder.join("tmp")).unwrap();
         std::fs::write(folder.join("settings.json"), "{}").unwrap();
         assert!(!Antigravity.installed(&folder));
-        assert!(Antigravity.logins(&folder, home.path()).unwrap().is_empty());
         std::fs::create_dir(folder.join("antigravity")).unwrap();
         assert!(Antigravity.installed(&folder));
     }

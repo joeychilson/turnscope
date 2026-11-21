@@ -63,6 +63,20 @@ pub trait Agent: Sync {
         folder.exists()
     }
 
+    /// Like `folders`, leaving out the agent's own folder when the agent isn't
+    /// installed: it may not exist or may belong to another program, as
+    /// `~/.gemini` is the Gemini command line's too.
+    fn installed_folders(&self, home: &Path) -> Vec<PathBuf> {
+        let mut folders = self.folders(home);
+        if folders
+            .first()
+            .is_some_and(|folder| !self.installed(folder))
+        {
+            folders.remove(0);
+        }
+        folders
+    }
+
     /// Its history files in `folder`, in the order they're read. One that
     /// doesn't exist is passed over, so a file it may keep can be listed
     /// without looking.

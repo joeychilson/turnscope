@@ -191,7 +191,7 @@ fn gather(
          AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
     )?;
     for &agent in agents {
-        let folders = agent.folders(home);
+        let folders = agent.installed_folders(home);
         // Each folder whose logins were read, with the providers they name.
         let mut read: Vec<(String, Vec<String>)> = Vec::new();
         for folder in &folders {
@@ -1621,6 +1621,72 @@ mod tests {
                 ),
                 ("fake:key-c".to_owned(), Some(3_000), None),
             ]
+        );
+    }
+
+    #[test]
+    fn an_uninstalled_agent_isnt_asked_for_logins_and_records_no_sign_in() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Counting(AtomicBool);
+        impl Agent for Counting {
+            fn info(&self) -> &'static agents::Info {
+                &FAKE_AGENT
+            }
+            fn folders(&self, home: &Path) -> Vec<std::path::PathBuf> {
+                vec![home.join(".fake")]
+            }
+            fn installed(&self, folder: &Path) -> bool {
+                folder.join("installed").exists()
+            }
+            fn files(&self, _folder: &Path) -> Vec<std::path::PathBuf> {
+                Vec::new()
+            }
+            fn read(&self, _file: &Path, _cursor: &str) -> Result<agents::Read> {
+                Ok(agents::Read::default())
+            }
+            fn logins(&self, _folder: &Path, _home: &Path) -> Result<Vec<agents::Login>> {
+                self.0.store(true, Ordering::Relaxed);
+                Ok(vec![agents::Login {
+                    provider: "fake".to_owned(),
+                    credential: None,
+                }])
+            }
+            fn mcp_command(&self, _folder: &Path, _home: &Path) -> Option<String> {
+                None
+            }
+        }
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = crate::db::open(data.path()).unwrap();
+        let fake: &'static Fake = Box::leak(Box::default());
+        let agent = Counting(AtomicBool::new(false));
+        // Neither missing nor a folder made by another tool (as Gemini CLI's
+        // `~/.gemini` for Antigravity) counts as installed.
+        let (signed_in, _) = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
+        assert!(!agent.0.load(Ordering::Relaxed), "logins was called");
+        assert!(signed_in.is_empty());
+        std::fs::create_dir(home.path().join(".fake")).unwrap();
+        let (signed_in, _) = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
+        assert!(!agent.0.load(Ordering::Relaxed), "logins was called");
+        assert!(signed_in.is_empty());
+
+        // Once it was signed in and its folder was deleted, it's still signed
+        // out without asking `logins`.
+        let folder = home.path().join(".fake").to_string_lossy().into_owned();
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account)
+             VALUES ('fake', ?1, 'fake', 1000, 'fake:account')",
+            [&folder],
+        )
+        .unwrap();
+        let (signed_in, _) = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
+        assert!(!agent.0.load(Ordering::Relaxed), "logins was called");
+        assert_eq!(signed_in.len(), 1);
+        assert_eq!(
+            (
+                signed_in[0].folder.as_str(),
+                signed_in[0].account.as_deref()
+            ),
+            (folder.as_str(), None)
         );
     }
 }
