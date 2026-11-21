@@ -185,8 +185,8 @@ pub fn work_rate(
     enough: f64,
 ) -> Option<f64> {
     let hours = |from: i64, to: i64| {
-        // None where `from` is after `to`, as a window's start drifted past
-        // its first reading is.
+        // No hours where `from` is after `to`, as a window's start drifted
+        // past its first reading is.
         let slots = worked
             .partition_point(|at| *at <= to)
             .saturating_sub(worked.partition_point(|at| *at <= from));
