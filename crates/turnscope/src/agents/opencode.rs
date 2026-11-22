@@ -52,24 +52,18 @@ const OWN: &str = "(s.fork_session_id IS NULL OR m.time_created >= s.time_create
 
 #[derive(Default, Serialize, Deserialize)]
 struct Cursor {
-    /// The latest `time_updated` seen in each table, and no later than the
-    /// clock was at that read. Chosen over the latest seen alone, under which
-    /// a row stamped while the clock was ahead, as one set by hand and put
-    /// right, hid every row stamped at the true time until the clock passed
-    /// it, and `doctor` said nothing. On a made-up database with a session
-    /// stamped a day ahead, one saved a minute before now was still unread
-    /// two days on. Such a row is read again at each read until the clock
-    /// passes it, which changes nothing. (No real history was looked at for
-    /// such a row.)
+    /// The latest `time_updated` seen in each table, but no later than the
+    /// clock at that read. By the latest alone, a row stamped while the clock
+    /// was ahead hid every later row until the clock passed it: on a made-up
+    /// database with a session stamped a day ahead, one saved a minute before
+    /// now was unread two days on.
     sessions: i64,
     messages: i64,
 }
 
-/// How long before the latest `time_updated` seen a read starts. A row can
-/// be committed after one stamped later: OpenCode stamps a row as it makes
-/// the write, then waits up to 5 s (`busy_timeout`) for another process's
-/// write to end. Rows read again change nothing. (From OpenCode's code,
-/// `packages/core/src/database/`, read 2026-10-12.)
+/// How long before the latest `time_updated` seen a read starts: OpenCode
+/// stamps a row, then waits up to 5 s (`busy_timeout`) to write it, so a row
+/// can be committed after one stamped later (its code, read 2026-10-12).
 const LATE: i64 = 10_000;
 
 impl Agent for OpenCode {
@@ -134,8 +128,8 @@ struct MessageData<'a> {
     model: Option<ModelRef<'a>>,
     tokens: Option<MessageTokens>,
     time: Option<MessageTime>,
-    #[serde(rename = "providerState", borrow)]
-    provider_state: Option<ProviderState<'a>>,
+    #[serde(rename = "providerState")]
+    provider_state: Option<ProviderState>,
     cost: Option<f64>,
 }
 
@@ -167,10 +161,11 @@ struct MessageTime {
     created: Option<i64>,
 }
 
+/// Each provider's own: what's in it isn't OpenCode's to say.
 #[derive(Deserialize)]
-struct ProviderState<'a> {
-    #[serde(rename = "serviceTier", borrow)]
-    service_tier: Option<Cow<'a, str>>,
+struct ProviderState {
+    #[serde(rename = "serviceTier", default, deserialize_with = "super::lenient")]
+    service_tier: Option<String>,
 }
 
 fn read_at(file: &Path, cursor: &str, now: i64) -> Result<Read> {
@@ -241,26 +236,27 @@ fn messages(
         let native = row.get_ref(1)?.as_str()?;
         let (created, updated): (i64, i64) = (row.get(2)?, row.get(3)?);
         cursor.messages = cursor.messages.max(updated.min(now));
-        // A row read again only for being within `LATE` was counted, and
-        // one stamped ahead of the clock is counted by the read that takes
-        // the cursor past it. One committed late, stamped at or before the
-        // last read, isn't: knowing it wasn't seen would take every bad
-        // row's id in the cursor, for a count only doctor shows.
+        // A row that doesn't read is counted by the read whose cursor first
+        // passes it. One committed late, stamped at or before the last read,
+        // isn't: that would take each such row's id in the cursor, for a
+        // count only `doctor` shows.
         let unseen = u64::from(updated > mark && updated <= now);
         let Ok(data) = serde_json::from_str::<MessageData<'_>>(row.get_ref(4)?.as_str()?) else {
             read.skipped += unseen;
             continue;
         };
         // A message has no tokens until its response ends.
-        let Some(tokens) = data.tokens else {
-            continue;
-        };
-        let (Some(input), Some(output), Some(reasoning), Some(cache)) =
-            (tokens.input, tokens.output, tokens.reasoning, tokens.cache)
+        let Some(MessageTokens {
+            input: Some(input),
+            output: Some(output),
+            reasoning: Some(reasoning),
+            cache:
+                Some(CacheTokens {
+                    read: Some(cache_read),
+                    write: Some(cache_write),
+                }),
+        }) = data.tokens
         else {
-            continue;
-        };
-        let (Some(cache_read), Some(cache_write)) = (cache.read, cache.write) else {
             continue;
         };
         let Some((Some(provider), Some(model))) = data.model.map(|m| (m.provider_id, m.id)) else {

@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use super::{Account, Info, Limits, Problem, Provider, Reading};
+use super::{Info, Limits, Problem, Provider, Reading};
 use crate::agents::Credential;
 use crate::time::{DAY, HOUR};
 
@@ -40,10 +40,6 @@ const USAGE: &str = "https://api.anthropic.com/api/oauth/usage";
 impl Provider for Anthropic {
     fn info(&self) -> &'static Info {
         &INFO
-    }
-
-    fn account(&self, credential: &Credential) -> Option<Account> {
-        super::account(INFO.id, credential, || credential.identity.clone())
     }
 
     fn makes(&self, model: &str) -> bool {
@@ -70,13 +66,10 @@ fn parse(answer: &Value, now: i64) -> Option<Vec<Reading>> {
         let (name, scope, length) = match key.as_str() {
             "five_hour" => ("5 hours", None, 5 * HOUR),
             "seven_day" => ("Weekly", None, 7 * DAY),
-            // The plan's use through other apps signed in with it, not
-            // Claude Code's. So it's scoped, as a limit on one model is:
-            // used up, it doesn't decide the account or hold back the
-            // return of 5 hours or Weekly, and as `Other apps` names no
-            // model, none of Claude Code's responses count toward it. With
-            // no scope, it did all three. Not measured: no answer read here
-            // has carried it.
+            // Use through other apps signed in with the plan. Scoped, so used
+            // up it doesn't decide the account, and as `Other apps` names no
+            // model, no response of Claude Code's counts toward it. Not
+            // measured: no answer read here has carried it.
             "seven_day_oauth_apps" => ("Weekly", Some("Other apps".to_owned()), 7 * DAY),
             other => match other.strip_prefix("seven_day_").filter(|m| !m.is_empty()) {
                 Some(model) => ("Weekly", Some(super::words(model)), 7 * DAY),

@@ -201,7 +201,7 @@ pub trait Agent: Sync {
 
 pub trait Provider: Sync {
     fn info(&self) -> &'static Info;
-    fn account(&self, credential: &Credential) -> Option<Account>;
+    fn account(&self, credential: &Credential) -> Option<Account> { account(self.info().id, credential, || credential.identity.clone()) }
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> std::result::Result<Limits, Problem>;
     fn account_limits(&self, _credential: &Credential, _now: i64, _by: Instant) -> std::result::Result<Vec<Reading>, Problem> { Ok(Vec::new()) }
     fn rolls(&self, _key: &str) -> Option<i64> { None }

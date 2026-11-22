@@ -166,7 +166,8 @@ fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> R
     match ask() {
         Ok(catalog) => take(db, &catalog, now).map(|()| true),
         Err(error) => {
-            // Retry in 10 minutes instead of 6 hours so a failed first launch recovers quickly.
+            // Asked again in 10 minutes, not 6 hours, so a first launch
+            // offline gets prices soon after.
             let tx = crate::db::write(db)?;
             tx.execute(
                 "UPDATE state SET prices_at = ?1 WHERE prices_at <= ?2",
@@ -181,8 +182,8 @@ fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> R
 const DUE: i64 = 6 * crate::time::HOUR;
 const CLAIMED: i64 = 2 * crate::time::MINUTE;
 
-/// Claims for 2 minutes until `take` records the full 6-hour timestamp, so a
-/// crash mid-fetch doesn't leave costs unpriced for 6 hours.
+/// Claim the refresh for this process: for 2 minutes, until `take` records it
+/// for 6 hours, so a process that dies meanwhile holds it up 2 minutes.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
     let at: Option<i64> = db.query_row("SELECT prices_at FROM state", [], |row| row.get(0))?;
     if at.is_some_and(|at| at > now - DUE && at <= now + crate::limits::DUE) {
@@ -216,9 +217,9 @@ fn catalog() -> Result<Catalog> {
     Ok(catalog)
 }
 
-/// Priced models from models.dev's JSON, skipping entries whose `cost` can't
-/// be read as rates: storing an empty `{}` would stop `take` from pricing
-/// earlier responses once real rates appear.
+/// Priced models from models.dev's JSON. One whose `cost` doesn't read as
+/// rates is left out: stored, it would stop `take` pricing what was used of
+/// it once its rates are listed.
 fn parse_catalog(json: &[u8]) -> Result<Catalog> {
     let providers: HashMap<String, Value> = serde_json::from_slice(json)
         .map_err(|error| Error::Failed(format!("models.dev's catalog didn't read: {error}")))?;
@@ -252,17 +253,13 @@ fn parse_catalog(json: &[u8]) -> Result<Catalog> {
     Ok(catalog)
 }
 
-/// Write what `catalog` prices, as of `now`, and price what was used of a
-/// model it lists for the first time and what had no price, in one write:
-/// priced after, a process that ended between the two left that usage
-/// unpriced for good.
+/// Write what `catalog` prices, as of `now`, and price again what was used of
+/// a model it lists for the first time and what had no price, in the same
+/// write, so a process that ends between them leaves nothing unpriced.
 ///
-/// Without `ingest.lock`: a read of history takes in the prices at each of
-/// its writes, so what it wrote before this write is priced here, and what
-/// it writes after, by the read. Chosen over holding the lock, which made
-/// an agent's tool call that fell due to refresh the prices wait out the
-/// app's read of all of history, minutes long, though it waits a second at
-/// most for the read itself.
+/// Without `ingest.lock`, as a read of history prices what it writes as it
+/// writes it. Holding the lock made an agent's tool call that fell due to
+/// refresh the prices wait out the app's first read of history, minutes long.
 fn take(db: &mut Connection, catalog: &Catalog, now: i64) -> Result<()> {
     let tx = crate::db::write(db)?;
     let current: HashMap<(String, String), (String, Option<String>)> = tx
@@ -438,15 +435,27 @@ mod tests {
         assert_eq!(prices.cost("opencode", &unlisted), Some(0.001));
     }
 
+    /// One process asks models.dev at a time: claimed for two minutes, then
+    /// six hours once its catalog is taken in, or again by a clock set back.
     #[test]
-    fn one_process_claims_the_refresh_and_a_clock_set_back_can_claim_it_again() {
+    fn models_dev_is_asked_by_one_process_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();
-        let now = 1_800_000_000_000;
+        let now = crate::now();
         assert!(claim(&mut db, now).unwrap());
         // A process that read the time 20 ms earlier, and claims after.
         assert!(!claim(&mut db, now - 20).unwrap());
+        assert!(!claim(&mut db, now + CLAIMED - 1).unwrap());
+        assert!(claim(&mut db, now + CLAIMED).unwrap());
         assert!(claim(&mut db, now - crate::time::DAY).unwrap(), "set back");
+
+        db.execute("UPDATE state SET prices_at = NULL", []).unwrap();
+        let began = crate::now();
+        assert!(refresh_from(&mut db, || Ok(listing("zai", "glm-5.3", Value::Null))).unwrap());
+        let asked: i64 = db
+            .query_row("SELECT prices_at FROM state", [], |row| row.get(0))
+            .unwrap();
+        assert!((began..=crate::now()).contains(&asked));
     }
 
     /// Asked again in ten minutes when models.dev fails, and left as
@@ -484,27 +493,6 @@ mod tests {
             let claimed = asked() + DUE - CLAIMED;
             assert!((began..=crate::now()).contains(&claimed));
         }
-    }
-
-    /// A process that ends while models.dev is asked leaves it to be asked
-    /// again two minutes later, and one that takes its catalog in, six
-    /// hours later.
-    #[test]
-    fn models_dev_is_claimed_for_two_minutes_until_its_catalog_is_taken_in() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let now = crate::now();
-        assert!(claim(&mut db, now).unwrap());
-        assert!(!claim(&mut db, now + CLAIMED - 1).unwrap());
-        assert!(claim(&mut db, now + CLAIMED).unwrap());
-
-        db.execute("UPDATE state SET prices_at = NULL", []).unwrap();
-        let began = crate::now();
-        assert!(refresh_from(&mut db, || Ok(listing("zai", "glm-5.3", Value::Null))).unwrap());
-        let asked: i64 = db
-            .query_row("SELECT prices_at FROM state", [], |row| row.get(0))
-            .unwrap();
-        assert!((began..=crate::now()).contains(&asked));
     }
 
     /// A catalog listing `model` of `provider` at `cost`.

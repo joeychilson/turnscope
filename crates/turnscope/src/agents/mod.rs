@@ -19,8 +19,9 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 use rusqlite::{Connection, OpenFlags};
-use serde::de::{self, SeqAccess, Visitor};
+use serde::Deserialize;
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 use crate::{Error, Result};
 
@@ -166,7 +167,7 @@ pub struct InBand {
 }
 
 impl InBand {
-    pub fn scope(&self) -> Option<&str> {
+    fn scope(&self) -> Option<&str> {
         self.readings.first().and_then(|r| r.scope.as_deref())
     }
 }
@@ -206,10 +207,7 @@ impl Read {
         if response.tokens == Tokens::default() && response.cost.is_none_or(|cost| cost == 0.0) {
             return;
         }
-        if !self.sessions.contains_key(&response.session) {
-            self.sessions
-                .insert(response.session.clone(), Session::default());
-        }
+        self.session(&response.session);
         match self.responses.get_mut(&response.id) {
             Some(known) => known.merge(response),
             None => {
@@ -238,8 +236,8 @@ pub struct Session {
 const TITLE: usize = 200;
 
 impl Session {
-    // Kept as written, including any pasted key (the agent's own files already
-    // hold it; at most 159 of 13,652 titles had held one, November 2026).
+    /// Kept as written, a pasted key included: the agent's own files hold it
+    /// too, and at most 159 of 13,652 titles had one (November 2026).
     pub fn title(&mut self, kind: Title, text: &str) {
         if self.title.as_ref().is_some_and(|(had, _)| kind < *had) {
             return;
@@ -428,16 +426,6 @@ fn reading(path: &Path, error: impl Display) -> Error {
     Error::Failed(format!("reading {}: {error}", path.display()))
 }
 
-fn unix_millis(ts: i64) -> Option<i64> {
-    (ts > 0).then(|| {
-        if ts > 100_000_000_000 {
-            ts
-        } else {
-            ts.saturating_mul(1000)
-        }
-    })
-}
-
 fn non_empty(value: &Value) -> Option<&str> {
     value.as_str().filter(|text| !text.is_empty())
 }
@@ -446,9 +434,9 @@ fn str_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(non_empty)
 }
 
-// Read an agent's SQLite DB without writing sidecar `-wal`/`-shm` files: when
-// no `-wal` exists, open `?immutable=1` (regular open left 14 files across 7
-// DBs, measured 2026-11-10) and fail if the file or `-wal` changed mid-read.
+/// Read an agent's SQLite database: with no `-wal` beside it, immutable, which
+/// leaves no files behind (a plain open left 14 by 7 databases, 2026-11-10),
+/// failing if the database or its log changed meanwhile.
 fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
     let mut log = file.as_os_str().to_owned();
     log.push("-wal");
@@ -459,15 +447,10 @@ fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result<T>)
     let before = file.to_str().zip(alone());
     let db = match before {
         Some((path, _)) => {
-            let path: Cow<'_, str> = if path.contains(['%', '?', '#']) {
-                Cow::Owned(
-                    path.replace('%', "%25")
-                        .replace('?', "%3f")
-                        .replace('#', "%23"),
-                )
-            } else {
-                Cow::Borrowed(path)
-            };
+            let path = path
+                .replace('%', "%25")
+                .replace('?', "%3f")
+                .replace('#', "%23");
             Connection::open_with_flags(
                 format!("file:{path}?immutable=1"),
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -491,7 +474,8 @@ fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result<T>)
     }
 }
 
-// Stop before any trailing incomplete line without `\n` (still being written).
+/// Visit each line of `path` from `from`, and return where the next read
+/// starts: before a last line with no `\n`, as one still being written.
 fn try_lines(
     path: &Path,
     from: u64,
@@ -536,35 +520,38 @@ fn entries(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
         .map(|entry| entry.path())
 }
 
-fn texts<'a>(content: impl serde::Deserializer<'a>) -> Vec<String> {
-    #[derive(serde::Deserialize)]
+/// The texts of a message's `content`: a string, or parts with `text`.
+fn texts(content: &RawValue) -> Vec<String> {
+    #[derive(Deserialize)]
     struct Part<'a> {
         #[serde(borrow)]
         text: Option<Cow<'a, str>>,
     }
-    struct Texts;
-    impl<'de> Visitor<'de> for Texts {
-        type Value = Vec<String>;
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("string or parts")
-        }
-        fn visit_str<E: de::Error>(self, value: &str) -> std::result::Result<Vec<String>, E> {
-            Ok(vec![value.to_owned()])
-        }
-        fn visit_seq<A: SeqAccess<'de>>(
-            self,
-            mut seq: A,
-        ) -> std::result::Result<Vec<String>, A::Error> {
-            let mut out = Vec::new();
-            while let Some(part) = seq.next_element::<Part>()? {
-                if let Some(text) = part.text {
-                    out.push(text.into_owned());
-                }
-            }
-            Ok(out)
-        }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Content<'a> {
+        Text(#[serde(borrow)] Cow<'a, str>),
+        Parts(#[serde(borrow)] Vec<Part<'a>>),
     }
-    content.deserialize_any(Texts).unwrap_or_default()
+    match serde_json::from_str(content.get()) {
+        Ok(Content::Text(text)) => vec![text.into_owned()],
+        Ok(Content::Parts(parts)) => parts
+            .into_iter()
+            .filter_map(|part| Some(part.text?.into_owned()))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// For a field a reader can do without: one null or of another type reads as
+/// its default, so it doesn't lose the line it's on.
+fn lenient<'de, D, T>(field: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    let raw = <&RawValue>::deserialize(field)?;
+    Ok(serde_json::from_str(raw.get()).unwrap_or_default())
 }
 
 /// The newer of the sign-in in the Keychain and the one in the file: the one
@@ -625,8 +612,8 @@ fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> Logi
     }
 }
 
-// Uses `/usr/bin/security` (what agents write with, avoiding a Keychain prompt)
-// with `HOME=home` so tests under an empty home only see the System keychain.
+/// The Keychain item `service`, read with `/usr/bin/security` as the agents
+/// write it, so macOS asks nothing; under `home`, so a test's sees no item.
 fn keychain<T>(
     home: &Path,
     service: &str,
@@ -661,7 +648,7 @@ fn found(output: std::process::Output) -> std::result::Result<Option<Vec<u8>>, S
     }
 }
 
-// Decodes JWT claims without verifying the signature (used only for account id / expiry).
+/// A JWT's claims, unverified: read only for its account and expiry.
 pub(crate) fn claims(token: &str) -> Value {
     token
         .split('.')
@@ -693,64 +680,50 @@ pub(crate) fn own_and_found(home: &Path, own: &str, prefix: &str, signed: &str) 
     folders
 }
 
-fn opening(text: &str, tag: &str) -> Option<(usize, usize)> {
+/// Where in `text` the first mark of `tag` is that begins with `opens`, `<`
+/// or `</`: as `<tag>`, or `<tag …>` with attributes.
+fn mark(text: &str, opens: &str, tag: &str) -> Option<(usize, usize)> {
     let mut from = 0;
-    while let Some(rel) = text[from..].find('<') {
+    while let Some(rel) = text[from..].find(opens) {
         let at = from + rel;
-        let rest = &text[at + 1..];
-        if let Some(after_tag) = rest.strip_prefix(tag) {
-            let after = at + 1 + tag.len();
-            match after_tag.chars().next() {
-                Some('>') => return Some((at, after + 1)),
+        let named = at + opens.len() + tag.len();
+        if text[at + opens.len()..].starts_with(tag) {
+            let rest = &text[named..];
+            match rest.chars().next() {
+                Some('>') => return Some((at, named + 1)),
                 Some(space) if space.is_whitespace() => {
-                    let end = after_tag.find('>')?;
-                    return Some((at, after + end + 1));
+                    return Some((at, named + rest.find('>')? + 1));
                 }
                 _ => {}
             }
         }
-        from = at + 1;
-    }
-    None
-}
-
-fn closing(text: &str, tag: &str) -> Option<(usize, usize)> {
-    let mut from = 0;
-    while let Some(rel) = text[from..].find("</") {
-        let at = from + rel;
-        if let Some(after) = text[at + 2..].strip_prefix(tag)
-            && after.starts_with('>')
-        {
-            return Some((at, at + 2 + tag.len() + 1));
-        }
-        from = at + 2;
+        from = at + opens.len();
     }
     None
 }
 
 fn inner<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
-    let after = &text[opening(text, tag)?.1..];
-    Some(match closing(after, tag) {
+    let after = &text[mark(text, "<", tag)?.1..];
+    Some(match mark(after, "</", tag) {
         Some((end, _)) => &after[..end],
         None => after,
     })
 }
 
-// Strip `<tag>…</tag>` blocks injected by an agent. An unclosed opening tag is
-// treated as injected only at the start of the remaining text, so prose like
-// "Add a <skill> element" is kept intact.
+/// `text` without the agent's `<tag>…</tag>` blocks. A tag never closed is
+/// the agent's only at the start, so "Add a <skill> element" is kept.
 fn without_tags(text: &str, tags: &[&str]) -> String {
     if !text.contains('<') {
         return text.trim().to_owned();
     }
     let mut text = text.to_owned();
     for tag in tags {
-        while let Some((start, inside)) = opening(&text, tag)
-            && let Some((_, end)) = closing(&text[inside..], tag)
+        while let Some((start, inside)) = mark(&text, "<", tag)
+            && let Some((_, end)) = mark(&text[inside..], "</", tag)
         {
             text.replace_range(start..inside + end, "");
         }
-        while let Some((start, end)) = closing(&text, tag) {
+        while let Some((start, end)) = mark(&text, "</", tag) {
             text.replace_range(start..end, "");
         }
     }
@@ -758,7 +731,7 @@ fn without_tags(text: &str, tags: &[&str]) -> String {
     let opens = trimmed.starts_with('<')
         && tags
             .iter()
-            .any(|tag| opening(trimmed, tag).is_some_and(|(start, _)| start == 0));
+            .any(|tag| mark(trimmed, "<", tag).is_some_and(|(start, _)| start == 0));
     if opens {
         String::new()
     } else if trimmed.len() == text.len() {

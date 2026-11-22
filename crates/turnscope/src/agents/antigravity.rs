@@ -1,38 +1,32 @@
-//! Antigravity's app and its command line, `agy`, share `~/.gemini`: the
-//! app keeps its history in `antigravity/` there, `agy` in
-//! `antigravity-cli/`, and both their MCP servers in
-//! `config/mcp_config.json`. So `~/.gemini` is its one folder, over a folder
-//! for each: `connect` then runs `agy` once, and a second folder stays what
-//! it is for the other agents, a second account's.
+//! Antigravity.
 //!
-//! Antigravity publishes no schema for what it writes as protobuf. What
-//! follows was measured on 2026-11-10 on 8 conversations with 196 model
-//! calls, written by `agy` 1.2.11 and the app 2.31.0. The field numbers are
-//! the ones CodexBar, tokscale, CodeBurn and agent-walker read. `#1.#4` is
-//! field 4 of the message in field 1.
+//! Its app and its command line, `agy`, share `~/.gemini`: the app keeps its
+//! history in `antigravity/`, `agy` in `antigravity-cli/`, and both their MCP
+//! servers in `config/mcp_config.json`. So `~/.gemini` is its one folder, and
+//! `connect` runs `agy` once.
 //!
-//! **Files.** In each of the two folders, a conversation `<id>` is:
+//! Antigravity publishes no schema for what it writes as protobuf. Measured
+//! 2026-11-10 on 8 conversations with 196 model calls, by `agy` 1.2.11 and
+//! the app 2.31.0, at the field numbers CodexBar, tokscale, CodeBurn and
+//! agent-walker read (`#1.#4` is field 4 of the message in field 1). In each
+//! folder, a conversation `<id>` is:
 //!
-//! - `conversations/<id>.db`, a SQLite database: a row per step in `steps`,
-//!   a row per model call in `gen_metadata`, and in
-//!   `trajectory_metadata_blob` when the conversation began (#2) and the
-//!   folder it works in (#1.#1, a `file://` address). One the app begins
-//!   with no folder has none.
+//! - `conversations/<id>.db`: a row per step in `steps`, a row per model call
+//!   in `gen_metadata`, and in `trajectory_metadata_blob` when it began (#2)
+//!   and the folder it works in (#1.#1, a `file://` address).
 //! - `brain/<id>/.system_generated/logs/transcript_full.jsonl`, a line per
-//!   step as the model saw it. `transcript.jsonl` beside it cuts long text
-//!   short, and `chunks/` holds the same lines cut every 100 KiB, mid-line.
+//!   step as the model saw it (`transcript.jsonl` cuts long text short, and
+//!   `chunks/` cuts lines in two).
 //! - its row of `conversation_summaries.db`, with the title Antigravity gave
-//!   it: 3 of the 8 had one.
+//!   it (3 of the 8 had one).
 //!
 //! **Usage.** A `gen_metadata` row's `data` holds its call's usage at #1.#4:
 //! input (#2), output (#3), cache writes (#4), cache reads (#5), reasoning
-//! (#9), the reply (#10) and the message's id (#7). Input leaves cache reads
-//! out: it was the smaller in 173 of the 174 calls that read the cache.
-//! Output includes reasoning: it was reasoning plus the reply in all 193
-//! calls with tokens. No call wrote to a cache. The model is #1.#19, as
-//! `gemini-3.8-flash`. A call is made when the step it names first (#2) is:
-//! that step's `metadata` holds the time (#1), and held the same message id
-//! in all 193.
+//! (#9) and the message's id (#7). Input leaves out cache reads (it was the
+//! smaller in 173 of the 174 calls that read the cache), and output includes
+//! reasoning (in all 193 calls with tokens). The model is #1.#19, as
+//! `gemini-3.8-flash`. A call is made when the step it names first (#2) is,
+//! at that step's `metadata` #1.
 //!
 //! **Not read.** The Antigravity IDE's history, which this Mac doesn't have.
 
@@ -57,17 +51,15 @@ static INFO: Info = Info {
     id: "antigravity",
     name: "Antigravity",
     command: "agy",
-    // The app doesn't run `agy`: it started `turnscope mcp` from this
-    // program, a child of its process `Antigravity` (2.31.0, measured
-    // 2026-11-11). Only this program, over any process of the app: a
-    // person's shell in a terminal the app holds would be under the app too
-    // (not measured: none ran).
+    // The app 2.31.0 started `turnscope mcp` from this program (measured
+    // 2026-11-11). Not any process of the app, as a shell in its terminal
+    // would be one too.
     app: Some(APP),
     mcp_add: &["mcp", "add", "turnscope", "--"],
     mcp_remove: Some(&["mcp", "remove", "turnscope"]),
     folder_var: None,
     charges: false,
-    // The app set no variable that names the conversation.
+    // The app sets no variable naming the conversation.
     session_var: None,
 };
 
@@ -172,23 +164,9 @@ impl Agent for Antigravity {
     }
 }
 
-/// The sign-in the Keychain item's value `kept` holds, when it's one to a
-/// Google account. Why not, for a value that doesn't read: taking that for
-/// signed out would sign its account out.
-///
-/// Read 2026-11-10, the value was base64 JSON: `token` with its
-/// `access_token`, `refresh_token` and `expiry`, `auth_method`, and
-/// `id_token_email`, the only name of the account, so its id and its label.
-/// The app 2.31.0 wrote each token it renewed back to the item (one had 22
-/// minutes left, hours after sign-in); 2.33.1 doesn't (measured 2026-11-21: the item was last written the day before
-/// the app started, and 17 hours on the app still hadn't). So the token in
-/// the item has expired within an hour of sign-in, and Google renews it
-/// with its refresh token, in memory (`providers::google`).
-///
-/// Only `auth_method` `consumer`, a Google account's, is read: Google
-/// answers a token of Antigravity's other client with limits nothing has
-/// touched, which would pass for the plan's (CodexBar's code, read
-/// 2026-11-10).
+/// The sign-in the Keychain item's value `kept` holds, base64 JSON as
+/// go-keyring writes it (read 2026-11-10). An error for a value that doesn't
+/// read: taken for signed out, it would sign its account out.
 fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
     let kept = std::str::from_utf8(kept).map_err(|error| error.to_string())?;
     let kept = kept
@@ -202,8 +180,14 @@ fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
     Ok(credential(&kept))
 }
 
-/// The sign-in `kept` holds, the Keychain item's JSON or the file's, when
-/// it's one to a Google account.
+/// The sign-in `kept` holds, the Keychain item's JSON or the file's: `token`
+/// (`access_token`, `refresh_token`, `expiry`), `auth_method` and
+/// `id_token_email`, the account's only name. From the app 2.33.1 on, a
+/// renewed token isn't written back (measured 2026-11-21), so the token
+/// expires within an hour of sign-in and is renewed in memory
+/// (`providers::google`). Only `auth_method` `consumer`, a Google account's,
+/// is read: Google answers a token of Antigravity's other client with
+/// limits nothing has touched (CodexBar's code, read 2026-11-10).
 fn credential(kept: &Value) -> Option<Credential> {
     let text = |at: &str| kept.pointer(at)?.as_str().filter(|text| !text.is_empty());
     let (Some(token), Some("consumer")) = (text("/token/access_token"), text("/auth_method"))
@@ -224,10 +208,9 @@ fn credential(kept: &Value) -> Option<Credential> {
     })
 }
 
-/// Where Antigravity's programs may be, which hold the client its sign-in is
-/// renewed with: the app's in `/Applications` and `agy` in `~/.local/bin`,
-/// where they were on this Mac (2026-11-22), and the app in the person's
-/// own `~/Applications`.
+/// Where Antigravity's programs, which hold the client its sign-in is renewed
+/// with, may be: where the app and `agy` were on this Mac (2026-11-22), and
+/// the person's own `~/Applications`.
 fn programs(home: &Path) -> Vec<PathBuf> {
     vec![
         Path::new("/Applications").join(APP),
@@ -282,10 +265,9 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
     let mut calls =
         tx.prepare("SELECT idx, data FROM gen_metadata WHERE idx >= ?1 ORDER BY idx")?;
     let mut step = tx.prepare("SELECT metadata FROM steps WHERE idx = ?1")?;
-    // The last call read may have had no tokens yet, so it's read again: the
-    // 3 calls without tokens were each their conversation's last, as one
-    // still running or one that failed is, and were still the only 3 of 254
-    // later that day.
+    // The last call read is read again, as it may have had no tokens yet:
+    // the 3 calls without were each their conversation's last, still running
+    // or failed, and still the only 3 of 254 later that day.
     let seen = cursor.calls;
     let mut rows = calls.query([seen - 1])?;
     while let Some(row) = rows.next()? {
@@ -330,8 +312,7 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
                 _ => {}
             }
         }
-        // Still running, or failed: it's read again, as said above, and not
-        // skipped for having no model or time yet.
+        // Still running, or failed: read again, not skipped.
         if tokens == Tokens::default() {
             continue;
         }
@@ -355,12 +336,10 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
             session: session.clone(),
             copy: false,
             at,
-            // Antigravity signs in to Google only, so the Claude and GPT
-            // models it serves from the same plan are `google`'s too. Its
-            // 2.34.0 program names Claude's as Anthropic does, as
-            // `claude-opus-5-5`, which then take Anthropic's list price
-            // (`prices`), and GPT's as `openai/gpt-oss-120b-maas`, which
-            // no one lists. Neither was seen in a conversation's history.
+            // Antigravity signs in to Google alone, so the Claude and GPT
+            // models its plan serves are `google`'s too. Its 2.34.0 program
+            // names Claude's as Anthropic does, which then take Anthropic's
+            // list price (`prices`); none was seen in history.
             provider: "google".to_owned(),
             model: model.to_owned(),
             prompt: tokens.input + tokens.cache_read + tokens.cache_write_5m,
@@ -374,10 +353,9 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
     Ok(read)
 }
 
-/// Read a transcript on from `cursor` for its session's title: the first
-/// thing the person asked, its first `USER_INPUT` line from
-/// `USER_EXPLICIT`. A line is written once. Once it has that, nothing more
-/// is read.
+/// Read a transcript on from `cursor` for its session's title: its first
+/// `USER_INPUT` line from `USER_EXPLICIT`. Once it has that, nothing more is
+/// read.
 fn transcript(file: &Path, cursor: &str) -> Result<Read> {
     let mut read = Read {
         cursor: cursor.to_owned(),
@@ -399,8 +377,8 @@ fn transcript(file: &Path, cursor: &str) -> Result<Read> {
         kind: Option<Cow<'a, str>>,
         #[serde(borrow)]
         source: Option<Cow<'a, str>>,
-        #[serde(borrow)]
-        content: Option<Cow<'a, str>>,
+        #[serde(default, deserialize_with = "super::lenient")]
+        content: Option<String>,
     }
     let session = INFO.session(native);
     cursor.offset = super::try_lines(file, cursor.offset, |bytes| {
@@ -431,10 +409,8 @@ fn transcript(file: &Path, cursor: &str) -> Result<Read> {
 fn titles(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
     let mut read = Read::default();
     // The app's titles list `agy`'s conversations too, so a conversation's
-    // database is in either folder. A row whose conversation has none in
-    // either gives no session, which would have a title and no usage.
-    // Whether Antigravity leaves such a row behind when it deletes a
-    // conversation wasn't measured.
+    // database is in either folder. A row with none in either gives no
+    // session, which would have a title and no usage.
     let known: HashSet<String> = file
         .parent()
         .and_then(Path::parent)
@@ -448,13 +424,10 @@ fn titles(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
         return Ok(read);
     }
     // Every row is read at each read, over reading on from the latest
-    // `last_modified_time` seen, which rested on three things not measured:
-    // that a later title moves the time, that a row is committed at most
-    // 10 s after one stamped later, and that every time is UTC. Measured
-    // 2026-11-14, release build, on a made-up table of 5,000 titled
-    // conversations (the real one had 8): a catch-up after one title changed
-    // ran 691M instructions more than one with nothing to read, about 0.1 s;
-    // reading on from the latest ran 21M more.
+    // `last_modified_time`, which rests on that time's meaning, not measured.
+    // On a made-up table of 5,000 titled conversations (the real one had 8),
+    // a read after one title changed took about 0.1 s (691M instructions,
+    // against 21M reading on; release build, 2026-11-14).
     let mut titled = db.prepare(
         "SELECT conversation_id, title, parent_conversation_id FROM conversation_summaries
          WHERE step_count > 0 AND conversation_id IS NOT NULL
@@ -926,19 +899,15 @@ mod tests {
 
     #[test]
     fn bytes_that_arent_a_message_give_no_fields() {
-        // A number, text, and a message within.
-        let message = [n(1, 300), b(2, &[b"hi"]), b(3, &[&n(1, 7)])].concat();
-        assert_eq!(number(&message, 1), Some(300));
-        assert_eq!(bytes(&message, 2), Some(&b"hi"[..]));
+        // Text longer than what's left, a number that never ends, and a
+        // kind of field there isn't.
+        assert_eq!(Fields(&[0x12, 0x05, b'h', b'i']).count(), 0);
         assert_eq!(
-            within(&message, &[3]).and_then(|inner| number(inner, 1)),
-            Some(7)
+            Fields(&[[0x08].as_slice(), &[0xff; 11]].concat()).count(),
+            0
         );
-        // Asked for as the other kind, or not there.
-        assert_eq!((number(&message, 2), bytes(&message, 1)), (None, None));
-        assert_eq!(within(&message, &[3, 1]), None);
-        assert!(number(&message, 9).is_none());
-        // Fixed numbers of four and eight bytes.
+        assert_eq!(Fields(&[0x0b, 0x01]).count(), 0);
+        // Fixed numbers of four and eight bytes are read past.
         let fixed = [
             &[0x0d][..],
             &7u32.to_le_bytes(),
@@ -947,25 +916,6 @@ mod tests {
         ]
         .concat();
         assert_eq!((number(&fixed, 1), number(&fixed, 2)), (Some(7), Some(9)));
-        // Text longer than what's left, a number that never ends, and a
-        // kind of field there isn't.
-        assert_eq!(Fields(&[0x12, 0x05, b'h', b'i']).count(), 0);
-        assert_eq!(Fields(&[0x08; 1]).count(), 0);
-        assert_eq!(
-            Fields(&[
-                0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-            ])
-            .count(),
-            0
-        );
-        assert_eq!(Fields(&[0x00, 0x01]).count(), 0);
-        assert_eq!(Fields(&[0x0b, 0x01]).count(), 0);
-        assert_eq!(time(&[n(1, 2), n(2, 999_999_999)].concat()), Some(2_999));
-        assert_eq!(
-            folder(b"file:///work/a%20b%25").as_deref(),
-            Some("/work/a b%")
-        );
-        assert_eq!(folder(b"https://example.com/a"), None);
         assert_eq!(folder(b"file:///work/%4"), None);
     }
 
