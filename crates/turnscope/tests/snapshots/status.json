@@ -12,6 +12,7 @@
       "label": "me@example.com",
       "limits": [
         {
+          "estimated": false,
           "heldBy": [],
           "key": "five_hour",
           "leftPercent": 25,
@@ -49,6 +50,7 @@
           }
         },
         {
+          "estimated": false,
           "heldBy": [],
           "key": "seven_day",
           "leftPercent": 56,
@@ -106,6 +108,7 @@
       "label": "me@example.com",
       "limits": [
         {
+          "estimated": false,
           "heldBy": [],
           "key": "secondary_window",
           "leftPercent": 80,
@@ -154,6 +157,7 @@
       "label": null,
       "limits": [
         {
+          "estimated": false,
           "heldBy": [],
           "key": "credits",
           "leftPercent": 70,
@@ -173,6 +177,7 @@
           "work": null
         },
         {
+          "estimated": false,
           "heldBy": [
             "pi"
           ],

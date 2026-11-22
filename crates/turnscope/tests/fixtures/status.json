@@ -12,6 +12,7 @@
       "label": "me@example.com",
       "limits": [
         {
+          "estimated": false,
           "heldBy": [],
           "key": "five_hour",
           "leftPercent": 28,
@@ -52,6 +53,7 @@
           }
         },
         {
+          "estimated": false,
           "heldBy": [],
           "key": "seven_day",
           "leftPercent": 60,
@@ -81,6 +83,7 @@
           }
         },
         {
+          "estimated": false,
           "heldBy": [],
           "key": "seven_day_opus",
           "leftPercent": 0,
@@ -128,6 +131,7 @@
       "label": null,
       "limits": [
         {
+          "estimated": false,
           "heldBy": [],
           "key": "primary_window",
           "leftPercent": 100,
@@ -150,6 +154,7 @@
           "work": null
         },
         {
+          "estimated": false,
           "heldBy": [],
           "key": "secondary",
           "leftPercent": 97,
@@ -196,6 +201,7 @@
       "label": null,
       "limits": [
         {
+          "estimated": false,
           "heldBy": [
             "pi"
           ],
@@ -217,6 +223,7 @@
           "work": null
         },
         {
+          "estimated": false,
           "heldBy": [
             "opencode"
           ],

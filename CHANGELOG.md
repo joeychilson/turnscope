@@ -27,6 +27,18 @@
   `app.lock`, `turnscope mcp` and `turnscope guard` let the unsandboxed app
   handle provider network requests so agent sandboxes never poison account
   status.
+- **Honest expired states and live local burn estimates.** Expired cached
+  tokens no longer nag to reopen an agent on the panel row; rows keep
+  showing the deciding limit and explain calmly when opened that they update
+  when the agent runs. While an active account is temporarily unreadable,
+  calibrated local usage derives an approximate `~XX%` estimate in memory
+  without writing readings or triggering alerts.
+- **Google multi-pool scoping and cross-provider pricing.** Google AI
+  plans now scope Gemini limits to `Gemini` beside `Claude and GPT` so
+  peer pools decide cleanly and headlines name which pool is exhausted.
+  Cross-provider models (such as Claude or GPT run via Google) fall back to
+  their maker's models.dev list price, and limit-share breakdowns stay
+  available when unpriced responses are under 5% of weighted token volume.
 
 ## 0.3.1
 

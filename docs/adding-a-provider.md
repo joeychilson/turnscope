@@ -148,6 +148,11 @@ account, and the folders and usage of the rest move to it. OpenCode Go's is
 the instant its monthly window resets, which keys to one plan report to the
 second. The default, `None`, never merges.
 
+If the provider makes models that other providers may also serve (such as
+Claude or GPT served through Google), implement `owns_model`: `prices`
+uses it to fall back to the maker's models.dev list price when the serving
+provider's catalog omits that model.
+
 A failure is a `Problem`:
 
 - `Problem::SignIn`: the provider refused the login. Refused at two reads

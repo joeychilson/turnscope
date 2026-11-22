@@ -346,7 +346,9 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             );
             let mut text =
                 heading + &usage::text(&used, shares.as_ref().map(|shares| (limit, shares)));
-            if let Some(why) = usage::unshared(&used, limit).filter(|_| since.is_none()) {
+            if shares.is_none()
+                && let Some(why) = usage::unshared(&used, limit).filter(|_| since.is_none())
+            {
                 text += &format!("\n{why}");
             }
             let value = json!({
@@ -650,7 +652,11 @@ fn guard(
             ))
         ),
         outlook => {
-            let mut said = format!("{called} has {}% left, under {below}%.", found.left_percent);
+            let mut said = format!(
+                "{called} has {}{}% left, under {below}%.",
+                if found.estimated { "~" } else { "" },
+                found.left_percent
+            );
             if let Some(resets) = found.resets() {
                 said += &format!(" It resets {}", ahead(resets));
                 if let status::Outlook::RunsOut { likely, .. } = outlook {

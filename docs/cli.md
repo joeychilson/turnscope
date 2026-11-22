@@ -218,8 +218,9 @@ if it has the limit, or else the first account shown that has it. `--since`
 moves the start, and then rows get no share. A limit whose window reset
 since it was read counts from the reset, or from one window's length ago
 when the reset is longer ago than that, and its rows get no share either:
-how much of the new window is used isn't known. Nor do they while some of
-the usage has no known price, since a share is of cost: a line says so.
+how much of the new window is used isn't known. Nor do they when 5% or
+more of the weighted token volume has no known price, since a share is of
+cost: a line says so.
 A key's own limit counts only the usage made with that key. With `--json`,
 `sharePercents` holds each row's share in the rows' order, and
 `restSharePercent` the share of the row adding up the rest, each `null`
@@ -402,7 +403,7 @@ SuperGrok · sign in again
 A limit running out ends with `out` and when: a countdown within 3 hours,
 else a clock time. A used-up limit says `used up, back` and when. Limits
 from an earlier read end with `as of` and the time. An account never read
-says `login expired` when that's why, and `not read yet` otherwise. An API key with no limits shows its spend this month.
+says `updates on next use` when its cached token expired, and `not read yet` otherwise. An API key with no limits shows its spend this month.
 
 In Claude Code's `settings.json`:
 

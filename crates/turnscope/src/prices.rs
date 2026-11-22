@@ -123,7 +123,18 @@ impl Prices {
     }
 
     fn at(&self, provider: &str, model: &str, at: i64) -> Option<&Model> {
-        in_force(self.0.get(&(provider.to_owned(), model.to_owned()))?, at)
+        if let Some(history) = self.0.get(&(provider.to_owned(), model.to_owned())) {
+            return in_force(history, at);
+        }
+        // Cross-provider fallback: an agent such as Antigravity records Claude
+        // or GPT models under its own provider id (`google`), while models.dev
+        // lists them under their canonical maker.
+        let bare = model.rsplit('/').next().unwrap_or(model);
+        let maker = providers::maker(bare)?;
+        if maker == provider && bare == model {
+            return None;
+        }
+        in_force(self.0.get(&(maker.to_owned(), bare.to_owned()))?, at)
     }
 }
 
@@ -622,5 +633,68 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].0, ("anthropic".to_owned(), "complete".to_owned()));
         assert_eq!(parsed[0].1.1, None);
+    }
+
+    #[test]
+    fn cross_provider_models_fall_back_to_their_makers_list_price() {
+        let prices = priced(&[
+            (
+                "anthropic",
+                "claude-opus-5",
+                0,
+                r#"{"input":5,"output":25}"#,
+                None,
+            ),
+            ("openai", "gpt-5.5", 0, r#"{"input":2,"output":10}"#, None),
+            (
+                "google",
+                "gemini-3.8-pro",
+                0,
+                r#"{"input":1,"output":4}"#,
+                None,
+            ),
+        ]);
+        let tokens = Tokens {
+            input: 1_000_000,
+            ..Tokens::default()
+        };
+        // Claude and GPT run through Antigravity (`provider = "google"`).
+        assert_eq!(
+            prices.cost("antigravity", &response("google", "claude-opus-5", tokens)),
+            Some(5.0)
+        );
+        assert_eq!(
+            prices.cost("antigravity", &response("google", "gpt-5.5", tokens)),
+            Some(2.0)
+        );
+        // Prefixed gateway model falls back to its maker's bare id.
+        assert_eq!(
+            prices.cost(
+                "opencode",
+                &response("openrouter", "google/gemini-3.8-pro", tokens)
+            ),
+            Some(1.0)
+        );
+        // Provider's own listing still takes precedence over canonical fallback.
+        let custom = priced(&[
+            (
+                "anthropic",
+                "claude-opus-5",
+                0,
+                r#"{"input":5,"output":25}"#,
+                None,
+            ),
+            (
+                "google",
+                "claude-opus-5",
+                0,
+                r#"{"input":9,"output":30}"#,
+                None,
+            ),
+        ]);
+        assert_eq!(
+            custom.cost("antigravity", &response("google", "claude-opus-5", tokens)),
+            Some(9.0)
+        );
     }
 }

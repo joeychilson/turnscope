@@ -33,18 +33,16 @@
 //! 5-hour window reset 10 hours after the week began: 5-hour windows follow
 //! one another from the week's first use.
 //!
-//! **The plan's own limits.** A plan has a pool for Gemini models and one
-//! for Claude and GPT models, each with a 5-hour and a weekly bucket, and
-//! none on all usage. The Gemini pool's are the plan's own, over giving
-//! every limit a scope: Antigravity's own models draw on them, and with no
-//! limit of its own an account has nothing to stand by in the status line
-//! or for `guard`. Every other bucket is scoped by its group, as `Weekly
-//! (Claude and GPT)`, and still shows when it runs out.
+//! **Model pools.** A plan has peer pools — one for Gemini models and one
+//! for Claude and GPT models — each with a 5-hour and a weekly bucket, and
+//! no combined cap across all models. Every bucket carries its group's scope
+//! (`Gemini`, `Claude and GPT`) so each pool's work rate and "Used most"
+//! breakdown count only its own models, and `status::deciding` compares all
+//! peer pools equally when an account has no whole-account limit.
 //!
-//! **Keys.** A limit is keyed by its window, and one not the plan's own by
-//! its bucket too, as `weekly:3p-weekly`, over the bucket's id alone: the
-//! status lists limits by key, and by id the Claude and GPT pool's came
-//! before the plan's own.
+//! **Keys.** Gemini buckets keep keys `5h` and `weekly`, and other pools key
+//! by window and bucket id (`weekly:3p-weekly`), preserving existing reading
+//! history and listing Gemini before third-party pools.
 //!
 //! **Refreshing.** From Antigravity 2.33.1 on (verified in 2.34.0,
 //! 2026-11-21), each `language_server` process generates a random
@@ -137,6 +135,10 @@ impl Provider for Google {
 
     fn refreshes(&self) -> bool {
         true
+    }
+
+    fn owns_model(&self, model: &str) -> bool {
+        model.starts_with("gemini-")
     }
 
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
@@ -840,7 +842,9 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
                 continue;
             };
             let resets = super::reset(&bucket["resetTime"])?;
-            // The Gemini pool's: `gemini-5h`, `gemini-weekly`.
+            // The Gemini pool's: `gemini-5h`, `gemini-weekly`. Keep short keys
+            // so reading history stays continuous and Gemini sorts first, while
+            // scoping every pool to its own models.
             let own = id.strip_prefix("gemini-") == Some(window);
             readings.push(Reading {
                 key: match own {
@@ -848,10 +852,10 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
                     false => format!("{window}:{id}"),
                 },
                 name: super::window_name(length),
-                scope: match (own, group["displayName"].as_str().map(scope)) {
-                    (true, _) => None,
-                    (false, Some(group)) if !group.is_empty() => Some(group.to_owned()),
-                    (false, _) => Some(super::words(id)),
+                scope: match group["displayName"].as_str().map(scope) {
+                    Some(group) if !group.is_empty() => Some(group.to_owned()),
+                    _ if own => Some("Gemini".to_owned()),
+                    _ => Some(super::words(id)),
                 },
                 used: ((1.0 - left) * 100.0).clamp(0.0, 100.0),
                 size: None,
@@ -904,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn the_gemini_pool_is_the_plans_own_and_the_others_are_their_groups() {
+    fn each_model_pool_keeps_its_group_scope() {
         let answer = json!({
             "groups": [
                 {
@@ -943,8 +947,8 @@ mod tests {
         assert_eq!(
             read,
             [
-                ("weekly", "Weekly", None, 2.3),
-                ("5h", "5 hours", None, 0.0),
+                ("weekly", "Weekly", Some("Gemini"), 2.3),
+                ("5h", "5 hours", Some("Gemini"), 0.0),
                 ("weekly:3p-weekly", "Weekly", Some("Claude and GPT"), 100.0),
                 ("5h:3p-5h", "5 hours", Some("Claude and GPT"), 75.0),
             ]

@@ -60,6 +60,7 @@ impl Words {
     pub fn left(&self, limit: &Limit) -> String {
         match &limit.money {
             Some(money) => self.dollars(money.left_usd, true),
+            None if limit.estimated => format!("~{}%", limit.left_percent),
             None => format!("{}%", limit.left_percent),
         }
     }
@@ -322,13 +323,6 @@ impl Words {
                 "Sign in again to update".into()
             };
         }
-        if account.state.why() == Some(Stale::Expired) {
-            let agent = account
-                .agents
-                .first()
-                .map_or("its agent", |a| turnscope::agents::name(a));
-            return format!("Open {agent} to renew its login");
-        }
         if let Some(limit) = account.deciding_limit() {
             return match limit.reset_since {
                 Some(reset) => format!("{} reset {}", self.name(limit), self.ago(reset)),
@@ -339,6 +333,13 @@ impl Words {
             return self.spent_line(spend);
         }
         match account.state.why() {
+            Some(Stale::Expired) => {
+                let agent = account
+                    .agents
+                    .first()
+                    .map_or("its agent", |a| turnscope::agents::name(a));
+                format!("Updates when {agent} runs")
+            }
             Some(Stale::ReadFailed) => "Couldn't be read yet".into(),
             Some(Stale::SignedOut) => "Signed out".into(),
             _ => "Not read yet".into(),
@@ -441,6 +442,22 @@ impl Words {
                 Standing::Lasts,
             );
         };
+        let subject = match (&limit.outlook, limit.scope.as_deref()) {
+            (Outlook::UsedUp { .. }, Some(scope))
+                if account
+                    .limits
+                    .iter()
+                    .any(|o| o.scope != limit.scope && o.standing() != Standing::UsedUp) =>
+            {
+                format!("{}'s {scope}", account.title)
+            }
+            (Outlook::RunsOut { .. }, Some(scope))
+                if account.limits.iter().any(|o| o.scope != limit.scope) =>
+            {
+                format!("{}'s {scope}", account.title)
+            }
+            _ => account.title.clone(),
+        };
         match &limit.outlook {
             Outlook::UsedUp { back } => {
                 let after = back
@@ -448,18 +465,14 @@ impl Words {
                     .map_or("It isn't known when it's back.".into(), |b| {
                         format!("Back {}.", self.at(b))
                     });
-                (
-                    format!("{} is used up", account.title),
-                    after,
-                    Standing::UsedUp,
-                )
+                (format!("{subject} is used up"), after, Standing::UsedUp)
             }
             Outlook::RunsOut { likely, .. } => {
                 let when = match likely.horizon {
                     Horizon::Soon | Horizon::Later => self.at(likely),
                     Horizon::Today | Horizon::ThisWeek => self.when(likely.at),
                 };
-                let headline = format!("{} runs out {}", account.title, unbroken(&when));
+                let headline = format!("{subject} runs out {}", unbroken(&when));
                 let back = limit
                     .window
                     .as_ref()
@@ -488,6 +501,9 @@ impl Words {
         let standing = format!("{} has {what}", account.title);
         match reason {
             Unknown::NotEnoughData | Unknown::Rolling => format!("{standing}."),
+            Unknown::Stale if limit.estimated => {
+                format!("Estimated from local usage, {standing}.")
+            }
             Unknown::Stale => format!("As last read, {standing}."),
             Unknown::NoReset => format!("{standing}; it doesn't reset."),
         }
@@ -602,11 +618,12 @@ impl Words {
             .agents
             .first()
             .map_or("its agent", |a| turnscope::agents::name(a));
+        let estimated = account.limits.iter().any(|l| l.estimated);
         Some(match &account.state {
             State::Unread { why: Stale::SignIn } => format!("Open {with} to sign in again."),
             State::Unread {
                 why: Stale::Expired,
-            } => format!("Its login expired. Open {with} to renew it."),
+            } => format!("Updates when {with} runs."),
             State::Unread {
                 why: Stale::ReadFailed,
             } => "It couldn't be read yet.".into(),
@@ -622,17 +639,29 @@ impl Words {
             State::AsOf {
                 read_at,
                 why: Stale::ReadFailed,
+            } if estimated => {
+                format!("Estimated from local usage since {}.", self.ago(*read_at))
+            }
+            State::AsOf {
+                read_at,
+                why: Stale::ReadFailed,
             } => {
                 format!("It couldn't be read since {}.", self.ago(*read_at))
             }
             State::AsOf {
                 read_at,
                 why: Stale::Expired,
-            } => {
+            } if estimated => {
                 format!(
-                    "Last read {}. Open {with} to renew its login.",
+                    "Estimated from local usage since {}. Updates when {with} runs.",
                     self.ago(*read_at)
                 )
+            }
+            State::AsOf {
+                read_at,
+                why: Stale::Expired,
+            } => {
+                format!("As of {}. Updates when {with} runs.", self.ago(*read_at))
             }
             State::AsOf {
                 read_at,
@@ -783,6 +812,9 @@ impl Words {
                 format!("runs out in {}", self.spoken(likely.at))
             }
             Outlook::RunsOut { .. } => format!("{} left, running out", self.left(limit)),
+            Outlook::Lasts { .. } | Outlook::Unknown { .. } if limit.estimated => {
+                format!("about {}% left", limit.left_percent)
+            }
             Outlook::Lasts { .. } | Outlook::Unknown { .. } => format!("{} left", self.left(limit)),
         }
     }
@@ -997,6 +1029,7 @@ mod tests {
             window: window("2026-09-30T15:00:00Z", Soon),
             read_at: noon(),
             left_percent: 20,
+            estimated: false,
             money: None,
             reset_since: None,
             held_by: vec![],
@@ -1506,14 +1539,38 @@ mod tests {
             w.opened(&as_of(Stale::SignIn, noon(), half()), false),
             some("Last read 12 PM. Open Claude Code to sign in.")
         );
-        // Every login expired. An agent renews it when next used, so no sign-in is needed.
+        // Cached token expired. An agent renews it when next used, so the row keeps showing
+        // its deciding limit instead of nagging to reopen the agent.
         let expired = as_of(Stale::Expired, noon(), half());
         assert_eq!(
             w.opened(&expired, false),
-            some("Last read 12 PM. Open Claude Code to renew its login.")
+            some("As of 12 PM. Updates when Claude Code runs.")
         );
-        assert_eq!(w.status(&expired), "Open Claude Code to renew its login");
+        assert_eq!(w.status(&expired), "5 hours resets in 3h");
         assert!(!expired.refused());
+        // Active account with a local burn estimate while temporarily unreadable.
+        let estimated = as_of(
+            Stale::Expired,
+            noon(),
+            Limit {
+                estimated: true,
+                outlook: unknown(Unknown::Stale),
+                ..half()
+            },
+        );
+        assert_eq!(w.figure(&estimated), "~50%");
+        assert_eq!(
+            w.spoken_item(&[&estimated], false),
+            "Claude Max, about 50% left"
+        );
+        assert_eq!(
+            w.opened(&estimated, false),
+            some("Estimated from local usage since 12 PM. Updates when Claude Code runs.")
+        );
+        assert_eq!(
+            w.verdict(&[&estimated], false).1,
+            "Estimated from local usage, Claude Max has ~50% left of 5 hours."
+        );
         // Never read, each says why, and what to do where there's something.
         let lapsed = Account {
             state: State::Unread {
@@ -1521,10 +1578,10 @@ mod tests {
             },
             ..account(vec![])
         };
-        assert_eq!(w.status(&lapsed), "Open Claude Code to renew its login");
+        assert_eq!(w.status(&lapsed), "Updates when Claude Code runs");
         assert_eq!(
             w.opened(&lapsed, false),
-            some("Its login expired. Open Claude Code to renew it.")
+            some("Updates when Claude Code runs.")
         );
         let unreachable = Account {
             state: State::Unread {
@@ -1821,6 +1878,54 @@ mod tests {
         assert_eq!(
             w.verdict(&[&running], false).1,
             format!("{lasts} Claude and GPT weekly is used up, back Sat 9 AM.")
+        );
+    }
+
+    #[test]
+    fn peer_model_pools_scope_the_verdict_when_another_pool_still_has_room() {
+        let w = words();
+        let gemini = Limit {
+            key: "5h".into(),
+            scope: some("Gemini"),
+            left_percent: 95,
+            ..limit(lasts())
+        };
+        let used_weekly = Limit {
+            key: "weekly:3p-weekly".into(),
+            scope: some("Claude and GPT"),
+            window: window("2026-10-03T09:00:00Z", ThisWeek),
+            ..weekly(used_up(Some(moment("2026-10-03T09:00:00Z", ThisWeek))), 0)
+        };
+        let multi_pool = Account {
+            title: "Google AI Ultra".into(),
+            deciding: some("weekly:3p-weekly"),
+            ..account(vec![gemini.clone(), used_weekly.clone()])
+        };
+        assert_eq!(
+            w.verdict(&[&multi_pool], false),
+            (
+                "Google AI Ultra's Claude and GPT is used up".into(),
+                "Back Sat 9 AM.".into(),
+                Standing::UsedUp,
+            )
+        );
+        assert_eq!(w.status(&multi_pool), "Claude and GPT weekly back Sat 9 AM");
+        // When every pool is used up, the whole account is used up.
+        let all_used = Account {
+            title: "Google AI Ultra".into(),
+            deciding: some("weekly:3p-weekly"),
+            ..account(vec![
+                Limit {
+                    outlook: used_up(None),
+                    left_percent: 0,
+                    ..gemini
+                },
+                used_weekly,
+            ])
+        };
+        assert_eq!(
+            w.verdict(&[&all_used], false).0,
+            "Google AI Ultra is used up"
         );
     }
 

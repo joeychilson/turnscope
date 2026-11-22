@@ -489,31 +489,39 @@ pub fn breakdown(
             .and_then(|window| Some(window.resets.at - window.starts_at?));
         Some(length.map_or(reset, |length| reset.max(now - length)))
     });
-    let usage = usage(
-        db,
-        &Query {
-            // A key's spend counts by the month; a limit with no window
-            // start otherwise over the last week.
-            since: between
-                .map(|(since, _)| since)
-                .or(start)
-                .unwrap_or_else(|| match account.kind {
-                    crate::providers::Kind::ApiKey => time::start_of(time::Period::Month, now),
-                    crate::providers::Kind::Subscription => now - 7 * time::DAY,
-                }),
-            until: between.map_or(now, |(_, until)| until),
-            by,
-            agent: None,
-            account: Some(account.id.clone()),
-            models: models(limit.and_then(|limit| limit.scope.as_deref())),
-            key: key(limit.map_or("", |limit| &limit.key)),
-            top,
-        },
-    )?;
-    // Points, for the limit's own window alone.
+    let query = Query {
+        // A key's spend counts by the month; a limit with no window
+        // start otherwise over the last week.
+        since: between
+            .map(|(since, _)| since)
+            .or(start)
+            .unwrap_or_else(|| match account.kind {
+                crate::providers::Kind::ApiKey => time::start_of(time::Period::Month, now),
+                crate::providers::Kind::Subscription => now - 7 * time::DAY,
+            }),
+        until: between.map_or(now, |(_, until)| until),
+        by,
+        agent: None,
+        account: Some(account.id.clone()),
+        models: models(limit.and_then(|limit| limit.scope.as_deref())),
+        key: key(limit.map_or("", |limit| &limit.key)),
+        top,
+    };
+    let usage = usage(db, &query)?;
+    // Points, for the limit's own window alone. Allow shares when priced usage
+    // covers virtually all token volume (< 5% unpriced weighted tokens), so one
+    // stray unpriced response doesn't blank out an entire window's shares, while
+    // still refusing shares when an unpriced model accounts for meaningful work.
+    let minor_unpriced = if usage.total.unpriced == 0 {
+        true
+    } else if between.is_none() && window.is_some() && usage.total.cost_usd > 0.0 {
+        unpriced_token_share(db, &query)? < 0.05
+    } else {
+        false
+    };
     let used = limit
         .filter(|_| between.is_none() && window.is_some() && usage.total.cost_usd > 0.0)
-        .filter(|_| usage.total.unpriced == 0)
+        .filter(|_| minor_unpriced)
         .map(|limit| f64::from(100 - limit.left_percent));
     let shares = used.map(|used| {
         let points = |row: &Row| row.cost_usd / usage.total.cost_usd * used;
@@ -523,6 +531,37 @@ pub fn breakdown(
         }
     });
     Ok((usage, shares))
+}
+
+/// Fraction of weighted token volume
+/// (`input + cache_write + 5*(output + reasoning) + 0.1*cache_read`)
+/// in `query`'s responses that has no known price (`cost IS NULL`).
+fn unpriced_token_share(db: &Connection, query: &Query) -> Result<f64> {
+    let mut filters = vec!["r.at >= ?".to_owned(), "r.at < ?".to_owned()];
+    let mut values: Vec<Value> = vec![query.since.into(), query.until.into()];
+    if let Some(agent) = &query.agent {
+        filters.push("r.agent = ?".to_owned());
+        values.push(agent.clone().into());
+    }
+    if let Some(account) = &query.account {
+        filters.push("r.account = ?".to_owned());
+        values.push(account.clone().into());
+    }
+    let (limited, given) = limited(&query.models, query.key.as_ref());
+    filters.extend(limited);
+    values.extend(given);
+    let weight = "r.input + r.cache_write_5m + r.cache_write_1h + (r.output + r.reasoning) * 5 + r.cache_read * 0.1";
+    let sql = format!(
+        "SELECT total(iif(r.cost IS NOT NULL, {weight}, 0.0)),
+                total(iif(r.cost IS NULL, {weight}, 0.0))
+         FROM response r WHERE {}",
+        filters.join(" AND ")
+    );
+    let (priced, unpriced): (f64, f64) = db.query_row(&sql, params_from_iter(values), |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    let total = priced + unpriced;
+    Ok(if total > 0.0 { unpriced / total } else { 1.0 })
 }
 
 /// Why `usage` of `limit`'s window gives no shares, when it's that some of
@@ -860,6 +899,15 @@ mod tests {
                 "No shares of Weekly are given: 1 response with no known price, and a share is of cost."
             )
         );
+        // When unpriced responses are a tiny fraction (< 5% of weighted token
+        // volume), shares are still given for the priced usage.
+        db.execute(
+            "UPDATE response SET input = 100000, output = 10000 WHERE id = 'r1'",
+            [],
+        )
+        .unwrap();
+        let (_, resilient) = shares(&db);
+        assert!(resilient.is_some());
     }
 
     /// A title is what someone typed: a `|` in it stays in its cell.

@@ -565,8 +565,11 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
             "SELECT {RESPONSE_COLUMNS}, agent FROM response
              WHERE EXISTS (
                  SELECT 1 FROM repriced
-                 WHERE repriced.provider = response.provider
-                   AND repriced.model = response.model
+                 WHERE (repriced.provider = response.provider AND repriced.model = response.model)
+                    OR (response.cost IS NULL AND (
+                        repriced.model = response.model
+                        OR response.model LIKE '%/' || repriced.model
+                    ))
              )"
         ))?
         .query_map([], |row| Ok((row.get(16)?, stored(row)?)))?
