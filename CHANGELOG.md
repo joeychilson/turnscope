@@ -2,15 +2,15 @@
 
 ## 0.3.2
 
-- **Antigravity's limits stay current whether its app is open, closed, or
-  updated.** Instead of scraping Antigravity's running server process and
-  local ports, Turnscope now reads both the Keychain item and
-  `~/.gemini/jetski-standalone-oauth-token`, refreshes expired Google
-  access tokens in memory without touching Keychain or Antigravity's
-  files, caches the Google project across reads, and ignores unknown
-  future quota window shapes beside known ones.
-- **Unreadable agent login folders are logged and marked unavailable**
-  instead of leaving an older `expired` state frozen in place.
+- **Antigravity's limits are read whether its app is open or not.**
+  Antigravity 2.33.1 and later don't save the login they renew, so
+  Turnscope renews it with Google itself, in memory, as the app does.
+  0.3.1 asked the open app instead, which found nothing from 2.34.0 on and
+  said to open Antigravity to renew its login.
+- **An account whose login can't be read says so.** When the Keychain is
+  locked, say, the account says its limits couldn't be read since, and
+  why goes in `app.log`. It went on saying what it said before, such as
+  to renew its login.
 - **Codex's limits update as it works.** Codex writes the account's limits
   with each response, and Turnscope now takes them in as it reads Codex's
   history, offline too. A limit Codex doesn't write, as one on some

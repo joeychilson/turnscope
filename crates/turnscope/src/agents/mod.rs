@@ -354,47 +354,26 @@ pub struct Credential {
     pub identity: Option<(String, Option<String>)>,
     /// The plan, where the agent's files say, such as `max`.
     pub plan: Option<String>,
-    /// What a provider with non-rotating refresh tokens uses to renew an
-    /// expired access token in memory, without writing to the agent's files or
-    /// Keychain.
+    /// What renews the login in memory once its token expires, where its
+    /// provider renews logins at all: only one whose refresh token isn't
+    /// replaced when used, so renewing takes nothing from the agent.
     pub refresh: Option<Refresh>,
 }
 
-/// What a provider with non-rotating refresh tokens uses to renew an expired
-/// access token in memory.
-pub struct Refresh {
-    pub token: Secret,
-    /// Installed binaries holding the agent's OAuth client, in preference
-    /// order.
-    pub binaries: Vec<PathBuf>,
+impl Credential {
+    /// Whether it's good for a minute more: one about to expire would be
+    /// refused on the way, which reads as a login to sign in to again,
+    /// where it only needs renewing.
+    pub fn fresh(&self, now: i64) -> bool {
+        self.expires.is_none_or(|at| at > now + crate::time::MINUTE)
+    }
 }
 
-/// The fresher of two reads of the same login (such as Keychain and a fallback
-/// file). A readable login wins over a missing or unreadable second copy; a
-/// read error beside no login is returned so a half-written file never signs
-/// the account out.
-pub fn fresher(
-    first: Result<Option<Credential>>,
-    second: Result<Option<Credential>>,
-) -> Result<Option<Credential>> {
-    match (first, second) {
-        (Ok(Some(mut a)), Ok(Some(mut b))) => {
-            if b.expires > a.expires {
-                if b.refresh.is_none() {
-                    b.refresh = a.refresh;
-                }
-                Ok(Some(b))
-            } else {
-                if a.refresh.is_none() {
-                    a.refresh = b.refresh;
-                }
-                Ok(Some(a))
-            }
-        }
-        (Ok(Some(kept)), Ok(None) | Err(_)) | (Ok(None) | Err(_), Ok(Some(kept))) => Ok(Some(kept)),
-        (Ok(None), Ok(None)) => Ok(None),
-        (Err(error), _) | (_, Err(error)) => Err(error),
-    }
+/// What renews a login: its refresh token, and the agent's programs, which
+/// hold the OAuth client to renew it with.
+pub struct Refresh {
+    pub token: Secret,
+    pub programs: Vec<PathBuf>,
 }
 
 /// A token or key. It can't be printed, serialized or cloned, so it can't
@@ -521,6 +500,26 @@ pub fn texts<'a>(content: impl serde::Deserializer<'a> + Copy) -> Vec<String> {
         .into_iter()
         .filter_map(|part| part.text.map(Cow::into_owned))
         .collect()
+}
+
+/// The newer of the sign-in in the Keychain and the one in the file: the one
+/// whose token expires later. One that reads wins over one that doesn't, so a
+/// file half written doesn't sign the account out, nor does a Keychain that
+/// can't be read when the file can.
+fn fresher(
+    kept: Result<Option<Credential>>,
+    file: Result<Option<Credential>>,
+) -> Result<Option<Credential>> {
+    match (kept, file) {
+        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(if file.expires > kept.expires {
+            file
+        } else {
+            kept
+        })),
+        (Ok(Some(one)), _) | (_, Ok(Some(one))) => Ok(Some(one)),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        (Ok(None), Ok(None)) => Ok(None),
+    }
 }
 
 pub fn json_file(path: &Path) -> Result<Option<Value>> {
@@ -985,34 +984,5 @@ mod tests {
             found(ended(1, "", "")),
             Err("security gave no reason (exit status: 1)".to_owned())
         );
-    }
-
-    #[test]
-    fn fresher_prefers_later_expiry_and_keeps_errors_from_signing_out() {
-        let cred = |secret: &str, expires: Option<i64>| Credential {
-            provider: "google",
-            secret: Secret::new(secret),
-            key: false,
-            expires,
-            identity: None,
-            plan: None,
-            refresh: None,
-        };
-        let picked = fresher(
-            Ok(Some(cred("old", Some(100)))),
-            Ok(Some(cred("new", Some(200)))),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(picked.secret.expose(), "new");
-        let picked = fresher(
-            Err(Error::Failed("locked".into())),
-            Ok(Some(cred("file", Some(100)))),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(picked.secret.expose(), "file");
-        assert!(fresher(Ok(None), Err(Error::Failed("corrupt".into()))).is_err());
-        assert!(fresher(Ok(None), Ok(None)).unwrap().is_none());
     }
 }
