@@ -166,7 +166,7 @@ pub fn renewed(accounts: &[String]) {
     let Some(center) = center() else { return };
     let ids: Vec<Retained<NSString>> = accounts
         .iter()
-        .map(|id| NSString::from_str(&format!("account:{id}")))
+        .map(|id| NSString::from_str(&turnscope::alerts::replaces(id, None)))
         .collect();
     center.removeDeliveredNotificationsWithIdentifiers(&NSArray::from_retained_slice(&ids));
 }

@@ -78,13 +78,27 @@ pub enum Event {
 
 /// Why the data isn't kept current.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Stopped {
-    pub why: String,
-    /// False once a newer Turnscope has written to the data. The engine
-    /// then stops for good: this is the last `Event::Kept` it tells, it
-    /// writes nothing more, raises no alert, and refuses every request but
-    /// `used_most` (`Engine`), so the app shows what was read.
-    pub trying_again: bool,
+pub enum Stopped {
+    /// Reading or writing the data failed, for this reason: it's tried
+    /// again.
+    Failing(String),
+    /// A newer Turnscope has written to the data (`Error::Newer`). The
+    /// engine then stops for good: this is the last `Event::Kept` it tells,
+    /// it writes nothing more, raises no alert, and refuses every request
+    /// but `used_most` (`Engine`), so the app shows what was read.
+    Newer { replaced: bool },
+}
+
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Stopped::Failing(why) => f.write_str(why),
+            Stopped::Newer { replaced } => Error::Newer {
+                replaced: *replaced,
+            }
+            .fmt(f),
+        }
+    }
 }
 
 const AGAIN: Duration = Duration::from_secs(5);
@@ -95,7 +109,7 @@ const AGAIN: Duration = Duration::from_secs(5);
 /// measured 2026-11-18). Connects run on a separate thread since agent
 /// commands can take a minute.
 ///
-/// Once a newer Turnscope has written (`Stopped::trying_again == false`),
+/// Once a newer Turnscope has written (`Stopped::Newer`),
 /// write requests are refused and `used_most` still answers.
 pub struct Engine {
     inner: Arc<Inner>,
@@ -234,7 +248,7 @@ impl Engine {
                 return;
             };
             let done = match inner.newer() {
-                Some(why) => Err(Error::Newer(why)),
+                Some(newer) => Err(newer),
                 None if connecting => crate::connect::connect(found, &inner.home, &inner.binary),
                 None => crate::connect::disconnect(found, &inner.home),
             };
@@ -361,7 +375,7 @@ impl Inner {
                         Some(showing) => crate::db::writing(&showing.db),
                         None => Ok(()),
                     };
-                    if let Err(error @ Error::Newer(_)) = newer {
+                    if let Err(error @ Error::Newer { .. }) = newer {
                         self.stopped(error);
                         return;
                     }
@@ -401,19 +415,20 @@ impl Inner {
     }
 
     fn stopped(&self, error: Error) -> bool {
-        let newer = matches!(error, Error::Newer(_));
         let why = error.to_string();
         log(&self.data, &why);
-        self.kept(Some(Stopped {
-            why,
-            trying_again: !newer,
-        }));
+        let stopped = match error {
+            Error::Newer { replaced } => Stopped::Newer { replaced },
+            _ => Stopped::Failing(why),
+        };
+        let newer = matches!(stopped, Stopped::Newer { .. });
+        self.kept(Some(stopped));
         newer
     }
 
     fn failed(&self, doing: &str, error: Error) {
         match error {
-            Error::Newer(_) => {
+            Error::Newer { .. } => {
                 self.stopped(error);
             }
             error => log(&self.data, &format!("{doing}: {error}")),
@@ -422,7 +437,7 @@ impl Inner {
 
     fn kept(&self, now: Option<Stopped>) {
         let mut said = locked(&self.kept);
-        let done = matches!(&*said, Kept::Stopped(stopped) if !stopped.trying_again);
+        let done = matches!(&*said, Kept::Stopped(Stopped::Newer { .. }));
         let next = match &now {
             Some(stopped) => Kept::Stopped(stopped.clone()),
             None => Kept::Current,
@@ -434,9 +449,11 @@ impl Inner {
         }
     }
 
-    fn newer(&self) -> Option<String> {
+    fn newer(&self) -> Option<Error> {
         match &*locked(&self.kept) {
-            Kept::Stopped(stopped) if !stopped.trying_again => Some(stopped.why.clone()),
+            Kept::Stopped(Stopped::Newer { replaced }) => Some(Error::Newer {
+                replaced: *replaced,
+            }),
             _ => None,
         }
     }
@@ -646,7 +663,7 @@ fn read_limits(db: &mut Connection, home: &Path, data: &Path, asked: bool) -> Re
         false => crate::limits::refresh(db, home),
     };
     match read {
-        Err(error @ Error::Newer(_)) => Err(error),
+        Err(error @ Error::Newer { .. }) => Err(error),
         Err(error) => {
             log(data, &error.to_string());
             Ok(true)
@@ -714,7 +731,7 @@ impl Showing {
                 self.shown = Some(shown.clone());
                 Ok(Some((shown, raised)))
             }
-            Err(error @ Error::Newer(_)) => Err(error),
+            Err(error @ Error::Newer { .. }) => Err(error),
             Err(error) => {
                 log(&self.data, &format!("raising alerts: {error}"));
                 Ok(Some((shown, Vec::new())))
@@ -858,15 +875,7 @@ mod tests {
                 Event::Kept(Some(stopped)) => Some(stopped),
                 _ => None,
             });
-            let why = crate::db::newer().to_string();
-            assert_eq!(
-                stopped,
-                Stopped {
-                    why,
-                    trying_again: false
-                },
-                "{newer}"
-            );
+            assert_eq!(stopped, Stopped::Newer { replaced: false }, "{newer}");
         }
     }
 
@@ -895,8 +904,7 @@ mod tests {
             Event::Kept(Some(stopped)) => Some(stopped),
             _ => None,
         });
-        assert_eq!(stopped.why, crate::db::newer().to_string());
-        assert!(!stopped.trying_again);
+        assert_eq!(stopped, Stopped::Newer { replaced: false });
         engine.hide("anthropic:a".to_owned(), true);
         let hidden = next(&told, 10, |event| match event {
             Event::Shown(shown, _) => Some(shown.status.accounts[0].hidden),
@@ -908,7 +916,7 @@ mod tests {
             Event::Connected { error, .. } => Some(error),
             _ => None,
         });
-        assert_eq!(error, Some(stopped.why));
+        assert_eq!(error, Some(stopped.to_string()));
     }
 
     /// A status worked out before a hide, and slow to be told, is told
@@ -990,7 +998,7 @@ mod tests {
         };
         let failed = kept(10).expect("said to be current");
         assert!(
-            failed.trying_again && failed.why.contains("ingest.lock"),
+            matches!(&failed, Stopped::Failing(why) if why.contains("ingest.lock")),
             "{failed:?}"
         );
         std::fs::remove_dir(&blocked).unwrap();
@@ -1029,8 +1037,7 @@ mod tests {
             Event::Kept(Some(stopped)) => Some(stopped),
             _ => None,
         });
-        assert_eq!(stopped.why, crate::db::newer().to_string());
-        assert!(!stopped.trying_again);
+        assert_eq!(stopped, Stopped::Newer { replaced: false });
     }
 
     /// One app keeps a data directory current at a time, and the next can

@@ -273,15 +273,21 @@ pub fn acknowledge(db: &mut Connection, ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
+/// The notification an alert takes the place of: the last one about the same limit, or about
+/// the account where it has no limit.
+pub fn replaces(account: &str, limit: Option<&str>) -> String {
+    match limit {
+        Some(limit) => format!("limit:{account}:{limit}"),
+        None => format!("account:{account}"),
+    }
+}
+
 fn alert(id: i64, kind: Kind, account: &str, limit: &str, detail: Detail, now: i64) -> Alert {
     let limit = Some(limit.to_owned()).filter(|limit| !limit.is_empty());
     Alert {
         id,
         kind,
-        replaces: match &limit {
-            Some(limit) => format!("limit:{account}:{limit}"),
-            None => format!("account:{account}"),
-        },
+        replaces: replaces(account, limit.as_deref()),
         account: account.to_owned(),
         account_title: detail.account_title,
         limit,

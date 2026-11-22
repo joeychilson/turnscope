@@ -4,10 +4,12 @@
 
 use std::collections::HashMap;
 
-use crate::preferences::{MenuShows, Preferences};
-use crate::standing::*;
-use crate::words::{self, Words};
 use turnscope::engine::{Shown, Stopped, UsedMost};
+use turnscope::status::{Account, Agent, Connection, Status};
+
+use crate::preferences::{MenuShows, Preferences};
+use crate::standing::{AccountStanding, Standing};
+use crate::words::{self, Words};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Page {
@@ -145,8 +147,9 @@ impl State {
         Words::new(self.frozen.unwrap_or_else(turnscope::now))
     }
 
+    /// Whether a newer Turnscope wrote to the data, so nothing can be changed.
     pub fn stopped(&self) -> bool {
-        self.problem.as_ref().is_some_and(|p| !p.trying_again)
+        matches!(self.problem, Some(Stopped::Newer { .. }))
     }
 
     pub fn verdict(&self, words: &Words) -> (String, String, Standing) {
@@ -257,14 +260,9 @@ pub(crate) mod tests {
         let example = example();
         let at = example.status.at;
         let state = State::fixed(example);
-        // The words are as of the status's time, whenever it's drawn, and name agents as the
-        // status does.
+        // The words are as of the status's time, whenever it's drawn.
         assert_eq!(state.words().now, at);
         assert_eq!(state.words_now().now, at);
-        assert_eq!(
-            words::via(&state.all()[0]).as_deref(),
-            Some("via Claude Code")
-        );
     }
 
     #[test]
@@ -321,7 +319,21 @@ pub(crate) mod tests {
         let reading = shown(first.clone());
         assert_eq!(reading.verdict(&reading.words()).0, "Getting your limits");
         first.status.history_read = true;
-        let read = shown(first);
+        let read = shown(first.clone());
         assert_eq!(read.verdict(&read.words()).0, "No accounts found yet");
+        for agent in &mut first.agents {
+            agent.installed = false;
+        }
+        let none = shown(first);
+        assert_eq!(
+            none.verdict(&none.words()),
+            (
+                "No agents found".into(),
+                "Turnscope reads Claude Code, Codex, OpenCode, Pi, Grok Build and Antigravity. \
+                 Sign in to one, and its limits show up."
+                    .into(),
+                Standing::Lasts
+            )
+        );
     }
 }

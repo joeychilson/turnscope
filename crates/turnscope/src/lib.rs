@@ -45,8 +45,9 @@ pub enum Error {
     /// Exit 1; the message says how to fix it.
     Failed(String),
     /// A newer Turnscope has written to the data, so this one writes
-    /// nothing more (`db::newer`). Exit 1.
-    Newer(String),
+    /// nothing more (`db::newer`). `replaced`: this copy's binary was
+    /// replaced since it started, so starting it again updates it. Exit 1.
+    Newer { replaced: bool },
     /// Another Turnscope was reading history for longer than this one
     /// waited (`ingest::ingest`), so an MCP answer says its usage is only
     /// part of it. Exit 1.
@@ -57,12 +58,18 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let (Error::Usage(message)
-        | Error::NotFound(message)
-        | Error::Failed(message)
-        | Error::Newer(message)
-        | Error::Busy(message)) = self;
-        f.write_str(message)
+        f.write_str(match self {
+            Error::Usage(message)
+            | Error::NotFound(message)
+            | Error::Failed(message)
+            | Error::Busy(message) => message,
+            Error::Newer { replaced: true } => {
+                "Turnscope was updated after this one started; start it again"
+            }
+            Error::Newer { replaced: false } => {
+                "a newer Turnscope has updated this data; update Turnscope"
+            }
+        })
     }
 }
 
