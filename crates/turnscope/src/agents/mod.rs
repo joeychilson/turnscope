@@ -511,7 +511,7 @@ fn fresher(
     file: Result<Option<Credential>>,
 ) -> Result<Option<Credential>> {
     match (kept, file) {
-        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(if file.expires > kept.expires {
+        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(if expiry(&file) > expiry(&kept) {
             file
         } else {
             kept
@@ -520,6 +520,11 @@ fn fresher(
         (Err(error), _) | (_, Err(error)) => Err(error),
         (Ok(None), Ok(None)) => Ok(None),
     }
+}
+
+/// When a sign-in expires, one with no expiry last.
+fn expiry(credential: &Credential) -> i64 {
+    credential.expires.unwrap_or(i64::MAX)
 }
 
 pub fn json_file(path: &Path) -> Result<Option<Value>> {
