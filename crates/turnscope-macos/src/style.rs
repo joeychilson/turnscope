@@ -15,19 +15,19 @@ use crate::standing::Standing;
 use crate::state::State;
 use crate::symbols::{Weight, symbol};
 
+/// SwiftUI's `spring(response: 0.34, dampingFraction: 0.9)`, as Rune's response and bounce.
 pub const SPRING: Spring = Spring::new(0.34, 0.1);
+/// SwiftUI's `easeOut(duration: 0.12)`. Without it Rune shows hover at once and fades it out
+/// over 0.1 s.
 pub const HOVER: Curve = Curve::tween(0.12, Easing::EASE_OUT);
 pub const APPEAR_AFTER: f32 = 0.16;
 
 const SF: Family = Family::Named("System Font");
 
-/// SF's file, as the app's own font (`AppSpec::fonts`). Rune looks up a fallback font, once per
-/// character, for each character beyond ASCII that none of an app's own fonts has, and SF,
-/// named by family, isn't one of them. So each such character cost about 60 ms the first time
-/// it showed, and the first "·" a second with the fonts it loaded: a row opened for the first
-/// time took 0.3 to 0.7 s, and 20 accented letters in a title 1.2 s (measured 2026-11-18). As
-/// the app's own font, a character SF has needs no lookup. Mapped, not read, so only the pages
-/// Rune reads take memory: read whole, its 8 MB would have added as much.
+/// SF's file, as the app's own font. Rune looks up a fallback font for each character beyond
+/// ASCII that the app's own fonts lack, and SF named by family isn't one: a row opened for the
+/// first time took 0.3 to 0.7 s, and 20 accented letters 1.2 s (measured 2026-11-18). Mapped,
+/// not read, so only the pages Rune reads take memory, not all 8 MB.
 pub fn fonts() -> &'static [&'static [u8]] {
     static FONTS: OnceLock<Option<&'static [u8]>> = OnceLock::new();
     FONTS
@@ -213,6 +213,7 @@ impl Ink {
         over(self.wash(under), self.wash(to))
     }
 
+    /// 0.06 darker, as the Swift app's buttons were.
     pub fn press(&self, under: f32) -> Color {
         over(self.wash(under), self.wash(under + 0.06))
     }
@@ -292,8 +293,8 @@ pub fn item_row(key: impl Into<String>) -> El {
         .px(row_size::PAD_X)
 }
 
-// Controls use Rune's GPU-side `hover` / `hover_group` rather than app state,
-// which otherwise triggered 6 view rebuilds per pass down the panel (Nov 2026).
+// Controls hover with Rune's `hover` and `hover_group`, which don't run the view: hover kept in
+// the app's state ran it 6 times in one pass down the panel (November 2026).
 
 pub fn icon_button(
     key: &str,
@@ -349,6 +350,8 @@ pub fn pill(key: &str, title: &str, filled: bool, enabled: bool, ink: &Ink) -> E
         .child(said.group_color(ink.primary))
 }
 
+/// A symbol in a circle the size of a pill, as its partner: a bare symbol beside a pill looked
+/// too small.
 pub fn round_button(key: &str, symbol_name: &'static str, ink: &Ink) -> El {
     let rest = 0.08;
     el().key(key)
@@ -429,6 +432,7 @@ pub fn section_title(title: &str, ink: &Ink) -> El {
 }
 
 pub fn spinner(ink: &Ink) -> El {
+    // 0.7 of a circle from three o'clock, as SwiftUI's trimmed circle.
     static ARC: Icon = Icon {
         name: "spinner",
         view: 12.0,
@@ -440,6 +444,8 @@ pub fn spinner(ink: &Ink) -> El {
         .a11y_hidden()
 }
 
+/// `e`, keyed by what it says, so a change fades the old words out as the new fade in. Rune's
+/// rolling digits are in its kit, which the app doesn't use.
 pub fn changes(said: &str, e: El) -> El {
     e.key(format!("said:{said}"))
         .transition(Transition::opacity())
@@ -476,8 +482,4 @@ pub fn rich_text(parts: &[(&str, Color, Option<f32>)]) -> RichText {
         spans.push(span);
     }
     RichText { content, spans }
-}
-
-pub fn spans(parts: &[(&str, Color, Option<f32>)]) -> El {
-    rich_text(parts).into_el()
 }

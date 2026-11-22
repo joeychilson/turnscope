@@ -21,8 +21,8 @@ mod words;
 use std::cell::Cell;
 use std::path::Path;
 use std::ptr::NonNull;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
@@ -43,6 +43,7 @@ use style::{GUTTER, PANEL_WIDTH};
 
 pub static HANDLE: OnceLock<AppHandle<State>> = OnceLock::new();
 static STARTED: OnceLock<Instant> = OnceLock::new();
+/// Whether the ticker wakes each minute: a closed panel with nothing urgent never wakes the app.
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static TICKER: OnceLock<std::thread::Thread> = OnceLock::new();
 
@@ -53,6 +54,7 @@ thread_local! {
 }
 
 pub fn took(s: &mut State, shown: Shown, alerts: Vec<Alert>, tx: &mut Tx) {
+    // Rune shows a change no input caused at once: animated, the open panel's changes move.
     if s.panel_open {
         tx.animated();
     }
@@ -60,12 +62,11 @@ pub fn took(s: &mut State, shown: Shown, alerts: Vec<Alert>, tx: &mut Tx) {
     drew(s);
     notifier::renewed(&taken.readable);
     for (account, limit) in taken.asks {
-        engine::used_most(account, limit);
+        engine::ask(|e| e.used_most(account, limit));
     }
     notifier::tell(s, alerts);
 }
 
-#[derive(Debug, PartialEq)]
 struct Taken {
     asks: Vec<(String, String)>,
     readable: Vec<String>,
@@ -95,9 +96,10 @@ fn take(s: &mut State, shown: Shown) -> Taken {
         .filter(|a| !a.refused() && (first || refused.contains(&a.id)))
         .map(|a| a.id.clone())
         .collect();
-    let asks = match s.panel_open {
-        true => asks(s, |a| s.open.as_deref() == Some(a.id.as_str())),
-        false => Vec::new(),
+    let asks = if s.panel_open {
+        asks(s, |a| s.open.as_deref() == Some(a.id.as_str()))
+    } else {
+        Vec::new()
     };
     Taken { asks, readable }
 }
@@ -130,7 +132,7 @@ pub fn hide(s: &mut State, id: &str, hidden: bool) {
     }
     s.mark_hidden(id, hidden);
     drew(s);
-    engine::hide(id.to_owned(), hidden);
+    engine::ask(|e| e.hide(id.to_owned(), hidden));
 }
 
 pub fn connect(s: &mut State, id: &str, connecting: bool) {
@@ -145,7 +147,7 @@ pub fn connect(s: &mut State, id: &str, connecting: bool) {
     };
     s.changing_agents.insert(id.to_owned(), to);
     s.agent_errors.remove(id);
-    engine::connect(id.to_owned(), connecting);
+    engine::ask(|e| e.connect(id.to_owned(), connecting));
 }
 
 pub fn ask_used(s: &State, id: &str) {
@@ -155,7 +157,7 @@ pub fn ask_used(s: &State, id: &str) {
         .find(|a| a.id == id)
         .and_then(|a| a.deciding.clone())
     {
-        engine::used_most(id.to_owned(), limit);
+        engine::ask(|e| e.used_most(id.to_owned(), limit));
     }
 }
 
@@ -171,34 +173,21 @@ fn asks(s: &State, again: impl Fn(&Account) -> bool) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Waits up to 2 s from launch for macOS to place the status item (it arrived
-/// 1.55–1.65 s after launch in debug builds, measured 2026-11-18; before then
-/// its window is off-screen). Counting from launch avoids delaying notification
-/// clicks when the item is hidden in menu bar settings.
+/// Runs `f` once macOS has placed the status item, or 2 s after launch: until then its window
+/// is off-screen, and it was placed 1.55 to 1.65 s after launch in a debug build (measured
+/// 2026-11-18). Counted from each call instead, a notification click waited 2 s every time
+/// while the item was hidden in the menu bar's settings.
 fn when_placed(f: impl FnOnce(&mut State) + Send + 'static) {
-    let Some(handle) = HANDLE.get().cloned() else {
-        return;
-    };
-    let thread_handle = handle.clone();
+    let Some(handle) = HANDLE.get() else { return };
     handle.update_if(move |s, _| {
         if menu_bar::placed() || waited() {
             f(s);
             return true;
         }
-        // Only the main thread can see the item's place: asked there each 50 ms.
+        // Only the main thread can see the item's place: asked there again in 50 ms.
         std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(50));
-                let (tell, told) = mpsc::channel();
-                thread_handle.update_if(move |_, _| {
-                    let _ = tell.send(menu_bar::placed() || waited());
-                    false
-                });
-                if told.recv().unwrap_or(true) {
-                    break;
-                }
-            }
-            thread_handle.update(move |s, _| f(s));
+            std::thread::sleep(Duration::from_millis(50));
+            when_placed(f);
         });
         false
     });
@@ -258,11 +247,11 @@ fn show_panel(s: &mut State) {
     if engine::running() {
         // Pre-fetch so expanding a row doesn't jump a second time up to 250 ms later.
         for (account, limit) in asks(s, |_| true) {
-            engine::used_most(account, limit);
+            engine::ask(|e| e.used_most(account, limit));
         }
         notifier::check();
         login::check();
-        engine::ask_limits();
+        engine::ask(|e| e.ask_limits());
         s.checks_automatically = updater::automatic();
     }
     if let Some(place) = menu_bar::panel_place(PANEL_WIDTH as f64, GUTTER as f64) {
@@ -285,8 +274,8 @@ fn closed(s: &mut State, _: &mut Tx) {
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     if s.grow_due.is_some_and(|due| clock >= due) {
+        // Animated, or Rune would show the bars at their level at once.
         tx.animated();
-        s.grown = true;
         s.grow_due = None;
         changed = true;
     }
@@ -343,17 +332,17 @@ fn ticked(s: &mut State) -> bool {
     s.panel_open
 }
 
-pub fn beep() {
-    objc2_app_kit::NSBeep();
-}
-
-pub fn open_url(url: &str) {
-    let Some(url) =
-        objc2_foundation::NSURL::URLWithString(&objc2_foundation::NSString::from_str(url))
-    else {
-        return;
-    };
-    objc2_app_kit::NSWorkspace::sharedWorkspace().openURL(&url);
+/// Sets what `field` picks to `value`, from any thread, and redraws the open panel if it
+/// changed.
+pub fn set<T: PartialEq + Send + 'static>(field: fn(&mut State) -> &mut T, value: T) {
+    if let Some(handle) = HANDLE.get() {
+        handle.update_if(move |s, _| {
+            let held = field(s);
+            let changed = *held != value;
+            *held = value;
+            changed && s.panel_open
+        });
+    }
 }
 
 /// True when running from a mounted DMG or App Translocation path, whose
@@ -374,8 +363,6 @@ fn from_disk_image() -> bool {
     }
 }
 
-// Starting
-
 fn spec() -> AppSpec<State> {
     AppSpec::<State> {
         families: ("System Font", "ui-monospace"),
@@ -391,7 +378,6 @@ fn spec() -> AppSpec<State> {
     }
 }
 
-/// The status in the file at `path`, as `--fixture` names it.
 fn fixture(path: &Path) -> Shown {
     let read = std::fs::read_to_string(path).map_err(|error| error.to_string());
     match read.and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string())) {
@@ -403,8 +389,7 @@ fn fixture(path: &Path) -> Shown {
     }
 }
 
-/// The status the engine works out from the data in `data`, for the agents in `home`, as it is
-/// now. It only reads: no alert is raised, and nothing is caught up.
+/// What the engine reads in `data` now, without raising alerts or catching up.
 fn read(home: &Path, data: &Path) -> Shown {
     match turnscope::engine::shown(data, home, &engine::binary()) {
         Ok(shown) => shown,
@@ -415,10 +400,8 @@ fn read(home: &Path, data: &Path) -> Shown {
     }
 }
 
-/// Draws the panel as `panel-light.png` and `panel-dark.png` in `folder`, with what `opening`
-/// names open, and quits. It shows the status in `fixture`, as `scripts/screenshots.sh` draws
-/// the README's, or else what the engine reads in `home` and `data`, as `scripts/check-app.sh`
-/// checks a built app does.
+/// Draws the panel as `panel-light.png` and `panel-dark.png` in `folder` and quits, for
+/// `scripts/screenshots.sh` and `scripts/check-app.sh`.
 fn snapshot(
     folder: &Path,
     fixture_path: Option<&Path>,
@@ -435,7 +418,7 @@ fn snapshot(
         None => read(home, data),
     };
     for theme in ["light", "dark"] {
-        let mut s = State::fixed(shown.clone(), Preferences::default());
+        let mut s = State::fixed(shown.clone());
         if let Some(opening) = opening {
             apply(&mut s, opening);
         }
@@ -483,7 +466,6 @@ fn main() {
     let runs_engine = fixed.is_none();
     if runs_engine {
         let _ = engine::DATA.set(data.clone());
-        // What went wrong is kept in the log, beside the data.
         let panicked = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             engine::log(&format!("panicked: {info}"));
@@ -494,9 +476,12 @@ fn main() {
     let app = App::new(spec())
         .init(move || {
             let mut s = match fixed {
-                // Changes made on a fixed status go nowhere.
-                Some(shown) => State::fixed(shown, Preferences::default()),
-                None => State::new(Preferences::read()),
+                // Changes made on a fixed status go nowhere: its preferences aren't kept.
+                Some(shown) => State::fixed(shown),
+                None => State {
+                    preferences: Preferences::read(),
+                    ..State::default()
+                },
             };
             s.from_disk_image = from_disk_image();
             s.live = true;
@@ -561,9 +546,11 @@ mod tests {
     #[test]
     fn a_notification_clicked_before_the_first_status_opens_its_account_with_what_used_it() {
         // As `open_panel` leaves it when the click launched the app.
-        let mut s = State::new(Preferences::default());
-        s.panel_open = true;
-        s.clicked = Some(CODEX.into());
+        let mut s = State {
+            panel_open: true,
+            clicked: Some(CODEX.into()),
+            ..State::default()
+        };
         let taken = take(&mut s, example());
         assert_eq!(s.open.as_deref(), Some(CODEX));
         // Every account shown that has a deciding limit, the one clicked among them.
@@ -572,7 +559,7 @@ mod tests {
 
     #[test]
     fn while_the_panel_is_open_a_status_asks_what_used_each_account_that_has_none() {
-        let mut s = State::new(Preferences::default());
+        let mut s = State::default();
         take(&mut s, example());
         s.panel_open = true;
         s.open = Some(CLAUDE.into());
@@ -592,7 +579,7 @@ mod tests {
 
     #[test]
     fn a_sign_in_notification_goes_on_the_first_status_and_once_its_account_is_read_again() {
-        let mut s = State::new(Preferences::default());
+        let mut s = State::default();
         // Each account that can be read, for a notification left from before the app started.
         let first = take(&mut s, example()).readable;
         assert_eq!(first, [CLAUDE, CODEX, OPENROUTER, "anthropic:api"]);

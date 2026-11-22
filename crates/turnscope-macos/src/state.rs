@@ -32,6 +32,7 @@ impl Tab {
     ];
 }
 
+#[derive(Default)]
 pub struct State {
     pub status: Option<Status>,
     pub agents: Vec<Agent>,
@@ -39,7 +40,7 @@ pub struct State {
     pub changing_agents: HashMap<String, Connection>,
     pub agent_errors: HashMap<String, String>,
     pub used: HashMap<String, (String, Vec<UsedMost>)>,
-    /// Fixed status timestamp (`--fixture` / `--snapshot`) so wording stays stable.
+    /// A fixed status's time (`--fixture`, `--snapshot`), which its words are as of.
     pub frozen: Option<i64>,
     pub from_disk_image: bool,
     pub live: bool,
@@ -58,59 +59,22 @@ pub struct State {
     pub open: Option<String>,
     pub unused_open: bool,
     pub hidden_shown: bool,
+    /// The minute the open panel's words are as of: set as it opens, and each minute after.
     pub now: i64,
     pub panel_open: bool,
     pub tallest: Option<f32>,
-
-    pub grown: bool,
+    /// When the open row's bars grow, once its lines have faded in (`poll`).
     pub grow_due: Option<f64>,
     /// Row just closed by click; delays re-enabling its press shade (`poll`).
     pub closed: Option<(String, f64)>,
 }
 
-impl Default for State {
-    fn default() -> Self {
-        State::new(Preferences::default())
-    }
-}
-
 impl State {
-    pub fn new(preferences: Preferences) -> State {
-        State {
-            status: None,
-            agents: Vec::new(),
-            problem: None,
-            changing_agents: HashMap::new(),
-            agent_errors: HashMap::new(),
-            used: HashMap::new(),
-            frozen: None,
-            from_disk_image: false,
-            live: false,
-            preferences,
-            notifications_denied: false,
-            update_available: false,
-            checks_automatically: false,
-            login: crate::login::Login::default(),
-            opening: None,
-            clicked: None,
-            alerts_waiting: Vec::new(),
-            page: Page::default(),
-            tab: Tab::default(),
-            open: None,
-            unused_open: false,
-            hidden_shown: false,
-            now: turnscope::time::minute(turnscope::now()),
-            panel_open: false,
-            tallest: None,
-            grown: true,
-            grow_due: None,
-            closed: None,
-        }
-    }
-
-    pub fn fixed(shown: Shown, preferences: Preferences) -> State {
-        let mut state = State::new(preferences);
-        state.frozen = Some(shown.status.at);
+    pub fn fixed(shown: Shown) -> State {
+        let mut state = State {
+            frozen: Some(shown.status.at),
+            ..State::default()
+        };
         state.take(shown);
         state
     }
@@ -130,8 +94,8 @@ impl State {
             .is_some_and(|status| !status.history_read)
     }
 
-    /// Before initial history ingest completes, treat every account as in use so
-    /// the panel doesn't show "Nothing in use" while reading history.
+    /// Until the history is read, every account counts as in use, so the panel doesn't say
+    /// "Nothing in use" while it reads.
     pub fn counts(&self, account: &Account) -> bool {
         self.reading() || account.in_use
     }
@@ -213,25 +177,22 @@ impl State {
     }
 
     pub fn in_menu_bar(&self) -> Vec<&Account> {
-        let iter = self.all().iter().filter(|a| !a.hidden && self.counts(a));
-        match self.preferences.menu_shows {
-            MenuShows::All => iter.collect(),
-            MenuShows::One => iter.take(1).collect(),
+        let mut shown = self.in_use();
+        if self.preferences.menu_shows == MenuShows::One {
+            shown.truncate(1);
         }
+        shown
     }
 
     pub fn urgent(&self) -> bool {
-        let mut iter = self.all().iter().filter(|a| !a.hidden && self.counts(a));
-        match self.preferences.menu_shows {
-            MenuShows::All => iter.any(|a| a.standing() != Standing::Lasts),
-            MenuShows::One => iter.next().is_some_and(|a| a.standing() != Standing::Lasts),
-        }
+        self.in_menu_bar()
+            .iter()
+            .any(|a| a.standing() != Standing::Lasts)
     }
 
     pub fn close_open(&mut self) {
         self.open = None;
         self.grow_due = None;
-        self.grown = true;
     }
 
     pub fn reset(&mut self) {
@@ -295,7 +256,7 @@ pub(crate) mod tests {
     fn a_fixture_is_shown_as_of_its_own_time() {
         let example = example();
         let at = example.status.at;
-        let state = State::fixed(example, Preferences::default());
+        let state = State::fixed(example);
         // The words are as of the status's time, whenever it's drawn, and name agents as the
         // status does.
         assert_eq!(state.words().now, at);

@@ -11,6 +11,7 @@ use crate::state::{Page, State};
 use crate::style::*;
 use crate::symbols::Weight;
 use crate::words::{self, Words};
+use turnscope::engine::UsedMost;
 
 pub const FRAME: &str = "frame";
 
@@ -21,6 +22,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         cx.accent(),
     );
     cx.foreground(ink.primary);
+    // Every button is a Tab stop and Return presses it, as on a web page: Rune's default makes
+    // a button a Tab stop only if it says so.
     cx.web_focus();
     let pages = pages(s, &ink);
     panel(pages, s.live, &ink)
@@ -30,11 +33,11 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
 
 fn panel(pages: El, live: bool, ink: &Ink) -> El {
     if live {
-        // The panel hangs inside a full-height transparent window rather than resizing
-        // per spring frame, which dropped frames every 16–24 ms on a 10 ms display
-        // (measured 2026-11-18). macOS delivers clicks anywhere in that transparent
-        // frame to this window (`windowNumberAtPoint` 700 pt below, 2026-11-18), so
-        // clicking the backdrop closes the panel while the card absorbs inner clicks.
+        // The panel hangs in a see-through window that runs to the screen's bottom: a window
+        // that followed its height resized each spring frame, which came 16 to 24 ms apart on
+        // a 10 ms display (measured 2026-11-18). macOS gives that window every click in its
+        // frame (`windowNumberAtPoint` named it 700 points below the panel), so a click off
+        // the panel closes it, as a click outside a menu does.
         return col()
             .w_full()
             .h_full()
@@ -47,6 +50,8 @@ fn panel(pages: El, live: bool, ink: &Ink) -> El {
                     .radius(14.0)
                     .continuous_corners()
                     .border(0.5, ink.quaternary)
+                    // SwiftUI's `shadow(radius: 18, y: 8)`, black at 28%, on the frame: the
+                    // pages' clip would cut it off.
                     .shadow(8.0, 36.0, Color::BLACK.alpha(0.28))
                     .on_background_press(|_: &mut State| {})
                     .child(pages.clip_rounded(14.0).continuous_corners()),
@@ -163,9 +168,6 @@ pub fn waiting(s: &State, ink: &Ink) -> El {
         .child(said)
 }
 
-/// The one thing to know, in large type: whether you can keep going, or, before any account
-/// is found, why none is. Under it is when it's back, or what's left of a limit that isn't
-/// forecast.
 fn verdict(s: &State, w: &Words, ink: &Ink) -> El {
     let (headline, detail, standing) = s.verdict(w);
     let mut verdict = col().key("verdict").gap(4.0).w_full().child(
@@ -204,7 +206,6 @@ fn accounts(s: &State, w: &Words, ink: &Ink) -> El {
         in_use_list = in_use_list.child(account_row(s, w, a, i == 0, ink));
     }
     list = list.child(in_use_list);
-    // Accounts used this week are always shown, under a heading that says what they are.
     if !recent.is_empty() {
         let mut recent_list = col()
             .key("recent")
@@ -228,7 +229,6 @@ fn accounts(s: &State, w: &Words, ink: &Ink) -> El {
     }
     let mut accounts = col().key("accounts").w_full().child(list);
     if let Some(offer) = connect_offer(s, ink) {
-        // Apart from the accounts, as a group of its own.
         accounts = accounts.child(offer.pt(row_size::GROUPS));
     }
     accounts
@@ -240,29 +240,64 @@ fn account_row(s: &State, w: &Words, a: &Account, headlined: bool, ink: &Ink) ->
     let open = openable && s.open.as_deref() == Some(a.id.as_str());
     let labelled = a.twinned(s.all());
     let called = words::called(a, labelled);
+    // Open, its limit lines say what the line under its name and its figure would.
+    let lines = open && !a.limits.is_empty();
 
-    let header = account_header(
-        s,
-        w,
-        a,
-        &called,
-        RowFlags {
-            labelled,
-            openable,
-            open,
-        },
-        ink,
-    );
+    let mut name = col()
+        .key("name")
+        .gap(1.0)
+        .shrink()
+        .min_w(0.0)
+        .child(account_title(a, labelled, ink.primary, ink.secondary));
+    // What VoiceOver says for the row.
+    let mut said = called.clone();
+    let mut figure = None;
+    if !lines {
+        let status = w.status(a);
+        let (shown, spoken) = row_figure(a, ink);
+        said = format!("{called}, {status}, {spoken}");
+        name = name.child(appears(
+            text(status)
+                .key("status")
+                .font(SMALL)
+                .color(ink.ink(a.standing(), ink.secondary))
+                .truncate(),
+        ));
+        figure = Some(appears(shown));
+    }
+    let mut header = item_row("header")
+        .child(account_logo(&a.provider, row_size::LOGO, ink.primary, ink))
+        .child(name)
+        .child(spacer().min_w(8.0))
+        .child(hide_button(s, a, &called, ink));
+    if let Some(figure) = figure {
+        header = header.child(figure);
+    }
+    header = header.label(said);
+    if openable {
+        // A press shades only the header: on an open row, or one a click just closed, it showed
+        // as a band darker than the rest, so there it's too faint to see. With no press overlay
+        // at all, Rune stops following presses.
+        let shade = ink.press(ink.row);
+        let just_closed = s.closed.as_ref().is_some_and(|(id, _)| *id == a.id);
+        let id = a.id.clone();
+        header = header
+            .role("button")
+            .expanded(open)
+            .on_press_tx(move |s: &mut State, tx: &mut Tx| toggle_open(s, &id, tx))
+            .radius(row_size::RADIUS)
+            .continuous_corners()
+            .press(if open || just_closed {
+                shade.alpha(0.0001)
+            } else {
+                shade
+            });
+    }
+
     let mut body = col().key(format!("row:{}", a.id)).w_full().child(header);
     if open {
-        body = body.child(appears(account_opened(
-            w,
-            a,
-            note,
-            s.used_most(a),
-            s.grown,
-            ink,
-        )));
+        let grown = s.grow_due.is_none();
+        body = body.child(appears(opened(w, a, note, s.used_most(a), grown, ink)));
     }
 
     let menu_id = a.id.clone();
@@ -305,48 +340,41 @@ fn account_row(s: &State, w: &Words, a: &Account, headlined: bool, ink: &Ink) ->
     body
 }
 
-struct RowFlags {
-    labelled: bool,
-    openable: bool,
-    open: bool,
-}
-
-fn account_header(
-    s: &State,
+/// What an open row shows under its header: its limits' lines, `note`, and what used it most.
+fn opened(
     w: &Words,
     a: &Account,
-    called: &str,
-    flags: RowFlags,
+    note: Option<String>,
+    used_most: &[UsedMost],
+    grown: bool,
     ink: &Ink,
 ) -> El {
-    // Whether its limits show as lines. They say everything the line under the name would.
-    let lines = flags.open && !a.limits.is_empty();
-    // What VoiceOver says for the row: its name, then, while its limits aren't shown, its
-    // line and figure.
-    let mut said = called.to_owned();
-
-    let mut name = col()
-        .key("name")
-        .gap(1.0)
-        .shrink()
-        .min_w(0.0)
-        .child(account_title(a, flags.labelled, ink.primary, ink.secondary));
-    if !lines {
-        let status = w.status(a);
-        said = format!("{said}, {status}");
-        name = name.child(appears(
-            text(status)
-                .key("status")
-                .font(SMALL)
-                .color(ink.ink(a.standing(), ink.secondary))
-                .truncate(),
-        ));
+    let mut opened = col()
+        .key("opened")
+        .gap(10.0)
+        .w_full()
+        .pt(10.0 - row_size::PAD_Y)
+        .pb(row_size::PAD_Y)
+        .px(row_size::PAD_X);
+    let last = a.limits.len().saturating_sub(1);
+    for (i, limit) in a.limits.iter().enumerate() {
+        let ends = note.is_none() && used_most.is_empty() && i == last;
+        opened = opened.child(limit_line(w, limit, ends, grown, ink));
     }
+    if let Some(note) = note {
+        opened = opened.child(text(note).font(LINE).color(ink.secondary).wrap().w_full());
+    }
+    if !used_most.is_empty() {
+        opened = opened.child(appears(used_most_list(a, used_most, ink)));
+    }
+    opened
+}
 
-    // Sized to a name's line, and always given its room, so nothing moves when it shows on
-    // hover, or as the keyboard comes to it.
+/// The Hide button, which shows on hover. Sized to a name's line and always given its room, so
+/// nothing moves when it shows.
+fn hide_button(s: &State, a: &Account, called: &str, ink: &Ink) -> El {
     let can_hide = !s.stopped();
-    let mut hide = icon_button(
+    let hide = icon_button(
         &format!("hide:{}", a.id),
         "eye.slash",
         22.0,
@@ -357,97 +385,41 @@ fn account_header(
     .group_opacity(0.0, 1.0)
     .label(format!("Hide {called}"))
     .help(format!("Hide {called} from the menu bar and the panel"));
-    if can_hide {
-        let id = a.id.clone();
-        hide = hide.on_press(move |s: &mut State| crate::hide(s, &id, true));
+    if !can_hide {
+        return hide;
     }
-
-    let mut header = item_row("header")
-        .child(account_logo(&a.provider, row_size::LOGO, ink.primary, ink))
-        .child(name)
-        .child(spacer().min_w(8.0))
-        .child(hide);
-    // Once the limit lines show, they say what the figure does, so it fades as they open.
-    if !lines {
-        let (figure, then) = words::row_figure(a);
-        let then = then.map(|t| format!(" {t}")).unwrap_or_default();
-        let left = if a.deciding_limit().is_some() {
-            " left"
-        } else {
-            ""
-        };
-        let spoken = format!("{figure}{then}{left}");
-        said = format!("{said}, {spoken}");
-        header = header.child(appears(
-            el().key("figure").child(
-                changes(
-                    &format!("{figure}{then}"),
-                    spans(&[
-                        (&figure, ink.ink(a.standing(), ink.primary), None),
-                        (&then, ink.secondary, Some(400.0)),
-                    ]),
-                )
-                .font(FIGURE)
-                .label(spoken),
-            ),
-        ));
-    }
-    // A press shade on an open header would darken only the top band (229 vs 242/255
-    // while Rune fades it out over 0.2 s), so suppress it while open or just closed.
-    // Removing `.press` stops Rune tracking presses, so keep a near-invisible overlay.
-    header = header.label(said);
-    if flags.openable {
-        let id = a.id.clone();
-        let just_closed = s.closed.as_ref().is_some_and(|(id, _)| *id == a.id);
-        let shade = ink.press(ink.row);
-        header = header
-            .role("button")
-            .expanded(flags.open)
-            .on_press_tx(move |s: &mut State, tx: &mut Tx| toggle_open(s, &id, tx))
-            .radius(row_size::RADIUS)
-            .continuous_corners()
-            .press(if flags.open || just_closed {
-                shade.alpha(0.0001)
-            } else {
-                shade
-            });
-    }
-    header
+    let id = a.id.clone();
+    hide.on_press(move |s: &mut State| crate::hide(s, &id, true))
 }
 
-fn account_opened(
-    w: &Words,
-    a: &Account,
-    note: Option<String>,
-    used_most: &[turnscope::engine::UsedMost],
-    grown: bool,
-    ink: &Ink,
-) -> El {
-    let used = !used_most.is_empty();
-    let mut opened = col()
-        .key("opened")
-        .gap(10.0)
-        .w_full()
-        .pt(10.0 - row_size::PAD_Y)
-        .pb(row_size::PAD_Y)
-        .px(row_size::PAD_X);
-    let last_idx = a.limits.len().saturating_sub(1);
-    for (i, limit) in a.limits.iter().enumerate() {
-        let last = note.is_none() && !used && i == last_idx;
-        opened = opened.child(limit_line(w, limit, last, grown, ink));
-    }
-    if let Some(note) = note {
-        opened = opened.child(text(note).font(LINE).color(ink.secondary).wrap().w_full());
-    }
-    if used {
-        opened = opened.child(appears(used_most_list(a, used_most, ink)));
-    }
-    opened
+/// The figure on a row's right, and what VoiceOver says for it.
+fn row_figure(a: &Account, ink: &Ink) -> (El, String) {
+    let (figure, then) = words::row_figure(a);
+    let then = then.map(|t| format!(" {t}")).unwrap_or_default();
+    let left = if a.deciding_limit().is_some() {
+        " left"
+    } else {
+        ""
+    };
+    let spoken = format!("{figure}{then}{left}");
+    let shown = el().key("figure").child(
+        changes(
+            &format!("{figure}{then}"),
+            rich_text(&[
+                (&figure, ink.ink(a.standing(), ink.primary), None),
+                (&then, ink.secondary, Some(400.0)),
+            ])
+            .into_el(),
+        )
+        .font(FIGURE)
+        .label(spoken.clone()),
+    );
+    (shown, spoken)
 }
 
 fn toggle_open(s: &mut State, id: &str, tx: &mut Tx) {
-    // Snap row fill immediately; fading it left the opened body lighter than the header
-    // (252 vs 242/255 for 0.2 s, measured 2026-11-18).
+    // The row's fill lands at once: faded, the open part came in lighter than the part
+    // clicked, 252 against 242 of 255, for 0.2 s (measured 2026-11-18).
     tx.color_motion(rune::Spring::NONE);
     if s.open.as_deref() == Some(id) {
         let due = tx.clock() + 0.25;
@@ -458,8 +430,8 @@ fn toggle_open(s: &mut State, id: &str, tx: &mut Tx) {
     }
     s.open = Some(id.to_owned());
     crate::ask_used(s, id);
-    // Delay bar growth until the lines fade in (earlier, bars were 2/3 grown before appearing).
-    s.grown = false;
+    // The bars grow once the lines have faded in: growing at once, they were two thirds grown
+    // before the lines showed.
     let due = tx.clock() + f64::from(APPEAR_AFTER);
     s.grow_due = Some(due);
     tx.wake_at(due);
@@ -510,7 +482,7 @@ pub fn account_name(a: &Account, title: Color, subtitle: Color, ink: &Ink) -> El
 
 const LIMIT_LINE: f32 = PANEL_WIDTH - 2.0 * 8.0 - 2.0 * row_size::PAD_X;
 
-fn limit_line(w: &Words, limit: &Limit, last: bool, grown: bool, ink: &Ink) -> El {
+fn limit_line(w: &Words, limit: &Limit, ends: bool, grown: bool, ink: &Ink) -> El {
     let standing = limit.standing();
     let name = words::name(limit);
     // When it runs out, in amber; then when it resets, or when it's back if it's used up, in
@@ -576,7 +548,7 @@ fn limit_line(w: &Words, limit: &Limit, last: bool, grown: bool, ink: &Ink) -> E
         .key(format!("limit:{}", limit.key))
         .gap(5.0)
         .w_full()
-        .pb(if last { row_size::UNDER_BAR } else { 0.0 })
+        .pb(if ends { row_size::UNDER_BAR } else { 0.0 })
         .child(
             row()
                 .gap(8.0)
@@ -596,7 +568,7 @@ fn limit_line(w: &Words, limit: &Limit, last: bool, grown: bool, ink: &Ink) -> E
         )
 }
 
-fn used_most_list(a: &Account, sessions: &[turnscope::engine::UsedMost], ink: &Ink) -> El {
+fn used_most_list(a: &Account, sessions: &[UsedMost], ink: &Ink) -> El {
     let first = sessions.first().map(|u| u.agent.as_str());
     let agents = sessions.iter().any(|u| Some(u.agent.as_str()) != first);
     let of = a.deciding_limit().map(words::of).unwrap_or_default();
@@ -805,6 +777,7 @@ fn footer(s: &State, ink: &Ink) -> El {
         } else {
             "Not up to date · update Turnscope"
         };
+        // Cut short before the buttons: at full length beside "Update available" it hid Quit.
         footer = footer.child(appears(
             text(said)
                 .key("stale")

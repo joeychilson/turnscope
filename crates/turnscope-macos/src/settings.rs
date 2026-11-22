@@ -98,8 +98,6 @@ fn setting(key: &str, title: &str, help: Option<&str>, control: El, ink: &Ink) -
     line
 }
 
-// General
-
 fn general(s: &State, ink: &Ink) -> El {
     col()
         .key("general")
@@ -212,7 +210,7 @@ fn notifications(s: &State, ink: &Ink) -> El {
                 {
                     let flag = pick(&mut status.settings.notify);
                     *flag = !*flag;
-                    crate::engine::save_settings(status.settings);
+                    crate::engine::ask(|e| e.save_settings(status.settings));
                 }
             },
         );

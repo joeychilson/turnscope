@@ -42,6 +42,7 @@ impl Words {
             .to_zoned(self.tz.clone())
     }
 
+    /// Past is "0m": a status can be minutes old, as only one that changed is told.
     fn until(&self, at: i64) -> String {
         turnscope::time::span((at - self.now).max(0))
     }
@@ -51,13 +52,11 @@ impl Words {
     }
 
     fn at_horizon(&self, at: i64, horizon: Horizon, full: bool) -> String {
-        if horizon == Horizon::Soon {
-            return format!("in {}", self.until(at));
-        }
-        let z = self.zoned(at);
         match horizon {
-            Horizon::Today => fmt_time(&z),
+            Horizon::Soon => format!("in {}", self.until(at)),
+            Horizon::Today => fmt_time(&self.zoned(at)),
             Horizon::ThisWeek => {
+                let z = self.zoned(at);
                 let day = if self.today.tomorrow().ok() == Some(z.date()) {
                     "tomorrow".into()
                 } else {
@@ -65,8 +64,7 @@ impl Words {
                 };
                 format!("{day} {}", fmt_time(&z))
             }
-            Horizon::Later => fmt_month_day(&z, full),
-            Horizon::Soon => unreachable!(),
+            Horizon::Later => fmt_month_day(&self.zoned(at), full),
         }
     }
 
@@ -141,8 +139,6 @@ impl Words {
             format!("this {part}")
         }
     }
-
-    // Limits and the panel
 
     fn short(&self, limit: &Limit) -> String {
         let limit_name = name(limit);
@@ -259,11 +255,8 @@ impl Words {
                 Standing::Lasts,
             );
         };
-        // A limit on some models decides only an account with none on all its
-        // usage, as a Google AI plan's pools: those models, not the account,
-        // are used up, as "Claude and GPT are used up". Named by its models
-        // over its own name, which ran to two lines: "Claude and GPT weekly
-        // is used up".
+        // A limit on some models, as a Google AI plan's pool, is named by its models: "Claude
+        // and GPT are used up". With its own name too, the headline ran to two lines.
         let (subject, plural) = match &limit.scope {
             Some(models) => (models.clone(), models.contains(" and ")),
             None => (account.title.clone(), false),
@@ -478,16 +471,6 @@ impl Words {
             || alert.account_title.clone(),
             |a| called_among(a, accounts),
         );
-        if alert.kind == AlertKind::SignIn {
-            let agent = account
-                .and_then(|a| a.agents.first())
-                .map(|a| turnscope::agents::name(a));
-            return Note {
-                title,
-                subtitle: "Sign in again".into(),
-                body: agent.map_or(String::new(), |a| format!("Open {a} to sign in.")),
-            };
-        }
         let limit = account.and_then(|a| {
             a.limits
                 .iter()
@@ -508,34 +491,35 @@ impl Words {
                 .as_ref()
                 .map_or(String::new(), |r| format!("Back {}.", self.clock(r, true)))
         };
-        match alert.kind {
-            AlertKind::SignIn => unreachable!(),
+        let (subtitle, body) = match alert.kind {
+            AlertKind::SignIn => (
+                "Sign in again".into(),
+                account
+                    .and_then(|a| a.agents.first())
+                    .map_or(String::new(), |a| {
+                        format!("Open {} to sign in.", turnscope::agents::name(a))
+                    }),
+            ),
             AlertKind::RunningOut => {
                 let out = alert
                     .runs_out
                     .as_ref()
                     .map_or("soon".into(), |r| self.clock(r, true));
-                Note {
-                    title,
-                    subtitle: format!("{limit_name} {runs} out {out}"),
-                    body: back(),
-                }
+                (format!("{limit_name} {runs} out {out}"), back())
             }
-            AlertKind::UsedUp => Note {
-                title,
-                subtitle: format!("{limit_name} {be} used up"),
-                body: back(),
-            },
-            AlertKind::Reset => Note {
-                title,
-                subtitle: format!("{limit_name} {be} back"),
-                body: limit.map_or(String::new(), |l| format!("{} left.", left_of(l))),
-            },
+            AlertKind::UsedUp => (format!("{limit_name} {be} used up"), back()),
+            AlertKind::Reset => (
+                format!("{limit_name} {be} back"),
+                limit.map_or(String::new(), |l| format!("{} left.", left_of(l))),
+            ),
+        };
+        Note {
+            title,
+            subtitle,
+            body,
         }
     }
 }
-
-// Stateless wording
 
 fn fmt_time(z: &Zoned) -> String {
     let format = if z.minute() == 0 {
@@ -976,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn time_horizons_timezones_and_minute_rounding() {
+    fn a_time_is_said_as_its_horizon_calls_for_in_the_macs_zone() {
         let w = words();
         assert_eq!(w.at(&moment("2026-09-30T14:10:00Z", Soon)), "in 2h 10m");
         assert_eq!(w.at(&moment("2026-09-30T18:40:00Z", Today)), "6:40 PM");
@@ -1014,11 +998,16 @@ mod tests {
         // Past midnight after a 23-hour DST spring-forward day (2027-03-14).
         let dst = Words::in_zone(at("2027-03-11T18:00:00Z"), chicago);
         assert_eq!(dst.when(at("2027-03-15T05:30:00Z")), "Sunday night");
+    }
 
-        // Countdowns floor `now` to the minute and round remaining time to the nearest minute.
+    /// The minute's tick lands a little after the minute, and the panel opens at any second.
+    #[test]
+    fn a_countdown_counts_from_the_minute_it_is() {
+        let w = words();
         let claude = account(vec![limit(runs_out())]);
         for millis in [50, 40_000, 59_900] {
             let late = as_of(noon() + millis);
+            assert_eq!(late.at(&moment("2026-09-30T14:00:00Z", Soon)), "in 2h");
             assert_eq!(late.figure(&claude), "2h");
             assert_eq!(late.spoken_figure(&claude), "runs out in 2 hours");
         }
@@ -1032,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn dollar_formatting_and_rounding_down() {
+    fn amounts_are_grouped_and_what_is_left_is_rounded_down() {
         assert_eq!(dollars(0.0, false), "$0");
         assert_eq!(dollars(0.004, false), "$0");
         assert_eq!(dollars(0.004, true), "$0");
@@ -1047,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn limit_names_windows_and_resets() {
+    fn a_limit_says_its_name_when_it_resets_and_when_it_runs_out() {
         let w = words();
         assert_eq!(
             w.window(&limit(runs_out())).as_deref(),
@@ -1099,14 +1088,26 @@ mod tests {
         assert_eq!(left(&money), "$8.70");
         assert_eq!(size(&money).as_deref(), Some("of $30"));
         assert_eq!((w.window(&money), w.ahead(&money)), (None, None));
+        let too_new = Limit {
+            left_percent: 99,
+            ..limit(unknown(Unknown::NotEnoughData))
+        };
+        assert_eq!(w.ahead(&too_new), None);
+    }
 
-        // Account whose limits all reset since last read.
+    #[test]
+    fn a_limit_reset_since_it_was_read_is_full_and_doesnt_run_out() {
+        let w = words();
         let five_reset = Limit {
             left_percent: 100,
             reset_since: Some(at("2026-09-30T11:00:00Z")),
             ..limit(unknown(Unknown::Stale))
         };
         assert_eq!(w.window(&five_reset).as_deref(), Some("Reset 11 AM"));
+        assert_eq!(
+            (left(&five_reset).as_str(), w.ahead(&five_reset)),
+            ("100%", None)
+        );
         let week_reset = Limit {
             reset_since: Some(at("2026-09-30T11:30:00Z")),
             ..weekly(unknown(Unknown::Stale), 100)
@@ -1126,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn verdicts_for_urgent_lasting_unforecast_and_scoped_limits() {
+    fn the_verdict_says_the_most_urgent_and_when_its_back() {
         let w = words();
         let out = account(vec![limit(runs_out())]);
         assert_eq!(
@@ -1167,17 +1168,24 @@ mod tests {
             )
         );
 
-        let used = account(vec![Limit {
-            left_percent: 0,
-            ..limit(used_up(Some(moment("2026-10-03T09:00:00Z", ThisWeek))))
-        }]);
+        let used = |back| {
+            account(vec![Limit {
+                left_percent: 0,
+                ..limit(used_up(Some(back)))
+            }])
+        };
         assert_eq!(
-            w.verdict(&[&used], false),
+            w.verdict(&[&used(moment("2026-10-03T09:00:00Z", ThisWeek))], false),
             (
                 "Claude Max is used up".into(),
                 "Back Sat 9 AM.".into(),
                 Standing::UsedUp
             )
+        );
+        assert_eq!(
+            w.verdict(&[&used(moment("2026-09-30T15:00:00Z", Soon))], false)
+                .1,
+            "Back in 3h."
         );
 
         assert_eq!(
@@ -1200,8 +1208,21 @@ mod tests {
                 Standing::Lasts
             )
         );
+        let signed_out = Account {
+            state: State::Unread {
+                why: Stale::SignedOut,
+            },
+            ..account(vec![])
+        };
+        assert_eq!(
+            w.verdict(&[&signed_out], false).1,
+            "No agent here is signed in to it."
+        );
+    }
 
-        // Lasting account with all lasting, scoped used-up, credits, key, stale, and unforecast.
+    #[test]
+    fn the_verdict_says_only_what_lasts_lasts() {
+        let w = words();
         let week = weekly(lasts(), 60);
         assert_eq!(
             w.verdict(&[&account(vec![week.clone()])], false).1,
@@ -1339,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn account_disambiguation_between_headline_rows_and_notifications() {
+    fn an_account_is_told_apart_only_where_it_has_to_be() {
         let w = words();
         let mine = Account {
             label: Some("me@example.com".into()),
@@ -1388,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_bar_and_voice_over_wording() {
+    fn the_menu_bar_says_what_is_left_how_long_or_when_its_back() {
         let w = words();
         let ok = account(vec![Limit {
             left_percent: 67,
@@ -1469,7 +1490,7 @@ mod tests {
     }
 
     #[test]
-    fn opened_notes_stale_states() {
+    fn an_opened_account_says_why_its_limits_are_old_or_unread() {
         let w = words();
         let as_of_state = |why: Stale, at: i64, limit: Limit| Account {
             state: State::AsOf { read_at: at, why },
@@ -1543,7 +1564,7 @@ mod tests {
     }
 
     #[test]
-    fn notifications_used_most_and_welcome() {
+    fn a_note_says_which_account_then_what_happened_then_what_it_means() {
         let w = words();
         let make_alert = |kind| Alert {
             id: 1,

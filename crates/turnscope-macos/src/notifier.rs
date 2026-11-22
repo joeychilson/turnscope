@@ -9,7 +9,10 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, ProtocolObject};
 use objc2::{AnyThread, define_class, msg_send};
-use objc2_foundation::{NSArray, NSDictionary, NSError, NSObjectProtocol, NSString};
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{
+    NSArray, NSBundle, NSDictionary, NSError, NSObjectProtocol, NSString, NSURL,
+};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
     UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
@@ -68,7 +71,7 @@ thread_local! {
 fn bundled() -> bool {
     static BUNDLED: OnceLock<bool> = OnceLock::new();
     *BUNDLED.get_or_init(|| {
-        let bundle = objc2_foundation::NSBundle::mainBundle();
+        let bundle = NSBundle::mainBundle();
         bundle.bundleIdentifier().is_some() && bundle.bundlePath().to_string().ends_with(".app")
     })
 }
@@ -98,13 +101,7 @@ pub fn check() {
     let got = RcBlock::new(|settings: NonNull<UNNotificationSettings>| {
         let denied =
             unsafe { settings.as_ref() }.authorizationStatus() == UNAuthorizationStatus::Denied;
-        if let Some(handle) = crate::HANDLE.get() {
-            handle.update_if(move |s, _| {
-                let changed = s.notifications_denied != denied;
-                s.notifications_denied = denied;
-                changed && s.panel_open
-            });
-        }
+        crate::set(|s| &mut s.notifications_denied, denied);
     });
     center.getNotificationSettingsWithCompletionHandler(&got);
 }
@@ -129,12 +126,9 @@ pub fn tell(s: &State, alerts: Vec<Alert>) {
             &[&*NSString::from_str("account")],
             &[&*NSString::from_str(&alert.account)],
         );
-        unsafe {
-            content.setUserInfo(
-                &*(Retained::as_ptr(&info)
-                    as *const NSDictionary<objc2::runtime::AnyObject, objc2::runtime::AnyObject>),
-            )
-        };
+        // SAFETY: a dictionary of strings is a dictionary of objects.
+        let info: Retained<NSDictionary> = unsafe { Retained::cast_unchecked(info) };
+        unsafe { content.setUserInfo(&info) };
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
             &NSString::from_str(&alert.replaces),
             &content,
@@ -146,7 +140,7 @@ pub fn tell(s: &State, alerts: Vec<Alert>) {
             if !error.is_null() {
                 return;
             }
-            crate::engine::acknowledge(vec![id]);
+            crate::engine::ask(|e| e.acknowledge(vec![id]));
             // The account may have been read again while it was posted.
             if let Some(account) = sign_in.clone()
                 && let Some(handle) = crate::HANDLE.get()
@@ -179,11 +173,13 @@ pub fn renewed(accounts: &[String]) {
 
 /// Opens Turnscope's notifications in System Settings.
 pub fn open_settings() {
-    let id = objc2_foundation::NSBundle::mainBundle()
+    let id = NSBundle::mainBundle()
         .bundleIdentifier()
         .map(|id| id.to_string())
         .unwrap_or_default();
     let url =
         format!("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id={id}");
-    crate::open_url(&url);
+    if let Some(url) = NSURL::URLWithString(&NSString::from_str(&url)) {
+        NSWorkspace::sharedWorkspace().openURL(&url);
+    }
 }
