@@ -20,8 +20,9 @@
   is still read every 5, and any account right after a limit resets.
 - **Opening the panel reads limits more than 5 minutes old**, and tries
   again an account whose read failed. So does an agent writing a new
-  login. If it finds no network, as right after the Mac wakes, it leaves
-  the account as it was.
+  login to a file; a login kept in the Keychain is found within 5
+  minutes, as before. If it finds no network,
+  as right after the Mac wakes, it leaves the account as it was.
 - **`guard` and the MCP server leave limits to the app** while it runs, so a
   hook or tool call doesn't wait on a provider then.
 - **Claude Code's login is also read from `.credentials.json`** in its

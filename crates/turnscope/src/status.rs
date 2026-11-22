@@ -659,9 +659,10 @@ fn hours_to_reset(starts: Option<i64>, resets: i64, reset: bool, now: i64) -> Op
 
 /// An account's limits, each as last read since the last read of all of
 /// them, `full_read_at`, as an agent may write some alone since
-/// (`limits::record_in_band`), or else since `read_at`; and whether any
-/// rose between its last two readings within the half hour, as use
-/// elsewhere makes them.
+/// (`limits::record_in_band`), or ever, with no such read: an agent writes
+/// only the limits that moved, so its last reading alone may miss some;
+/// and whether any rose between its last two readings within the half
+/// hour, as use elsewhere makes them.
 fn limits(
     db: &rusqlite::Connection,
     account: &str,
@@ -680,7 +681,7 @@ fn limits(
         starts: Option<i64>,
         resets: Option<i64>,
     }
-    let since = full_read_at.map_or(read_at, |full| full.min(read_at));
+    let since = full_read_at.map_or(i64::MIN, |full| full.min(read_at));
     let mut latest: BTreeMap<String, Latest> = BTreeMap::new();
     let mut rows = db.prepare_cached(
         "SELECT limit_key, at, name, scope, used, size, starts, resets FROM reading
