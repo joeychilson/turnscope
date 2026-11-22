@@ -593,7 +593,6 @@ fn apply(model: Option<&str>, tier: Option<&str>, cursor: &mut Cursor, read: &mu
     if let Some(model) = model.filter(|model| !model.is_empty()) {
         for mut waiting in cursor.waiting.drain(..) {
             waiting.model = model.to_owned();
-            waiting.priority = cursor.priority;
             read.respond(waiting);
         }
         if cursor.model.as_deref() != Some(model) {

@@ -70,8 +70,7 @@ fn workspace(credential: &Credential) -> Option<(String, Option<String>)> {
 /// `None` for an answer with no `rate_limit` at all, such as an error sent
 /// with 200, so it isn't taken for a plan without limits.
 fn parse(answer: &Value, now: i64) -> Option<Limits> {
-    let rate_limit = answer.get("rate_limit").filter(|rate| rate.is_object())?;
-    let mut readings = windows(rate_limit, None, now)?;
+    let mut readings = windows(answer.get("rate_limit")?, None, now)?;
     for extra in answer["additional_rate_limits"]
         .as_array()
         .into_iter()

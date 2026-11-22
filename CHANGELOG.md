@@ -37,8 +37,11 @@
   price, earlier usage included.
 - **The app shows an amount that rounds to no cents as `$0`**, not
   `$0.00`.
-- **A session title cut to length no longer ends in a space**, as it
-  could in `usage --json`.
+- **A session's title and project are read better**, in history read
+  before too, which is read again once after updating: a title cut to
+  length no longer ends in a space, a Pi session's title skips a blank
+  first part, and a session's project is no longer lost to an empty
+  folder its agent wrote first.
 
 ## 0.3.1
 

@@ -128,9 +128,11 @@ struct MessageData<'a> {
     #[serde(borrow)]
     model: Option<ModelRef<'a>>,
     tokens: Option<MessageTokens>,
+    #[serde(default, deserialize_with = "super::lenient")]
     time: Option<MessageTime>,
-    #[serde(rename = "providerState")]
+    #[serde(rename = "providerState", default, deserialize_with = "super::lenient")]
     provider_state: Option<ProviderState>,
+    #[serde(default, deserialize_with = "super::lenient")]
     cost: Option<f64>,
 }
 

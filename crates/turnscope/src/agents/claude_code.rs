@@ -400,14 +400,12 @@ impl Agent for ClaudeCode {
                 .is_some_and(|extension| extension == "jsonl")
         };
         let mut files = Vec::new();
-        for project in super::entries(&folder.join("projects")) {
-            for entry in std::fs::read_dir(&project).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if jsonl(&path) {
-                    files.push(path);
-                } else if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    files.extend(super::entries(&path.join("subagents")).filter(jsonl));
-                }
+        let projects = super::entries(&folder.join("projects"));
+        for path in projects.flat_map(|project| super::entries(&project)) {
+            if jsonl(&path) {
+                files.push(path);
+            } else if path.is_dir() {
+                files.extend(super::entries(&path.join("subagents")).filter(jsonl));
             }
         }
         files
@@ -991,15 +989,16 @@ mod tests {
         let creds = json!({"claudeAiOauth": {"accessToken": "file-tok", "expiresAt": 1_790_000_000_000_i64, "subscriptionType": "max"}});
         std::fs::write(&config, account.to_string()).unwrap();
         std::fs::write(folder.join(".credentials.json"), creds.to_string()).unwrap();
-        std::fs::write(work.join(".claude.json"), account.to_string()).unwrap();
+        let other = json!({"oauthAccount": {"accountUuid": "a2", "organizationUuid": "o2", "emailAddress": "me@example.com"}});
+        std::fs::write(work.join(".claude.json"), other.to_string()).unwrap();
         std::fs::write(work.join(".credentials.json"), creds.to_string()).unwrap();
-        for dir in [&folder, &work] {
+        for (dir, id) in [(&folder, "a1:o1"), (&work, "a2:o2")] {
             let logins = ClaudeCode.logins(dir, home.path()).unwrap();
             let cred = logins[0].credential.as_ref().unwrap();
             assert_eq!(cred.secret.expose(), "file-tok");
             assert_eq!(
                 cred.identity.as_ref(),
-                Some(&("a1:o1".to_owned(), Some("me@example.com".to_owned())))
+                Some(&(id.to_owned(), Some("me@example.com".to_owned())))
             );
             assert_eq!(
                 (cred.plan.as_deref(), cred.expires, cred.key),

@@ -65,7 +65,7 @@ struct Line<'a> {
     kind: Cow<'a, str>,
     #[serde(borrow)]
     id: Option<Cow<'a, str>>,
-    #[serde(borrow)]
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
     timestamp: Option<Cow<'a, str>>,
     #[serde(borrow)]
     cwd: Option<Cow<'a, str>>,
@@ -109,9 +109,10 @@ struct Usage {
     cache_read: u64,
     #[serde(rename = "cacheWrite")]
     cache_write: u64,
-    #[serde(rename = "cacheWrite1h")]
+    #[serde(rename = "cacheWrite1h", default, deserialize_with = "super::lenient")]
     cache_write_1h: Option<u64>,
     output: u64,
+    #[serde(default, deserialize_with = "super::lenient")]
     reasoning: Option<u64>,
     #[serde(default, deserialize_with = "super::lenient")]
     cost: Option<Cost>,
@@ -481,6 +482,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut odd = usage(50, 0.0);
         odd["cost"] = json!("n/a");
+        odd["reasoning"] = json!("5");
         let file = session(
             dir.path(),
             "2026-09-30T09-00-00-000Z_s1.jsonl",
