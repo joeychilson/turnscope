@@ -418,10 +418,11 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
             }
         },
     };
-    // Each answer is as of now: what changed since is read first. While the
-    // menu bar app holds `app.lock`, it keeps limits and prices current
-    // outside any agent sandbox, so a sandboxed MCP server only ingests local
-    // history and never poisons `account.problem` with blocked network calls.
+    // Each answer is as of now: what changed since is read first. Not the
+    // limits and prices while an app keeps the data current
+    // (`engine::running`): it reads them as they come due, and a call that
+    // read them too would wait on a provider, up to 15 s, for what the app
+    // reads anyway.
     let caught = if turnscope::engine::running(&server.data) {
         turnscope::ingest::ingest(db, &server.home, Some(PATIENCE))
     } else {

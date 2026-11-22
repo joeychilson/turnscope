@@ -47,9 +47,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use super::{Agent, Credential, InBand, Info, Login, Read, Response, Secret, Title, Tokens};
-use crate::providers::Reading;
-use crate::time::{DAY, HOUR};
+use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
 use crate::{Error, Result};
 
 pub struct ClaudeCode;
@@ -473,57 +471,7 @@ impl Agent for ClaudeCode {
     }
 
     fn login_file(&self, path: &Path) -> bool {
-        matches!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some(".credentials.json" | ".claude.json")
-        )
-    }
-
-    fn statusline_limits(&self, input: &Value, now: i64) -> Option<InBand> {
-        let rate_limits = input.get("rate_limits")?.as_object()?;
-        let mut readings = Vec::new();
-        for (key, name, length) in [
-            ("five_hour", "5 hours", 5 * HOUR),
-            ("seven_day", "Weekly", 7 * DAY),
-        ] {
-            let Some(window) = rate_limits.get(key) else {
-                continue;
-            };
-            let Some(used) = window["used_percentage"]
-                .as_f64()
-                .filter(|used| used.is_finite())
-            else {
-                continue;
-            };
-            let resets = match &window["resets_at"] {
-                Value::Number(num) => num.as_i64().filter(|&ts| ts > 0).map(|ts| {
-                    // Claude Code writes Unix seconds; accept milliseconds defensively.
-                    if ts > 100_000_000_000 {
-                        ts
-                    } else {
-                        ts.saturating_mul(1000)
-                    }
-                }),
-                Value::String(text) => crate::time::millis(text),
-                _ => None,
-            }
-            .or((used == 0.0).then_some(now + length));
-            readings.push(Reading {
-                key: key.to_owned(),
-                name: name.to_owned(),
-                scope: None,
-                used: used.clamp(0.0, 100.0),
-                size: None,
-                starts: resets.map(|resets| resets - length),
-                resets,
-            });
-        }
-        (!readings.is_empty()).then(|| InBand {
-            provider: "anthropic".to_owned(),
-            at: now,
-            plan: None,
-            readings,
-        })
+        path.file_name() == Some(".credentials.json".as_ref())
     }
 }
 
@@ -1077,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn logins_reads_credentials_file_when_keychain_has_none() {
+    fn a_login_kept_in_a_file_is_read_without_the_keychain() {
         let home = tempfile::tempdir().unwrap();
         let folder = home.path().join(".claude");
         std::fs::create_dir(&folder).unwrap();
@@ -1096,36 +1044,5 @@ mod tests {
         assert_eq!(cred.secret.expose(), "file-tok");
         assert_eq!(cred.plan.as_deref(), Some("max"));
         assert_eq!(cred.expires, Some(1_790_000_000_000));
-    }
-
-    #[test]
-    fn statusline_limits_reads_five_hour_and_seven_day_windows() {
-        let now = 1_790_856_000_000_i64;
-        let input = json!({
-            "session_id": "s1",
-            "rate_limits": {
-                "five_hour": {"used_percentage": 35.5, "resets_at": 1_790_863_200},
-                "seven_day": {"used_percentage": 12.0, "resets_at": "2026-10-05T00:00:00Z"}
-            }
-        });
-        let snapshot = ClaudeCode.statusline_limits(&input, now).unwrap();
-        assert_eq!(snapshot.provider, "anthropic");
-        assert_eq!(snapshot.at, now);
-        assert_eq!(snapshot.readings.len(), 2);
-        assert_eq!(snapshot.readings[0].key, "five_hour");
-        assert_eq!(snapshot.readings[0].used, 35.5);
-        assert_eq!(snapshot.readings[0].resets, Some(1_790_863_200_000));
-        assert_eq!(
-            snapshot.readings[0].starts,
-            Some(1_790_863_200_000 - 5 * HOUR)
-        );
-        assert_eq!(snapshot.readings[1].key, "seven_day");
-        assert_eq!(snapshot.readings[1].used, 12.0);
-        assert!(snapshot.readings[1].resets.is_some());
-        assert!(
-            ClaudeCode
-                .statusline_limits(&json!({"session_id": "s1"}), now)
-                .is_none()
-        );
     }
 }

@@ -117,19 +117,14 @@ pub struct Engine {
 /// A request, as a queue runs it (`queue`).
 type Work = Box<dyn FnOnce(&Inner) + Send>;
 
-/// Minimum time between explicit `Engine::poke` refreshes (panel open or Mac
-/// wake), so repeated clicks don't hammer providers.
-const POKE_GAP: Duration = Duration::from_secs(30);
-
-/// Why `keep` woke from waiting on agent folder changes.
+/// What woke `keep`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Wake {
-    /// Files changed in an agent folder.
-    Files,
-    /// A login file changed in an agent folder.
-    Auth,
-    /// The app asked for a fresh check (panel opened or Mac woke).
-    Poke,
+    /// Something was written in an agent's folder.
+    Written,
+    /// Limits were asked for: the panel opened (`Engine::ask_limits`), or
+    /// an agent wrote a login (`Agent::login_file`).
+    Asked,
 }
 
 struct Inner {
@@ -142,10 +137,8 @@ struct Inner {
     showing: Mutex<Option<Showing>>,
     /// What `Event::Kept` last said, so it's told only when it changes.
     kept: Mutex<Option<Option<Stopped>>>,
-    /// Sender to wake `keep` while this process holds `app.lock`.
+    /// What wakes `keep`, while it runs.
     wake: Mutex<Option<Sender<Wake>>>,
-    /// When `Engine::poke` last woke `keep`.
-    last_poke: Mutex<Option<Instant>>,
     /// Set once the `Engine` is dropped: its threads end at their next turn.
     ended: AtomicBool,
 }
@@ -172,7 +165,6 @@ impl Engine {
             showing: Mutex::new(None),
             kept: Mutex::new(None),
             wake: Mutex::new(None),
-            last_poke: Mutex::new(None),
             ended: AtomicBool::new(false),
         });
         let running = Arc::clone(&inner);
@@ -259,29 +251,18 @@ impl Engine {
         });
     }
 
-    /// Wake the engine to check logins and refresh any stale, failing, or
-    /// reset accounts right away, as when the panel opens or the Mac wakes.
-    /// Debounced so repeated clicks don't hammer providers.
-    pub fn poke(&self) {
-        let sender = self
+    /// Ask for limits read `limits::DUE` ago or more to be read again, and
+    /// any whose read failed, as when the panel opens
+    /// (`limits::refresh_asked`). Nothing, while another app keeps the data
+    /// current.
+    pub fn ask_limits(&self) {
+        let wake = self
             .inner
             .wake
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let Some(sender) = sender else {
-            return;
-        };
-        let mut last = self
-            .inner
-            .last_poke
-            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if last.is_some_and(|at| at.elapsed() < POKE_GAP) {
-            return;
-        }
-        if sender.send(Wake::Poke).is_ok() {
-            *last = Some(Instant::now());
+        if let Some(wake) = wake.as_ref() {
+            let _ = wake.send(Wake::Asked);
         }
     }
 
@@ -560,12 +541,8 @@ pub fn log(data: &Path, line: &str) {
     }
 }
 
-/// Whether a Turnscope app process currently holds `app.lock` in `data` and
-/// keeps the data current. Never creates `app.lock`.
-///
-/// Used by `turnscope mcp` and `turnscope guard` so a process running inside
-/// an agent's network sandbox doesn't attempt provider API calls while the
-/// unsandboxed app is already keeping limits and prices current.
+/// Whether an app keeps the data in `data` current, holding `app.lock`
+/// (`lock`), without making the file.
 pub fn running(data: &Path) -> bool {
     let Ok(file) = File::open(data.join("app.lock")) else {
         return false;
@@ -592,6 +569,14 @@ fn lock(data: &Path) -> Result<Option<File>> {
 /// shows what an agent wrote up to 5 s late.
 const GAP: Duration = Duration::from_secs(5);
 
+/// The least time between two reads of limits asked for
+/// (`limits::refresh_asked`): asked for again sooner, they're read once it's
+/// passed. Each read gathers every agent's logins, the Keychain's with
+/// `/usr/bin/security`, and asks again a provider that failed, so opening
+/// the panel again and again would ask that often. 30 s is a guess at how
+/// soon someone looks again, not measured.
+const ASKED: Duration = Duration::from_secs(30);
+
 /// What `keep` found.
 enum Caught {
     /// The limits, read before the first catch-up.
@@ -603,10 +588,10 @@ enum Caught {
     Failed(Error),
 }
 
-/// Catch up when the agents' folders change, on explicit pokes (panel open
-/// or Mac wake), and each minute, as horizons and outlooks move with the
-/// clock. Tells `told` what each catch-up came to, and returns once it says
-/// to stop.
+/// Catch up when the agents' folders change, and each minute, as horizons
+/// and outlooks move with the clock, reading the limits asked for first
+/// (`Wake::Asked`). Tells `told` what each catch-up came to, and returns
+/// once it says to stop.
 fn keep(
     home: &Path,
     data: &Path,
@@ -625,23 +610,17 @@ fn keep(
     // 100 s, measured 2026-11-11). An agent's writes to its database are in
     // the `-wal` file.
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let Ok(event) = event else {
-            let _ = changed.send(Wake::Files);
-            return;
-        };
-        let ours = !event.paths.is_empty()
-            && event
-                .paths
+        let paths = event.as_ref().map_or(&[][..], |event| &event.paths[..]);
+        let ours = !paths.is_empty()
+            && paths
                 .iter()
                 .all(|path| path.to_string_lossy().ends_with("-shm"));
-        if ours {
-            return;
-        }
-        let auth = event
-            .paths
+        let login = paths
             .iter()
             .any(|path| agents::ALL.iter().any(|agent| agent.login_file(path)));
-        let _ = changed.send(if auth { Wake::Auth } else { Wake::Files });
+        if !ours {
+            let _ = changed.send(if login { Wake::Asked } else { Wake::Written });
+        }
     })
     .map_err(|error| Error::Failed(error.to_string()))?;
     let mut watched: Vec<PathBuf> = Vec::new();
@@ -691,12 +670,14 @@ fn keep(
             return Ok(());
         }
     }
-    let mut refresh_stale = false;
+    // Limits asked for and not read yet, and when they last were.
+    let (mut asked, mut asked_at) = (false, None::<Instant>);
     loop {
         watch(&mut watcher);
-        if refresh_stale && crate::online() {
-            refresh_stale = false;
-            let read = match crate::limits::refresh_stale(&mut db, home) {
+        let mut read_asked = false;
+        if asked && crate::online() && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+            (asked, asked_at) = (false, Some(Instant::now()));
+            read_asked = match crate::limits::refresh_asked(&mut db, home) {
                 Ok(read) => read,
                 Err(error @ Error::Newer(_)) => return Err(error),
                 Err(error) => {
@@ -704,9 +685,6 @@ fn keep(
                     true
                 }
             };
-            if read && !told(Caught::Limits) {
-                return Ok(());
-            }
         }
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
@@ -714,7 +692,7 @@ fn keep(
                     crate::now().div_euclid(crate::time::MINUTE),
                     db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
                 );
-                let new = read || pushed != Some(now);
+                let new = read || read_asked || pushed != Some(now);
                 pushed = Some(now);
                 Caught::Read { new }
             }
@@ -730,50 +708,21 @@ fn keep(
             return Ok(());
         }
         let waited = Instant::now();
-        let merge = |kind: &mut Wake, next: Wake| {
-            if next == Wake::Auth || (next == Wake::Poke && *kind == Wake::Files) {
-                *kind = next;
-            }
-        };
         match changes.recv_timeout(Duration::from_secs(60)) {
-            Ok(mut kind) => {
-                if kind == Wake::Poke {
-                    while let Ok(next) = changes.try_recv() {
-                        merge(&mut kind, next);
+            Ok(wake) => {
+                asked |= wake == Wake::Asked;
+                // Let a burst of writes settle, a second at most.
+                let start = Instant::now();
+                while let Ok(wake) = changes.recv_timeout(Duration::from_millis(250)) {
+                    asked |= wake == Wake::Asked;
+                    if start.elapsed() >= Duration::from_secs(1) {
+                        break;
                     }
-                    refresh_stale = true;
-                } else {
-                    // Let a burst of writes settle, a second at most.
-                    let start = Instant::now();
-                    while let Ok(next) = changes.recv_timeout(Duration::from_millis(250)) {
-                        merge(&mut kind, next);
-                        if kind == Wake::Poke || start.elapsed() >= Duration::from_secs(1) {
-                            break;
-                        }
-                    }
-                    // Wait out `GAP` for regular history writes, but break
-                    // immediately if an auth change or explicit poke arrives.
-                    while kind == Wake::Files {
-                        let left = GAP.saturating_sub(waited.elapsed());
-                        if left.is_zero() {
-                            break;
-                        }
-                        match changes.recv_timeout(left) {
-                            Ok(next) => merge(&mut kind, next),
-                            Err(RecvTimeoutError::Timeout) => break,
-                            Err(RecvTimeoutError::Disconnected) => {
-                                return Err(Error::Failed(
-                                    "the agents' folders can't be watched".into(),
-                                ));
-                            }
-                        }
-                    }
-                    while let Ok(next) = changes.try_recv() {
-                        merge(&mut kind, next);
-                    }
-                    if matches!(kind, Wake::Auth | Wake::Poke) {
-                        refresh_stale = true;
-                    }
+                }
+                // The next catch-up reads what's written meanwhile.
+                std::thread::sleep(GAP.saturating_sub(waited.elapsed()));
+                while let Ok(wake) = changes.try_recv() {
+                    asked |= wake == Wake::Asked;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -1220,7 +1169,7 @@ mod tests {
     }
 
     /// One app keeps a data directory current at a time, and the next can
-    /// once it's gone. `running` reports that state without creating a lock.
+    /// once it's gone; `running` says so without making `app.lock`.
     #[test]
     fn one_app_holds_the_lock_at_a_time() {
         let data = tempfile::tempdir().unwrap();

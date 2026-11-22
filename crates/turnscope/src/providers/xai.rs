@@ -49,7 +49,7 @@ impl Provider for Xai {
         // version it no longer takes, which signing in again wouldn't fix.
         let answer = super::asked(
             BILLING,
-            credential,
+            &credential.secret,
             &[
                 "X-XAI-Token-Auth: xai-grok-cli",
                 "x-grok-client-identifier: grok-shell",

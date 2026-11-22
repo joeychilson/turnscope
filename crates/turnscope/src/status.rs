@@ -20,14 +20,15 @@ use text::NONE_READ;
 pub use text::{fit, limit_text, line, none, stale, text, verdict};
 
 /// How recently a response must have drawn on an account for it to be in use.
-const IN_USE: i64 = 30 * MINUTE;
+pub(crate) const IN_USE: i64 = 30 * MINUTE;
 
 /// How recently, for it to be one the person uses.
 const RECENT: i64 = 7 * DAY;
 
 /// How long readings stand. After that an outlook is no longer said, and an
 /// account with no newer read shows as of its last one, whatever stopped
-/// the next: limits are read every 5 minutes while anything runs.
+/// the next: while anything runs, limits are read every 5 minutes of an
+/// account in use, and every 20 of one not (`limits::Schedule`).
 const STALE: i64 = 30 * MINUTE;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -524,7 +525,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
         "SELECT id, provider, kind, title, label, hidden, read_at, problem,
              EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?1),
              (SELECT reads FROM failing WHERE account = a.id),
-             full_read_at
+             full_read_at, checked_at
          FROM account a",
     )?;
     let mut rows = rows.query([now - RECENT])?;
@@ -534,6 +535,12 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
         let problem: Option<String> = row.get(7)?;
         let failed: Option<i64> = row.get(9)?;
         let full_read_at: Option<i64> = row.get(10)?;
+        let checked_at: Option<i64> = row.get(11)?;
+        // Readings an agent wrote after the read that failed, as Codex does
+        // as it works, are current (`limits::record_in_band`).
+        let problem = problem.filter(|_| {
+            checked_at.is_none_or(|checked| read_at.is_none_or(|read| read <= checked))
+        });
         let agents = signed.remove(&id).unwrap_or_default();
         let why = match problem.as_deref() {
             _ if agents.is_empty() => Some(Stale::SignedOut),
@@ -664,9 +671,10 @@ fn hours_to_reset(starts: Option<i64>, resets: i64, reset: bool, now: i64) -> Op
     Some(until.max(0) as f64 / HOUR as f64)
 }
 
-/// An account's latest reading per limit since its last full poll (preserving
-/// scoped limits when a newer in-band reading only updated core windows), and
-/// whether any rose between its last two reads within the half hour, as use
+/// An account's limits, each as last read since the last read of all of
+/// them, `full_read_at`, as an agent may write some alone since
+/// (`limits::record_in_band`), or else since `read_at`; and whether any
+/// rose between its last two readings within the half hour, as use
 /// elsewhere makes them.
 fn limits(
     db: &rusqlite::Connection,
@@ -1555,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn in_band_readings_preserve_scoped_limits_from_last_full_poll() {
+    fn limits_an_agent_wrote_show_beside_those_it_did_not() {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::open(dir.path()).unwrap();
         let full_at = 2 * HOUR;
@@ -1572,8 +1580,8 @@ mod tests {
             [],
         )
         .unwrap();
-        // Full poll wrote core + scoped limits at `full_at`; in-band wrote
-        // only core limits at `in_band_at`.
+        // A read of all of them at `full_at`; the agent wrote the plan's own
+        // at `in_band_at`.
         db.execute(
             "INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets) VALUES
                  ('anthropic:a', 'five_hour', ?1, '5 hours', NULL, 20.0, 0, ?3),

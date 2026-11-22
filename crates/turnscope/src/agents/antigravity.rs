@@ -77,10 +77,11 @@ const TRANSCRIPT: &str = "transcript_full.jsonl";
 /// The Keychain item, service and account, where the app and `agy` keep
 /// their one Google sign-in.
 const SIGN_IN: (&str, &str) = ("gemini", "antigravity");
-/// The plain JSON file in `~/.gemini` that Antigravity's
-/// `compositeTokenStorage` falls back to when Keychain fails, times out, or
-/// is bypassed (verified in Antigravity 2.34.0 `NewFileTokenStorage`,
-/// 2026-11-21).
+/// The file in `~/.gemini` Antigravity keeps its sign-in in when the
+/// Keychain fails it: 2.34.0's `language_server` names it beside "failed to
+/// unmarshal token", in a file store beside its Keychain one (read
+/// 2026-11-22). None was written on this Mac, so it's taken to hold the
+/// Keychain item's JSON without the base64.
 const FALLBACK: &str = "jetski-standalone-oauth-token";
 /// What go-keyring puts before a value it wrote as base64.
 const WRAPPED: &str = "go-keyring-base64:";
@@ -148,13 +149,13 @@ impl Agent for Antigravity {
 
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
         let (service, account) = SIGN_IN;
-        let keychain = super::keychain(home, service, Some(account), |kept| signed_in(kept, home))
+        let kept = super::keychain(home, service, Some(account), |kept| signed_in(kept, home))
             .map(Option::flatten);
         let file = super::json_file(&folder.join(FALLBACK))
-            .map(|kept| kept.and_then(|kept| credential(&kept, home)));
+            .map(|file| file.and_then(|file| credential(&file, home)));
         Ok(vec![Login {
             provider: "google".to_owned(),
-            credential: super::fresher(keychain, file)?,
+            credential: super::fresher(kept, file)?,
         }])
     }
 
@@ -177,16 +178,14 @@ impl Agent for Antigravity {
 /// Google account. Why not, for a value that doesn't read: taking that for
 /// signed out would sign its account out.
 ///
-/// Read 2026-11-10, the value was base64 JSON: `token` with `access_token`,
-/// `refresh_token` and `expiry`, `auth_method`, `id_token_email`, and
-/// `writer_id`. From app 2.33.1 on (verified in 2.34.0, 2026-11-21), each
-/// `language_server` process generates a new `writer_id`, writes it to
-/// Keychain only on interactive login, and skips saving hourly refreshes
-/// whenever `writer_id` differs, leaving Keychain expired after a restart,
-/// update, or switch between the app and `agy`. So `refresh_token` is passed
-/// along with Antigravity's installed binary paths so the Google provider can
-/// renew an expired access token in memory without writing to Antigravity's
-/// files or Keychain.
+/// Read 2026-11-10, the value was base64 JSON: `token` with its
+/// `access_token`, `refresh_token` and `expiry`, `auth_method`, and
+/// `id_token_email`, the only name of the account, so its id and its label.
+/// The app 2.31.0 wrote each token it renewed back to the item (one had 22
+/// minutes left, hours after sign-in); 2.33.1 doesn't (measured 2026-11-21: the item was last written the day before
+/// the app started, and 17 hours on the app still hadn't). So the token in
+/// the item has expired within an hour of sign-in, and Google renews it
+/// with its refresh token, in memory (`providers::google`).
 ///
 /// Only `auth_method` `consumer`, a Google account's, is read: Google
 /// answers a token of Antigravity's other client with limits nothing has
@@ -205,58 +204,38 @@ fn signed_in(kept: &[u8], home: &Path) -> std::result::Result<Option<Credential>
     Ok(credential(&kept, home))
 }
 
-/// The Google consumer sign-in `kept` holds, whether from Keychain or the
-/// plain JSON fallback file.
+/// The sign-in `kept` holds, the Keychain item's JSON or the file's, when
+/// it's one to a Google account.
 fn credential(kept: &Value, home: &Path) -> Option<Credential> {
-    let token = kept["token"]["access_token"]
-        .as_str()
-        .filter(|token| !token.is_empty());
-    let (Some(token), Some("consumer")) = (token, kept["auth_method"].as_str()) else {
+    let text = |at: &str| kept.pointer(at)?.as_str().filter(|text| !text.is_empty());
+    let (Some(token), Some("consumer")) = (text("/token/access_token"), text("/auth_method"))
+    else {
         return None;
     };
-    let email = kept["id_token_email"]
-        .as_str()
-        .filter(|email| !email.is_empty());
-    let refresh = kept["token"]["refresh_token"]
-        .as_str()
-        .filter(|refresh| !refresh.is_empty())
-        .map(|refresh| Refresh {
-            token: Secret::new(refresh),
-            binaries: binaries(home),
-        });
     Some(Credential {
         provider: "google",
         secret: Secret::new(token),
         key: false,
-        expires: kept["token"]["expiry"]
-            .as_str()
-            .and_then(crate::time::millis),
-        identity: email.map(|email| (email.to_owned(), Some(email.to_owned()))),
+        expires: text("/token/expiry").and_then(crate::time::millis),
+        identity: text("/id_token_email").map(|email| (email.to_owned(), Some(email.to_owned()))),
         plan: None,
-        refresh,
+        refresh: text("/token/refresh_token").map(|token| Refresh {
+            token: Secret::new(token),
+            programs: programs(home),
+        }),
     })
 }
 
-/// Copies of Antigravity's binary holding its Google OAuth client, in
-/// preference order. Fast existence checks only: a binary is read only when
-/// refreshing an expired Google token.
-fn binaries(home: &Path) -> Vec<PathBuf> {
-    let mut candidates = vec![
-        home.join("Applications").join(APP),
+/// Where Antigravity's programs may be, which hold the client its sign-in is
+/// renewed with: the app's in `/Applications` and `agy` in `~/.local/bin`,
+/// where they were on this Mac (2026-11-22), and the app in the person's
+/// own `~/Applications`.
+fn programs(home: &Path) -> Vec<PathBuf> {
+    vec![
         Path::new("/Applications").join(APP),
+        home.join("Applications").join(APP),
         home.join(".local/bin").join(INFO.command),
-        PathBuf::from("/opt/homebrew/bin").join(INFO.command),
-        PathBuf::from("/usr/local/bin").join(INFO.command),
-    ];
-    if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(std::env::split_paths(&path).map(|dir| dir.join(INFO.command)));
-    }
-    let mut seen = std::collections::HashSet::new();
-    candidates
-        .into_iter()
-        .filter(|path| path.is_file())
-        .filter(|path| seen.insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.clone())))
-        .collect()
+    ]
 }
 
 /// What the person typed, of a `USER_INPUT` line's `content`: it's in
@@ -973,12 +952,9 @@ mod tests {
     }
 
     #[test]
-    fn a_sign_in_is_read_from_go_keyring_or_the_plain_json_fallback() {
+    fn a_sign_in_is_read_from_what_go_keyring_wrote_or_the_file() {
         use base64::engine::general_purpose::STANDARD;
         let home = tempfile::tempdir().unwrap();
-        let binary = home.path().join("Applications").join(APP);
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::write(&binary, b"fake").unwrap();
         let wrapped = |kept: &Value| format!("{WRAPPED}{}\n", STANDARD.encode(kept.to_string()));
         let kept = json!({
             "token": {
@@ -1016,7 +992,6 @@ mod tests {
         );
         let refresh = credential.refresh.as_ref().unwrap();
         assert_eq!(refresh.token.expose(), "made-up-refresh");
-        assert_eq!(refresh.binaries.first(), Some(&binary));
 
         // Another way of signing in isn't read, nor a sign-in with no token.
         let mut other = kept.clone();
@@ -1045,19 +1020,47 @@ mod tests {
             .is_err()
         );
 
-        // The plain JSON fallback file in `~/.gemini` is read when Keychain
-        // holds no item, and fails if half written.
+        // The file is read as the item is, and one half written isn't taken
+        // for signed out.
         let folder = Antigravity.folders(home.path()).remove(0);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(FALLBACK), kept.to_string()).unwrap();
         let logins = Antigravity.logins(&folder, home.path()).unwrap();
         let from_file = logins[0].credential.as_ref().unwrap();
         assert_eq!(from_file.secret.expose(), "made-up-token");
-        assert_eq!(
-            from_file.refresh.as_ref().unwrap().token.expose(),
-            "made-up-refresh"
-        );
         std::fs::write(folder.join(FALLBACK), "{").unwrap();
         assert!(Antigravity.logins(&folder, home.path()).is_err());
+    }
+
+    #[test]
+    fn of_the_keychain_and_the_file_the_newer_sign_in_is_read() {
+        let signed = |token: &str, expires: i64| {
+            Ok(Some(Credential {
+                provider: "google",
+                secret: Secret::new(token),
+                key: false,
+                expires: Some(expires),
+                identity: None,
+                plan: None,
+                refresh: None,
+            }))
+        };
+        let failed = || Err(crate::Error::Failed("made-up failure".to_owned()));
+        let read = |kept, file| {
+            crate::agents::fresher(kept, file)
+                .unwrap()
+                .map(|one| one.secret.expose().to_owned())
+        };
+        assert_eq!(
+            read(signed("kept", 1), signed("file", 2)).as_deref(),
+            Some("file")
+        );
+        assert_eq!(
+            read(signed("kept", 2), signed("file", 1)).as_deref(),
+            Some("kept")
+        );
+        assert_eq!(read(failed(), signed("file", 1)).as_deref(), Some("file"));
+        assert_eq!(read(signed("kept", 1), failed()).as_deref(), Some("kept"));
+        assert!(crate::agents::fresher(Ok(None), failed()).is_err());
     }
 }

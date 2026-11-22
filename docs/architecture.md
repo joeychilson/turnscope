@@ -48,9 +48,9 @@ formats correctly, and the forecast.
 
 | Source | Gives |
 |---|---|
-| Agents' history files | Responses, sessions, and in-band readings (Codex `token_count.rate_limits`) |
+| Agents' history files | Responses, sessions, and the limits Codex writes as it works |
 | Agents' login files and the Keychain | Which account each agent folder is signed in to, and the logins to read limits with |
-| Providers' APIs and `statusline` stdin | Readings (Claude Code passes live `rate_limits` on `statusline` stdin) |
+| Providers' APIs | Readings |
 | models.dev | Prices |
 
 Everything is kept in one SQLite file, `turnscope.db`, in the data
@@ -63,7 +63,7 @@ directory. Times are UTC milliseconds and money is dollars. The schema is
 | `session` | Each session: agent, project, title, and the session it's a subagent of |
 | `session_file` | Which files tell of each session |
 | `response` | One row per response: tokens, prompt size, the cost the agent recorded, its cost, its account, and the file that last reported it |
-| `account` | Each account: provider, kind, title, label, whether it's hidden, the last read that worked (`read_at`), the last full API poll (`full_read_at`), when it was last checked (`checked_at`), when its next check is due (`next_check_at`), and what went wrong with the last read |
+| `account` | Each account: provider, kind, title, label, whether it's hidden, its last reading, the last read of all its limits that worked, when its provider was last asked, and what went wrong then |
 | `failing` | Each account whose last read failed: how many reads in a row failed that way, what the last met, and when it's read next |
 | `reading` | Each limit at each read: name, scope, percent used, size in dollars, the window's start and reset |
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
@@ -197,7 +197,6 @@ pub trait Agent: Sync {
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>>;
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
     fn login_file(&self, _path: &Path) -> bool { false }
-    fn statusline_limits(&self, _input: &Value, _now: i64) -> Option<InBand> { None }
 }
 
 pub trait Provider: Sync {
@@ -207,7 +206,6 @@ pub trait Provider: Sync {
     fn account_limits(&self, _credential: &Credential, _now: i64, _by: Instant) -> std::result::Result<Vec<Reading>, Problem> { Ok(Vec::new()) }
     fn rolls(&self, _key: &str) -> Option<i64> { None }
     fn plan_mark(&self, _limits: &Limits) -> Option<i64> { None }
-    fn refreshes(&self) -> bool { false }
     fn makes(&self, _model: &str) -> bool { false }
 }
 ```
@@ -221,20 +219,20 @@ pub trait Provider: Sync {
 1. Prices, when six hours have passed since any process last took
    models.dev's catalog in, ten minutes after models.dev couldn't be read,
    or two minutes after a process asked it and ended before the answer.
-2. Limits, scheduled per account: active accounts (drawn on in the last 15
-   minutes or with rising limits) every 5 minutes unless a fresh in-band
-   reading arrived in the last 2 minutes and a full poll ran within 25
-   minutes; idle accounts every 25 minutes (5 minutes before `STALE`); and
-   any account right after a window's reset passes. Login discovery runs at
-   least every 5 minutes, and immediately on panel open, Mac wake, or login
-   file changes. An account whose provider answered but was busy or not
-   understood waits longer: 5 minutes, then 10, 20 and 30 at most, or as
-   long as the provider asks, up to 30 (`limits::backoff`). One that didn't
-   answer, as while the Mac is offline, doesn't. A read that fails
-   differently from the one before is added to `app.log`.
-3. The agents' history, every time (also recording Codex's in-band
-   `rate_limits` snapshots without overwriting scoped limits from the last
-   full poll).
+2. Limits, of each account as they come due (`limits::Schedule`): 5
+   minutes after its last reading while it's in use, 20 while it isn't,
+   and right after one of its windows resets. All of an account's limits
+   are read at least every 20 minutes, whatever an agent writes of some of
+   them meanwhile. The agents' logins are gathered for each read, and
+   every 5 minutes otherwise: an account first signed in to then is read
+   at once. An account whose
+   provider answered but was busy or not understood waits longer: 5
+   minutes, then 10, 20 and 30 at most, or as long as the provider asks,
+   up to 30 (`limits::backoff`). One that didn't answer, as while the Mac
+   is offline, doesn't. A read that fails differently from the one before
+   is added to `app.log`.
+3. The agents' history, every time, with the limits Codex writes as it
+   works (`limits::record_in_band`).
 
 With `TURNSCOPE_OFFLINE` set to anything but `0`, it skips prices and
 limits. A provider out of reach leaves things as they were.
@@ -242,10 +240,10 @@ limits. A provider out of reach leaves things as they were.
 | Process | Catches up |
 |---|---|
 | A CLI command that reports data | Before it answers. `connect`, `disconnect`, and `accounts hide` and `show` don't. |
-| `guard` | Limits only, when due and no menu bar app holds `app.lock`. A hook waits for it, so it reads no history or prices. |
-| `statusline` | Never hits the network. Reads the database alone, and records live `rate_limits` piped on stdin on a best-effort 50 ms write when changed. |
-| `mcp` | Before each tool call: history only when a menu bar app holds `app.lock` (avoiding sandboxed network failures), or a full catch-up otherwise. |
-| An app | On a thread of its own (`engine`): at start, with the limits first; immediately on panel open, Mac wake (debounced to 30 s), or login file changes; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. |
+| `guard` | Limits only, when due, and not while an app runs. A hook waits for it, so it reads no history or prices. |
+| `statusline` | Never. It reads the database alone. |
+| `mcp` | Before each tool call, history only while an app runs. |
+| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login, it reads first the limits more than 5 minutes old and those whose read failed, at most every 30 s (`limits::refresh_asked`). |
 
 While an app runs, the other processes rarely find anything new to read.
 
@@ -484,18 +482,18 @@ and what the backtest measured on this Mac's real limit history
   printed, serialized or cloned. An API key is known by its fingerprint,
   the first 16 hex digits of its SHA-256.
 - **One way to the network.** Every request goes through `/usr/bin/curl`
-  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. The one
-  exception is Antigravity's app on this Mac, asked over HTTP at
-  127.0.0.1, never through a proxy. Headers, with any credential, go to
-  curl on standard input, never in its arguments or environment. A header
-  with a line break isn't sent. A request is a GET, but for Google's
-  limits, which answer only a POST: its body is an argument, and holds no
-  secret.
+  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. Headers, with
+  any credential, go to curl on standard input, never in its arguments or
+  environment. A header with a line break isn't sent. A request is a GET,
+  but for Google's limits, which answer only a POST: its body is an
+  argument, and holds no secret. Renewing Antigravity's login is a POST
+  of a form, which goes on standard input as headers do.
 - **Logins are only read.** Each is sent only to its own provider, and
-  never once it has expired. While Antigravity's app runs, its own token
-  is sent to the app instead, and nothing to Google. Turnscope never
-  refreshes a token or writes an agent's files. `connect` and
-  `disconnect` run the agent's own command.
+  never once it has expired, but for Antigravity's: Turnscope renews it
+  with Google, with its refresh token and the client secret in
+  Antigravity's program, and keeps the new token in memory alone
+  (`providers::google`). Turnscope never writes an agent's files or the
+  Keychain. `connect` and `disconnect` run the agent's own command.
 - **The data directory** is the owner's alone: it's created 0700.
 - **The MCP server only reads.** A session's title is what someone asked
   there, so its instructions tell agents to read one as data, not as an

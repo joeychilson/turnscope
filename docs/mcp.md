@@ -119,7 +119,7 @@ way.
   ```
 
 - Each call first reads what's new: history, and limits and prices when
-  they're due. A provider that can't be reached leaves its account as it
+  they're due, unless the app runs, which reads those itself. A provider that can't be reached leaves its account as it
   was last read. If reading fails, as when a newer Turnscope has written
   to the data since the server started, or another Turnscope has been
   reading history for over a second, as the app does at its first launch,
