@@ -4,41 +4,39 @@
 
 - **Antigravity's limits are read whether its app is open or not.**
   Antigravity 2.33.1 and later don't save the login they renew, so
-  Turnscope renews it with Google itself, in memory, as the app does.
-  0.3.1 asked the open app instead, which found nothing from 2.34.0 on and
-  said to open Antigravity to renew its login.
-- **An account whose login can't be read says so.** When the Keychain is
-  locked, say, the account says its limits couldn't be read since, and
-  why goes in `app.log`. It went on saying what it said before, such as
-  to renew its login.
-- **Codex's limits update as it works.** Codex writes the account's limits
-  with each response, and Turnscope now takes them in as it reads Codex's
-  history, offline too. A limit Codex doesn't write, as one on some
-  models, stays as Turnscope last read it.
-- **Accounts not in use are read every 20 minutes**, not every 5. An
-  account in use, drawn on in the last half hour or with a limit risen,
-  is still read every 5, and any account right after a limit resets.
-- **Opening the panel reads limits more than 5 minutes old**, and tries
-  again an account whose read failed. So does an agent writing a new
-  login to a file; a login kept in the Keychain is found within 5
-  minutes, as before. If it finds no network,
-  as right after the Mac wakes, it leaves the account as it was.
-- **`guard` and the MCP server leave limits to the app** while it runs, so a
-  hook or tool call doesn't wait on a provider then.
-- **Claude Code's login is also read from `.credentials.json`** in its
-  folder, where Claude Code keeps it without the Keychain, and the fresher
-  copy is used.
-- **An expired login no longer asks you to open its agent.** The agent
-  renews it when it runs, so the row goes on showing its limits as last
-  read, and opened, says when that was.
-- **A Google AI plan goes by the pool it draws on.** While you work on
+  Turnscope now renews it with Google itself and keeps it in memory, as
+  the app does. 0.3.1 asked the open app, which stopped working in 2.34.0.
+- **Codex's limits update as Codex works**, offline too: Turnscope takes in
+  the limits Codex writes with each response. A limit Codex doesn't write,
+  such as one on some models, stays as last read.
+- **An account not in use is read every 20 minutes**, not every 5. One in
+  use is still read every 5, and any account right after a limit resets.
+- **Opening the panel reads limits more than 5 minutes old**, and those
+  whose read failed. So does an agent writing a new login file. If that
+  read finds no network, as right after the Mac wakes, the account stays
+  as it was.
+- **An account whose login can't be read**, as while the Keychain is
+  locked, says it couldn't be read since its last read, and `app.log` says
+  why. Before, it kept saying what it said last, such as to renew its
+  login.
+- **An expired login no longer asks you to open its agent**, which renews
+  it when it runs. The account keeps showing its limits as last read, and
+  says when that was.
+- **Claude Code's login is also read from `.credentials.json`**, where
+  Claude Code keeps it when it doesn't use the Keychain. The copy that
+  expires later is used.
+- **`guard` and the MCP server leave limits and prices to the app** while
+  it runs, so a hook or a tool call doesn't wait on a provider.
+- **A Google AI plan goes by the pool it last drew on.** While you work on
   Claude or GPT, the panel, the status line, `status --hours` and
   `check_limits` go by the Claude and GPT limits, and say when they're used
-  up: they went by Gemini's, which said there was room. Gemini's limits are
-  now named `(Gemini)`, and their work rate and what used them count Gemini
-  usage alone.
-- **Claude used through Antigravity has a cost,** at Anthropic's list
-  prices, including what was used before.
+  up. Before, they went by Gemini's and said there was room. Gemini's
+  limits are now named `(Gemini)`, and their work rate and what used them
+  count Gemini usage alone.
+- **Claude used through Antigravity has a cost**, at Anthropic's list
+  price, earlier usage included.
+- **The app shows an amount that rounds to no cents as `$0`**, not
+  `$0.00`.
 
 ## 0.3.1
 

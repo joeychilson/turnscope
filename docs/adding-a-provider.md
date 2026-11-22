@@ -21,8 +21,6 @@ real answers from it: each limit's fields, what a plan without a window
 sends, how times are written, and what a refused login gets: its status,
 and whether its body is an HTML page, which `ask` doesn't count as refused.
 The module comment of `src/providers/acme.rs` says how its API answers.
-Each decision you measured goes on the code it applies to, with its
-numbers and dates.
 
 ## 2. Describe it in `Info`
 
@@ -47,12 +45,11 @@ static INFO: Info = Info {
 };
 ```
 
-| Field | Type | What it is |
-|---|---|---|
-| `id` | `&'static str` | As stored, as agents' logins name it, as the logo's file name, and as models.dev names it, so its models are priced. |
-| `name` | `&'static str` | As people know it. An API-key account is titled `<name> API key`. |
-| `subscription` | `Option<&'static str>` | What its plans are called, before the plan. A subscription account is titled `<subscription> <plan>`, such as `Claude Max`, or `<subscription>` alone when no plan is known, as `OpenCode Go` is. `None` for a provider that sells no plans: every account is then titled `<name> API key`. |
-| `key_limits` | `bool` | Whether an API key an agent holds reads any limit, as OpenRouter's does. Where it doesn't, as Anthropic's, an API-key account is listed with no limits, and `limits` is never given a key. |
+Each field's doc comment says what it is. The `id` is also the logo's file
+name and the provider's id at models.dev, so its models are priced. A
+subscription account is titled `<subscription> <plan>`, such as `Claude
+Max`, or `<subscription>` alone when no plan is known; an API-key account
+`<name> API key`.
 
 ## 3. Implement `Provider`
 
@@ -102,30 +99,28 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
 or `None` when it can't tell: that login's usage is then no account's. By
 default a key's is the provider's API account and a sign-in's is
 `credential.identity`, which the agent's files gave. Implement it where
-the token's claims tell more (`crate::agents::claims`). An `Account`:
-
-| Field | What it is |
-|---|---|
-| `id` | `acme:<the provider's id for it>`. Never put a secret in it: an account known only by its key uses `key-` and `credential.secret.fingerprint()`, as OpenCode Go's does. |
-| `kind` | `Kind::Subscription`, a plan with percent limits that reset, or `Kind::ApiKey`, paid as used, whose limits, where it has any, are money. |
-| `label` | What tells it from another of its kind, such as an email address. |
+the token's claims tell more (`crate::agents::claims`). Never put a
+secret in an account's id: one known only by its key uses `key-` and
+`credential.secret.fingerprint()`, as OpenCode Go's does.
 
 `limits` reads what a login reads now: a sign-in's account's limits, or a
 key's own. `now` is Unix milliseconds, for an answer that gives a reset as
 time from now. `by` is when the account's read must end: pass it to every
 request, which asks nothing once it's past. It returns a `Limits`: the
 `plan` as the provider reports it (`max`, `plus`), and a `Reading` per
-limit:
+limit. Beyond the doc comments on `Reading`:
 
-| Field | What it is |
-|---|---|
-| `key` | The same at every read: it names the limit in readings, alerts and what used it most. A limit that belongs to one API key is keyed `key-<fingerprint>`, from `credential.secret.fingerprint()`: the status then shows the agents holding that key, and the limit never decides how the account stands. |
-| `name` | As the user knows it: `5 hours`, `Weekly`, `Credits`. A limit of money whose name ends in `s` is said as plural, "Credits are used up", by the command line, the MCP server and the app alike. |
-| `scope` | The model it covers, when not all: `Opus`. Join several with "and", as `Claude and GPT`: a breakdown counts the responses of models whose id names any of them. A limit on use no agent here makes, as Anthropic's on other apps, gets a scope that names no model, `Other apps`, so it counts none. A limit with a scope never decides how its account stands while one without does. |
-| `used` | Percent used. For a limit of money, what was spent divided by the limit, times 100. |
-| `size` | Dollars, for a limit of money. For one that never resets, all that was ever bought, as OpenRouter's credits are, so it grows when more is: a `usedUp` alert is raised once per size. |
-| `starts` | When its window started, in Unix milliseconds. `None` for a window that rolls, which then has no outlook or work left. |
-| `resets` | When its window resets. `None` for a limit that never resets, such as credits. |
+- `key` is the same at every read: it names the limit in readings, alerts
+  and what used it. A limit of one API key is keyed `key-<fingerprint>`:
+  the status then shows the agents holding that key, and the limit never
+  decides how the account stands.
+- `name` is as the user knows it: `5 hours`, `Weekly`, `Credits`. A limit
+  of money whose name ends in `s` is said as plural: "Credits are used up".
+- `starts` and `resets` are Unix milliseconds. `starts` is `None` for a
+  window that rolls, which then has no outlook or work left; `resets` is
+  `None` for a limit that never resets, such as credits.
+- A limit with a `scope` never decides how its account stands while one
+  without does.
 
 Where every key of an API-key account reads the same limits of the
 account itself, as OpenRouter's credits, implement `account_limits` for
@@ -162,13 +157,9 @@ A failure is a `Problem`:
   answer `parse` doesn't understand, use `Problem::not_understood(url)`;
   for anything else, `Problem::unavailable(why)`.
 
-The helpers in `src/providers/mod.rs` each have a doc comment:
-`account(provider, credential, identity)` and `api_account(provider)`;
-`ask(url, credential, headers, by)`, `asked(url, token, headers, body,
-refused, by)`, `post_form(url, fields, by)` and `request(url, headers,
-body, seconds)`; and
-`absent(window)`, `reset(value)`, `window(key, scope, used, length,
-resets)`, `window_name(length)` and `words(key)` for reading an answer.
+The helpers in `src/providers/mod.rs` make requests (`ask`, `asked`,
+`post_form`) and read answers (`absent`, `reset`, `window`, `window_name`,
+`words`).
 
 How Turnscope calls it, as each account's limits come due
 (`limits::Schedule`), or less often while it answers but is unavailable
@@ -192,7 +183,7 @@ Rules:
   except where renewing takes nothing from the agent: a provider whose
   refresh token isn't replaced when used, as Google's, renews a login
   that carries a `refresh`, and keeps the new token in memory alone.
-- **Requests** go only through `ask`, `asked`, `post_form` or `request`:
+- **Requests** go only through the helpers in `src/providers/mod.rs`:
   curl with the credential on standard input, Turnscope's only way to the
   network. A request changes nothing at the provider.
 - **An answer that isn't understood** is `Problem::not_understood`, not an
@@ -268,15 +259,15 @@ provider changes no CLI snapshot.
 ## 7. Add its logo
 
 Add a logo at `crates/turnscope-macos/assets/logos/providers/acme.svg`, as
-[its README](../crates/turnscope-macos/assets/logos/README.md) says. Without one, the
-app draws a generic mark.
+[its README](../crates/turnscope-macos/assets/logos/README.md) says.
+Without one, the panel shows a key in its place.
 
 ## 8. Update the docs
 
 Name the provider in:
 
 - `README.md`: the supported providers, with what its plans are called.
-- `docs/architecture.md`: the glossary and the code map.
+- `docs/architecture.md`: the glossary.
 - `CHANGELOG.md`.
 
 ## Done when
