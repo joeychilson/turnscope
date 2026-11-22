@@ -811,12 +811,8 @@ mod tests {
     /// An engine on `data` and `home`, and what it tells.
     fn start(data: &Path, home: &Path) -> (Engine, Receiver<Event>) {
         let (sender, told) = mpsc::channel();
-        let sender = Mutex::new(sender);
         let engine = Engine::start(data.into(), home.into(), home.into(), move |event| {
-            let _ = sender
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .send(event);
+            let _ = sender.send(event);
         });
         (engine, told)
     }
@@ -831,6 +827,14 @@ mod tests {
                 return picked;
             }
         }
+    }
+
+    /// The next stop told, within `wait`.
+    fn stopped(told: &Receiver<Event>, wait: u64) -> Stopped {
+        next(told, wait, |event| match event {
+            Event::Kept(Some(stopped)) => Some(stopped),
+            _ => None,
+        })
     }
 
     /// Prices and limits count as read just now, so nothing is asked over
@@ -854,19 +858,12 @@ mod tests {
                 .execute_batch(newer)
                 .unwrap();
             let (_engine, told) = start(data.path(), home.path());
-            let stopped = next(&told, 10, |event| match event {
-                Event::Kept(Some(stopped)) => Some(stopped),
-                _ => None,
-            });
             let why = crate::db::newer().to_string();
-            assert_eq!(
-                stopped,
-                Stopped {
-                    why,
-                    trying_again: false
-                },
-                "{newer}"
-            );
+            let stop = Stopped {
+                why,
+                trying_again: false,
+            };
+            assert_eq!(stopped(&told, 10), stop, "{newer}");
         }
     }
 
@@ -891,12 +888,9 @@ mod tests {
         });
         db.execute_batch(NEWER[1]).unwrap();
         std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
-        let stopped = next(&told, 20, |event| match event {
-            Event::Kept(Some(stopped)) => Some(stopped),
-            _ => None,
-        });
-        assert_eq!(stopped.why, crate::db::newer().to_string());
-        assert!(!stopped.trying_again);
+        let stop = stopped(&told, 20);
+        assert_eq!(stop.why, crate::db::newer().to_string());
+        assert!(!stop.trying_again);
         engine.hide("anthropic:a".to_owned(), true);
         let hidden = next(&told, 10, |event| match event {
             Event::Shown(shown, _) => Some(shown.status.accounts[0].hidden),
@@ -908,7 +902,7 @@ mod tests {
             Event::Connected { error, .. } => Some(error),
             _ => None,
         });
-        assert_eq!(error, Some(stopped.why));
+        assert_eq!(error, Some(stop.why));
     }
 
     /// A status worked out before a hide, and slow to be told, is told
@@ -927,11 +921,9 @@ mod tests {
         let (sender, told) = mpsc::channel();
         let (holding, held) = mpsc::channel();
         let (release, released) = mpsc::channel::<()>();
-        let (sender, holding, released) = (
-            Mutex::new(sender),
-            Mutex::new(holding),
-            Mutex::new(released),
-        );
+        // Called from any thread, the closure must be `Sync`: a `Receiver`
+        // isn't.
+        let released = Mutex::new(released);
         let first = AtomicBool::new(true);
         // The first status is held until the test lets it go.
         let engine = Engine::start(
@@ -942,16 +934,13 @@ mod tests {
                 if let Event::Shown(shown, _) = &event
                     && first.swap(false, Ordering::Relaxed)
                 {
-                    let _ = holding
-                        .lock()
-                        .unwrap()
-                        .send(shown.status.accounts[0].hidden);
+                    let _ = holding.send(shown.status.accounts[0].hidden);
                     let _ = released
                         .lock()
                         .unwrap()
                         .recv_timeout(Duration::from_secs(10));
                 }
-                let _ = sender.lock().unwrap().send(event);
+                let _ = sender.send(event);
             },
         );
         let hidden = held.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -1025,12 +1014,9 @@ mod tests {
             matches!(event, Event::Kept(None)).then_some(())
         });
         db.execute_batch(NEWER[1]).unwrap();
-        let stopped = next(&told, 10, |event| match event {
-            Event::Kept(Some(stopped)) => Some(stopped),
-            _ => None,
-        });
-        assert_eq!(stopped.why, crate::db::newer().to_string());
-        assert!(!stopped.trying_again);
+        let stop = stopped(&told, 10);
+        assert_eq!(stop.why, crate::db::newer().to_string());
+        assert!(!stop.trying_again);
     }
 
     /// One app keeps a data directory current at a time, and the next can

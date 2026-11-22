@@ -1175,6 +1175,7 @@ pub fn named<'a>(status: &'a Status, name: &str) -> crate::Result<Vec<&'a Accoun
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test::response;
 
     fn example() -> Status {
         serde_json::from_str(include_str!("../tests/fixtures/status.json")).unwrap()
@@ -1253,17 +1254,8 @@ mod tests {
             week = 7 * DAY,
         ))
         .unwrap();
-        let drew = |id: &str, at: i64, model: &str| {
-            db.execute(
-                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                     input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                     web_searches, priority, cost, account)
-                 VALUES ('antigravity', ?1, 's', 0, 1, '/g', ?2, 'google', ?3,
-                     1, 0, 0, 0, 1, 0, 1, 0, 0, NULL, 'google:g')",
-                params![id, at, model],
-            )
-            .unwrap();
-        };
+        let google = ("antigravity", "/g", "google", Some("google:g"));
+        let drew = |id: &str, at: i64, model: &str| response(&db, google, id, at, model, None);
         let shown = |db: &rusqlite::Connection| status(db, now).unwrap().accounts.remove(0);
         // Drawn on by no response: by Gemini's, listed first, though Claude
         // and GPT are used up.
@@ -1297,17 +1289,12 @@ mod tests {
     fn read(now: i64, kind: &str, readings: &[(i64, f64)]) -> Status {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::open(dir.path()).unwrap();
-        db.execute(
+        db.execute_batch(&format!(
             "INSERT INTO account (id, provider, kind, title, read_at)
-             VALUES ('anthropic:a', 'anthropic', ?1, 'Claude', ?2)",
-            params![kind, now],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO sign_in (agent, folder, provider, since, account)
-             VALUES ('claude-code', '/a', 'anthropic', 0, 'anthropic:a')",
-            [],
-        )
+                 VALUES ('anthropic:a', 'anthropic', '{kind}', 'Claude', {now});
+             INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('claude-code', '/a', 'anthropic', 0, 'anthropic:a');"
+        ))
         .unwrap();
         for (at, used) in readings {
             db.execute(
@@ -1418,15 +1405,7 @@ mod tests {
             resets = start + 6 * DAY,
         ))
         .unwrap();
-        let mut insert = db
-            .prepare(
-                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                     input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                     web_searches, priority, account)
-                 VALUES ('claude-code', ?1, 's', 0, 1, '/a', ?2, 'anthropic', ?3, 1, 0, 0, 0, 1, 0,
-                     1, 0, 0, 'anthropic:a')",
-            )
-            .unwrap();
+        let claude = ("claude-code", "/a", "anthropic", Some("anthropic:a"));
         for slot in 0..48 {
             let model = if slot < 36 {
                 "claude-sonnet-5"
@@ -1434,9 +1413,7 @@ mod tests {
                 "claude-opus-5"
             };
             let at = start + slot * forecast::SLOT;
-            insert
-                .execute(params![format!("r{slot}"), at, model])
-                .unwrap();
+            response(&db, claude, &format!("r{slot}"), at, model, None);
         }
         let status = status(&db, now).unwrap();
         let work = status.accounts[0].limits[0].work.unwrap();
@@ -1451,15 +1428,8 @@ mod tests {
         // $51.50 by 2026-10-15 12:00 UTC forecasts between $105 and $115
         // for the month, in every time zone from UTC-12 to UTC+14.
         let now = 1_792_065_600_000;
-        db.execute(
-            "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                 web_searches, priority, cost, account)
-             VALUES ('pi', 'r', 's', 0, 1, 'f', ?1, 'openrouter', 'm', 1, 0, 0, 0, 1, 0, 1,
-                 0, 0, 51.5, 'openrouter:api')",
-            [now - HOUR],
-        )
-        .unwrap();
+        let pi = ("pi", "f", "openrouter", Some("openrouter:api"));
+        response(&db, pi, "r", now - HOUR, "m", Some(51.5));
         for minute in 0..60 {
             let spend = spend(&db, "openrouter:api", now + minute * MINUTE).unwrap();
             assert_eq!(spend.forecast_usd, Some(110.0), "minute {minute}");

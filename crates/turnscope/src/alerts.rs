@@ -342,6 +342,7 @@ pub fn save_settings(db: &rusqlite::Connection, settings: &Settings) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test::rows;
     use crate::status::{Horizon, LimitWindow};
     use crate::time::MINUTE;
 
@@ -508,16 +509,6 @@ mod tests {
         status(at, 40, outlook)
     }
 
-    /// The alerts recorded, told or not.
-    fn recorded(db: &Connection) -> Vec<(String, bool)> {
-        db.prepare("SELECT kind, acknowledged FROM alert ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    }
-
     /// Recorded as shown, so showing the account or turning the kind on
     /// later doesn't bring back the past.
     #[test]
@@ -535,7 +526,8 @@ mod tests {
         ] {
             let (_dir, mut db) = open();
             assert!(raise(&mut db, &status).unwrap().is_empty());
-            assert_eq!(recorded(&db), [(kind.to_owned(), true)]);
+            let recorded = rows(&db, "SELECT kind, acknowledged FROM alert");
+            assert_eq!(recorded, [format!("{kind}|1")]);
             assert!(pending(&db, &status, DAY).unwrap().is_empty());
             status.accounts[0].hidden = false;
             status.settings.notify = Notify::default();

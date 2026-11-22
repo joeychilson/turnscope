@@ -713,6 +713,7 @@ fn project(cwd: &str, home: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test::{one, response, rows};
 
     /// A temp data folder and home, with a folder of Claude Code's projects
     /// in the home.
@@ -740,10 +741,6 @@ mod tests {
         format!("{}{reply}\n", line())
     }
 
-    fn count(db: &Connection, sql: &str) -> i64 {
-        db.query_row(sql, [], |row| row.get(0)).unwrap()
-    }
-
     /// As if the history had been read with the reader before this one,
     /// which made something else of each file: more output, and another
     /// title for its session, of the highest rank.
@@ -763,8 +760,8 @@ mod tests {
     /// made them.
     fn made(db: &Connection) -> [i64; 2] {
         [
-            count(db, "SELECT coalesce(sum(output), 0) FROM response"),
-            count(db, "SELECT count(*) FROM session WHERE title = 'Misread'"),
+            one::<i64>(db, "SELECT coalesce(sum(output), 0) FROM response"),
+            one::<i64>(db, "SELECT count(*) FROM session WHERE title = 'Misread'"),
         ]
     }
 
@@ -777,7 +774,7 @@ mod tests {
         let log = turn("b").replace(r#""s1""#, r#""s2""#);
         std::fs::write(&file, log).unwrap();
         ingest(&mut db, home.path(), None).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM session"), 2);
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM session"), 2);
         read_with_an_older_reader(&db);
         // Gone when history is read again: what the older reader made of it
         // stays.
@@ -822,7 +819,7 @@ mod tests {
                 "SELECT min(readers) FROM file",
                 "SELECT readers FROM state",
             ]
-            .map(|sql| count(db, sql))
+            .map(|sql| one::<i64>(db, sql))
         };
         let other = tempfile::tempdir().unwrap();
         let mut fresh = crate::db::open(other.path()).unwrap();
@@ -857,10 +854,7 @@ mod tests {
         let file = first.join("s1.jsonl");
         std::fs::write(&file, turn("a") + "not a line\n").unwrap();
         ingest(&mut db, home.path(), None).unwrap();
-        let cursor = |db: &Connection| -> String {
-            db.query_row("SELECT cursor FROM file", [], |row| row.get(0))
-                .unwrap()
-        };
+        let cursor = |db: &Connection| one::<String>(db, "SELECT cursor FROM file");
         let read_to = cursor(&db);
 
         // Moved, as an agent moves a file it archives: its row moves with
@@ -869,9 +863,7 @@ mod tests {
         std::fs::rename(&file, &moved).unwrap();
         assert!(!ingest(&mut db, home.path(), None).unwrap());
         assert_eq!(cursor(&db), read_to);
-        let path: String = db
-            .query_row("SELECT path FROM file", [], |row| row.get(0))
-            .unwrap();
+        let path = one::<String>(&db, "SELECT path FROM file");
         assert_eq!(Path::new(&path), moved);
 
         // Replaced, and replaced again: read from the start each time, its
@@ -882,8 +874,8 @@ mod tests {
             std::fs::rename(&new, &moved).unwrap();
             ingest(&mut db, home.path(), None).unwrap();
             assert_eq!(made(&db), [40, 0]);
-            assert_eq!(count(&db, "SELECT count(*) FROM response"), 2);
-            assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
+            assert_eq!(one::<i64>(&db, "SELECT count(*) FROM response"), 2);
+            assert_eq!(one::<i64>(&db, "SELECT skipped FROM file"), 1);
         }
 
         // Its inode, now listed by Codex, isn't Claude Code's file moved.
@@ -894,7 +886,7 @@ mod tests {
         ingest(&mut db, home.path(), None).unwrap();
         for agent in ["claude-code", "codex"] {
             let files = format!("SELECT count(*) FROM file WHERE agent = '{agent}'");
-            assert_eq!(count(&db, &files), 1, "{agent}");
+            assert_eq!(one::<i64>(&db, &files), 1, "{agent}");
         }
     }
 
@@ -907,13 +899,10 @@ mod tests {
         std::fs::create_dir_all(&subagents).unwrap();
         std::fs::write(subagents.join("agent-x.jsonl"), line()).unwrap();
         ingest(&mut db, home.path(), None).unwrap();
-        let why: String = db
-            .query_row(
-                "SELECT failed FROM file WHERE path LIKE '%agent-x.jsonl'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let why: String = one(
+            &db,
+            "SELECT failed FROM file WHERE path LIKE '%agent-x.jsonl'",
+        );
         assert!(why.contains("waits for its description"), "{why}");
         std::fs::write(
             subagents.join("agent-x.meta.json"),
@@ -922,7 +911,7 @@ mod tests {
         .unwrap();
         ingest(&mut db, home.path(), None).unwrap();
         assert_eq!(
-            count(&db, "SELECT count(*) FROM file WHERE failed IS NOT NULL"),
+            one::<i64>(&db, "SELECT count(*) FROM file WHERE failed IS NOT NULL"),
             0
         );
     }
@@ -958,19 +947,9 @@ mod tests {
         ingest(&mut db, home.path(), None).unwrap();
         write(&lines[1..]);
         ingest(&mut db, home.path(), None).unwrap();
-        let responses: Vec<(String, i64)> = db
-            .prepare("SELECT id, output FROM response ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
         assert_eq!(
-            responses,
-            [
-                ("msg_1:req_1".to_owned(), 900),
-                ("msg_2:req_2".to_owned(), 40)
-            ]
+            rows(&db, "SELECT id, output FROM response ORDER BY id"),
+            ["msg_1:req_1|900", "msg_2:req_2|40"]
         );
     }
 
@@ -1043,10 +1022,7 @@ mod tests {
         let cwd = format!(r#""cwd":"{}","sessionId""#, worktree.join("src").display());
         let log = turn("a").replace(r#""sessionId""#, &cwd);
         std::fs::write(folder.join("s1.jsonl"), log).unwrap();
-        let project = |db: &Connection| -> String {
-            db.query_row("SELECT project FROM session", [], |row| row.get(0))
-                .unwrap()
-        };
+        let project = |db: &Connection| one::<String>(db, "SELECT project FROM session");
         ingest(&mut db, home.path(), None).unwrap();
         assert_eq!(project(&db), repository.to_string_lossy());
 
@@ -1065,17 +1041,17 @@ mod tests {
         let log = folder.join("s1.jsonl");
         std::fs::write(&log, line()).unwrap();
         let unread = "SELECT history_at IS NULL FROM state";
-        assert_eq!(count(&db, unread), 1);
+        assert!(one::<bool>(&db, unread));
         assert!(ingest(&mut db, home.path(), None).unwrap());
-        assert_eq!(count(&db, unread), 0);
+        assert!(!one::<bool>(&db, unread));
         // Another connection would see any write. Anything but history
         // written in the agent's folder is nothing new.
         let other = crate::db::open(dir.path()).unwrap();
-        let before = count(&other, "PRAGMA data_version");
+        let before = one::<i64>(&other, "PRAGMA data_version");
         assert!(!ingest(&mut db, home.path(), None).unwrap());
         std::fs::write(home.path().join(".claude/debug.txt"), "").unwrap();
         assert!(!ingest(&mut db, home.path(), None).unwrap());
-        assert_eq!(count(&other, "PRAGMA data_version"), before);
+        assert_eq!(one::<i64>(&other, "PRAGMA data_version"), before);
         std::fs::write(&log, line().repeat(2)).unwrap();
         assert!(ingest(&mut db, home.path(), None).unwrap());
         // One that can't be read is tried again each time, and reads nothing.
@@ -1120,7 +1096,7 @@ mod tests {
         );
         assert!(ingest(&mut db, home.path(), None).unwrap());
         assert_eq!(
-            count(&db, "SELECT count(*) FROM session WHERE id LIKE '%ses_new'"),
+            one::<i64>(&db, "SELECT count(*) FROM session WHERE id LIKE '%ses_new'"),
             1
         );
     }
@@ -1146,10 +1122,7 @@ mod tests {
             reading.join().unwrap().unwrap();
         });
         // 100 input tokens at $5 a million, and 20 output at $25.
-        let cost: Option<f64> = db
-            .query_row("SELECT cost FROM response", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(cost, Some(0.001));
+        assert_eq!(one::<f64>(&db, "SELECT cost FROM response"), 0.001);
     }
 
     #[test]
@@ -1171,7 +1144,7 @@ mod tests {
         drop(held);
         let error = reading.join().unwrap().unwrap_err();
         assert_eq!(error, crate::db::newer().to_string());
-        assert_eq!(count(&db, "SELECT count(*) FROM file"), 0);
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM file"), 0);
     }
 
     #[test]
@@ -1187,9 +1160,7 @@ mod tests {
             .unwrap();
         let error = due(&mut db, home.path()).err().unwrap();
         assert_eq!(error.to_string(), crate::db::newer().to_string());
-        let stored: String = db
-            .query_row("SELECT path FROM file", [], |row| row.get(0))
-            .unwrap();
+        let stored = one::<String>(&db, "SELECT path FROM file");
         assert_eq!(Path::new(&stored), first);
     }
 
@@ -1201,17 +1172,20 @@ mod tests {
             "INSERT INTO price VALUES
                  ('anthropic', 'm1', 0, '{\"input\":2,\"output\":10}', NULL),
                  ('anthropic', 'm2', 0, '{\"input\":4,\"output\":20}', NULL),
-                 ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL);
-             INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                 web_searches, priority, cost) VALUES
-                 ('claude-code', 'r1', 's', 0, 1, '/w', 0, 'anthropic', 'm1', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
-                 ('claude-code', 'r2', 's', 0, 1, '/w', 0, 'anthropic', 'm2', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
-                 ('claude-code', 'r3', 's', 0, 1, '/w', 0, 'anthropic', 'm3', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, 9.0),
-                 ('antigravity', 'r4', 's', 0, 1, '/g', 0, 'google', 'claude-opus-5-5', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
-                 ('antigravity', 'r5', 's', 0, 1, '/g', 0, 'google', 'gemini-unlisted', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL);",
+                 ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL);",
         )
         .unwrap();
+        let claude = ("claude-code", "/w", "anthropic", None);
+        let antigravity = ("antigravity", "/g", "google", None);
+        for (from, id, model, cost) in [
+            (claude, "r1", "m1", None),
+            (claude, "r2", "m2", None),
+            (claude, "r3", "m3", Some(9.0)),
+            (antigravity, "r4", "claude-opus-5-5", None),
+            (antigravity, "r5", "gemini-unlisted", None),
+        ] {
+            response(&db, from, id, 0, model, cost);
+        }
         let tx = crate::db::write(&mut db).unwrap();
         price_again(
             &tx,
@@ -1222,23 +1196,13 @@ mod tests {
         )
         .unwrap();
         tx.commit().unwrap();
-        let costs: Vec<(String, Option<f64>)> = db
-            .prepare("SELECT id, cost FROM response ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
         assert_eq!(
-            costs,
+            rows(&db, "SELECT id, cost FROM response ORDER BY id"),
             [
-                ("r1".to_owned(), Some(2.0)),
-                ("r2".to_owned(), Some(4.0)),
-                ("r3".to_owned(), Some(9.0)),
+                "r1|2", "r2|4", "r3|9",
                 // Claude served by Google, unpriced since before the maker's
                 // price applied to it, at Anthropic's list price.
-                ("r4".to_owned(), Some(5.0)),
-                ("r5".to_owned(), None),
+                "r4|5", "r5|NULL",
             ]
         );
     }

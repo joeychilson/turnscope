@@ -501,17 +501,68 @@ pub fn tokens(row: &Row, from: usize) -> rusqlite::Result<Tokens> {
 }
 
 #[cfg(test)]
+pub(crate) mod test {
+    use rusqlite::Connection;
+    use rusqlite::types::{FromSql, ValueRef};
+
+    /// The one value `sql` gives.
+    pub(crate) fn one<T: FromSql>(db: &Connection, sql: &str) -> T {
+        db.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    /// Each row `sql` gives, its columns joined by `|`.
+    pub(crate) fn rows(db: &Connection, sql: &str) -> Vec<String> {
+        db.prepare(sql)
+            .unwrap()
+            .query_map([], |row| {
+                Ok((0..row.as_ref().column_count())
+                    .map(|at| match row.get_ref(at).unwrap() {
+                        ValueRef::Null => "NULL".to_owned(),
+                        ValueRef::Integer(n) => n.to_string(),
+                        ValueRef::Real(n) => n.to_string(),
+                        ValueRef::Text(text) => String::from_utf8_lossy(text).into_owned(),
+                        ValueRef::Blob(_) => "blob".to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|"))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    /// A response of a million input tokens, its session its id, `from` an
+    /// agent's folder, a provider and the account it drew on.
+    pub(crate) fn response(
+        db: &Connection,
+        from: (&str, &str, &str, Option<&str>),
+        id: &str,
+        at: i64,
+        model: &str,
+        cost: Option<f64>,
+    ) {
+        let (agent, folder, provider, account) = from;
+        db.execute(
+            "INSERT INTO response (agent, folder, provider, account, id, at, model, cost, session,
+                 copy, file, input, cache_read, cache_write_5m, cache_write_1h, output, reasoning,
+                 prompt, web_searches, priority)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?5, 0, 1, 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0)",
+            rusqlite::params![agent, folder, provider, account, id, at, model, cost],
+        )
+        .unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test::{one, rows};
     use super::*;
 
     #[test]
     fn an_older_turnscope_stops_writing_once_a_newer_one_has() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(dir.path()).unwrap();
-        let newest = || -> Option<i64> {
-            db.query_row("SELECT version FROM state", [], |row| row.get(0))
-                .unwrap()
-        };
+        let newest = || one::<Option<i64>>(&db, "SELECT version FROM state");
         assert_eq!(newest(), None);
         writing(&db).unwrap();
         assert_eq!(newest(), Some(VERSION));
@@ -542,10 +593,7 @@ mod tests {
         });
         assert!(opened.iter().all(|opened| *opened), "{opened:?}");
         let db = open(dir.path()).unwrap();
-        let mode: String = db
-            .pragma_query_value(None, "journal_mode", |row| row.get(0))
-            .unwrap();
-        assert_eq!(mode, "wal");
+        assert_eq!(rows(&db, "PRAGMA journal_mode"), ["wal"]);
     }
 
     #[test]
@@ -625,29 +673,6 @@ mod tests {
         INSERT INTO price VALUES ('xai', 'grok-5', 0, '{"input":3,"output":15}', NULL);
         UPDATE state SET readers = 6, history_at = 800, limits_at = 900, prices_at = 700,
             settings = '{"notify":{"reset":false}}';"#;
-
-    fn rows(db: &Connection, sql: &str) -> Vec<String> {
-        db.prepare(sql)
-            .unwrap()
-            .query_map([], |row| {
-                let count = row.as_ref().column_count();
-                Ok((0..count)
-                    .map(|at| match row.get_ref(at).unwrap() {
-                        rusqlite::types::ValueRef::Null => "NULL".to_owned(),
-                        rusqlite::types::ValueRef::Integer(n) => n.to_string(),
-                        rusqlite::types::ValueRef::Real(n) => n.to_string(),
-                        rusqlite::types::ValueRef::Text(text) => {
-                            String::from_utf8_lossy(text).into_owned()
-                        }
-                        rusqlite::types::ValueRef::Blob(_) => "blob".to_owned(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("|"))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    }
 
     #[test]
     fn what_turnscope_0_1_kept_is_taken_in_and_left_where_it_was() {
