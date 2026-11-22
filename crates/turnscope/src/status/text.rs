@@ -4,11 +4,11 @@
 
 use super::{
     Account, Horizon, HoursLeft, Limit, Moment, Outlook, Spread, Stale, State, Status, Unknown,
+    Work,
 };
 use crate::agents;
 use crate::time::{self, MINUTE};
 
-/// What under ten minutes of work reads as.
 const UNDER: &str = "under 10m";
 
 /// Hours of work as people say them: to ten minutes, `1h 50m`, and from
@@ -46,14 +46,6 @@ fn agree<'a>(limit: &Limit, one: &'a str, many: &'a str) -> &'a str {
     }
 }
 
-/// The agents to open to sign in to `account` again: `Codex or Pi`. There's
-/// always one: with no agent signed in to it, an account is signed out,
-/// whatever its last read said (`status`).
-fn login_agents(account: &Account) -> String {
-    let names: Vec<&str> = account.agents.iter().map(|id| agents::name(id)).collect();
-    names.join(" or ")
-}
-
 /// Why there's no account to show or name, before any is known.
 pub(super) const NONE_READ: &str =
     "No account's limits have been read yet: no agent here is signed in to one Turnscope reads.";
@@ -76,7 +68,10 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
         State::AsOf { read_at, why } => (why, Some(read_at)),
         State::Unread { why } => (why, None),
     };
-    let agents = login_agents(account);
+    // The agents to sign in with, `Codex or Pi`: one is always signed in to
+    // an account not `SignedOut`.
+    let names: Vec<&str> = account.agents.iter().map(|id| agents::name(id)).collect();
+    let agents = names.join(" or ");
     Some(match why {
         Stale::SignedOut => "no agent here is signed in to it now".to_owned(),
         Stale::SignIn => format!("its login was refused; open {agents} to sign in again"),
@@ -252,12 +247,10 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
     out
 }
 
-/// The 80% range of the hours of work `limit` has left, as it follows the
-/// likely hours: ` (1h 10m–3h)`, or ` (1h 10m or more)` when its slow end
-/// is held at the reset, as much work as there's time for. Nothing when it
-/// says no more than the likely hours do: its ends read the same, as under
-/// ten minutes twice, or it's under ten minutes or more, which is any
-/// amount.
+/// The 80% range of the hours of work `limit` has left, after the likely
+/// hours: ` (1h 10m–3h)`, or ` (1h 10m or more)` when its slow end is held
+/// at the reset. Nothing where it says no more: its ends read the same, or
+/// it's "under 10m or more", which is any amount.
 fn range(limit: &Limit, left: &HoursLeft, now: i64) -> String {
     let until = limit.hours_to_reset(now);
     let (low, high) = (worked(left.low), worked(left.high));
@@ -284,7 +277,7 @@ fn used_up(account: &Account) -> Option<(&Limit, Option<Moment>)> {
 /// `account`'s limit it stands by with the fewest likely hours of work
 /// left, and those hours. One reset since it was read counts, with a new
 /// window's work left: left out, an account whose 5 hours had just reset
-/// would be said to have room to keep going, even working nonstop.
+/// was said to have room to keep going, even working nonstop.
 fn first_out(account: &Account) -> Option<(&Limit, HoursLeft)> {
     account
         .limits
@@ -295,10 +288,7 @@ fn first_out(account: &Account) -> Option<(&Limit, HoursLeft)> {
 }
 
 /// Whether `hours` more of work fit the limits `account` stands by, at the
-/// work rate so far.
-///
-/// A limit with no work rate measured, too little work or a window that
-/// rolls, says it can't be told, naming it and what's left of it: said to
+/// work rate so far. One with no work rate says it can't be told: said to
 /// fit with a note after, OpenCode Go's rolling 5 hours at 4% left read as
 /// room for hours of work.
 pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
@@ -327,7 +317,6 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
         .filter(|limit| account.stands_by(limit))
     {
         let Some(work) = &limit.work else {
-            // A window that rolls has no start to measure work from.
             let rolls = limit
                 .window
                 .is_some_and(|window| window.starts_at.is_none());
@@ -386,12 +375,10 @@ enum End {
 }
 
 /// Where `hours` more of work at `work`'s rate leave `limit`, working all
-/// the while. Past its reset, in the windows after it, each a new one as
-/// long: counted only to the reset, 6 hours of work at 25% an hour on a 5
-/// hours resetting in 30 minutes left 16% of it, where the window after
-/// runs out 4 hours into it, and a minute after the reset the same limit
-/// was said to run out.
-fn ends(limit: &Limit, work: &crate::status::Work, hours: f64, now: i64) -> End {
+/// the while. Past its reset, in the windows after, each a new one as long:
+/// counted only to the reset, 6 hours at 25% an hour on a 5 hours resetting
+/// in 30 minutes left 16%, though the window after runs out 4 hours in.
+fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
     let rate = work.rate_per_hour;
     // Out before its reset, as forecast with the spread of work's pace.
     if let Some(left) = work.left_hours
@@ -404,8 +391,8 @@ fn ends(limit: &Limit, work: &crate::status::Work, hours: f64, now: i64) -> End 
         return End::Leaves((left - rate * hours).max(0.0));
     };
     let length = limit
-        .window
-        .and_then(|window| Some((window.resets.at - window.starts_at?) as f64 / time::HOUR as f64));
+        .length()
+        .map(|length| length as f64 / time::HOUR as f64);
     let past = hours - until;
     // The work in the first window after, and in the last.
     let (first, last) = match length.filter(|length| *length > 0.0) {
@@ -442,12 +429,10 @@ pub fn verdict(account: &Account, now: i64) -> String {
 
 /// How `account`, read, stands: used up until the limit that decides it is
 /// back, or else by the limit it stands by closest to running out, by the
-/// work left or else the clock's pace.
-///
-/// The limit that decides it, with no work rate measured, is said by the
-/// clock's pace, over another's work left: OpenCode Go's rolling 5 hours at
-/// 4% left was passed over for "about 12h of work left before Weekly runs
-/// out".
+/// work left or else the clock's pace. The deciding limit with no work rate
+/// is said by the clock's pace, over another's work left: OpenCode Go's
+/// rolling 5 hours at 4% left was passed over for "about 12h of work left
+/// before Weekly runs out".
 fn standing(account: &Account, title: &str, now: i64) -> String {
     if let Some((limit, back)) = used_up(account) {
         let back = back.map_or(String::new(), |back| {

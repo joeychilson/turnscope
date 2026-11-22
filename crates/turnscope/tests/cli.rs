@@ -65,19 +65,26 @@ fn home() -> &'static Path {
     home
 }
 
-fn turnscope(data: &Path, args: &[&str], input: Option<&str>) -> Output {
-    let mut child = command(data, args)
+fn turnscope(data: &Path, args: &[&str]) -> Output {
+    command(data, args).output().unwrap()
+}
+
+fn fed(command: &mut Command, input: &[u8]) -> Output {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    stdin
-        .write_all(input.unwrap_or_default().as_bytes())
-        .unwrap();
-    drop(stdin);
+    child.stdin.take().unwrap().write_all(input).unwrap();
     child.wait_with_output().unwrap()
+}
+
+fn replies(output: &Output) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
 }
 
 /// `turnscope` with `args` over the store `data`, as Claude Code runs it.
@@ -124,45 +131,16 @@ fn command_of(binary: &Path, agent: &str, data: &Path, args: &[&str]) -> Command
     command
 }
 
-/// What the MCP server `mcp` runs answers each of `calls`, a tool and its
-/// arguments, in turn.
-fn tools(mcp: &mut Command, calls: &[(&str, &str)]) -> Vec<String> {
-    let requests: String = calls
+/// What the MCP server `command` runs answers each of `calls`, a tool and
+/// its arguments, in turn.
+fn tools(command: &mut Command, calls: &[(&str, &str)]) -> Vec<String> {
+    let mut mcp = Mcp::spawn(command);
+    let answers = calls
         .iter()
-        .enumerate()
-        .map(|(id, (tool, arguments))| {
-            format!(
-                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{tool}","arguments":{arguments}}}}}"#
-            ) + "\n"
-        })
+        .map(|(tool, arguments)| mcp.call(tool, arguments).0)
         .collect();
-    let mut mcp = mcp
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    mcp.stdin
-        .take()
-        .unwrap()
-        .write_all(requests.as_bytes())
-        .unwrap();
-    let output = mcp.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| {
-            let reply: serde_json::Value = serde_json::from_str(line).unwrap();
-            reply["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .collect()
+    mcp.close();
+    answers
 }
 
 struct Mcp {
@@ -172,10 +150,11 @@ struct Mcp {
 }
 
 impl Mcp {
-    fn spawn(cmd: &mut Command) -> Mcp {
-        let mut child = cmd
+    fn spawn(command: &mut Command) -> Mcp {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         let stdin = child.stdin.take().unwrap();
@@ -187,19 +166,37 @@ impl Mcp {
         }
     }
 
-    fn usage(&mut self) -> (String, bool) {
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
-        writeln!(self.stdin, "{request}").unwrap();
+    /// What `tool` answers `arguments`, and whether that's an error.
+    fn call(&mut self, tool: &str, arguments: &str) -> (String, bool) {
+        writeln!(
+            self.stdin,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{arguments}}}}}"#
+        )
+        .unwrap();
         let reply: serde_json::Value =
             serde_json::from_str(&self.replies.next().unwrap().unwrap()).unwrap();
         let text = reply["result"]["content"][0]["text"].as_str().unwrap();
         (text.to_owned(), reply["result"]["isError"] == true)
     }
 
-    fn close(mut self) {
-        drop(self.stdin);
-        assert!(self.child.wait().unwrap().success());
+    /// Every account's usage since 2026-09-29.
+    fn usage(&mut self) -> (String, bool) {
+        self.call("explain_usage", r#"{"all":true,"since":"2026-09-29"}"#)
     }
+
+    fn close(self) {
+        drop(self.stdin);
+        let output = self.child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn count(db: &Connection, sql: &str) -> i64 {
+    db.query_row(sql, [], |row| row.get(0)).unwrap()
 }
 
 /// A store with the fixture's history read, and four accounts:
@@ -267,7 +264,7 @@ fn store() -> tempfile::TempDir {
     )
     .unwrap();
     drop(db);
-    assert!(turnscope(data.path(), &["accounts"], None).status.success());
+    assert!(turnscope(data.path(), &["accounts"]).status.success());
     data
 }
 
@@ -328,7 +325,7 @@ fn every_command_answers_as_its_snapshot_says() {
             if json {
                 args.push("--json");
             }
-            let output = turnscope(data.path(), &args, None);
+            let output = turnscope(data.path(), &args);
             assert!(
                 output.status.success(),
                 "{name}: {}",
@@ -482,7 +479,7 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             "invalid value 'x'",
         ),
     ] {
-        let output = turnscope(data.path(), &args, None);
+        let output = turnscope(data.path(), &args);
         assert_eq!(output.status.code(), Some(code), "{args:?}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains(says),
@@ -507,7 +504,7 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
 fn a_command_says_when_it_reads_all_of_history() {
     let data = tempfile::tempdir().unwrap();
     let said = |args: &[&str]| {
-        let output = turnscope(data.path(), args, None);
+        let output = turnscope(data.path(), args);
         assert!(output.status.success(), "{args:?}");
         String::from_utf8_lossy(&output.stderr).into_owned()
     };
@@ -530,7 +527,7 @@ fn a_command_says_when_it_reads_all_of_history() {
 fn a_command_says_when_it_waits_for_another_turnscope_reading_history() {
     let data = tempfile::tempdir().unwrap();
     let by_session = ["usage", "--since", "7d", "--by", "session"];
-    assert!(turnscope(data.path(), &by_session, None).status.success());
+    assert!(turnscope(data.path(), &by_session).status.success());
     // Held as the other Turnscope holds it, all the while it reads.
     let reading = std::fs::File::create(data.path().join("ingest.lock")).unwrap();
     reading.lock().unwrap();
@@ -588,10 +585,10 @@ fn the_callers_account_is_its_agent_folders_however_its_written() {
 #[test]
 fn a_status_line_or_a_guard_never_makes_the_database() {
     let data = tempfile::tempdir().unwrap();
-    let output = turnscope(data.path(), &["statusline"], None);
+    let output = turnscope(data.path(), &["statusline"]);
     assert!(output.status.success() && output.stdout.is_empty());
     let guard = ["guard", "--limit", "week", "--below", "100"];
-    assert_eq!(turnscope(data.path(), &guard, None).status.code(), Some(0));
+    assert_eq!(turnscope(data.path(), &guard).status.code(), Some(0));
     assert!(!data.path().join("turnscope.db").exists());
 }
 
@@ -601,15 +598,15 @@ fn a_status_line_or_a_guard_never_makes_the_database() {
 #[test]
 fn connect_and_disconnect_leave_the_database_alone() {
     let data = tempfile::tempdir().unwrap();
-    assert!(turnscope(data.path(), &["connect"], None).status.success());
+    assert!(turnscope(data.path(), &["connect"]).status.success());
     assert!(!data.path().join("turnscope.db").exists());
     Connection::open(data.path().join("turnscope.db"))
         .unwrap()
         .execute_batch("PRAGMA user_version = 99")
         .unwrap();
-    assert!(turnscope(data.path(), &["connect"], None).status.success());
+    assert!(turnscope(data.path(), &["connect"]).status.success());
     // OpenCode has no command to remove a server with, so none is run.
-    let output = turnscope(data.path(), &["disconnect", "opencode"], None);
+    let output = turnscope(data.path(), &["disconnect", "opencode"]);
     assert_eq!(
         String::from_utf8_lossy(&output.stderr).trim_end(),
         "turnscope: OpenCode has no command Turnscope can run to remove a server: remove `turnscope` from its MCP settings by hand."
@@ -671,7 +668,7 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
             "--below",
             below,
         ];
-        turnscope(data.path(), &args, None)
+        turnscope(data.path(), &args)
     };
     let blocked = guard("5 hours", "50");
     assert_eq!(blocked.status.code(), Some(2));
@@ -694,19 +691,11 @@ fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
     let data = store();
     let new = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
     let line = |agent: &str, session: &str, folder: &str| {
-        let mut line = command_as(agent, data.path(), &["statusline"])
-            .env("CLAUDE_CODE_SESSION_ID", new)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
         let given = format!(r#"{{"session_id": "{session}", "cwd": "{folder}"}}"#);
-        line.stdin
-            .take()
-            .unwrap()
-            .write_all(given.as_bytes())
-            .unwrap();
-        let output = line.wait_with_output().unwrap();
+        let output = fed(
+            command_as(agent, data.path(), &["statusline"]).env("CLAUDE_CODE_SESSION_ID", new),
+            given.as_bytes(),
+        );
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
     let (claude, chatgpt) = (
@@ -722,7 +711,7 @@ fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
     // which is Claude Code's too.
     assert_eq!(line("codex", new, "/work/api"), chatgpt);
     // An account named, whose limits can't be read.
-    let named = turnscope(data.path(), &["statusline", "--account", "supergrok"], None);
+    let named = turnscope(data.path(), &["statusline", "--account", "supergrok"]);
     assert_eq!(
         String::from_utf8_lossy(&named.stdout).trim(),
         "SuperGrok · sign in again"
@@ -798,7 +787,7 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
         shift = HOUR * 25 / 60
     ))
     .unwrap();
-    let output = turnscope(data.path(), &["status", "--account", "claude"], None);
+    let output = turnscope(data.path(), &["status", "--account", "claude"]);
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(
         text.contains(
@@ -806,7 +795,7 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
         ),
         "{text}"
     );
-    let output = turnscope(data.path(), &["doctor"], None);
+    let output = turnscope(data.path(), &["doctor"]);
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(
         text.contains("Claude Max (me@example.com): it couldn't be read since 11:25; it's tried again every 5 to 30 minutes."),
@@ -830,7 +819,7 @@ fn what_used_a_limit_whose_window_reset_since_its_read_counts_from_the_reset() {
     ))
     .unwrap();
     let limit = ["usage", "--account", "claude", "--limit", "5 hours"];
-    let output = turnscope(data.path(), &limit, None);
+    let output = turnscope(data.path(), &limit);
     let text = String::from_utf8_lossy(&output.stdout);
     // What it used before the reset is no part of the window it's in, and
     // how much of that one is used isn't known: no shares.
@@ -840,7 +829,7 @@ fn what_used_a_limit_whose_window_reset_since_its_read_counts_from_the_reset() {
             && text.contains(" Responses   Cost\n"),
         "{text}"
     );
-    let output = turnscope(data.path(), &[&limit[..], &["--json"]].concat(), None);
+    let output = turnscope(data.path(), &[&limit[..], &["--json"]].concat());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["usage"]["since"], NOW - HOUR);
     assert_eq!(json["sharePercents"], serde_json::Value::Null);
@@ -889,7 +878,7 @@ fn explain_usage_says_a_cost_it_doesnt_know_is_unpriced() {
 #[test]
 fn with_no_account_to_show_every_front_end_says_why() {
     let said = |data: &Path, args: &[&str]| {
-        let output = turnscope(data, args, None);
+        let output = turnscope(data, args);
         assert!(output.status.success(), "{args:?}");
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
@@ -903,7 +892,7 @@ fn with_no_account_to_show_every_front_end_says_why() {
     assert_eq!(said(data.path(), &["accounts"]), none);
     assert_eq!(check_limits(data.path(), "{}"), none);
     // Nor can one be named.
-    let hide = turnscope(data.path(), &["accounts", "hide", "claude"], None);
+    let hide = turnscope(data.path(), &["accounts", "hide", "claude"]);
     assert_eq!(hide.status.code(), Some(3));
     assert_eq!(
         String::from_utf8_lossy(&hide.stderr).trim_end(),
@@ -999,14 +988,11 @@ fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
              a newer Turnscope has updated this data; update Turnscope"
         )
     );
-    let read: i64 = db
-        .query_row(
-            "SELECT count(*) FROM file WHERE agent = 'codex'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(read, 0, "it read history into a schema it doesn't know");
+    assert_eq!(
+        count(&db, "SELECT count(*) FROM file WHERE agent = 'codex'"),
+        0,
+        "it read history into a schema it doesn't know"
+    );
     // A query that no longer fits fails, and says why first.
     db.execute("ALTER TABLE session RENAME COLUMN title TO name", [])
         .unwrap();
@@ -1043,14 +1029,11 @@ fn a_server_left_running_stops_writing_once_a_newer_turnscope_has() {
              a newer Turnscope has updated this data; update Turnscope"
         )
     );
-    let read: i64 = db
-        .query_row(
-            "SELECT count(*) FROM file WHERE agent = 'codex'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(read, 0, "it wrote after a newer Turnscope had");
+    assert_eq!(
+        count(&db, "SELECT count(*) FROM file WHERE agent = 'codex'"),
+        0,
+        "it wrote after a newer Turnscope had"
+    );
     // Once an update has replaced its binary, it says to start it again:
     // the one who updated has nothing more to update.
     std::fs::remove_file(&binary).unwrap();
@@ -1071,18 +1054,13 @@ fn an_account_isnt_hidden_by_an_older_turnscope() {
     let db = Connection::open(data.path().join("turnscope.db")).unwrap();
     db.execute("UPDATE state SET version = 99000000", [])
         .unwrap();
-    let hide = turnscope(data.path(), &["accounts", "hide", "claude"], None);
+    let hide = turnscope(data.path(), &["accounts", "hide", "claude"]);
     assert!(!hide.status.success());
     assert_eq!(
         String::from_utf8_lossy(&hide.stderr).trim_end(),
         "turnscope: a newer Turnscope has updated this data; update Turnscope"
     );
-    let hidden: i64 = db
-        .query_row("SELECT count(*) FROM account WHERE hidden", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(hidden, 0);
+    assert_eq!(count(&db, "SELECT count(*) FROM account WHERE hidden"), 0);
 }
 
 /// A message the server can't take gets an error, and the server goes on:
@@ -1090,27 +1068,14 @@ fn an_account_isnt_hidden_by_an_older_turnscope() {
 #[test]
 fn an_mcp_server_answers_a_malformed_message_and_goes_on() {
     let data = store();
-    let mut child = command(data.path(), &["mcp"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(b"\xff\xfe\n").unwrap();
-    for line in [
+    let lines = [
         r#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#,
         r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#,
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"check_limits","arguments":null}}"#,
         r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#,
-    ] {
-        stdin.write_all(format!("{line}\n").as_bytes()).unwrap();
-    }
-    drop(stdin);
-    let output = child.wait_with_output().unwrap();
-    let replies: Vec<serde_json::Value> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    ];
+    let input = [&b"\xff\xfe\n"[..], (lines.join("\n") + "\n").as_bytes()].concat();
+    let replies = replies(&fed(&mut command(data.path(), &["mcp"]), &input));
     let codes: Vec<_> = replies
         .iter()
         .map(|reply| (reply["id"].clone(), reply["error"]["code"].clone()))
@@ -1146,12 +1111,10 @@ fn an_mcp_session_answers_as_its_snapshot_says() {
         r#"{"jsonrpc":"2.0","id":9,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
         r#"{"jsonrpc":"2.0","id":10,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-01-01"}}}"#,
     ];
-    let output = turnscope(data.path(), &["mcp"], Some(&(requests.join("\n") + "\n")));
+    let input = requests.join("\n") + "\n";
+    let output = fed(&mut command(data.path(), &["mcp"]), input.as_bytes());
     assert!(output.status.success());
-    let replies: Vec<serde_json::Value> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let replies = replies(&output);
     // A notification is answered with nothing.
     assert_eq!(replies.len(), requests.len() - 1);
     assert!(
