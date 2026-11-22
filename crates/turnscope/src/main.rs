@@ -676,7 +676,7 @@ fn guard(
     let db = if online() && !turnscope::engine::running(data) {
         drop(read_db);
         let mut db = db::open(data)?;
-        let _ = limits::refresh(&mut db, home);
+        let _ = limits::refresh(&mut db, home, false);
         db
     } else {
         read_db

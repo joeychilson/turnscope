@@ -368,6 +368,30 @@ pub fn write(db: &mut Connection) -> Result<Transaction<'_>> {
     Ok(tx)
 }
 
+/// Claim a job for this process, in one statement, unless another claimed
+/// it less than `gap` ago, so no two do it at once: `state`'s `column` is
+/// set to `to`. A claim more than five minutes ahead of now is of a clock
+/// set back since. Looked at first: claiming waits for the write lock,
+/// which a hook shouldn't when nothing is due.
+pub fn claim(db: &mut Connection, column: &str, now: i64, gap: i64, to: i64) -> Result<bool> {
+    const AHEAD: i64 = 5 * crate::time::MINUTE;
+    let last: Option<i64> =
+        db.query_row(&format!("SELECT {column} FROM state"), [], |row| row.get(0))?;
+    if last.is_some_and(|last| now - gap < last && last <= now + AHEAD) {
+        return Ok(false);
+    }
+    let tx = write(db)?;
+    let claimed = tx.execute(
+        &format!(
+            "UPDATE state SET {column} = ?1
+             WHERE {column} IS NULL OR {column} <= ?2 - ?3 OR {column} > ?2 + ?4"
+        ),
+        rusqlite::params![to, now, gap, AHEAD],
+    )?;
+    tx.commit()?;
+    Ok(claimed > 0)
+}
+
 fn open_lock(path: &Path) -> Result<File> {
     std::fs::OpenOptions::new()
         .write(true)

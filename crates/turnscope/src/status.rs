@@ -570,11 +570,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             None => (Vec::new(), false),
         };
         let used_by = used.remove(&id).unwrap_or_default();
-        let kind = if row.get::<_, String>(2)? == "apiKey" {
-            Kind::ApiKey
-        } else {
-            Kind::Subscription
-        };
+        let kind: Kind = row.get(2)?;
         accounts.push(Account {
             spend: (kind == Kind::ApiKey)
                 .then(|| spend(db, &id, now))

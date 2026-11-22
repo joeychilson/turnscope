@@ -50,6 +50,17 @@ pub fn name(id: &str) -> &str {
     by_id(id).map_or(id, |agent| agent.info().name)
 }
 
+/// Whether `path` is a file an agent keeps a login in (`Info::login_file`).
+pub fn login_file(path: &Path) -> bool {
+    let name = path.file_name();
+    ALL.iter().any(|agent| {
+        agent
+            .info()
+            .login_file
+            .is_some_and(|file| name == Some(file.as_ref()))
+    })
+}
+
 pub trait Agent: Sync {
     fn info(&self) -> &'static Info;
 
@@ -98,14 +109,6 @@ pub trait Agent: Sync {
     /// The command that `folder`'s configuration runs for Turnscope's MCP
     /// server, if any. Each of its folders keeps its own.
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
-
-    /// Whether `path` is a file the agent keeps a login in, so a write to
-    /// it asks for limits (`limits::refresh_asked`), as once it signs in
-    /// again. Not one it keeps other things in too, as Claude Code's
-    /// `.claude.json`.
-    fn login_file(&self, _path: &Path) -> bool {
-        false
-    }
 }
 
 /// What Turnscope knows of an agent as a program.
@@ -132,6 +135,10 @@ pub struct Info {
     pub charges: bool,
     /// What it sets in an MCP server it starts: its session's id.
     pub session_var: Option<&'static str>,
+    /// The name of a file it keeps a login in, so a write to it asks for
+    /// limits (`limits::refresh`), as once it signs in again. Not one
+    /// it keeps other things in too, as Claude Code's `.claude.json`.
+    pub login_file: Option<&'static str>,
 }
 
 impl Info {
@@ -246,15 +253,15 @@ impl Session {
         let mut left = TITLE;
         for word in text.split_whitespace() {
             if !out.is_empty() {
+                if left <= 1 {
+                    break;
+                }
                 out.push(' ');
                 left -= 1;
             }
             for ch in word.chars().take(left) {
                 out.push(ch);
                 left -= 1;
-            }
-            if left == 0 {
-                break;
             }
         }
         if !out.is_empty() {
@@ -791,6 +798,9 @@ mod tests {
         assert_eq!(title.chars().count(), 200);
         session.title(Title::Named, " \n ");
         assert_eq!(session.title.as_ref().unwrap().1.chars().count(), 200);
+        let full = "a".repeat(199);
+        session.title(Title::Named, &format!("{full} b"));
+        assert_eq!(session.title.unwrap().1, full);
     }
 
     #[test]

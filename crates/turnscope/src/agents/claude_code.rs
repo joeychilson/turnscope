@@ -55,6 +55,7 @@ static INFO: Info = Info {
     folder_var: Some("CLAUDE_CONFIG_DIR"),
     charges: false,
     session_var: Some("CLAUDE_CODE_SESSION_ID"),
+    login_file: Some(".credentials.json"),
 };
 
 /// What Claude Code adds to a message sent as the person's.
@@ -486,10 +487,6 @@ impl Agent for ClaudeCode {
 
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String> {
         super::json_mcp_command(&settings(folder, home), "/mcpServers/turnscope/command")
-    }
-
-    fn login_file(&self, path: &Path) -> bool {
-        path.file_name() == Some(".credentials.json".as_ref())
     }
 }
 

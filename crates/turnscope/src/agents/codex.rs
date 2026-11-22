@@ -60,6 +60,7 @@ static INFO: Info = Info {
     folder_var: Some("CODEX_HOME"),
     charges: false,
     session_var: None,
+    login_file: Some("auth.json"),
 };
 
 /// What Codex puts in a message sent as the person's: its context, a
@@ -456,10 +457,6 @@ impl Agent for Codex {
 
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
         super::toml_mcp_command(&folder.join("config.toml"))
-    }
-
-    fn login_file(&self, path: &Path) -> bool {
-        path.file_name().and_then(|name| name.to_str()) == Some("auth.json")
     }
 }
 

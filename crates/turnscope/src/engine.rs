@@ -111,7 +111,7 @@ enum Wake {
     /// Something was written in an agent's folder.
     Written,
     /// Limits were asked for: the panel opened (`Engine::ask_limits`), or
-    /// an agent wrote a login (`Agent::login_file`).
+    /// an agent wrote a login (`agents::login_file`).
     Asked,
 }
 
@@ -249,7 +249,7 @@ impl Engine {
 
     /// Ask for limits read `limits::DUE` ago or more to be read again, and
     /// any whose read failed, as when the panel opens
-    /// (`limits::refresh_asked`). Nothing, while another app keeps the data
+    /// (`limits::refresh`). Nothing, while another app keeps the data
     /// current.
     pub fn ask_limits(&self) {
         if let Some(wake) = locked(&self.inner.wake).as_ref() {
@@ -509,7 +509,7 @@ fn lock(data: &Path) -> Result<Option<File>> {
 const GAP: Duration = Duration::from_secs(5);
 
 /// The least time between two reads of limits asked for
-/// (`limits::refresh_asked`): each gathers every agent's logins, the
+/// (`limits::refresh`): each gathers every agent's logins, the
 /// Keychain's with `security`, and asks a failing provider again. A guess
 /// at how soon someone opens the panel again, not measured.
 const ASKED: Duration = Duration::from_secs(30);
@@ -544,9 +544,7 @@ fn keep(
             && paths
                 .iter()
                 .all(|path| path.to_string_lossy().ends_with("-shm"));
-        let login = paths
-            .iter()
-            .any(|path| agents::ALL.iter().any(|agent| agent.login_file(path)));
+        let login = paths.iter().any(|path| agents::login_file(path));
         if !ours {
             let _ = changed.send(if login { Wake::Asked } else { Wake::Written });
         }
@@ -613,6 +611,9 @@ fn keep(
         }
         let waited = Instant::now();
         match changes.recv_timeout(Duration::from_secs(60)) {
+            // At once, unless read under `ASKED` ago: waiting out the gap,
+            // limits asked for right after a catch-up were read 5 s later.
+            Ok(Wake::Asked) if asked_at.is_none_or(|at| at.elapsed() >= ASKED) => asked = true,
             Ok(wake) => {
                 asked |= wake == Wake::Asked;
                 // Let a burst of writes settle, a second at most.
@@ -641,11 +642,7 @@ fn keep(
 /// A failure is logged, and counts as a read so the status is told again,
 /// unless a newer Turnscope wrote.
 fn read_limits(db: &mut Connection, home: &Path, data: &Path, asked: bool) -> Result<bool> {
-    let read = match asked {
-        true => crate::limits::refresh_asked(db, home),
-        false => crate::limits::refresh(db, home),
-    };
-    match read {
+    match crate::limits::refresh(db, home, asked) {
         Err(error @ Error::Newer(_)) => Err(error),
         Err(error) => {
             log(data, &error.to_string());
@@ -1086,6 +1083,36 @@ mod tests {
         assert!(limits.is_some() && !history);
         drop(reading);
         assert_eq!(told(), (limits, true));
+    }
+
+    /// Limits asked for, as when the panel opens, are read at once, not
+    /// after the gap between catch-ups.
+    #[test]
+    fn limits_asked_for_are_read_at_once() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // Nothing is asked over the network: the home holds no login.
+        read_just_now(data.path());
+        let wake = Arc::new(Mutex::new(None));
+        let (sender, told) = mpsc::channel();
+        let (home_kept, data_kept, wake_kept) = (
+            home.path().to_path_buf(),
+            data.path().to_path_buf(),
+            Arc::clone(&wake),
+        );
+        std::thread::spawn(move || {
+            keep(&home_kept, &data_kept, &wake_kept, |_| {
+                sender.send(Instant::now()).is_ok()
+            })
+        });
+        told.recv_timeout(Duration::from_secs(10)).unwrap();
+        let asked = Instant::now();
+        locked(&wake).as_ref().unwrap().send(Wake::Asked).unwrap();
+        let answered = told.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            answered - asked < Duration::from_secs(1),
+            "{:?}",
+            answered - asked
+        );
     }
 
     /// A status is told when what it shows changed, and only then: not

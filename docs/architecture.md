@@ -196,7 +196,6 @@ pub trait Agent: Sync {
     fn read(&self, file: &Path, cursor: &str) -> Result<Read>;
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>>;
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
-    fn login_file(&self, _path: &Path) -> bool { false }
 }
 
 pub trait Provider: Sync {
@@ -243,7 +242,7 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due, and not while an app runs. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, history only while an app runs. |
-| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Agent::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads first the limits more than 5 minutes old and those whose read failed, at most every 30 s (`limits::refresh_asked`). |
+| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads first the limits more than 5 minutes old and those whose read failed, at most every 30 s (`limits::refresh`). |
 
 While an app runs, the other processes rarely find anything new to read.
 
@@ -482,7 +481,7 @@ and what the backtest measured on this Mac's real limit history
   printed, serialized or cloned. An API key is known by its fingerprint,
   the first 16 hex digits of its SHA-256.
 - **One way to the network.** Every request goes through `/usr/bin/curl`
-  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. Headers, with
+  (`providers::curl`), HTTPS only, ignoring `~/.curlrc`. Headers, with
   any credential, go to curl on standard input, never in its arguments or
   environment. A header with a line break isn't sent. A request is a GET,
   but for Google's limits, which answer only a POST: its body is an

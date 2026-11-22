@@ -42,6 +42,7 @@ static INFO: Info = Info {
     folder_var: None,
     charges: false,
     session_var: None,
+    login_file: None,
 };
 
 /// Whether the message `m` of the session `s` is the session's own: a fork's

@@ -123,6 +123,38 @@ struct Known {
     readers: i64,
 }
 
+/// How a file read before is read now.
+enum Resume {
+    Unchanged,
+    /// From its cursor: it only grew.
+    On,
+    /// It was replaced or cut short.
+    FromStart,
+}
+
+impl Known {
+    /// How the file, read before as this and now `stat`, is read. One an
+    /// older reader read is added to `older`, to take out what it made.
+    ///
+    /// Its reader is recorded when the read ends, over when what it made is
+    /// taken out, so a file taken out and then not read, as when the process
+    /// ends between the two, never looks read. The cost: one that can't be
+    /// read yet is taken out again at each catch-up, 23 to 25 ms among
+    /// 120,000 responses (2026-11-14).
+    fn resume(&self, stat: &Stat, older: &mut Vec<i64>) -> Resume {
+        if self.readers < READERS {
+            older.push(self.id);
+            Resume::FromStart
+        } else if self.stat == *stat {
+            Resume::Unchanged
+        } else if self.stat.inode == stat.inode && stat.size >= self.stat.size {
+            Resume::On
+        } else {
+            Resume::FromStart
+        }
+    }
+}
+
 /// Hold `ingest.lock` beside the database: one process reads history at a
 /// time, so a first run isn't read twice at once.
 pub fn lock(db: &Connection) -> Result<std::fs::File> {
@@ -202,21 +234,10 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
                     continue;
                 };
                 if let Some(was) = known.remove(path.as_os_str()) {
-                    let cursor = if was.readers < READERS {
-                        // Its reader is recorded when the read ends, over when what it
-                        // made is taken out, so a file taken out and then not read, as
-                        // when the process ends between the two, never looks read. The
-                        // cost: one that can't be read yet is taken out again at each
-                        // catch-up, 23 to 25 ms among 120,000 responses (2026-11-14).
-                        older.push(was.id);
-                        String::new()
-                    } else if was.stat == stat {
-                        continue;
-                    } else if was.stat.inode == stat.inode && stat.size >= was.stat.size {
-                        load_cursor(was.id)?
-                    } else {
-                        // A file replaced or cut short is read from the start.
-                        String::new()
+                    let cursor = match was.resume(&stat, &mut older) {
+                        Resume::Unchanged => continue,
+                        Resume::On => load_cursor(was.id)?,
+                        Resume::FromStart => String::new(),
                     };
                     due.push(Due {
                         agent,
@@ -252,12 +273,10 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
                 .query_row([was.id], |row| Ok((row.get(0)?, row.get(1)?)))?;
             if was_agent == agent.info().id {
                 renames.push((was.id, path.to_string_lossy().into_owned()));
-                if was.readers < READERS {
-                    older.push(was.id);
-                } else if was.stat == stat {
-                    continue;
-                } else if stat.size >= was.stat.size {
-                    cursor = was_cursor;
+                match was.resume(&stat, &mut older) {
+                    Resume::Unchanged => continue,
+                    Resume::On => cursor = was_cursor,
+                    Resume::FromStart => {}
                 }
             }
         }
@@ -336,11 +355,14 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
                 while files.peek().is_some() {
                     let tx = crate::db::write(db)?;
                     let derived = Derived::load(&tx)?;
+                    // Each folder's logins, read once a write: Codex writes
+                    // limits in every rollout.
+                    let mut held = HashMap::new();
                     let began = Instant::now();
                     while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
                         match read {
                             Ok(read) => {
-                                write(&tx, due, read, home, &derived, &mut projects)?;
+                                write(&tx, due, read, home, &derived, &mut projects, &mut held)?;
                                 wrote = true;
                             }
                             Err(error) => failed(&tx, due, &error)?,
@@ -400,6 +422,7 @@ fn write(
     home: &Path,
     derived: &Derived,
     projects: &mut HashMap<String, String>,
+    held: &mut HashMap<Arc<str>, Vec<(String, String)>>,
 ) -> Result<()> {
     let agent = due.agent.info().id;
     let folder = due.folder.as_ref();
@@ -480,7 +503,9 @@ fn write(
     // On the account the folder was signed in to when the agent wrote them,
     // and only while it still holds a login to it: a sign-in to another is
     // in `sign_in` up to `limits::DUE` later, and its limits would go to this.
-    let held = crate::limits::held_in(due.agent, Path::new(folder), home).unwrap_or_default();
+    let held = held.entry(Arc::clone(&due.folder)).or_insert_with(|| {
+        crate::limits::held_in(due.agent, Path::new(folder), home).unwrap_or_default()
+    });
     let now = crate::now();
     for limits in &read.limits {
         if let Some(account) = derived.account(folder, &limits.provider, limits.at)

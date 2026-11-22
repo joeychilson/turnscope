@@ -146,10 +146,6 @@ pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
         .map(|(_, value)| value)
 }
 
-pub const SIGN_IN_AT: &str =
-    "FROM sign_in held WHERE held.folder = r.folder AND held.provider = r.provider
-    ORDER BY held.since > r.at, iif(held.since > r.at, held.since, -held.since) LIMIT 1";
-
 /// Take in models.dev's catalog when it's six hours since any process last
 /// did: a price that changed is kept from now, beside the one before it, a
 /// model listed for the first time prices what was used of it before, and
@@ -185,24 +181,13 @@ const CLAIMED: i64 = 2 * crate::time::MINUTE;
 /// Claim the refresh for this process: for 2 minutes, until `take` records it
 /// for 6 hours, so a process that dies meanwhile holds it up 2 minutes.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
-    let at: Option<i64> = db.query_row("SELECT prices_at FROM state", [], |row| row.get(0))?;
-    if at.is_some_and(|at| at > now - DUE && at <= now + crate::limits::DUE) {
-        return Ok(false);
-    }
-    let tx = crate::db::write(db)?;
-    let claimed = tx.execute(
-        "UPDATE state SET prices_at = ?1 - ?2 + ?4
-         WHERE prices_at IS NULL OR prices_at <= ?1 - ?2 OR prices_at > ?1 + ?3",
-        params![now, DUE, crate::limits::DUE, CLAIMED],
-    )?;
-    tx.commit()?;
-    Ok(claimed > 0)
+    crate::db::claim(db, "prices_at", now, DUE, now - DUE + CLAIMED)
 }
 
 type Catalog = Vec<((String, String), (String, Option<String>))>;
 
 fn catalog() -> Result<Catalog> {
-    let (status, json) = providers::request("https://models.dev/api.json", &[], None, 60)?;
+    let (status, json) = providers::get("https://models.dev/api.json", 60)?;
     if status != 200 {
         return Err(Error::Failed(format!("models.dev answered {status}")));
     }

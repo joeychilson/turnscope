@@ -61,6 +61,7 @@ impl By {
     }
 }
 
+#[derive(Clone)]
 pub struct Query {
     pub since: i64,
     pub until: i64,
@@ -453,16 +454,8 @@ pub fn markdown(
 }
 
 /// What used a limit: `account`'s usage in `limit`'s window, or `between` a
-/// start and an end, each row in the window with the points of the limit it
-/// took: its share of the cost, times the points used. Approximate, as
-/// providers say how much of a limit is used but not by what. With no limit,
-/// the account's usage.
-///
-/// A window that reset since it was read counts from the reset, or one
-/// length back where that's later, with no shares: how much of the new
-/// window is used isn't known. A window that rolls counts the last of its
-/// length (`Provider::rolls`). Usage with no known price gives no shares
-/// (`unshared`): a share is of cost.
+/// start and an end, with the points of the limit each row took in the
+/// window (`shares`). With no limit, the account's usage.
 pub fn breakdown(
     db: &Connection,
     account: &crate::status::Account,
@@ -472,51 +465,72 @@ pub fn breakdown(
     top: usize,
     now: i64,
 ) -> Result<(Usage, Option<Shares>)> {
-    let window = limit.and_then(crate::status::Limit::started);
+    let usage = usage(db, &query(account, limit, between, by, top, now))?;
+    let shares = limit
+        .filter(|_| between.is_none())
+        .and_then(|limit| shares(&usage, limit));
+    Ok((usage, shares))
+}
+
+/// `account`'s usage of `limit`, in its window or `between` a start and an
+/// end. A window that reset since it was read counts from the reset, or one
+/// length back where that's later. A window that rolls counts the last of
+/// its length (`Provider::rolls`). With no window start, a key's spend
+/// counts by the month, anything else over the last week.
+pub fn query(
+    account: &crate::status::Account,
+    limit: Option<&crate::status::Limit>,
+    between: Option<(i64, i64)>,
+    by: By,
+    top: usize,
+    now: i64,
+) -> Query {
     let rolls = limit.and_then(|limit| {
         crate::providers::by_id(&account.provider)?
             .rolls(&limit.key)
             .map(|length| now - length)
     });
-    let start = rolls.or(window).or_else(|| {
-        let limit = limit?;
-        let reset = limit.reset_since?;
-        Some(reset.max(limit.length().map_or(reset, |length| now - length)))
-    });
-    let usage = usage(
-        db,
-        &Query {
-            // A key's spend counts by the month; a limit with no window
-            // start otherwise over the last week.
-            since: between
-                .map(|(since, _)| since)
-                .or(start)
-                .unwrap_or_else(|| match account.kind {
-                    crate::providers::Kind::ApiKey => time::start_of(time::Period::Month, now),
-                    crate::providers::Kind::Subscription => now - 7 * time::DAY,
-                }),
-            until: between.map_or(now, |(_, until)| until),
-            by,
-            agent: None,
-            account: Some(account.id.clone()),
-            models: models(limit.and_then(|limit| limit.scope.as_deref())),
-            key: key(limit.map_or("", |limit| &limit.key)),
-            top,
-        },
-    )?;
-    // Points, for the limit's own window alone.
-    let used = limit
-        .filter(|_| between.is_none() && window.is_some())
-        .filter(|_| usage.total.cost_usd > 0.0 && usage.total.unpriced == 0)
-        .map(|limit| f64::from(100 - limit.left_percent));
-    let shares = used.map(|used| {
-        let points = |row: &Row| row.cost_usd / usage.total.cost_usd * used;
-        Shares {
-            rows: usage.rows.iter().map(points).collect(),
-            rest: usage.rest.as_ref().map(points),
-        }
-    });
-    Ok((usage, shares))
+    let start = rolls
+        .or_else(|| limit.and_then(crate::status::Limit::started))
+        .or_else(|| {
+            let limit = limit?;
+            let reset = limit.reset_since?;
+            Some(reset.max(limit.length().map_or(reset, |length| now - length)))
+        });
+    Query {
+        since: between
+            .map(|(since, _)| since)
+            .or(start)
+            .unwrap_or_else(|| match account.kind {
+                crate::providers::Kind::ApiKey => time::start_of(time::Period::Month, now),
+                crate::providers::Kind::Subscription => now - 7 * time::DAY,
+            }),
+        until: between.map_or(now, |(_, until)| until),
+        by,
+        agent: None,
+        account: Some(account.id.clone()),
+        models: models(limit.and_then(|limit| limit.scope.as_deref())),
+        key: key(limit.map_or("", |limit| &limit.key)),
+        top,
+    }
+}
+
+/// The points of `limit` each row of `usage` of its window took: its share
+/// of the cost, times the points used. Approximate, as providers say how
+/// much of a limit is used but not by what. None for a window that reset
+/// since it was read, as how much of the new one is used isn't known, and
+/// for usage with no known price (`unshared`): a share is of cost.
+pub fn shares(usage: &Usage, limit: &crate::status::Limit) -> Option<Shares> {
+    limit.started()?;
+    if usage.total.unpriced > 0 || usage.total.cost_usd <= 0.0 {
+        return None;
+    }
+    let used = f64::from(100 - limit.left_percent);
+    let points = |row: &Row| row.cost_usd / usage.total.cost_usd * used;
+    Some(Shares {
+        rows: usage.rows.iter().map(points).collect(),
+        rest: usage.rest.as_ref().map(points),
+    })
 }
 
 /// Why `usage` of `limit`'s window gives no shares, when it's that some of
@@ -557,7 +571,7 @@ pub fn limited(models: &[String], key: Option<&str>) -> (String, Vec<Value>) {
         values.extend(models.iter().map(|model| model.clone().into()));
     }
     if let Some(key) = key {
-        sql += &format!(" AND (SELECT key {}) = ?", crate::prices::SIGN_IN_AT);
+        sql += &format!(" AND (SELECT key {}) = ?", crate::limits::SIGN_IN_AT);
         values.push(key.to_owned().into());
     }
     (sql, values)

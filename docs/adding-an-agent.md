@@ -44,6 +44,7 @@ static INFO: Info = Info {
     folder_var: Some("ACME_HOME"),
     charges: false,
     session_var: None,
+    login_file: Some("auth.json"),
 };
 ```
 
@@ -58,6 +59,9 @@ those:
   the agent. To find it, connect the agent, start a session in its app,
   and look at the server's parents with `ps`. It's `None` for an agent
   whose app runs `command`, or that has no app.
+- `login_file` names the file the agent keeps its login in: a write to it
+  asks for the limits again (`limits::refresh`), as after signing in
+  again. An agent with its login in the Keychain alone has `None`.
 - `folder_var` is needed when `folders` can find more than one folder.
 - [mcp.md](mcp.md#who-is-asking) says how `command`, `app` and
   `session_var` tell the MCP server which agent and session call it.
@@ -98,10 +102,6 @@ Beyond those:
 - `folders` lists the agent's own folder first: `installed` is asked of
   it, and it's the agent folder of a caller that names none.
 - `files` runs at every catch-up, so it lists and doesn't read.
-- `login_file`, left out above, says whether a file is one the agent keeps
-  its login in: a write to it asks for the limits again
-  (`limits::refresh_asked`), as after signing in again. An agent with its
-  login in the Keychain alone leaves it out.
 - An error from `read` leaves the cursor as it was, so the file is tried
   again at the next catch-up.
 - An agent with `folder_var` keeps a configuration per folder: `connect`

@@ -539,7 +539,24 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     ))
 }
 
-fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
+/// What `explain_usage` was asked for, checked.
+struct UsageAsked<'a> {
+    /// Said first: that whose account is asking isn't known, if it isn't.
+    lead: &'static str,
+    account: Option<&'a status::Account>,
+    limit: Option<&'a status::Limit>,
+    since: Option<i64>,
+    until: Option<i64>,
+    by: By,
+    top: usize,
+}
+
+fn usage_asked<'a>(
+    ask: &Ask,
+    arguments: Value,
+    status: &'a status::Status,
+    now: i64,
+) -> Result<UsageAsked<'a>> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -553,13 +570,11 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
         top: Option<usize>,
     }
     let input: Input = input(arguments)?;
-    let now = turnscope::now();
-    let status = status::status(ask.db, now)?;
-    let mut lead = String::new();
+    let mut lead = "";
     let account = match (input.account.as_deref(), input.all) {
-        (Some(name), _) => Some(status::one_account(&status, name)?),
+        (Some(name), _) => Some(status::one_account(status, name)?),
         (None, true) => None,
-        (None, false) => match ask.caller.account(ask.db, ask.home, &status)? {
+        (None, false) => match ask.caller.account(ask.db, ask.home, status)? {
             Some(account) => Some(account),
             None if input.limit.is_some() => {
                 return Err(Error::NotFound(
@@ -567,8 +582,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
                 ));
             }
             None => {
-                lead =
-                    "Which account is yours isn't known, so this is every account's.\n".to_owned();
+                lead = "Which account is yours isn't known, so this is every account's.\n";
                 None
             }
         },
@@ -620,7 +634,29 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
             )));
         }
     };
-    let top = input.top.unwrap_or(5).clamp(1, 20);
+    Ok(UsageAsked {
+        lead,
+        account,
+        limit,
+        since,
+        until,
+        by,
+        top: input.top.unwrap_or(5).clamp(1, 20),
+    })
+}
+
+fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
+    let now = turnscope::now();
+    let status = status::status(ask.db, now)?;
+    let UsageAsked {
+        lead,
+        account,
+        limit,
+        since,
+        until,
+        by,
+        top,
+    } = usage_asked(ask, arguments, &status, now)?;
     let yours = ask.caller.session.as_deref();
     // Every row, so the caller's own session is found past the top.
     let fetch_top = if by == By::Session && yours.is_some() {
@@ -628,28 +664,26 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     } else {
         top
     };
-    let (mut used, mut shares) = match account {
+    let query = match account {
         Some(account) => {
             let between = since.map(|since| (since, until.unwrap_or(now)));
-            usage::breakdown(ask.db, account, limit, between, by, fetch_top, now)?
+            usage::query(account, limit, between, by, fetch_top, now)
         }
-        None => (
-            usage::usage(
-                ask.db,
-                &usage::Query {
-                    since: since.unwrap_or(now - 30 * time::DAY),
-                    until: until.unwrap_or(now),
-                    by,
-                    agent: None,
-                    models: Vec::new(),
-                    key: None,
-                    account: None,
-                    top: fetch_top,
-                },
-            )?,
-            None,
-        ),
+        None => usage::Query {
+            since: since.unwrap_or(now - 30 * time::DAY),
+            until: until.unwrap_or(now),
+            by,
+            agent: None,
+            account: None,
+            models: Vec::new(),
+            key: None,
+            top: fetch_top,
+        },
     };
+    let mut used = usage::usage(ask.db, &query)?;
+    let mut shares = limit
+        .filter(|_| since.is_none())
+        .and_then(|limit| usage::shares(&used, limit));
     let own_line = if by == By::Session
         && used.rows.len() > top
         && let Some(yours) = yours
@@ -724,44 +758,40 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
             time::ago(start, minute),
         );
     }
-    // The same usage by model and project, and by account when it's every
-    // account's, so one call says what used it.
-    let models = usage::models(limit.and_then(|limit| limit.scope.as_deref()));
-    let key = usage::key(limit.map_or("", |limit| &limit.key));
-    let others = [
+    out += &by_others(ask.db, &query)?;
+    Ok(out.trim_end().to_owned())
+}
+
+/// What `query` asked by model and project, and by account when it's every
+/// account's, the top three of each, so one call says what used it.
+fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
+    let mut out = String::new();
+    for (by, what) in [
         (By::Model, "model"),
         (By::Project, "project"),
         (By::Account, "account"),
-    ];
-    for (other, what) in others {
-        if other != by && (other != By::Account || account.is_none()) {
-            let them = usage::usage(
-                ask.db,
-                &usage::Query {
-                    since: used.since,
-                    until: used.until,
-                    by: other,
-                    agent: None,
-                    account: account.map(|account| account.id.clone()),
-                    models: models.clone(),
-                    key: key.clone(),
-                    top: 3,
-                },
-            )?;
-            let listed: Vec<String> = them
-                .rows
-                .iter()
-                .map(|row| {
-                    let cost = usage::cost(row.cost_usd, row.unpriced);
-                    format!("{}: {cost}", row.label(other))
-                })
-                .collect();
-            if !listed.is_empty() {
-                out += &format!("\nBy {what}: {}.", listed.join("; "));
-            }
+    ] {
+        if by == query.by || (by == By::Account && query.account.is_some()) {
+            continue;
+        }
+        let other = usage::Query {
+            by,
+            top: 3,
+            ..query.clone()
+        };
+        let listed: Vec<String> = usage::usage(db, &other)?
+            .rows
+            .iter()
+            .map(|row| {
+                let cost = usage::cost(row.cost_usd, row.unpriced);
+                format!("{}: {cost}", row.label(by))
+            })
+            .collect();
+        if !listed.is_empty() {
+            out += &format!("\nBy {what}: {}.", listed.join("; "));
         }
     }
-    Ok(out.trim_end().to_owned())
+    Ok(out)
 }
 
 #[cfg(test)]

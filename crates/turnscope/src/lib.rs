@@ -122,7 +122,7 @@ pub fn catch_up(
     let (priced, limits) = match online() {
         true => (
             prices::refresh(db).unwrap_or(false),
-            limits::refresh(db, home),
+            limits::refresh(db, home, false),
         ),
         false => (false, Ok(false)),
     };

@@ -61,6 +61,7 @@ static INFO: Info = Info {
     charges: false,
     // The app sets no variable naming the conversation.
     session_var: None,
+    login_file: Some(FALLBACK),
 };
 
 const KEPT: [&str; 2] = ["antigravity", "antigravity-cli"];
@@ -157,10 +158,6 @@ impl Agent for Antigravity {
             return None;
         }
         Some(server["command"].as_str()?.to_owned())
-    }
-
-    fn login_file(&self, path: &Path) -> bool {
-        path.file_name().and_then(|name| name.to_str()) == Some(FALLBACK)
     }
 }
 

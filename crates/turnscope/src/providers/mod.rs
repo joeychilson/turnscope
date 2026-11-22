@@ -115,6 +115,27 @@ pub enum Kind {
     ApiKey,
 }
 
+/// Stored as it's serialized.
+impl rusqlite::ToSql for Kind {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(match self {
+            Kind::Subscription => "subscription",
+            Kind::ApiKey => "apiKey",
+        }
+        .into())
+    }
+}
+
+impl rusqlite::types::FromSql for Kind {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Kind> {
+        match value.as_str()? {
+            "subscription" => Ok(Kind::Subscription),
+            "apiKey" => Ok(Kind::ApiKey),
+            _ => Err(rusqlite::types::FromSqlError::InvalidType),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Limits {
     /// The plan, as the provider reports it: `max`, `plus`.
@@ -315,15 +336,9 @@ impl Answered {
     }
 }
 
-/// Ask `url` with `headers`, giving up after `seconds`. A body goes in
-/// curl's arguments, so it shows in a process listing.
-pub fn request(
-    url: &str,
-    headers: &[&str],
-    body: Option<&str>,
-    seconds: u32,
-) -> crate::Result<(u16, Vec<u8>)> {
-    requested(url, headers, body, Duration::from_secs(seconds.into()))
+/// GET `url`, giving up after `seconds`.
+pub fn get(url: &str, seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
+    curl(url, &[], &[], Duration::from_secs(seconds.into()))
         .map(|answered| (answered.status, answered.body))
         .map_err(|why| Error::Failed(format!("asking {url}: {why}")))
 }

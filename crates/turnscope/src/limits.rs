@@ -121,7 +121,8 @@ struct SignedIn {
 
 /// What every folder of `agents` holds: each folder's sign-in, each
 /// account to read with its logins, and the read of each account whose
-/// logins couldn't be read, failed with why.
+/// logins couldn't be read, unless another folder's login to it was
+/// (`failed_reads`).
 struct Gathered {
     signed_in: Vec<SignedIn>,
     accounts: BTreeMap<String, Held>,
@@ -131,18 +132,15 @@ struct Gathered {
 /// Read the limits of each account that's due (`Schedule::due`), and the
 /// agents' logins, when no process has claimed doing so in the last
 /// `CLAIM`, or the last [`DUE`] with no account due; whether it did.
-pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
-    refresh_with(db, home, agents::ALL, providers::ALL, false)
-}
-
-/// [`refresh`], for limits asked for, as when the panel opens: whatever
-/// another process claimed, an account read [`DUE`] ago or more is read
-/// again, and so is one whose last read failed, unless its provider asked
-/// to be left. A read no provider answered leaves the account as it was:
-/// asked for as the Mac woke, before its network was back, it showed as
-/// unread for five minutes.
-pub fn refresh_asked(db: &mut Connection, home: &Path) -> Result<bool> {
-    refresh_with(db, home, agents::ALL, providers::ALL, true)
+///
+/// `asked` for limits asked for, as when the panel opens: whatever another
+/// process claimed, an account read [`DUE`] ago or more is read again, and
+/// so is one whose last read failed, unless its provider asked to be left.
+/// A read no provider answered leaves the account as it was: asked for as
+/// the Mac woke, before its network was back, it showed as unread for five
+/// minutes.
+pub fn refresh(db: &mut Connection, home: &Path, asked: bool) -> Result<bool> {
+    refresh_with(db, home, agents::ALL, providers::ALL, asked)
 }
 
 fn refresh_with(
@@ -167,7 +165,7 @@ fn refresh_with(
         (false, true) => CLAIM,
         (false, false) => DUE,
     };
-    if !claim(db, now, gap)? {
+    if !crate::db::claim(db, "limits_at", now, gap, now)? {
         return Ok(false);
     }
     let mut gathered = gather(db, home, agents, providers)?;
@@ -228,7 +226,7 @@ struct Schedule {
 
 impl Schedule {
     /// Whether the account's limits are read at `now`; `asked` when they're
-    /// asked for (`refresh_asked`).
+    /// asked for (`refresh`).
     fn due(&self, now: i64, asked: bool) -> bool {
         // A wait longer than any is a clock set back since.
         if self
@@ -296,27 +294,6 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
         )?
         .collect::<rusqlite::Result<_>>()?;
     Ok(schedules)
-}
-
-/// Claim reading the limits, in one statement, unless a process claimed it
-/// less than `gap` ago, so no two processes read them at once. Not once a
-/// newer Turnscope has written.
-fn claim(db: &mut Connection, now: i64, gap: i64) -> Result<bool> {
-    // Looked at first: claiming waits for the write lock, which a hook
-    // shouldn't when nothing is due.
-    let last: Option<i64> = db.query_row("SELECT limits_at FROM state", [], |row| row.get(0))?;
-    if last.is_some_and(|last| now - gap < last && last <= now + DUE) {
-        return Ok(false);
-    }
-    // Claimed more than `DUE` ahead of now is a clock set back since.
-    let tx = crate::db::write(db)?;
-    let claimed = tx.execute(
-        "UPDATE state SET limits_at = ?1
-         WHERE limits_at IS NULL OR limits_at <= ?1 - ?2 OR limits_at > ?1 + ?3",
-        params![now, gap, DUE],
-    )?;
-    tx.commit()?;
-    Ok(claimed > 0)
 }
 
 /// What every folder of `agents` signs in to, the accounts those logins are
@@ -431,15 +408,25 @@ fn gather(
             }
         }
     }
-    // An account whose logins couldn't be read isn't signed out: its read
-    // fails with why, unless another folder's login to it is read.
+    unreadable.retain(|id, _| !accounts.contains_key(id));
+    Ok(Gathered {
+        unreadable: failed_reads(db, unreadable, providers)?,
+        signed_in,
+        accounts,
+    })
+}
+
+/// The reads of `unreadable` accounts, each failed with why its logins
+/// couldn't be read: such an account isn't signed out.
+fn failed_reads(
+    db: &Connection,
+    unreadable: BTreeMap<String, String>,
+    providers: &[&'static dyn Provider],
+) -> Result<Vec<(Read, Held)>> {
     let mut stored = db.prepare("SELECT provider, kind, label FROM account WHERE id = ?1")?;
     let mut failed = Vec::new();
     for (id, why) in unreadable {
-        if accounts.contains_key(&id) {
-            continue;
-        }
-        let row: Option<(String, String, Option<String>)> = stored
+        let row: Option<(String, Kind, Option<String>)> = stored
             .query_row([&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .optional()?;
         let Some((provider, kind, label)) = row else {
@@ -448,10 +435,6 @@ fn gather(
         let Some(&provider) = providers.iter().find(|read| read.info().id == provider) else {
             continue;
         };
-        let kind = match kind.as_str() {
-            "apiKey" => Kind::ApiKey,
-            _ => Kind::Subscription,
-        };
         let held = Held {
             provider,
             account: providers::Account { id, kind, label },
@@ -459,11 +442,7 @@ fn gather(
         };
         failed.push((Read::failed(Problem::unanswered(why)), held));
     }
-    Ok(Gathered {
-        signed_in,
-        accounts,
-        unreadable: failed,
-    })
+    Ok(failed)
 }
 
 /// Write what was read, in one write: accounts read as one plan made one,
@@ -491,35 +470,23 @@ fn record(
         }
     }
     sign_ins(&tx, &signed_in, now)?;
-    let mut own_ok = HashSet::new();
-    let mut plan_ok = HashSet::new();
-    for (read, held) in &answers {
-        if read.limits.is_some() {
-            own_ok.insert(held.account.id.clone());
-            plan_ok.insert(
-                one.get(&held.account.id)
-                    .unwrap_or(&held.account.id)
-                    .clone(),
-            );
+    // Of one plan, the account that stands for it is written once: by its
+    // own read that worked, else a merged key's that worked, else the first
+    // read that failed.
+    let mut chosen: BTreeMap<String, (u8, Read, Held)> = BTreeMap::new();
+    for (read, held) in answers {
+        let id = one.get(&held.account.id).unwrap_or(&held.account.id);
+        let rank = match (read.limits.is_some(), *id == held.account.id) {
+            (true, true) => 0,
+            (true, false) => 1,
+            (false, _) => 2,
+        };
+        if chosen.get(id).is_none_or(|(had, ..)| rank < *had) {
+            chosen.insert(id.clone(), (rank, read, held));
         }
     }
-    let mut written = HashSet::new();
     let mut logged = Vec::new();
-    for (read, held) in answers {
-        // Of one plan, the account that stands for it is written once: by its
-        // own read when it succeeded, or by a merged key's when its own wasn't
-        // read or failed.
-        let id = one.get(&held.account.id).unwrap_or(&held.account.id);
-        if read.limits.is_none() && plan_ok.contains(id) {
-            continue;
-        }
-        if one.contains_key(&held.account.id) && own_ok.contains(id) {
-            continue;
-        }
-        let id = id.clone();
-        if !written.insert(id.clone()) {
-            continue;
-        }
+    for (id, (_, read, held)) in chosen {
         let title = title(&held, &read);
         // Named in `app.log` by its title alone: a label can be an email,
         // and `doctor` prints the log for a report someone may post.
@@ -538,10 +505,7 @@ fn record(
         .execute(params![
             id,
             held.provider.info().id,
-            match held.account.kind {
-                Kind::Subscription => "subscription",
-                Kind::ApiKey => "apiKey",
-            },
+            held.account.kind,
             title,
             held.account.label,
             read.limits.is_some().then_some(now),
@@ -647,9 +611,11 @@ pub fn record_in_band(
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .optional()?;
-        // Codex writes its limits with every response, most often unchanged.
+        // Codex writes its limits with every response, most often unchanged:
+        // as used, of the same window.
         if !before.is_some_and(|(at, used, resets)| {
-            at >= snapshot.at || (used == reading.used && resets == reading.resets)
+            at >= snapshot.at
+                || (used == reading.used && crate::forecast::same_reset(resets, reading.resets))
         }) {
             new.push(reading);
         }
@@ -731,18 +697,21 @@ fn failing(
     })
 }
 
+/// The sign-in in force at response `r`, or before the folder's first, the
+/// first, as `ingest::Derived::of` finds it.
+pub const SIGN_IN_AT: &str =
+    "FROM sign_in held WHERE held.folder = r.folder AND held.provider = r.provider
+    ORDER BY held.since > r.at, iif(held.since > r.at, held.since, -held.since) LIMIT 1";
+
 /// Write each folder's sign-in that changed, and the account of the
 /// responses made in that folder since, in the same write: after it, a
 /// process that ended between the two left the responses on the account
 /// before for good. Without `ingest.lock`, as a read of history takes in the
 /// sign-ins at each of its writes (`ingest::Derived`).
 fn sign_ins(tx: &Transaction, signed_in: &[SignedIn], now: i64) -> Result<()> {
-    // The sign-in in force at each response, or before the folder's first,
-    // the first, as `ingest::Derived::of` finds it.
     let mut update = tx.prepare(&format!(
-        "UPDATE response AS r SET account = (SELECT account {})
-         WHERE folder = ?1 AND provider = ?2 AND at >= ?3",
-        crate::prices::SIGN_IN_AT
+        "UPDATE response AS r SET account = (SELECT account {SIGN_IN_AT})
+         WHERE folder = ?1 AND provider = ?2 AND at >= ?3"
     ))?;
     for signed in signed_in {
         let held: Option<(Option<String>, Option<String>)> = tx
@@ -1762,6 +1731,7 @@ mod tests {
         folder_var: None,
         charges: false,
         session_var: None,
+        login_file: None,
     };
 
     impl Agent for FakeAgent {
