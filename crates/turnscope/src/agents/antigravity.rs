@@ -155,7 +155,7 @@ impl Agent for Antigravity {
             .map(|file| file.and_then(|file| credential(&file, home)));
         Ok(vec![Login {
             provider: "google".to_owned(),
-            credential: fresher(kept, file)?,
+            credential: super::fresher(kept, file)?,
         }])
     }
 
@@ -167,6 +167,10 @@ impl Agent for Antigravity {
             return None;
         }
         Some(server["command"].as_str()?.to_owned())
+    }
+
+    fn login_file(&self, path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str()) == Some(FALLBACK)
     }
 }
 
@@ -220,31 +224,6 @@ fn credential(kept: &Value, home: &Path) -> Option<Credential> {
             programs: programs(home),
         }),
     })
-}
-
-/// The newer of the sign-in in the Keychain and the one in the file: the one
-/// whose token expires later. One that reads wins over one that doesn't, so a
-/// file half written doesn't sign the account out, nor does a Keychain that
-/// can't be read when the file can.
-fn fresher(
-    kept: Result<Option<Credential>>,
-    file: Result<Option<Credential>>,
-) -> Result<Option<Credential>> {
-    match (kept, file) {
-        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(if expiry(&file) > expiry(&kept) {
-            file
-        } else {
-            kept
-        })),
-        (Ok(Some(one)), _) | (_, Ok(Some(one))) => Ok(Some(one)),
-        (Err(error), _) | (_, Err(error)) => Err(error),
-        (Ok(None), Ok(None)) => Ok(None),
-    }
-}
-
-/// When a sign-in expires, one with no expiry last.
-fn expiry(credential: &Credential) -> i64 {
-    credential.expires.unwrap_or(i64::MAX)
 }
 
 /// Where Antigravity's programs may be, which hold the client its sign-in is
@@ -1065,7 +1044,7 @@ mod tests {
         };
         let failed = || Err(crate::Error::Failed("made-up failure".to_owned()));
         let read = |kept, file| {
-            fresher(kept, file)
+            crate::agents::fresher(kept, file)
                 .unwrap()
                 .map(|one| one.secret.expose().to_owned())
         };
@@ -1086,6 +1065,6 @@ mod tests {
             })
         });
         assert_eq!(read(lasting, signed("file", 2)).as_deref(), Some("kept"));
-        assert!(fresher(Ok(None), failed()).is_err());
+        assert!(crate::agents::fresher(Ok(None), failed()).is_err());
     }
 }

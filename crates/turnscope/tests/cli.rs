@@ -1180,3 +1180,50 @@ fn an_mcp_session_answers_as_its_snapshot_says() {
         "mcp.json differs; run with TURNSCOPE_BLESS=1 and review the diff"
     );
 }
+
+/// While an app keeps the data current, a hook's guard and an MCP server's
+/// call leave limits and prices to it.
+#[test]
+fn guard_and_mcp_leave_limits_to_the_app() {
+    let data = store();
+    let app = std::fs::File::create(data.path().join("app.lock")).unwrap();
+    app.lock().unwrap();
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    db.execute("UPDATE state SET limits_at = NULL, prices_at = NULL", [])
+        .unwrap();
+    // Online, with every request sent to a port that takes none, so a read
+    // that should have been left reaches no provider.
+    let online = |mut command: Command| {
+        command
+            .env("TURNSCOPE_OFFLINE", "0")
+            .env("ALL_PROXY", "http://127.0.0.1:9")
+            .env("HTTPS_PROXY", "http://127.0.0.1:9");
+        command
+    };
+    let guard = online(command(
+        data.path(),
+        &[
+            "guard",
+            "--account",
+            "claude",
+            "--limit",
+            "5 hours",
+            "--below",
+            "20",
+        ],
+    ))
+    .output()
+    .unwrap();
+    assert_eq!(guard.status.code(), Some(0));
+    let answers = tools(
+        &mut online(command(data.path(), &["mcp"])),
+        &[("check_limits", r#"{"account":"claude"}"#)],
+    );
+    assert!(answers[0].contains("Claude Max"), "{}", answers[0]);
+    let claimed: (Option<i64>, Option<i64>) = db
+        .query_row("SELECT limits_at, prices_at FROM state", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(claimed, (None, None));
+}

@@ -431,6 +431,23 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
             response.id,
         ])?;
     }
+    if read.limits.is_empty() {
+        return Ok(());
+    }
+    // On the account the folder was signed in to when the agent wrote them,
+    // as its responses are, and only while the folder still holds a login
+    // to it: a sign-in to another is in `sign_in` once the logins are
+    // gathered again, up to `limits::DUE` later, and meanwhile the other's
+    // limits would go to this one, to stand for it once it's signed out.
+    let held = crate::limits::held_in(due.agent, &due.folder, home).unwrap_or_default();
+    let now = crate::now();
+    for limits in &read.limits {
+        if let Some(account) = derived.account(&folder, &limits.provider, limits.at)
+            && held.contains(&(limits.provider.clone(), account.clone()))
+        {
+            crate::limits::record_in_band(tx, &account, limits, now)?;
+        }
+    }
     Ok(())
 }
 
@@ -489,13 +506,17 @@ impl Derived {
         })
     }
 
+    /// The account `folder` held for `provider` at `at`, if any.
+    fn account(&self, folder: &str, provider: &str, at: i64) -> Option<String> {
+        self.signed
+            .get(&(folder.to_owned(), provider.to_owned()))
+            .and_then(|held| in_force(held, at))
+            .and_then(|account| account.clone())
+    }
+
     /// The cost of `response`, and the account it drew on.
     fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<String>) {
-        let account = self
-            .signed
-            .get(&(folder.to_owned(), response.provider.clone()))
-            .and_then(|held| in_force(held, response.at))
-            .and_then(|account| account.clone());
+        let account = self.account(folder, &response.provider, response.at);
         (self.prices.cost(agent, response), account)
     }
 }
@@ -1154,5 +1175,90 @@ mod tests {
                 ("r3".to_owned(), Some(9.0)),
             ]
         );
+    }
+
+    #[test]
+    fn limits_codex_writes_are_taken_in_offline() {
+        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let codex = home.path().join(".codex");
+        let sessions = codex.join("sessions/2026/10/01");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let sign_in = |account: &str| {
+            let kept = serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "token", "account_id": account}
+            });
+            std::fs::write(codex.join("auth.json"), kept.to_string()).unwrap();
+        };
+        let now = crate::now();
+        let older = now - crate::time::HOUR;
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at, problem)
+             VALUES ('openai:acct-1', 'openai', 'subscription', 'ChatGPT', ?1, ?1, ?1, 'expired')",
+            [older],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account)
+             VALUES ('codex', ?1, 'openai', ?2, 'openai:acct-1')",
+            params![codex.to_string_lossy(), older],
+        )
+        .unwrap();
+        let rollout = sessions.join("rollout-2026-10-01-t1.jsonl");
+        let write = |at: i64, used: f64| {
+            let resets = (now + 3 * crate::time::HOUR) / 1000;
+            let at = jiff::Timestamp::from_millisecond(at).unwrap().to_string();
+            let mut lines = String::new();
+            if !rollout.exists() {
+                let meta = serde_json::json!({"timestamp": at, "type": "session_meta", "payload": {"id": "t1"}});
+                lines += &format!("{meta}\n");
+            }
+            let count = serde_json::json!({
+                "timestamp": at,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "plan_type": "plus",
+                        "primary": {"used_percent": used, "window_minutes": 300, "resets_at": resets},
+                        "secondary": {"used_percent": 15.0, "window_minutes": 10080, "resets_at": resets + 86400}
+                    }
+                }
+            });
+            lines += &format!("{count}\n");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&rollout)
+                .unwrap();
+            std::io::Write::write_all(&mut file, lines.as_bytes()).unwrap();
+        };
+        let left = |db: &Connection| {
+            let status = crate::status::status(db, now).unwrap();
+            let account = &status.accounts[0];
+            let left: Vec<u8> = account
+                .limits
+                .iter()
+                .map(|limit| limit.left_percent)
+                .collect();
+            (
+                matches!(account.state, crate::status::State::Live { .. }),
+                left,
+            )
+        };
+
+        sign_in("acct-1");
+        write(now - 60_000, 30.0);
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        // Codex's login works where the one read before had expired.
+        assert_eq!(left(&db), (true, vec![70, 85]));
+        // Signed in to another account since the logins were gathered, the
+        // folder's limits are the other's.
+        sign_in("acct-2");
+        write(now - 30_000, 90.0);
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        assert_eq!(left(&db), (true, vec![70, 85]));
     }
 }

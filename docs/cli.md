@@ -39,9 +39,10 @@ Every command that prints data takes `--json`. Examples of the JSON are in
 
 Before answering, `status`, `usage`, `accounts` and `doctor` bring the
 database up to date. They read what's new in the
-agents' history, the limits when five minutes have passed since any process
-read them, and the prices when six hours have. If that fails, they answer
-from what's known and say why on standard error.
+agents' history, the limits of each account as they come due, 5 minutes
+after the last reading of one in use and 20 after one not, and the prices
+when six hours have passed since any process read them. If that fails,
+they answer from what's known and say why on standard error.
 
 The first time, and again after an update that changes how history is
 read, they read all of your agents' history, which can take minutes. They
@@ -368,10 +369,9 @@ Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at t
 ```
 
 A hook waits for the guard, so it reads no history and no prices. It reads
-the limits only when five minutes have passed since any process did, and
-not once a newer Turnscope has written to the data: then it guards by the
-limits read before. While
-the app runs, it always has. Nor does it make the database or take in
+the limits only as they come due, and not while the app runs, which reads
+them itself, nor once a newer Turnscope has written to the data: then it
+guards by the limits read before. Nor does it make the database or take in
 0.2's: before Turnscope has, or after an update until the new version has
 opened it, the standing isn't known. Each read of a login's limits gives
 up after 15 seconds, whether its provider takes one request or two, or

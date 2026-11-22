@@ -98,6 +98,10 @@ Beyond those:
 - `folders` lists the agent's own folder first: `installed` is asked of
   it, and it's the agent folder of a caller that names none.
 - `files` runs at every catch-up, so it lists and doesn't read.
+- `login_file`, left out above, says whether a file is one the agent keeps
+  its login in: a write to it asks for the limits again
+  (`limits::refresh_asked`), as after signing in again. An agent with its
+  login in the Keychain alone leaves it out.
 - An error from `read` leaves the cursor as it was, so the file is tried
   again at the next catch-up.
 - An agent with `folder_var` keeps a configuration per folder: `connect`
@@ -180,6 +184,11 @@ Rules:
 - **Changing a reader later.** If a change would read a file already read
   differently, raise `READERS` in `src/ingest.rs`, so every file is read
   again.
+- **Limits.** An agent that writes its account's limits as it works, as
+  Codex does, passes each set to `read.in_band`, keyed as the provider's
+  answer keys them (`providers::window`). They go to the account the folder
+  was signed in to then, while it still is, and only those newer than the
+  provider's last read are taken (`limits::record_in_band`).
 
 ### Logins
 

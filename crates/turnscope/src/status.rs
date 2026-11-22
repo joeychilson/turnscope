@@ -20,14 +20,15 @@ use text::NONE_READ;
 pub use text::{fit, limit_text, line, none, stale, text, verdict};
 
 /// How recently a response must have drawn on an account for it to be in use.
-const IN_USE: i64 = 30 * MINUTE;
+pub(crate) const IN_USE: i64 = 30 * MINUTE;
 
 /// How recently, for it to be one the person uses.
 const RECENT: i64 = 7 * DAY;
 
 /// How long readings stand. After that an outlook is no longer said, and an
 /// account with no newer read shows as of its last one, whatever stopped
-/// the next: limits are read every 5 minutes while anything runs.
+/// the next: while anything runs, limits are read every 5 minutes of an
+/// account in use, and every 20 of one not (`limits::Schedule`).
 const STALE: i64 = 30 * MINUTE;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -509,7 +510,8 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
     let mut rows = db.prepare(
         "SELECT id, provider, kind, title, label, hidden, read_at, problem,
              EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?1),
-             (SELECT reads FROM failing WHERE account = a.id)
+             (SELECT reads FROM failing WHERE account = a.id),
+             full_read_at, checked_at
          FROM account a",
     )?;
     let mut rows = rows.query([now - RECENT])?;
@@ -518,6 +520,13 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
         let read_at: Option<i64> = row.get(6)?;
         let problem: Option<String> = row.get(7)?;
         let failed: Option<i64> = row.get(9)?;
+        let full_read_at: Option<i64> = row.get(10)?;
+        let checked_at: Option<i64> = row.get(11)?;
+        // Readings an agent wrote after the read that failed, as Codex does
+        // as it works, are current (`limits::record_in_band`).
+        let problem = problem.filter(|_| {
+            checked_at.is_none_or(|checked| read_at.is_none_or(|read| read <= checked))
+        });
         let agents = signed.remove(&id).unwrap_or_default();
         let why = match problem.as_deref() {
             _ if agents.is_empty() => Some(Stale::SignedOut),
@@ -537,7 +546,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             },
         };
         let (limits, rose) = match read_at {
-            Some(read_at) => limits(db, &id, read_at, &keys, now)?,
+            Some(read_at) => limits(db, &id, read_at, full_read_at, &keys, now)?,
             None => (Vec::new(), false),
         };
         let used_by = used.remove(&id).unwrap_or_default();
@@ -648,18 +657,23 @@ fn hours_to_reset(starts: Option<i64>, resets: i64, reset: bool, now: i64) -> Op
     Some(until.max(0) as f64 / HOUR as f64)
 }
 
-/// An account's limits as last read, at `read_at`, and whether any rose
-/// between its last two reads within the half hour, as use elsewhere makes
-/// them.
+/// An account's limits, each as last read since the last read of all of
+/// them, `full_read_at`, as an agent may write some alone since
+/// (`limits::record_in_band`), or ever, with no such read: an agent writes
+/// only the limits that moved, so its last reading alone may miss some;
+/// and whether any rose between its last two readings within the half
+/// hour, as use elsewhere makes them.
 fn limits(
     db: &rusqlite::Connection,
     account: &str,
     read_at: i64,
+    full_read_at: Option<i64>,
     keys: &BTreeMap<String, Vec<String>>,
     now: i64,
 ) -> Result<(Vec<Limit>, bool)> {
     struct Latest {
         key: String,
+        at: i64,
         name: String,
         scope: Option<String>,
         used: f64,
@@ -667,23 +681,29 @@ fn limits(
         starts: Option<i64>,
         resets: Option<i64>,
     }
-    let latest: Vec<Latest> = db
-        .prepare_cached(
-            "SELECT limit_key, name, scope, used, size, starts, resets FROM reading
-             WHERE account = ?1 AND at = ?2 ORDER BY limit_key",
-        )?
-        .query_map(params![account, read_at], |row| {
-            Ok(Latest {
-                key: row.get(0)?,
-                name: row.get(1)?,
-                scope: row.get(2)?,
-                used: row.get(3)?,
-                size: row.get(4)?,
-                starts: row.get(5)?,
-                resets: row.get(6)?,
-            })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    let since = full_read_at.map_or(i64::MIN, |full| full.min(read_at));
+    let mut latest: BTreeMap<String, Latest> = BTreeMap::new();
+    let mut rows = db.prepare_cached(
+        "SELECT limit_key, at, name, scope, used, size, starts, resets FROM reading
+         WHERE account = ?1 AND at >= ?2 ORDER BY at, limit_key",
+    )?;
+    let mut rows = rows.query(params![account, since])?;
+    while let Some(row) = rows.next()? {
+        let key: String = row.get(0)?;
+        latest.insert(
+            key.clone(),
+            Latest {
+                key,
+                at: row.get(1)?,
+                name: row.get(2)?,
+                scope: row.get(3)?,
+                used: row.get(4)?,
+                size: row.get(5)?,
+                starts: row.get(6)?,
+                resets: row.get(7)?,
+            },
+        );
+    }
     if latest.is_empty() {
         return Ok((Vec::new(), false));
     }
@@ -699,8 +719,8 @@ fn limits(
     // limit's rows. With five limits read every 5 minutes for 30 days, made
     // up, that took 6.6 ms an account, and this 2.7 ms.
     let from = latest
-        .iter()
-        .map(|row| row.starts.unwrap_or(read_at - DAY))
+        .values()
+        .map(|row| row.starts.unwrap_or(row.at - DAY))
         .min()
         .unwrap_or(now)
         .min(now - WORKED);
@@ -726,20 +746,21 @@ fn limits(
     let mut limits = Vec::new();
     for Latest {
         key,
+        at: limit_read_at,
         name,
         scope,
         used,
         size,
         starts,
         resets,
-    } in latest
+    } in latest.into_values()
     {
         let history = histories.get(&key).map_or(&[][..], Vec::as_slice);
         // Its current window's: those that reset with it.
         let readings: Vec<(i64, f64)> = history
             .iter()
             .filter(|reading| {
-                reading.at >= starts.unwrap_or(read_at - DAY)
+                reading.at >= starts.unwrap_or(limit_read_at - DAY)
                     && forecast::same_reset(resets, reading.resets)
             })
             .map(|reading| (reading.at, reading.used))
@@ -753,7 +774,7 @@ fn limits(
         } else {
             (100.0 - used).clamp(0.0, 100.0)
         };
-        let stale = reset_since.is_some() || now - read_at > STALE;
+        let stale = reset_since.is_some() || now - limit_read_at > STALE;
         let outlook = match (starts, resets) {
             _ if reset_since.is_none() && used >= 100.0 => Outlook::UsedUp {
                 back: resets.map(|resets| Moment::of(resets, now)),
@@ -826,7 +847,7 @@ fn limits(
                 starts_at: starts,
                 resets: Moment::of(resets, now),
             }),
-            read_at,
+            read_at: limit_read_at,
             left_percent: left.floor() as u8,
             // What's left of money, from what was used rather than the
             // percent shown; a millionth of a cent over, as 66.6% of $50 is
@@ -1423,5 +1444,44 @@ mod tests {
         );
         assert_eq!(Moment::of(noon + 4 * HOUR, noon).horizon, Horizon::Today);
         assert_eq!(Moment::of(noon + 2 * HOUR, noon).horizon, Horizon::Soon);
+    }
+
+    #[test]
+    fn limits_an_agent_wrote_show_beside_those_it_did_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let full_at = 2 * HOUR;
+        let in_band_at = full_at + 10 * MINUTE;
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', ?1, ?2)",
+            params![in_band_at, full_at],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account)
+             VALUES ('claude-code', '/a', 'anthropic', 0, 'anthropic:a')",
+            [],
+        )
+        .unwrap();
+        // A read of all of them at `full_at`; the agent wrote the plan's own
+        // at `in_band_at`.
+        db.execute(
+            "INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets) VALUES
+                 ('anthropic:a', 'five_hour', ?1, '5 hours', NULL, 20.0, 0, ?3),
+                 ('anthropic:a', 'seven_day_opus', ?1, 'Weekly', 'Opus', 15.0, 0, ?4),
+                 ('anthropic:a', 'five_hour', ?2, '5 hours', NULL, 30.0, 0, ?3)",
+            params![full_at, in_band_at, 5 * HOUR, 7 * DAY],
+        )
+        .unwrap();
+        let shown = status(&db, in_band_at).unwrap();
+        let limits = &shown.accounts[0].limits;
+        assert_eq!(limits.len(), 2);
+        assert_eq!(limits[0].key, "five_hour");
+        assert_eq!(limits[0].left_percent, 70);
+        assert_eq!(limits[0].read_at, in_band_at);
+        assert_eq!(limits[1].key, "seven_day_opus");
+        assert_eq!(limits[1].left_percent, 85);
+        assert_eq!(limits[1].read_at, full_at);
     }
 }

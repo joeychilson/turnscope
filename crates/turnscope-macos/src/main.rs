@@ -299,6 +299,7 @@ fn show_panel(s: &mut State) {
     }
     notifier::check();
     login::check();
+    engine::ask_limits();
     s.checks_automatically = updater::automatic();
     if let Some(place) = menu_bar::panel_place(PANEL_WIDTH as f64, GUTTER as f64) {
         handle.place(DisplayTarget::Primary, place);

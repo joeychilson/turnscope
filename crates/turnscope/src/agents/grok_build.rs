@@ -211,6 +211,10 @@ impl Agent for GrokBuild {
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
         super::toml_mcp_command(&folder.join("config.toml"))
     }
+
+    fn login_file(&self, path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str()) == Some("auth.json")
+    }
 }
 
 fn summary(summary: &Value, facts: &mut Session) {

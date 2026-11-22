@@ -117,6 +117,16 @@ pub struct Engine {
 /// A request, as a queue runs it (`queue`).
 type Work = Box<dyn FnOnce(&Inner) + Send>;
 
+/// What woke `keep`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wake {
+    /// Something was written in an agent's folder.
+    Written,
+    /// Limits were asked for: the panel opened (`Engine::ask_limits`), or
+    /// an agent wrote a login (`Agent::login_file`).
+    Asked,
+}
+
 struct Inner {
     data: PathBuf,
     home: PathBuf,
@@ -127,6 +137,8 @@ struct Inner {
     showing: Mutex<Option<Showing>>,
     /// What `Event::Kept` last said, so it's told only when it changes.
     kept: Mutex<Option<Option<Stopped>>>,
+    /// What wakes `keep`, while it runs.
+    wake: Mutex<Option<Sender<Wake>>>,
     /// Set once the `Engine` is dropped: its threads end at their next turn.
     ended: AtomicBool,
 }
@@ -152,6 +164,7 @@ impl Engine {
             tell: Box::new(tell),
             showing: Mutex::new(None),
             kept: Mutex::new(None),
+            wake: Mutex::new(None),
             ended: AtomicBool::new(false),
         });
         let running = Arc::clone(&inner);
@@ -238,6 +251,21 @@ impl Engine {
         });
     }
 
+    /// Ask for limits read `limits::DUE` ago or more to be read again, and
+    /// any whose read failed, as when the panel opens
+    /// (`limits::refresh_asked`). Nothing, while another app keeps the data
+    /// current.
+    pub fn ask_limits(&self) {
+        let wake = self
+            .inner
+            .wake
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(wake) = wake.as_ref() {
+            let _ = wake.send(Wake::Asked);
+        }
+    }
+
     /// Run `change` on the open data, then tell the status again, changed
     /// or not.
     fn change(
@@ -321,8 +349,14 @@ impl Inner {
             match lock(&self.data) {
                 Ok(Some(lock)) => {
                     let kept = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        keep(&self.home, &self.data, |caught| self.caught(caught))
+                        keep(&self.home, &self.data, &self.wake, |caught| {
+                            self.caught(caught)
+                        })
                     }));
+                    *self
+                        .wake
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                     drop(lock);
                     let why = match kept {
                         Ok(Ok(())) => continue,
@@ -507,6 +541,19 @@ pub fn log(data: &Path, line: &str) {
     }
 }
 
+/// Whether an app keeps the data in `data` current, holding `app.lock`
+/// (`lock`), without making the file. A shared lock, so two processes
+/// asking at once don't each find the other.
+pub fn running(data: &Path) -> bool {
+    let Ok(file) = File::open(data.join("app.lock")) else {
+        return false;
+    };
+    matches!(
+        file.try_lock_shared(),
+        Err(std::fs::TryLockError::WouldBlock)
+    )
+}
+
 /// `app.lock` in `data`, held while one app keeps the data current, or None
 /// while another does: two would only read the same history twice. Two at
 /// once would still be safe, as the command line catching up beside the app
@@ -526,6 +573,14 @@ fn lock(data: &Path) -> Result<Option<File>> {
 /// shows what an agent wrote up to 5 s late.
 const GAP: Duration = Duration::from_secs(5);
 
+/// The least time between two reads of limits asked for
+/// (`limits::refresh_asked`): asked for again sooner, they're read once it's
+/// passed. Each read gathers every agent's logins, the Keychain's with
+/// `/usr/bin/security`, and asks again a provider that failed, so opening
+/// the panel again and again would ask that often. 30 s is a guess at how
+/// soon someone looks again, not measured.
+const ASKED: Duration = Duration::from_secs(30);
+
 /// What `keep` found.
 enum Caught {
     /// The limits, read before the first catch-up.
@@ -538,11 +593,18 @@ enum Caught {
 }
 
 /// Catch up when the agents' folders change, and each minute, as horizons
-/// and outlooks move with the clock. Tells `told` what each catch-up came
-/// to, and returns once it says to stop.
-fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Result<()> {
+/// and outlooks move with the clock, reading the limits asked for first
+/// (`Wake::Asked`). Tells `told` what each catch-up came to, and returns
+/// once it says to stop.
+fn keep(
+    home: &Path,
+    data: &Path,
+    wake: &Mutex<Option<Sender<Wake>>>,
+    mut told: impl FnMut(Caught) -> bool,
+) -> Result<()> {
     let mut db = crate::db::open(data)?;
-    let (changed, changes) = mpsc::channel();
+    let (changed, changes) = mpsc::channel::<Wake>();
+    *wake.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(changed.clone());
     // Any write, not only to history: macOS reports a write when its file
     // is closed, and Codex keeps a session's file open, and OpenCode its
     // database, while they work. Their other writes are what show it.
@@ -552,15 +614,16 @@ fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Resul
     // 100 s, measured 2026-11-11). An agent's writes to its database are in
     // the `-wal` file.
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let ours = event.is_ok_and(|event| {
-            !event.paths.is_empty()
-                && event
-                    .paths
-                    .iter()
-                    .all(|path| path.to_string_lossy().ends_with("-shm"))
-        });
+        let paths = event.as_ref().map_or(&[][..], |event| &event.paths[..]);
+        let ours = !paths.is_empty()
+            && paths
+                .iter()
+                .all(|path| path.to_string_lossy().ends_with("-shm"));
+        let login = paths
+            .iter()
+            .any(|path| agents::ALL.iter().any(|agent| agent.login_file(path)));
         if !ours {
-            let _ = changed.send(());
+            let _ = changed.send(if login { Wake::Asked } else { Wake::Written });
         }
     })
     .map_err(|error| Error::Failed(error.to_string()))?;
@@ -611,15 +674,29 @@ fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Resul
             return Ok(());
         }
     }
+    // Limits asked for and not read yet, and when they last were.
+    let (mut asked, mut asked_at) = (false, None::<Instant>);
     loop {
         watch(&mut watcher);
+        let mut read_asked = false;
+        if asked && crate::online() && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+            (asked, asked_at) = (false, Some(Instant::now()));
+            read_asked = match crate::limits::refresh_asked(&mut db, home) {
+                Ok(read) => read,
+                Err(error @ Error::Newer(_)) => return Err(error),
+                Err(error) => {
+                    log(data, &error.to_string());
+                    true
+                }
+            };
+        }
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
                 let now = (
                     crate::now().div_euclid(crate::time::MINUTE),
                     db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
                 );
-                let new = read || pushed != Some(now);
+                let new = read || read_asked || pushed != Some(now);
                 pushed = Some(now);
                 Caught::Read { new }
             }
@@ -636,15 +713,21 @@ fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Resul
         }
         let waited = Instant::now();
         match changes.recv_timeout(Duration::from_secs(60)) {
-            Ok(()) => {
+            Ok(wake) => {
+                asked |= wake == Wake::Asked;
                 // Let a burst of writes settle, a second at most.
                 let start = Instant::now();
-                while changes.recv_timeout(Duration::from_millis(250)).is_ok()
-                    && start.elapsed() < Duration::from_secs(1)
-                {}
+                while let Ok(wake) = changes.recv_timeout(Duration::from_millis(250)) {
+                    asked |= wake == Wake::Asked;
+                    if start.elapsed() >= Duration::from_secs(1) {
+                        break;
+                    }
+                }
                 // The next catch-up reads what's written meanwhile.
                 std::thread::sleep(GAP.saturating_sub(waited.elapsed()));
-                while changes.try_recv().is_ok() {}
+                while let Ok(wake) = changes.try_recv() {
+                    asked |= wake == Wake::Asked;
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
@@ -1090,14 +1173,23 @@ mod tests {
     }
 
     /// One app keeps a data directory current at a time, and the next can
-    /// once it's gone.
+    /// once it's gone; `running` says so without making `app.lock`.
     #[test]
     fn one_app_holds_the_lock_at_a_time() {
         let data = tempfile::tempdir().unwrap();
+        assert!(!running(data.path()));
+        assert!(!data.path().join("app.lock").exists());
         let first = lock(data.path()).unwrap();
         assert!(first.is_some());
+        assert!(running(data.path()));
         assert!(lock(data.path()).unwrap().is_none());
         drop(first);
+        assert!(!running(data.path()));
+        // Nor is an app found while another process asks.
+        let asking = File::open(data.path().join("app.lock")).unwrap();
+        asking.lock_shared().unwrap();
+        assert!(!running(data.path()));
+        drop(asking);
         assert!(lock(data.path()).unwrap().is_some());
     }
 
@@ -1119,7 +1211,10 @@ mod tests {
         let reading = crate::db::lock(&data.path().join("ingest.lock")).unwrap();
         let (sender, messages) = mpsc::channel();
         let (home_kept, data_kept) = (home.path().to_path_buf(), data.path().to_path_buf());
-        std::thread::spawn(move || keep(&home_kept, &data_kept, |_| sender.send(()).is_ok()));
+        std::thread::spawn(move || {
+            let wake = Mutex::new(None);
+            keep(&home_kept, &data_kept, &wake, |_| sender.send(()).is_ok())
+        });
         // Wait to be told, and say when the limits were read, and whether
         // the history was, by then.
         let told = || -> (Option<i64>, bool) {

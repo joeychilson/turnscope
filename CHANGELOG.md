@@ -11,6 +11,23 @@
   locked, say, the account says its limits couldn't be read since, and
   why goes in `app.log`. It went on saying what it said before, such as
   to renew its login.
+- **Codex's limits update as it works.** Codex writes the account's limits
+  with each response, and Turnscope now takes them in as it reads Codex's
+  history, offline too. A limit Codex doesn't write, as one on some
+  models, stays as Turnscope last read it.
+- **Accounts not in use are read every 20 minutes**, not every 5. An
+  account in use, drawn on in the last half hour or with a limit risen,
+  is still read every 5, and any account right after a limit resets.
+- **Opening the panel reads limits more than 5 minutes old**, and tries
+  again an account whose read failed. So does an agent writing a new
+  login to a file; a login kept in the Keychain is found within 5
+  minutes, as before. If it finds no network,
+  as right after the Mac wakes, it leaves the account as it was.
+- **`guard` and the MCP server leave limits to the app** while it runs, so a
+  hook or tool call doesn't wait on a provider then.
+- **Claude Code's login is also read from `.credentials.json`** in its
+  folder, where Claude Code keeps it without the Keychain, and the fresher
+  copy is used.
 
 ## 0.3.1
 

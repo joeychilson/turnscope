@@ -49,6 +49,13 @@
 //! history has a `forked_from_id` too, from the parent's `session_meta` in
 //! its copy (`core/src/session/session.rs`), but its copy ends at
 //! `subagent_history_start_ordinal`.
+//!
+//! **Limits.** A `token_count` also gives the account's limits as of that
+//! response, `rate_limits`, which are taken in between reads of the
+//! provider (`limits::record_in_band`). Not measured: the fields are as
+//! Codex's `RateLimitSnapshot` names them, `resets_at` in Unix seconds.
+//! Files read before aren't read again for them, so `ingest::READERS`
+//! stays: what they hold is older than the account's last read.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -57,8 +64,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
+use super::{Agent, Credential, InBand, Info, Login, Read, Response, Secret, Title, Tokens};
 use crate::Result;
+use crate::providers;
+use crate::time::MINUTE;
 
 pub struct Codex;
 
@@ -107,6 +116,14 @@ struct Cursor {
     titled: bool,
     /// Responses before any model was named.
     waiting: Vec<Response>,
+}
+
+impl Cursor {
+    /// The provider the rollout's responses and limits are of: the one its
+    /// `session_meta` names, or else OpenAI's.
+    fn provider(&self) -> String {
+        self.provider.clone().unwrap_or("openai".to_owned())
+    }
 }
 
 /// Where a rollout holds a copy of its parent's history.
@@ -268,6 +285,8 @@ struct Payload<'a> {
     // token_count
     #[serde(borrow)]
     info: Option<&'a RawValue>,
+    #[serde(borrow)]
+    rate_limits: Option<&'a RawValue>,
     // token_usage_record, and thread_settings_applied's `thread_id`
     response_id: Option<String>,
     thread_id: Option<String>,
@@ -306,6 +325,21 @@ struct Settings {
 struct Totals {
     total_token_usage: Usage,
     last_token_usage: Option<Usage>,
+}
+
+#[derive(Deserialize)]
+struct RateLimits {
+    limit_id: Option<String>,
+    limit_name: Option<String>,
+    primary: Option<RateWindow>,
+    secondary: Option<RateWindow>,
+}
+
+#[derive(Deserialize)]
+struct RateWindow {
+    used_percent: f64,
+    window_minutes: Option<i64>,
+    resets_at: Option<i64>,
 }
 
 fn parsed<'a, T: Deserialize<'a>>(raw: Option<&'a RawValue>) -> Option<T> {
@@ -406,6 +440,14 @@ impl Agent for Codex {
             Some("apikey") => (text("/OPENAI_API_KEY"), true),
             _ => (None, false),
         };
+        // The workspace and email beside the token, for a token that
+        // doesn't carry them.
+        let email = text("/tokens/id_token")
+            .and_then(|token| super::claims(token)["email"].as_str().map(str::to_owned))
+            .filter(|email| !email.is_empty());
+        let identity = text("/tokens/account_id")
+            .filter(|_| !key)
+            .map(|id| (id.to_owned(), email));
         Ok(vec![Login {
             provider: "openai".to_owned(),
             credential: secret.map(|secret| Credential {
@@ -413,7 +455,7 @@ impl Agent for Codex {
                 expires: super::claims(secret)["exp"].as_i64().map(|exp| exp * 1000),
                 secret: Secret::new(secret),
                 key,
-                identity: None,
+                identity,
                 plan: None,
                 refresh: None,
             }),
@@ -422,6 +464,10 @@ impl Agent for Codex {
 
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
         super::toml_mcp_command(&folder.join("config.toml"))
+    }
+
+    fn login_file(&self, path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str()) == Some("auth.json")
     }
 }
 
@@ -454,6 +500,13 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
                     Ok(totals) => total(totals, line, &thread, copied, cursor, read),
                     Err(_) => read.skipped += 1,
                 }
+            }
+            if !copied
+                && let Some(limits) = parsed::<RateLimits>(payload.rate_limits)
+                && let Some(at) = line.at()
+                && let Some(snapshot) = in_band(limits, cursor, at)
+            {
+                read.in_band(snapshot);
             }
         }
         ("event_msg", Some("thread_settings_applied")) => {
@@ -622,6 +675,47 @@ fn report(
     })
 }
 
+/// The limits a `token_count` gives, keyed as the provider's answer keys
+/// them, so each takes the place of the one read before: the plan's own
+/// windows, or with a `limit_name` those on some models. None of another
+/// limit with no name, which would be taken for the plan's own.
+fn in_band(limits: RateLimits, cursor: &Cursor, at: i64) -> Option<InBand> {
+    let scope = match (limits.limit_name.as_deref(), limits.limit_id.as_deref()) {
+        (Some(name), _) if !name.is_empty() => Some(name),
+        (_, None | Some("" | "codex")) => None,
+        _ => return None,
+    };
+    let readings: Vec<_> = [
+        ("primary_window", limits.primary),
+        ("secondary_window", limits.secondary),
+    ]
+    .into_iter()
+    .filter_map(|(key, window)| {
+        let window = window?;
+        let length = window
+            .window_minutes
+            .filter(|minutes| *minutes > 0)?
+            .checked_mul(MINUTE)?;
+        let resets = window
+            .resets_at
+            .filter(|at| *at > 0)
+            .and_then(|at| at.checked_mul(1000));
+        Some(providers::window(
+            key,
+            scope,
+            window.used_percent,
+            length,
+            resets,
+        ))
+    })
+    .collect();
+    (!readings.is_empty()).then(|| InBand {
+        provider: cursor.provider(),
+        at,
+        readings,
+    })
+}
+
 /// How many responses wait for a model at most. The cursor holds them, and
 /// is saved after each read, so it's kept small. Past that, a response is
 /// counted under no model, which has no price. (Not measured: no rollout was
@@ -632,7 +726,7 @@ const WAITING: usize = 64;
 /// provider and tier in force, or before any model is named, under none, and
 /// kept waiting for the first.
 fn respond(mut response: Response, cursor: &mut Cursor, read: &mut Read) {
-    response.provider = cursor.provider.clone().unwrap_or("openai".to_owned());
+    response.provider = cursor.provider();
     response.model = cursor.model.clone().unwrap_or_default();
     response.priority = cursor.priority;
     if cursor.model.is_none() && cursor.waiting.len() < WAITING {
@@ -1077,5 +1171,80 @@ mod tests {
         // Signed out, or signed in some other way.
         assert_eq!(login(json!({"auth_mode": "chatgpt"})), None);
         assert_eq!(login(json!({"OPENAI_API_KEY": "sk-made-up"})), None);
+    }
+
+    #[test]
+    fn a_rollout_gives_the_last_limits_codex_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = rollout(
+            dir.path(),
+            "t-limits",
+            &[
+                line(
+                    0,
+                    "session_meta",
+                    json!({"id": "t-limits", "model_provider": "openai"}),
+                ),
+                line(1, "turn_context", json!({"model": "gpt-5.5"})),
+                json!({
+                    "timestamp": "2026-10-01T10:00:00Z",
+                    "ordinal": 2,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": null,
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "plan_type": "plus",
+                            "primary": {"used_percent": 15.0, "window_minutes": 300, "resets_at": 1_790_870_000},
+                            "secondary": {"used_percent": 4.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
+                        }
+                    }
+                }),
+                json!({
+                    "timestamp": "2026-10-01T10:05:00Z",
+                    "ordinal": 3,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": null,
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "plan_type": "plus",
+                            "primary": {"used_percent": 22.5, "window_minutes": 300, "resets_at": 1_790_870_000},
+                            "secondary": {"used_percent": 6.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
+                        }
+                    }
+                }),
+            ],
+        );
+        let read = Codex.read(&file, "").unwrap();
+        assert_eq!(read.limits.len(), 1);
+        let limits = &read.limits[0];
+        assert_eq!(limits.provider, "openai");
+        assert_eq!(
+            limits.at,
+            crate::time::millis("2026-10-01T10:05:00Z").unwrap()
+        );
+        let pairs: Vec<_> = limits
+            .readings
+            .iter()
+            .map(|reading| {
+                let name = reading.name.as_str();
+                (
+                    reading.key.as_str(),
+                    name,
+                    reading.scope.as_deref(),
+                    reading.used,
+                )
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("primary_window", "5 hours", None, 22.5),
+                ("secondary_window", "Weekly", None, 6.0),
+            ]
+        );
     }
 }

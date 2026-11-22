@@ -96,6 +96,14 @@ pub trait Agent: Sync {
     /// The command that `folder`'s configuration runs for Turnscope's MCP
     /// server, if any. Each of its folders keeps its own.
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
+
+    /// Whether `path` is a file the agent keeps a login in, so a write to
+    /// it asks for limits (`limits::refresh_asked`), as once it signs in
+    /// again. Not one it keeps other things in too, as Claude Code's
+    /// `.claude.json`.
+    fn login_file(&self, _path: &Path) -> bool {
+        false
+    }
 }
 
 /// What Turnscope knows of an agent as a program.
@@ -138,13 +146,42 @@ pub struct Read {
     pub sessions: BTreeMap<String, Session>,
     /// By id, each response's reports merged.
     pub responses: HashMap<String, Response>,
+    /// Limits the agent wrote, the latest of each provider and scope
+    /// (`Read::in_band`).
+    pub limits: Vec<InBand>,
     /// Lines or rows it couldn't read.
     pub skipped: u64,
+}
+
+/// Limits an agent wrote in its history, as Codex does with each response
+/// (`limits::record_in_band`), keyed as its provider's are.
+pub struct InBand {
+    /// The provider as the agent's responses name it.
+    pub provider: String,
+    /// When the agent wrote them.
+    pub at: i64,
+    /// Of one scope: the plan's own limits, or one on some models.
+    pub readings: Vec<crate::providers::Reading>,
 }
 
 impl Read {
     pub fn session(&mut self, id: &str) -> &mut Session {
         self.sessions.entry(id.to_owned()).or_default()
+    }
+
+    /// Take in limits the agent wrote, over any it wrote before of the same
+    /// provider and scope: a long file's first read keeps its latest alone.
+    pub fn in_band(&mut self, snapshot: InBand) {
+        let scope = |limits: &InBand| limits.readings.first().map(|reading| reading.scope.clone());
+        let same = self
+            .limits
+            .iter_mut()
+            .find(|known| known.provider == snapshot.provider && scope(known) == scope(&snapshot));
+        match same {
+            Some(known) if known.at > snapshot.at => {}
+            Some(known) => *known = snapshot,
+            None => self.limits.push(snapshot),
+        }
     }
 
     /// Take in a response, and its session as one this file tells of. One
@@ -463,6 +500,31 @@ pub fn texts<'a>(content: impl serde::Deserializer<'a> + Copy) -> Vec<String> {
         .into_iter()
         .filter_map(|part| part.text.map(Cow::into_owned))
         .collect()
+}
+
+/// The newer of the sign-in in the Keychain and the one in the file: the one
+/// whose token expires later. One that reads wins over one that doesn't, so a
+/// file half written doesn't sign the account out, nor does a Keychain that
+/// can't be read when the file can.
+fn fresher(
+    kept: Result<Option<Credential>>,
+    file: Result<Option<Credential>>,
+) -> Result<Option<Credential>> {
+    match (kept, file) {
+        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(if expiry(&file) > expiry(&kept) {
+            file
+        } else {
+            kept
+        })),
+        (Ok(Some(one)), _) | (_, Ok(Some(one))) => Ok(Some(one)),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        (Ok(None), Ok(None)) => Ok(None),
+    }
+}
+
+/// When a sign-in expires, one with no expiry last.
+fn expiry(credential: &Credential) -> i64 {
+    credential.expires.unwrap_or(i64::MAX)
 }
 
 pub fn json_file(path: &Path) -> Result<Option<Value>> {

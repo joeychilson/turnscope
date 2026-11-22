@@ -418,8 +418,16 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
             }
         },
     };
-    // Each answer is as of now: what changed since is read first.
-    let caught = turnscope::catch_up(db, &server.home, Some(PATIENCE));
+    // Each answer is as of now: what changed since is read first. Not the
+    // limits and prices while an app keeps the data current
+    // (`engine::running`): it reads them as they come due, and a call that
+    // read them too would wait on a provider, up to 15 s, for what the app
+    // reads anyway.
+    let caught = if turnscope::engine::running(&server.data) {
+        turnscope::ingest::ingest(db, &server.home, Some(PATIENCE))
+    } else {
+        turnscope::catch_up(db, &server.home, Some(PATIENCE))
+    };
     // While all of history is read, the first time or after an update, what
     // was read before is only part of it: 450,000 responses read again
     // after an update gave 153,450 at one call, then 383,724 (2026-11-18).

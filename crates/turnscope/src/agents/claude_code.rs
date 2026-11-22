@@ -454,18 +454,24 @@ impl Agent for ClaudeCode {
             let hex = crate::sha256_hex(folder.as_os_str().as_encoded_bytes(), 4);
             format!("Claude Code-credentials-{hex}")
         };
-        let kept = super::keychain(home, &item, None, |kept| {
+        let keychain = super::keychain(home, &item, None, |kept| {
             serde_json::from_slice::<Value>(kept).map_err(|error| error.to_string())
-        })?
-        .unwrap_or_default();
+        })
+        .map(|kept| kept.and_then(|kept| credential(&kept, identity.clone())));
+        let file = super::json_file(&folder.join(".credentials.json"))
+            .map(|kept| kept.and_then(|kept| credential(&kept, identity.clone())));
         Ok(vec![Login {
             provider: "anthropic".to_owned(),
-            credential: credential(&kept, identity),
+            credential: super::fresher(keychain, file)?,
         }])
     }
 
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String> {
         super::json_mcp_command(&settings(folder, home), "/mcpServers/turnscope/command")
+    }
+
+    fn login_file(&self, path: &Path) -> bool {
+        path.file_name() == Some(".credentials.json".as_ref())
     }
 }
 
@@ -1016,5 +1022,27 @@ mod tests {
 
         let token = json!({"claudeAiOauth": {"accessToken": "tok-1"}});
         assert!(credential(&token, identity).is_some());
+    }
+
+    #[test]
+    fn a_login_kept_in_a_file_is_read_without_the_keychain() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join(".claude");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(
+            home.path().join(".claude.json"),
+            json!({"oauthAccount": {"accountUuid": "a1", "organizationUuid": "o1", "emailAddress": "me@example.com"}}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join(".credentials.json"),
+            json!({"claudeAiOauth": {"accessToken": "file-tok", "expiresAt": 1_790_000_000_000_i64, "subscriptionType": "max"}}).to_string(),
+        )
+        .unwrap();
+        let logins = ClaudeCode.logins(&folder, home.path()).unwrap();
+        let cred = logins[0].credential.as_ref().unwrap();
+        assert_eq!(cred.secret.expose(), "file-tok");
+        assert_eq!(cred.plan.as_deref(), Some("max"));
+        assert_eq!(cred.expires, Some(1_790_000_000_000));
     }
 }
