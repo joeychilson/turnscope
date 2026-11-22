@@ -47,23 +47,20 @@ struct Threshold {
 
 struct Model {
     base: Rates,
-    /// Each tier's rates, from the prompt size it starts above, smallest first.
     tiers: Vec<(u64, Rates)>,
     priority: Option<Rates>,
 }
 
-/// Each model's prices, by provider and model, from when each was in force,
-/// oldest first.
-pub struct Prices(HashMap<(String, String), History<Model>>);
+pub struct Prices(HashMap<String, HashMap<String, History<Model>>>);
 
 impl Prices {
     pub fn load(db: &Connection) -> Result<Prices> {
-        let mut models: HashMap<(String, String), History<Model>> = HashMap::new();
+        let mut models: HashMap<String, HashMap<String, History<Model>>> = HashMap::new();
         let mut rows =
             db.prepare("SELECT provider, model, since, cost, fast FROM price ORDER BY since")?;
         let mut rows = rows.query([])?;
         while let Some(row) = rows.next()? {
-            let Ok(cost) = serde_json::from_str::<Cost>(&row.get::<_, String>(3)?) else {
+            let Ok(cost) = serde_json::from_str::<Cost>(row.get_ref(3)?.as_str()?) else {
                 continue;
             };
             let mut tiers: Vec<(u64, Rates)> = cost
@@ -78,16 +75,22 @@ impl Prices {
             }
             tiers.sort_by_key(|(above, _)| *above);
             let priority = row
-                .get::<_, Option<String>>(4)?
-                .and_then(|fast| serde_json::from_str(&fast).ok());
-            models.entry((row.get(0)?, row.get(1)?)).or_default().push((
-                row.get(2)?,
-                Model {
-                    base: cost.base,
-                    tiers,
-                    priority,
-                },
-            ));
+                .get_ref(4)?
+                .as_str_or_null()?
+                .and_then(|fast| serde_json::from_str(fast).ok());
+            models
+                .entry(row.get(0)?)
+                .or_default()
+                .entry(row.get(1)?)
+                .or_default()
+                .push((
+                    row.get(2)?,
+                    Model {
+                        base: cost.base,
+                        tiers,
+                        priority,
+                    },
+                ));
         }
         Ok(Prices(models))
     }
@@ -123,7 +126,7 @@ impl Prices {
     }
 
     fn at(&self, provider: &str, model: &str, at: i64) -> Option<&Model> {
-        if let Some(history) = self.0.get(&(provider.to_owned(), model.to_owned())) {
+        if let Some(history) = self.0.get(provider).and_then(|models| models.get(model)) {
             return in_force(history, at);
         }
         // Cross-provider fallback: an agent such as Antigravity records Claude
@@ -134,15 +137,12 @@ impl Prices {
         if maker == provider && bare == model {
             return None;
         }
-        in_force(self.0.get(&(maker.to_owned(), bare.to_owned()))?, at)
+        in_force(self.0.get(maker)?.get(bare)?, at)
     }
 }
 
-/// Values each set from a time, oldest first.
 pub type History<T> = Vec<(i64, T)>;
 
-/// What was in force `at` in `history`: the latest set by then, or before
-/// the first, the first.
 pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
     history
         .iter()
@@ -151,22 +151,14 @@ pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
         .map(|(_, value)| value)
 }
 
-/// `in_force` in SQL, to select from: the sign-in to its provider that the
-/// agent folder of a response `r` held when `r` was made, or before the
-/// folder's first, the first.
 pub const SIGN_IN_AT: &str =
     "FROM sign_in held WHERE held.folder = r.folder AND held.provider = r.provider
     ORDER BY held.since > r.at, iif(held.since > r.at, held.since, -held.since) LIMIT 1";
 
-/// Take in models.dev's catalog when it's six hours since any process last
-/// did: a price that changed is kept from now, beside the one before it, and
-/// a model listed for the first time prices what was used of it before.
-/// Whether it was taken in.
 pub fn refresh(db: &mut Connection) -> Result<bool> {
     refresh_from(db, catalog)
 }
 
-/// `refresh`, with the catalog `ask` gets.
 fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> Result<bool> {
     let now = crate::now();
     if !claim(db, now)? {
@@ -175,14 +167,11 @@ fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> R
     match ask() {
         Ok(catalog) => take(db, &catalog, now).map(|()| true),
         Err(error) => {
-            // Asked again in ten minutes, not six hours, as a first launch
-            // would otherwise price nothing until then. Only when models.dev
-            // fails, and not once a newer Turnscope has written, as it may
-            // have while models.dev was asked.
+            // Retry in 10 minutes instead of 6 hours so a failed first launch recovers quickly.
             let tx = crate::db::write(db)?;
             tx.execute(
-                "UPDATE state SET prices_at = ?1",
-                [now - DUE + 10 * crate::time::MINUTE],
+                "UPDATE state SET prices_at = ?1 WHERE prices_at <= ?2",
+                params![now - DUE + 10 * crate::time::MINUTE, now - DUE + CLAIMED],
             )?;
             tx.commit()?;
             Err(error)
@@ -190,30 +179,17 @@ fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> R
     }
 }
 
-/// How long models.dev's catalog is kept before it's asked again.
 const DUE: i64 = 6 * crate::time::HOUR;
-
-/// How long a claim to ask models.dev holds before it's taken in.
 const CLAIMED: i64 = 2 * crate::time::MINUTE;
 
-/// Claim asking models.dev if it's due, in one statement, so no two
-/// processes ask at once. Not once a newer Turnscope has written.
-///
-/// Claimed for two minutes, longer than models.dev is waited for, and for
-/// six hours once its catalog is taken in (`take`). Claimed for six hours
-/// at once, a process that ended while models.dev was asked, as when the
-/// app is quit in its first minute, left every cost unknown until then.
+/// Claims for 2 minutes until `take` records the full 6-hour timestamp, so a
+/// crash mid-fetch doesn't leave costs unpriced for 6 hours.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
-    // Looked at first: claiming waits for the write lock, which a catch-up
-    // shouldn't when nothing is due.
     let at: Option<i64> = db.query_row("SELECT prices_at FROM state", [], |row| row.get(0))?;
     if at.is_some_and(|at| at > now - DUE && at <= now + crate::limits::DUE) {
         return Ok(false);
     }
     let tx = crate::db::write(db)?;
-    // Claimed up to `limits::DUE` ahead of now is another process's, which
-    // read the time a moment later; further ahead, as for limits, a clock
-    // set back since.
     let claimed = tx.execute(
         "UPDATE state SET prices_at = ?1 - ?2 + ?4
          WHERE prices_at IS NULL OR prices_at <= ?1 - ?2 OR prices_at > ?1 + ?3",
@@ -223,11 +199,8 @@ fn claim(db: &mut Connection, now: i64) -> Result<bool> {
     Ok(claimed > 0)
 }
 
-/// Each priced model models.dev lists, by provider and model: its `cost`,
-/// and its fast mode's, as JSON.
 type Catalog = Vec<((String, String), (String, Option<String>))>;
 
-/// models.dev's catalog, refused when it's cut short.
 fn catalog() -> Result<Catalog> {
     let (status, json) = providers::request("https://models.dev/api.json", &[], None, 60)?;
     if status != 200 {
@@ -251,11 +224,11 @@ fn parse_catalog(json: &[u8]) -> Result<Catalog> {
     let providers: HashMap<String, Value> = serde_json::from_slice(json)
         .map_err(|error| Error::Failed(format!("models.dev's catalog didn't read: {error}")))?;
     let mut catalog = Catalog::new();
-    for (provider, listing) in providers {
-        let Some(models) = listing["models"].as_object() else {
+    for (provider, mut listing) in providers {
+        let Some(models) = listing.get_mut("models").and_then(Value::as_object_mut) else {
             continue;
         };
-        for (id, model) in models {
+        for (id, model) in std::mem::take(models) {
             let Some(cost) = model
                 .get("cost")
                 .filter(|cost| Cost::deserialize(*cost).is_ok())
@@ -274,7 +247,7 @@ fn parse_catalog(json: &[u8]) -> Result<Catalog> {
                             .then(|| cost.to_string())
                     })
                 });
-            catalog.push(((provider.clone(), id.clone()), (cost.to_string(), fast)));
+            catalog.push(((provider.clone(), id), (cost.to_string(), fast)));
         }
     }
     Ok(catalog)
@@ -492,7 +465,7 @@ mod tests {
         let out_of_reach = || Err(Error::Failed("models.dev is out of reach".to_owned()));
         let began = crate::now();
         refresh_from(&mut db, out_of_reach).unwrap_err();
-        let claimed = asked() + 6 * crate::time::HOUR - 10 * crate::time::MINUTE;
+        let claimed = asked() + DUE - 10 * crate::time::MINUTE;
         assert!((began..=crate::now()).contains(&claimed));
 
         for answer in [Ok(listing("zai", "glm-5.3", Value::Null)), out_of_reach()] {
@@ -508,7 +481,7 @@ mod tests {
             })
             .unwrap_err();
             assert_eq!(error.to_string(), crate::db::newer().to_string());
-            let claimed = asked() + 6 * crate::time::HOUR - CLAIMED;
+            let claimed = asked() + DUE - CLAIMED;
             assert!((began..=crate::now()).contains(&claimed));
         }
     }

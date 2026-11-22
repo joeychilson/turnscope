@@ -3,8 +3,9 @@
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
 /// Whether the app opens at login.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Login {
+    #[default]
     Off,
     On,
     /// It's registered, but macOS holds it until it's allowed in System Settings.
@@ -27,7 +28,7 @@ pub fn check() {
             handle.update_if(move |s, _| {
                 let changed = s.login != login;
                 s.login = login;
-                changed
+                changed && s.panel_open
             });
         }
     });

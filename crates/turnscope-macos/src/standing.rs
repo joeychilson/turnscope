@@ -2,8 +2,7 @@
 //! to them: how a limit or an account stands, which sets its color.
 
 pub use turnscope::status::{
-    Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, State, Status,
-    Unknown,
+    Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, Status, Unknown,
 };
 
 /// How a limit stands, from calmest to most urgent. It sets the color.
@@ -30,7 +29,6 @@ impl LimitStanding for Limit {
 
 pub trait AccountStanding {
     fn standing(&self) -> Standing;
-    fn refilled_at(&self) -> Option<i64>;
     fn twinned<'a>(&self, among: impl IntoIterator<Item = &'a Account>) -> bool;
 }
 
@@ -38,10 +36,6 @@ impl AccountStanding for Account {
     fn standing(&self) -> Standing {
         self.deciding_limit()
             .map_or(Standing::Lasts, LimitStanding::standing)
-    }
-
-    fn refilled_at(&self) -> Option<i64> {
-        self.deciding_limit().and_then(|l| l.reset_since)
     }
 
     fn twinned<'a>(&self, among: impl IntoIterator<Item = &'a Account>) -> bool {

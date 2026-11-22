@@ -168,9 +168,8 @@ A failure is a `Problem`:
 
 The helpers in `src/providers/mod.rs` each have a doc comment:
 `account(provider, credential, identity)` and `api_account(provider)`;
-`ask(url, credential, headers, by)`, `asked(url, credential, headers,
-body, refused, by)`, `asked_bearer(url, token, headers, body, refused,
-by)`, `post_form(url, fields, by)` and
+`ask(url, credential, headers, by)`, `asked(url, token, headers,
+body, refused, by)`, `post_form(url, fields, by)` and
 `request(url, headers, body, seconds)`; and
 `absent(window)`, `reset(value)`, `window_name(length)` and `words(key)`
 for reading an answer.
@@ -197,7 +196,7 @@ Rules:
   do not rotate (Google) may exchange one in memory (`refreshes()`),
   caching the short-lived access token in memory only; every other
   provider waits for the agent to refresh it.
-- **Requests** go only through `ask`, `asked`, `asked_bearer`,
+- **Requests** go only through `ask`, `asked`, `asked_raw`,
   `post_form` or `request`: curl with credentials on standard input,
   Turnscope's only way to the network. A request changes nothing at the
   provider.

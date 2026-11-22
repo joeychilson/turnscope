@@ -13,7 +13,14 @@ pub const MINUTE: i64 = 60_000;
 pub const HOUR: i64 = 60 * MINUTE;
 pub const DAY: i64 = 24 * HOUR;
 
-/// The time in an RFC 3339 string.
+pub fn minute(at: i64) -> i64 {
+    at.div_euclid(MINUTE) * MINUTE
+}
+
+pub fn round_minute(at: i64) -> i64 {
+    (at + MINUTE / 2).div_euclid(MINUTE) * MINUTE
+}
+
 pub fn millis(text: &str) -> Option<i64> {
     text.parse::<Timestamp>().ok().map(|at| at.as_millisecond())
 }
@@ -32,17 +39,20 @@ pub enum Period {
 }
 
 pub fn start_of(period: Period, at: i64) -> i64 {
-    window(period, at, &TimeZone::system()).0
+    let zone = TimeZone::system();
+    start_of_day(period_date(period, at, &zone), &zone)
 }
 
-/// When the day, week (from Monday) or month `at` is in starts in `zone`,
-/// and when the next one does.
-pub fn window(period: Period, at: i64, zone: &TimeZone) -> (i64, i64) {
+pub fn period_date(period: Period, at: i64, zone: &TimeZone) -> Date {
     let day = Timestamp::from_millisecond(at)
         .unwrap_or_default()
         .to_zoned(zone.clone())
         .date();
-    let (start, span) = match period {
+    start_date(period, day).0
+}
+
+fn start_date(period: Period, day: Date) -> (Date, jiff::Span) {
+    match period {
         Period::Day => (day, 1.day()),
         Period::Week => (
             day.checked_sub((day.weekday().to_monday_zero_offset() as i64).days())
@@ -50,7 +60,15 @@ pub fn window(period: Period, at: i64, zone: &TimeZone) -> (i64, i64) {
             1.week(),
         ),
         Period::Month => (day.first_of_month(), 1.month()),
-    };
+    }
+}
+
+pub fn window(period: Period, at: i64, zone: &TimeZone) -> (i64, i64) {
+    let day = Timestamp::from_millisecond(at)
+        .unwrap_or_default()
+        .to_zoned(zone.clone())
+        .date();
+    let (start, span) = start_date(period, day);
     let end = start.checked_add(span).unwrap_or(start);
     (start_of_day(start, zone), start_of_day(end, zone))
 }
@@ -133,7 +151,6 @@ pub fn ago(at: i64, now: i64) -> String {
 /// now, is still to come. Decided from the two times alone, one of them
 /// read wrong: the read in 0m, or the reset 0m ago.
 fn told(at: i64, now: i64, in_minute: Ordering) -> String {
-    let minute = |at: i64| at.div_euclid(MINUTE) * MINUTE;
     let span = span(minute(at) - minute(now));
     match minute(at).cmp(&minute(now)).then(in_minute) {
         Ordering::Greater => format!("{} (in {span})", clock(at, now)),
@@ -143,7 +160,7 @@ fn told(at: i64, now: i64, in_minute: Ordering) -> String {
 
 /// A length of time: `45m`, `3h 20m`, `2d 4h`.
 pub fn span(ms: i64) -> String {
-    let minutes = (ms.abs() + MINUTE / 2) / MINUTE;
+    let minutes = ms.unsigned_abs().saturating_add((MINUTE / 2) as u64) / MINUTE as u64;
     let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
     match (days, hours) {
         (0, 0) => format!("{minutes}m"),

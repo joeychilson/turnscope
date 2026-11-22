@@ -28,7 +28,6 @@ use objc2_foundation::{
 
 use crate::standing::*;
 use crate::state::State;
-use crate::style::Ink;
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -50,13 +49,16 @@ impl Target {
     }
 }
 
-/// What an image shows: the accounts' logos and standings, their figures, what VoiceOver reads,
-/// which can change while the figures don't, and whether it's out of date.
+#[derive(Clone, PartialEq)]
+struct Slot {
+    provider: String,
+    standing: Standing,
+    figure: String,
+}
+
 #[derive(Clone, PartialEq)]
 struct Drawn {
-    providers: Vec<String>,
-    standings: Vec<Standing>,
-    figures: Vec<String>,
+    slots: Vec<Slot>,
     spoken: String,
     out_of_date: bool,
 }
@@ -71,8 +73,6 @@ thread_local! {
     static ITEM: RefCell<Option<Item>> = const { RefCell::new(None) };
 }
 
-/// Puts the item in the menu bar, or redraws the one there if what it shows changed. Call on
-/// the main thread.
 pub fn draw(s: &State) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -80,12 +80,18 @@ pub fn draw(s: &State) {
     // As of now, not the panel's minute: the item counts down whether the panel is open or not.
     let words = s.words_now();
     let shown = s.in_menu_bar();
+    let out_of_date = s.problem.is_some();
     let showing = Drawn {
-        providers: shown.iter().map(|a| a.provider.clone()).collect(),
-        standings: shown.iter().map(|a| a.standing()).collect(),
-        figures: shown.iter().map(|a| words.figure(a)).collect(),
-        spoken: words.spoken_item(&shown, s.failure.is_some()),
-        out_of_date: s.failure.is_some(),
+        slots: shown
+            .iter()
+            .map(|a| Slot {
+                provider: a.provider.clone(),
+                standing: a.standing(),
+                figure: words.figure(a),
+            })
+            .collect(),
+        spoken: words.spoken_item(&shown, out_of_date),
+        out_of_date,
     };
     ITEM.with(|cell| {
         let mut cell = cell.borrow_mut();
@@ -134,9 +140,9 @@ const MARK: f64 = 14.0;
 /// running out nears.
 fn image(showing: &Drawn) -> Retained<NSImage> {
     let template = showing
-        .standings
+        .slots
         .iter()
-        .all(|standing| *standing == Standing::Lasts);
+        .all(|slot| slot.standing == Standing::Lasts);
     let fraction = if showing.out_of_date { DIMMED } else { 1.0 };
     let font = unsafe {
         NSFont::monospacedDigitSystemFontOfSize_weight(
@@ -144,16 +150,6 @@ fn image(showing: &Drawn) -> Retained<NSImage> {
             NSFontWeightSemibold,
         )
     };
-    // Each account: its logo, and its figure in the menu bar's own size, as the clock is.
-    let parts: Vec<(Option<Retained<NSImage>>, Retained<NSString>, Standing)> = showing
-        .providers
-        .iter()
-        .zip(&showing.figures)
-        .zip(&showing.standings)
-        .map(|((provider, figure), standing)| {
-            (logo(provider), NSString::from_str(figure), *standing)
-        })
-        .collect();
     let attributes = move |font: &NSFont, color: &NSColor| {
         let keys: [&NSAttributedStringKey; 2] =
             unsafe { [NSFontAttributeName, NSForegroundColorAttributeName] };
@@ -161,19 +157,39 @@ fn image(showing: &Drawn) -> Retained<NSImage> {
         NSDictionary::from_slices(&keys, &values)
     };
     let measure = attributes(&font, &NSColor::blackColor());
-    let widths: Vec<f64> = parts
+    struct Part {
+        logo: Option<Retained<NSImage>>,
+        figure: Retained<NSString>,
+        standing: Standing,
+        width: f64,
+    }
+    // Each account: its logo, its figure in the menu bar's own size, standing, and text width.
+    let parts: Vec<Part> = showing
+        .slots
         .iter()
-        .map(|(_, figure, _)| {
-            unsafe { figure.sizeWithAttributes(Some(&measure)) }
+        .map(|slot| {
+            let figure = NSString::from_str(&slot.figure);
+            let width = unsafe { figure.sizeWithAttributes(Some(&measure)) }
                 .width
-                .ceil()
+                .ceil();
+            Part {
+                logo: logo(&slot.provider),
+                figure,
+                standing: slot.standing,
+                width,
+            }
         })
         .collect();
     let line = font.ascender() - font.descender();
     let width = if parts.is_empty() {
         MARK + 2.0
     } else {
-        widths.iter().map(|w| LOGO + 4.0 + w).sum::<f64>() + 10.0 * (parts.len() - 1) as f64 + 2.0
+        parts
+            .iter()
+            .map(|p| if p.logo.is_some() { LOGO + 4.0 } else { 0.0 } + p.width)
+            .sum::<f64>()
+            + 10.0 * (parts.len() - 1) as f64
+            + 2.0
     };
     let amber = urgent(Standing::RunningOut, showing.out_of_date);
     let red = urgent(Standing::UsedUp, showing.out_of_date);
@@ -199,8 +215,8 @@ fn image(showing: &Drawn) -> Retained<NSImage> {
             return Bool::YES;
         }
         let mut x = 1.0;
-        for ((logo, figure, standing), text_width) in parts.iter().zip(&widths) {
-            if let Some(logo) = logo {
+        for part in &parts {
+            if let Some(logo) = &part.logo {
                 tinted(
                     logo,
                     NSRect::new(
@@ -209,18 +225,18 @@ fn image(showing: &Drawn) -> Retained<NSImage> {
                     ),
                     &ink(Standing::Lasts),
                 );
+                x += LOGO + 4.0;
             }
-            x += LOGO + 4.0;
             // Raised a point onto the clock's baseline: centered in the item, it sat lower
             // (measured October 2026).
             let y = (HEIGHT - line) / 2.0 + 1.0;
             unsafe {
-                figure.drawAtPoint_withAttributes(
+                part.figure.drawAtPoint_withAttributes(
                     NSPoint::new(x, y),
-                    Some(&attributes(&font, &ink(*standing))),
+                    Some(&attributes(&font, &ink(part.standing))),
                 )
             };
-            x += text_width + 10.0;
+            x += part.width + 10.0;
         }
         Bool::YES
     });
@@ -234,22 +250,22 @@ thread_local! {
     static LOGOS: RefCell<std::collections::HashMap<String, Option<Retained<NSImage>>>> = RefCell::new(Default::default());
 }
 
-/// A provider's logo, from the SVGs built into the app.
 fn logo(provider: &str) -> Option<Retained<NSImage>> {
     LOGOS.with(|logos| {
+        if let Some(cached) = logos.borrow().get(provider) {
+            return cached.clone();
+        }
+        let image = crate::style::provider_svg(provider).and_then(|svg| {
+            let data = NSData::with_bytes(svg.as_bytes());
+            NSImage::initWithData(NSImage::alloc(), &data)
+        });
         logos
             .borrow_mut()
-            .entry(provider.to_owned())
-            .or_insert_with(|| {
-                let svg = crate::style::logo_svg(&format!("providers/{provider}"))?;
-                let data = NSData::with_bytes(svg.as_bytes());
-                NSImage::initWithData(NSImage::alloc(), &data)
-            })
-            .clone()
+            .insert(provider.to_owned(), image.clone());
+        image
     })
 }
 
-/// Draws `image` fitted into `rect`, keeping its shape, in `color`.
 fn tinted(image: &NSImage, rect: NSRect, color: &NSColor) {
     let size = image.size();
     if size.width <= 0.0 || size.height <= 0.0 {
@@ -276,8 +292,6 @@ fn tinted(image: &NSImage, rect: NSRect, color: &NSColor) {
     mask.drawInRect(at);
 }
 
-/// Turnscope's mark, as its icon draws it (`Turnscope.icon`): a ring around a slice, like a
-/// limit with some of it used. The radii are the icon's, in its units, 530 across the ring.
 fn mark(rect: NSRect, color: &NSColor) {
     let unit = rect.size.width / 530.0;
     let center = NSPoint::new(
@@ -296,7 +310,6 @@ fn mark(rect: NSRect, color: &NSColor) {
     ring.appendBezierPath(&circle(207.0));
     ring.setWindingRule(NSWindingRule::EvenOdd);
     ring.fill();
-    // From twelve o'clock, clockwise to 235°. AppKit's y goes up, so twelve o'clock is 90°.
     let slice = NSBezierPath::bezierPath();
     slice.moveToPoint(center);
     slice.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise(
@@ -311,8 +324,6 @@ fn mark(rect: NSRect, color: &NSColor) {
 }
 
 thread_local! {
-    /// Amber and red, then each dimmed, built the first time they're drawn: each is four
-    /// colors and the block that picks one, and the image draws itself each time AppKit asks.
     static URGENT: [Retained<NSColor>; 4] = [
         dynamic(Standing::RunningOut, 1.0),
         dynamic(Standing::UsedUp, 1.0),
@@ -321,27 +332,17 @@ thread_local! {
     ];
 }
 
-/// The opacity of what the item shows while the data can't be kept current.
 const DIMMED: f64 = 0.45;
 
-/// The item's amber or red, for `standing`, dimmed or not.
 fn urgent(standing: Standing, dimmed: bool) -> Retained<NSColor> {
     let index = usize::from(standing == Standing::UsedUp) + if dimmed { 2 } else { 0 };
     URGENT.with(|colors| colors[index].clone())
 }
 
-/// The panel's color for `standing` (`style::Ink`) in the appearance it's drawn in: light,
-/// dark, and each with Increase Contrast, at `fraction` of its opacity.
 fn dynamic(standing: Standing, fraction: f64) -> Retained<NSColor> {
     let srgb = |dark: bool, more: bool| {
-        let color = Ink::new(dark, more, rune::Color::BLACK).standing(standing);
-        let encode = |linear: f32| f64::from(rune::color::srgb_encode(linear));
-        NSColor::colorWithSRGBRed_green_blue_alpha(
-            encode(color.r),
-            encode(color.g),
-            encode(color.b),
-            fraction,
-        )
+        let (r, g, b) = crate::style::urgency_srgb(standing, dark, more);
+        NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, fraction)
     };
     let colors = [
         srgb(false, false),
@@ -349,18 +350,18 @@ fn dynamic(standing: Standing, fraction: f64) -> Retained<NSColor> {
         srgb(false, true),
         srgb(true, true),
     ];
-    // The block owns the colors it hands out, and the dynamic color owns the block.
+    let names = unsafe {
+        NSArray::from_slice(&[
+            NSAppearanceNameAqua,
+            NSAppearanceNameDarkAqua,
+            NSAppearanceNameAccessibilityHighContrastAqua,
+            NSAppearanceNameAccessibilityHighContrastDarkAqua,
+        ])
+    };
+    // The block owns the colors and appearance names, and the dynamic color owns the block.
     let provider = RcBlock::new(
         move |appearance: NonNull<NSAppearance>| -> NonNull<NSColor> {
             let appearance = unsafe { appearance.as_ref() };
-            let names = unsafe {
-                NSArray::from_slice(&[
-                    NSAppearanceNameAqua,
-                    NSAppearanceNameDarkAqua,
-                    NSAppearanceNameAccessibilityHighContrastAqua,
-                    NSAppearanceNameAccessibilityHighContrastDarkAqua,
-                ])
-            };
             let best = appearance.bestMatchFromAppearancesWithNames(&names);
             let is = |name: &NSString| best.as_deref().is_some_and(|b| b.isEqualToString(name));
             let picked = unsafe {

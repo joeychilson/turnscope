@@ -74,6 +74,12 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
+impl From<rusqlite::types::FromSqlError> for Error {
+    fn from(error: rusqlite::types::FromSqlError) -> Error {
+        Error::Failed(format!("the database: {error}"))
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Error {
         Error::Failed(error.to_string())
@@ -91,10 +97,14 @@ pub fn now() -> i64 {
 
 pub fn sha256_hex(data: &[u8], bytes: usize) -> String {
     use sha2::Digest as _;
-    sha2::Sha256::digest(data)[..bytes]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = sha2::Sha256::digest(data);
+    let mut out = String::with_capacity(bytes * 2);
+    for &byte in &digest[..bytes] {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Bring the database up to date: prices and limits when due, then what's
@@ -119,7 +129,7 @@ pub fn catch_up(
         false => (false, Ok(false)),
     };
     let read = ingest::ingest(db, home, patience)?;
-    Ok(limits? | priced | read)
+    Ok(limits? || priced || read)
 }
 
 pub fn online() -> bool {

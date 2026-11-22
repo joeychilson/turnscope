@@ -86,16 +86,23 @@ fn credits(answer: &Value) -> Option<Option<Reading>> {
 }
 
 fn own_limit(answer: &Value, key: &str, now: i64) -> Option<Option<Reading>> {
-    let data = answer.get("data")?;
-    let Some(limit) = data["limit"].as_f64().filter(|limit| *limit > 0.0) else {
-        return Some(None);
+    let data = answer.get("data").filter(|data| data.is_object())?;
+    let limit = match &data["limit"] {
+        Value::Null => return Some(None),
+        value => value.as_f64()?,
     };
-    let (name, used_in, period) = match data["limit_reset"].as_str() {
-        None => ("Key limit", "usage", None),
-        Some("daily") => ("Daily key limit", "usage_daily", Some(Period::Day)),
-        Some("weekly") => ("Weekly key limit", "usage_weekly", Some(Period::Week)),
-        Some("monthly") => ("Monthly key limit", "usage_monthly", Some(Period::Month)),
-        Some(_) => return None,
+    if limit <= 0.0 {
+        return Some(None);
+    }
+    let (name, used_in, period) = match &data["limit_reset"] {
+        Value::Null => ("Key limit", "usage", None),
+        Value::String(period) => match period.as_str() {
+            "daily" => ("Daily key limit", "usage_daily", Some(Period::Day)),
+            "weekly" => ("Weekly key limit", "usage_weekly", Some(Period::Week)),
+            "monthly" => ("Monthly key limit", "usage_monthly", Some(Period::Month)),
+            _ => return None,
+        },
+        _ => return None,
     };
     let spent = match data["limit_remaining"].as_f64() {
         Some(remaining) => limit - remaining,
@@ -189,6 +196,9 @@ mod tests {
         let now = 1_790_856_000_000;
         for answer in [
             json!({"data": {"limit": 10.0, "limit_remaining": 5.0, "limit_reset": "yearly"}}),
+            json!({"data": {"limit": 10.0, "limit_remaining": 5.0, "limit_reset": 123}}),
+            json!({"data": {"limit": "10.0"}}),
+            json!({"data": null}),
             json!({"data": {"limit": 10.0, "limit_reset": "daily"}}),
             json!({"error": {"code": 401, "message": "unauthorized"}}),
         ] {

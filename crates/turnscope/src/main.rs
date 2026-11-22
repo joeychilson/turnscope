@@ -53,29 +53,7 @@ enum Command {
         hours: Option<f64>,
     },
     /// What was used and what it cost, by day, week, month, model, project, agent, account or session
-    Usage {
-        /// From when [default: 30 days back]: today, yesterday, week (since Monday), month (since the 1st), 24h, 7d, 4w, a date, an RFC 3339 time, or now
-        #[arg(long)]
-        since: Option<String>,
-        /// Until when [default: now], in the same forms
-        #[arg(long)]
-        until: Option<String>,
-        /// How to group the rows [default: day, or session with --limit]
-        #[arg(long, value_enum)]
-        by: Option<usage::By>,
-        /// Only this agent's: its id, as `connect` lists them, such as claude-code
-        #[arg(long)]
-        agent: Option<String>,
-        /// Only this account's: an id, or part of a title or label
-        #[arg(long)]
-        account: Option<String>,
-        /// What used this limit, such as week or "5 hours": since its window started, with each row's share of it
-        #[arg(long, conflicts_with_all = ["until", "agent"])]
-        limit: Option<String>,
-        /// How many rows to show, 1 or more; the rest are added up
-        #[arg(long, default_value_t = 20, value_parser = rows)]
-        top: usize,
-    },
+    Usage(UsageArgs),
     /// List accounts, or hide or show one
     Accounts {
         #[command(subcommand)]
@@ -116,6 +94,31 @@ enum Command {
         #[arg(long)]
         account: Option<String>,
     },
+}
+
+#[derive(clap::Args)]
+struct UsageArgs {
+    /// From when [default: 30 days back]: today, yesterday, week (since Monday), month (since the 1st), 24h, 7d, 4w, a date, an RFC 3339 time, or now
+    #[arg(long)]
+    since: Option<String>,
+    /// Until when [default: now], in the same forms
+    #[arg(long)]
+    until: Option<String>,
+    /// How to group the rows [default: day, or session with --limit]
+    #[arg(long, value_enum)]
+    by: Option<usage::By>,
+    /// Only this agent's: its id, as `connect` lists them, such as claude-code
+    #[arg(long)]
+    agent: Option<String>,
+    /// Only this account's: an id, or part of a title or label
+    #[arg(long)]
+    account: Option<String>,
+    /// What used this limit, such as week or "5 hours": since its window started, with each row's share of it
+    #[arg(long, conflicts_with_all = ["until", "agent"])]
+    limit: Option<String>,
+    /// How many rows to show, 1 or more; the rest are added up
+    #[arg(long, default_value_t = 20, value_parser = rows)]
+    top: usize,
 }
 
 #[derive(Subcommand)]
@@ -201,29 +204,31 @@ fn guarding() -> bool {
         .is_ok_and(|matches| matches.subcommand_name() == Some("guard"))
 }
 
-/// `value` with `--json`, or else `text`.
-fn print(json: bool, value: serde_json::Value, text: String) -> String {
+fn print(
+    json: bool,
+    value: impl FnOnce() -> serde_json::Value,
+    text: impl FnOnce() -> String,
+) -> String {
     match json {
-        true => serde_json::to_string_pretty(&value).unwrap_or_default(),
-        false => text,
+        true => serde_json::to_string_pretty(&value()).unwrap_or_default(),
+        false => text(),
     }
 }
 
 /// `connect <agent>`, or `disconnect <agent>`.
 fn change_agent(id: &str, connecting: bool, json: bool, home: &Path) -> Result<String> {
     let agent = agents::find(id)?;
-    let text = if connecting {
+    let verb = if connecting {
         connect::connect(agent, home, &std::env::current_exe()?)?;
         "now runs Turnscope's MCP server. Start a new session in it to use it."
     } else {
         connect::disconnect(agent, home)?;
         "no longer runs Turnscope's MCP server. Sessions already open keep it until they end."
     };
-    let text = format!("{} {text}", agent.info().name);
     Ok(print(
         json,
-        json!({ "agent": id, "connected": connecting }),
-        text,
+        || json!({ "agent": id, "connected": connecting }),
+        || format!("{} {verb}", agent.info().name),
     ))
 }
 
@@ -237,36 +242,37 @@ fn connections(json: bool, home: &Path, data: &Path) -> Result<String> {
         None => Vec::new(),
     };
     let agents = status::agents(home, &engine, |id| in_use.iter().any(|used| used == id));
-    let lines: Vec<String> = agents
-        .iter()
-        .map(|agent| {
-            let state = match agent.connection {
-                _ if !agent.installed => "not installed".to_owned(),
-                status::Connection::Connected => "connected".to_owned(),
-                status::Connection::Outdated => {
-                    format!(
-                        "runs another copy of Turnscope: `turnscope connect {}` uses this one",
-                        agent.id
-                    )
-                }
-                status::Connection::Available => {
-                    format!("not connected: `turnscope connect {}`", agent.id)
-                }
-            };
-            format!("{:<12} {state}", agent.name)
-        })
-        .collect();
-    Ok(print(json, json!(agents), lines.join("\n")))
+    Ok(print(
+        json,
+        || json!(agents),
+        || {
+            agents
+                .iter()
+                .map(|agent| {
+                    let state = match agent.connection {
+                        _ if !agent.installed => "not installed".to_owned(),
+                        status::Connection::Connected => "connected".to_owned(),
+                        status::Connection::Outdated => format!(
+                            "runs another copy of Turnscope: `turnscope connect {}` uses this one",
+                            agent.id
+                        ),
+                        status::Connection::Available => {
+                            format!("not connected: `turnscope connect {}`", agent.id)
+                        }
+                    };
+                    format!("{:<12} {state}", agent.name)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+    ))
 }
 
 /// Commands that report data catch up first; those that change a setting
 /// don't wait for it.
 fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<String> {
     let mut db = db::open(data)?;
-    let reports = match &command {
-        Command::Accounts { action } => action.is_none(),
-        _ => true,
-    };
+    let reports = !matches!(&command, Command::Accounts { action: Some(_) });
     if reports {
         if let Some(wait) = ingest::waits(&db) {
             eprintln!("{wait}");
@@ -278,67 +284,135 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
         }
     }
     let now = now();
-    let time_of = |text: &Option<String>| {
-        text.as_deref()
-            .map(|text| time::parse(text, now))
-            .transpose()
-    };
-    Ok(match command {
+    match command {
         Command::Status {
             account,
             all,
             hours,
-        } => {
-            let status = status::status(&db, now)?;
-            let shown: Vec<&status::Account> = match &account {
-                Some(name) => status::named(&status, name)?,
-                None => status
-                    .accounts
-                    .iter()
-                    .filter(|account| all || !account.hidden)
-                    .collect(),
-            };
-            let fit = match (hours, shown.first()) {
-                (Some(hours), Some(first)) => Some(status::fit(first, hours, status.at)?),
-                _ => None,
-            };
+        } => cmd_status(&db, now, json, account.as_deref(), all, hours),
+        Command::Usage(mut args) => match args.limit.take() {
+            Some(name) => cmd_usage_limit(&db, home, now, json, args, &name),
+            None => cmd_usage(&db, now, json, args),
+        },
+        Command::Accounts { action } => cmd_accounts(&db, now, json, action),
+        Command::Doctor => {
+            let notes = doctor(&db, data, home, now)?;
+            Ok(print(
+                json,
+                || json!(notes),
+                || {
+                    if notes.is_empty() {
+                        "Nothing to fix.".to_owned()
+                    } else {
+                        notes.join("\n")
+                    }
+                },
+            ))
+        }
+        Command::Mcp
+        | Command::Guard { .. }
+        | Command::Statusline { .. }
+        | Command::Connect { .. }
+        | Command::Disconnect { .. } => {
+            unreachable!("served before the database is opened")
+        }
+    }
+}
+
+fn parse_time(text: Option<&str>, now: i64) -> Result<Option<i64>> {
+    text.map(|text| time::parse(text, now)).transpose()
+}
+
+fn check_range(since: i64, until_given: Option<i64>, now: i64) -> Result<()> {
+    if since >= until_given.unwrap_or(now) {
+        return Err(Error::Usage(
+            match until_given {
+                Some(_) => {
+                    "--since is at or after --until, so nothing is between them: give an earlier --since"
+                }
+                None => {
+                    "--since is now or later, so there's no usage after it: give an earlier --since"
+                }
+            }
+            .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn cmd_status(
+    db: &rusqlite::Connection,
+    now: i64,
+    json: bool,
+    account: Option<&str>,
+    all: bool,
+    hours: Option<f64>,
+) -> Result<String> {
+    let status = status::status(db, now)?;
+    let shown: Vec<&status::Account> = match account {
+        Some(name) => status::named(&status, name)?,
+        None => status
+            .accounts
+            .iter()
+            .filter(|account| all || !account.hidden)
+            .collect(),
+    };
+    let fit = match (hours, shown.first()) {
+        (Some(hours), Some(first)) => Some(status::fit(first, hours, status.at)?),
+        _ => None,
+    };
+    Ok(print(
+        json,
+        || json!({ "accounts": shown, "fit": fit }),
+        || {
             let text = match shown.is_empty() {
                 true => status::none(&status, "`turnscope status --all` shows them"),
                 false => status::text(&status, &shown, None),
             };
-            let text = match &fit {
+            match &fit {
                 Some(fit) => format!("{fit}\n\n{text}"),
                 None => text,
-            };
-            print(json, json!({ "accounts": shown, "fit": fit }), text)
-        }
-        Command::Usage {
-            since: from,
-            by,
-            account,
-            limit: Some(name),
-            top,
-            ..
-        } => {
-            let status = status::status(&db, now)?;
-            let (account, limit) = limit_of(&db, home, &status, account.as_deref(), &name)?;
-            let by = by.unwrap_or(usage::By::Session);
-            let since = time_of(&from)?;
-            if since.is_some_and(|since| since >= now) {
-                return Err(Error::Usage(
-                    "--since is now or later, so there's no usage after it: give an earlier --since"
-                        .to_owned(),
-                ));
             }
-            let (used, shares) = usage::breakdown(
-                &db,
-                account,
-                Some(limit),
-                since.map(|since| (since, now)),
-                by,
-                top,
-                now,
-            )?;
+        },
+    ))
+}
+
+fn cmd_usage_limit(
+    db: &rusqlite::Connection,
+    home: &Path,
+    now: i64,
+    json: bool,
+    args: UsageArgs,
+    name: &str,
+) -> Result<String> {
+    let status = status::status(db, now)?;
+    let (account, limit) = limit_of(db, home, &status, args.account.as_deref(), name)?;
+    let by = args.by.unwrap_or(usage::By::Session);
+    let since = parse_time(args.since.as_deref(), now)?;
+    if let Some(since) = since {
+        check_range(since, None, now)?;
+    }
+    let (used, shares) = usage::breakdown(
+        db,
+        account,
+        Some(limit),
+        since.map(|since| (since, now)),
+        by,
+        args.top,
+        now,
+    )?;
+    Ok(print(
+        json,
+        || {
+            json!({
+                "account": account.id,
+                "limit": limit.key,
+                "usage": used,
+                "sharePercents": shares.as_ref().map(|shares| &shares.rows),
+                "restSharePercent": shares.as_ref().and_then(|shares| shares.rest),
+            })
+        },
+        || {
             let heading = format!(
                 "{} · {}\n",
                 account.full_title(),
@@ -351,111 +425,90 @@ fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<Stri
             {
                 text += &format!("\n{why}");
             }
-            let value = json!({
-                "account": account.id,
-                "limit": limit.key,
-                "usage": used,
-                "sharePercents": shares.as_ref().map(|shares| &shares.rows),
-                "restSharePercent": shares.as_ref().and_then(|shares| shares.rest),
-            });
-            print(json, value, text)
+            text
+        },
+    ))
+}
+
+fn cmd_usage(db: &rusqlite::Connection, now: i64, json: bool, args: UsageArgs) -> Result<String> {
+    // Refused, as an unknown agent would show nothing used.
+    if let Some(agent) = &args.agent {
+        agents::find(agent)?;
+    }
+    let account = match args.account.as_deref() {
+        Some(name) => Some(
+            status::one_account(&status::status(db, now)?, name)?
+                .id
+                .clone(),
+        ),
+        None => None,
+    };
+    let since = parse_time(args.since.as_deref(), now)?.unwrap_or(now - 30 * time::DAY);
+    let until_given = parse_time(args.until.as_deref(), now)?;
+    check_range(since, until_given, now)?;
+    let query = usage::Query {
+        since,
+        until: until_given.unwrap_or(now),
+        by: args.by.unwrap_or(usage::By::Day),
+        agent: args.agent,
+        account,
+        models: Vec::new(),
+        key: None,
+        top: args.top,
+    };
+    let used = usage::usage(db, &query)?;
+    Ok(print(json, || json!(used), || usage::text(&used, None)))
+}
+
+fn cmd_accounts(
+    db: &rusqlite::Connection,
+    now: i64,
+    json: bool,
+    action: Option<AccountAction>,
+) -> Result<String> {
+    let mut status = status::status(db, now)?;
+    if let Some(AccountAction::Hide { account } | AccountAction::Show { account }) = &action {
+        let id = status::one_account(&status, account)?.id.clone();
+        let hidden = matches!(action, Some(AccountAction::Hide { .. }));
+        status::hide(db, &id, hidden)?;
+        if let Some(found) = status.accounts.iter_mut().find(|found| found.id == id) {
+            found.hidden = hidden;
         }
-        Command::Usage {
-            since: from,
-            until,
-            by,
-            agent,
-            account,
-            limit: None,
-            top,
-        } => {
-            // Refused, as an unknown agent would show nothing used.
-            if let Some(agent) = &agent {
-                agents::find(agent)?;
-            }
-            let account = match account {
-                Some(name) => Some(
-                    status::one_account(&status::status(&db, now)?, &name)?
-                        .id
-                        .clone(),
-                ),
-                None => None,
-            };
-            let since = time_of(&from)?.unwrap_or(now - 30 * time::DAY);
-            let until_given = time_of(&until)?;
-            let until = until_given.unwrap_or(now);
-            if since >= until {
-                return Err(Error::Usage(
-                    match until_given {
-                        Some(_) => "--since is at or after --until, so nothing is between them: give an earlier --since",
-                        None => "--since is now or later, so there's no usage after it: give an earlier --since",
-                    }
-                    .to_owned(),
-                ));
-            }
-            let query = usage::Query {
-                since,
-                until,
-                by: by.unwrap_or(usage::By::Day),
-                agent,
-                account,
-                models: Vec::new(),
-                key: None,
-                top,
-            };
-            let usage = usage::usage(&db, &query)?;
-            print(json, json!(usage), usage::text(&usage, None))
-        }
-        Command::Accounts { action } => {
-            let mut status = status::status(&db, now)?;
-            if let Some(AccountAction::Hide { account } | AccountAction::Show { account }) = &action
-            {
-                let id = status::one_account(&status, account)?.id.clone();
-                let hidden = matches!(action, Some(AccountAction::Hide { .. }));
-                status::hide(&db, &id, hidden)?;
-                if let Some(found) = status.accounts.iter_mut().find(|found| found.id == id) {
-                    found.hidden = hidden;
-                }
-            }
-            let (lines, listed): (Vec<String>, Vec<_>) = status
+    }
+    Ok(print(
+        json,
+        || {
+            let listed: Vec<_> = status
                 .accounts
                 .iter()
                 .map(|account| {
-                    let hidden = if account.hidden { " · hidden" } else { "" };
-                    let line = format!("{} · {}{hidden}", account.full_title(), account.id);
-                    let value = json!({
+                    json!({
                         "id": account.id,
                         "title": account.title,
                         "label": account.label,
                         "kind": account.kind,
                         "hidden": account.hidden,
-                    });
-                    (line, value)
+                    })
                 })
-                .unzip();
-            let text = match lines.is_empty() {
-                true => status::none(&status, "`turnscope status --all` shows them"),
-                false => lines.join("\n"),
-            };
-            print(json, json!(listed), text)
-        }
-        Command::Doctor => {
-            let notes = doctor(&db, data, home, now)?;
-            let text = if notes.is_empty() {
-                "Nothing to fix.".to_owned()
+                .collect();
+            json!(listed)
+        },
+        || {
+            if status.accounts.is_empty() {
+                status::none(&status, "`turnscope status --all` shows them")
             } else {
-                notes.join("\n")
-            };
-            print(json, json!(notes), text)
-        }
-        Command::Mcp
-        | Command::Guard { .. }
-        | Command::Statusline { .. }
-        | Command::Connect { .. }
-        | Command::Disconnect { .. } => {
-            unreachable!("served before the database is opened")
-        }
-    })
+                status
+                    .accounts
+                    .iter()
+                    .map(|account| {
+                        let hidden = if account.hidden { " · hidden" } else { "" };
+                        format!("{} · {}{hidden}", account.full_title(), account.id)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        },
+    ))
 }
 
 /// `--top`'s rows: 0 would show only the row adding up the rest.
@@ -546,9 +599,9 @@ fn doctor(db: &rusqlite::Connection, data: &Path, home: &Path, now: i64) -> Resu
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })? {
         let (path, skipped) = row?;
-        let lines = if skipped == 1 { "line" } else { "lines" };
         notes.push(format!(
-            "{path}: {skipped} {lines} couldn't be read; their agent may write a newer format."
+            "{path}: {} couldn't be read; their agent may write a newer format.",
+            usage::counted(skipped as u64, "line")
         ));
     }
     // Before any price is read, every model is unpriced: one note says so.
@@ -569,10 +622,9 @@ fn doctor(db: &rusqlite::Connection, data: &Path, home: &Path, now: i64) -> Resu
             } else {
                 model
             };
-            let responses = if count == 1 { "response" } else { "responses" };
             notes.push(format!(
-                "{model}: {} {responses} with no known price; models.dev doesn't list it.",
-                usage::count(count as u64)
+                "{model}: {} with no known price; models.dev doesn't list it.",
+                usage::counted(count as u64, "response")
             ));
         }
     }
@@ -580,15 +632,18 @@ fn doctor(db: &rusqlite::Connection, data: &Path, home: &Path, now: i64) -> Resu
     // from its icon, and limits are read in agents' hooks, where no one sees
     // their errors.
     let log = std::fs::read_to_string(data.join("app.log")).unwrap_or_default();
-    let logged: Vec<&str> = log
+    let mut logged: Vec<&str> = log
         .lines()
+        .rev()
         .filter(|line| {
             line.split_once(' ')
                 .and_then(|(at, _)| at.parse::<jiff::Timestamp>().ok())
                 .is_some_and(|at| at.as_millisecond() > now - time::DAY)
         })
+        .take(5)
         .collect();
-    for line in &logged[logged.len().saturating_sub(5)..] {
+    logged.reverse();
+    for line in logged {
         notes.push(format!("Logged: {line}"));
     }
     Ok(notes)
@@ -611,19 +666,22 @@ fn guard(
     below: u8,
     account: Option<&str>,
 ) -> Result<Option<String>> {
-    if db::read(data).is_none() {
+    let Some(read_db) = db::read(data) else {
         return Ok(None);
-    }
-    let mut db = db::open(data)?;
+    };
     // The limits read before still guard when this one can't read them
     // again, as once a newer Turnscope has written here, or does while they
     // are read: a hook that fails guards nothing. While the menu bar app
     // holds `app.lock`, it keeps limits current outside any agent sandbox.
-    if online() && !turnscope::engine::running(data) {
+    let db = if online() && !turnscope::engine::running(data) {
+        drop(read_db);
+        let mut db = db::open(data)?;
         let _ = limits::refresh(&mut db, home);
-    }
-    let now = now();
-    let status = status::status(&db, now)?;
+        db
+    } else {
+        read_db
+    };
+    let status = status::status(&db, now())?;
     let account = match account {
         Some(name) => status::one_account(&status, name)?,
         None => match mcp::Caller::detect().account(&db, home, &status)? {
@@ -642,7 +700,7 @@ fn guard(
         true => format!("{}'s {called}", account.title),
         false => format!("{}'s {called} limit", account.title),
     };
-    let ahead = |at: i64| time::ahead(at, now);
+    let ahead = |at: i64| time::ahead(at, status.at);
     Ok(Some(match &found.outlook {
         status::Outlook::UsedUp { back } => format!(
             "{called} is used up{}.",
@@ -676,15 +734,33 @@ fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String>
     let db = db::read(data)?;
     let given = stdin_json();
     let now = now();
-    let status = status::status(&db, now).ok()?;
-    let account = match account {
-        // A line is better than none: of several named, the first.
-        Some(name) => *status::named(&status, name).ok()?.first()?,
-        None => given
+    let snapshot = given.as_ref().and_then(|given| {
+        agents::ALL
+            .iter()
+            .find_map(|agent| agent.statusline_limits(given, now))
+    });
+    let known_id = if account.is_none() {
+        given
             .as_ref()
             .and_then(|given| harness_account(&db, given))
+            .or_else(|| mcp::Caller::detect().account_id(&db, home).ok().flatten())
+    } else {
+        None
+    };
+    // Record before computing status when the account id is already known so
+    // the common harness path computes `status::status` only once.
+    let mut recorded = false;
+    if let (Some(id), Some(snapshot)) = (&known_id, &snapshot) {
+        limits::record_statusline_limits(data, id, snapshot, now);
+        recorded = true;
+    }
+    let status = status::status(&db, now).ok()?;
+    let target = match account {
+        // A line is better than none: of several named, the first.
+        Some(name) => *status::named(&status, name).ok()?.first()?,
+        None => known_id
+            .as_deref()
             .and_then(|id| status.accounts.iter().find(|account| account.id == id))
-            .or_else(|| mcp::Caller::detect().account(&db, home, &status).ok()?)
             .or_else(|| {
                 status
                     .accounts
@@ -692,19 +768,15 @@ fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String>
                     .find(|account| account.in_use && !account.hidden)
             })?,
     };
-    if let Some(snapshot) = given.as_ref().and_then(|given| {
-        agents::ALL
-            .iter()
-            .find_map(|agent| agent.statusline_limits(given, now))
-    }) && account.provider == snapshot.provider
-        && account.kind == turnscope::providers::Kind::Subscription
-        && limits::record_statusline_limits(data, &account.id, &snapshot, now)
+    if !recorded
+        && let Some(snapshot) = &snapshot
+        && limits::record_statusline_limits(data, &target.id, snapshot, now)
         && let Ok(fresh) = status::status(&db, now)
-        && let Some(updated) = fresh.accounts.iter().find(|found| found.id == account.id)
+        && let Some(updated) = fresh.accounts.iter().find(|found| found.id == target.id)
     {
         return Some(status::line(updated, fresh.at));
     }
-    Some(status::line(account, status.at))
+    Some(status::line(target, status.at))
 }
 
 /// JSON piped by a harness to `turnscope statusline` on standard input, or

@@ -33,36 +33,26 @@ use objc2_foundation::NSNotification;
 use rune::{App, AppHandle, AppSpec, DisplayTarget, RunOptions, Tx, WindowOptions, WindowSpec};
 use turnscope::alerts::Alert;
 use turnscope::engine::Shown;
+use turnscope::time::{MINUTE, minute};
 
 use launch::{Launch, Opening};
 use preferences::Preferences;
 use standing::*;
-use state::{Page, State, minute};
+use state::{Page, State};
 use style::{GUTTER, PANEL_WIDTH};
 
-/// The app's state, from any thread.
 pub static HANDLE: OnceLock<AppHandle<State>> = OnceLock::new();
-/// When the app started, from which the panel waits for the item's place (`when_placed`).
 static STARTED: OnceLock<Instant> = OnceLock::new();
-/// Whether the app ticks each minute: while something shown counts down with the clock, in the
-/// menu bar or the open panel, and not otherwise, so a closed panel with nothing urgent never
-/// wakes the app. The tick's thread waits for it (`tick`).
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static TICKER: OnceLock<std::thread::Thread> = OnceLock::new();
 
 thread_local! {
-    /// When the panel last closed. A click on the item takes focus from the panel, which
-    /// closes it, before the item's own action runs: that click closes it and doesn't open it
-    /// again.
+    /// Focus loss closes the panel before the status item click fires; ignore
+    /// immediate clicks so clicking the item closes instead of reopening.
     static CLOSED: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
-// What the engine gives
-
-/// Takes in a status the engine gave, with the alerts it raised.
 pub fn took(s: &mut State, shown: Shown, alerts: Vec<Alert>, tx: &mut Tx) {
-    // While the panel is open, a status's changes move, as a click's do, rather than show at
-    // once, as Rune shows a change no input caused.
     if s.panel_open {
         tx.animated();
     }
@@ -72,22 +62,15 @@ pub fn took(s: &mut State, shown: Shown, alerts: Vec<Alert>, tx: &mut Tx) {
     for (account, limit) in taken.asks {
         engine::used_most(account, limit);
     }
-    if !alerts.is_empty() {
-        notifier::tell(s, alerts);
-    }
+    notifier::tell(s, alerts);
 }
 
-/// What a status asks for once it's taken in.
 #[derive(Debug, PartialEq)]
 struct Taken {
-    /// What used which account's limit to ask the engine, as `(account, limit)`.
     asks: Vec<(String, String)>,
-    /// The accounts whose sign-in notification goes: each that can be read, on the first
-    /// status, and after that each that couldn't be read and now can.
     readable: Vec<String>,
 }
 
-/// Takes in `shown`, and opens what waited for the first status.
 fn take(s: &mut State, shown: Shown) -> Taken {
     let first = s.status.is_none();
     let refused: Vec<String> = s
@@ -98,12 +81,8 @@ fn take(s: &mut State, shown: Shown) -> Taken {
         .collect();
     s.take(shown);
     if let Some(opening) = s.opening.take() {
-        when_placed(move |s, _| {
-            show_panel(s);
-            apply(s, opening);
-        });
+        open_with(opening);
     }
-    // Unless the panel was closed or went to Settings while it waited.
     if let Some(clicked) = s.clicked.take()
         && s.panel_open
         && s.page == Page::Main
@@ -116,8 +95,6 @@ fn take(s: &mut State, shown: Shown) -> Taken {
         .filter(|a| !a.refused() && (first || refused.contains(&a.id)))
         .map(|a| a.id.clone())
         .collect();
-    // Each account shown without what used it, as one that appeared since the panel opened,
-    // and the open one again, as its sessions move with the status.
     let asks = match s.panel_open {
         true => asks(s, |a| s.open.as_deref() == Some(a.id.as_str())),
         false => Vec::new(),
@@ -125,17 +102,15 @@ fn take(s: &mut State, shown: Shown) -> Taken {
     Taken { asks, readable }
 }
 
-/// Redraws the menu bar item, and ticks while something counts down.
 fn drew(s: &State) {
     menu_bar::draw(s);
     let counting = s.panel_open || s.urgent();
-    COUNTING.store(counting, Ordering::Relaxed);
+    COUNTING.store(counting, Ordering::Release);
     if counting && let Some(ticker) = TICKER.get() {
         ticker.unpark();
     }
 }
 
-/// Opens what `opening` names, as `--open` does.
 fn apply(s: &mut State, opening: Opening) {
     if opening.account {
         s.open = s.in_use().first().map(|a| a.id.clone());
@@ -149,20 +124,18 @@ fn apply(s: &mut State, opening: Opening) {
     }
 }
 
-// Requests
-
-/// Hides an account from the panel, the menu bar and alerts, or shows it again: at once, and
-/// back if the engine refuses, as it gives the status again either way.
 pub fn hide(s: &mut State, id: &str, hidden: bool) {
+    if s.stopped() {
+        return;
+    }
     s.mark_hidden(id, hidden);
     drew(s);
     engine::hide(id.to_owned(), hidden);
 }
 
-/// Connects the agent `id`, or disconnects it. It shows as working until it's done, then as
-/// connected or not, and shows why if it fails.
 pub fn connect(s: &mut State, id: &str, connecting: bool) {
-    if !engine::running() {
+    if !engine::running() || s.stopped() || s.from_disk_image || s.changing_agents.contains_key(id)
+    {
         return;
     }
     let to = if connecting {
@@ -175,7 +148,6 @@ pub fn connect(s: &mut State, id: &str, connecting: bool) {
     engine::connect(id.to_owned(), connecting);
 }
 
-/// Asks what used the account `id`'s deciding limit most.
 pub fn ask_used(s: &State, id: &str) {
     if let Some(limit) = s
         .all()
@@ -187,8 +159,6 @@ pub fn ask_used(s: &State, id: &str) {
     }
 }
 
-/// What used which account's deciding limit to ask the engine, as `(account, limit)`: for each
-/// account shown that `again` names, or whose sessions aren't in for that limit.
 fn asks(s: &State, again: impl Fn(&Account) -> bool) -> Vec<(String, String)> {
     s.all()
         .iter()
@@ -201,32 +171,26 @@ fn asks(s: &State, again: impl Fn(&Account) -> bool) -> Vec<(String, String)> {
         .collect()
 }
 
-// The panel
-
-/// Runs `f` once the item has its place in the menu bar to hang the panel from: at once, or
-/// as soon as it has one, or 2 s after launch without one, as when it's hidden in the menu
-/// bar's settings; the panel then opens at the screen's top right (`menu_bar::panel_place`).
-/// Until then the item's window is below the screen, and a panel opened from it hung off the
-/// screen's bottom-left corner, out of sight. It took its place 0.2 s after the event loop
-/// started, 1.55 to 1.65 s after launch in a debug build (measured 2026-11-18): a fixed second
-/// after launch was too soon. The 2 s count from launch: counted from each call, a click on a
-/// notification while the item was hidden opened the panel 2 s late, every time.
-fn when_placed(f: impl FnOnce(&mut State, &mut Tx) + Send + 'static) {
-    let Some(handle) = HANDLE.get() else { return };
-    handle.update(move |s, tx| {
+/// Waits up to 2 s from launch for macOS to place the status item (it arrived
+/// 1.55–1.65 s after launch in debug builds, measured 2026-11-18; before then
+/// its window is off-screen). Counting from launch avoids delaying notification
+/// clicks when the item is hidden in menu bar settings.
+fn when_placed(f: impl FnOnce(&mut State) + Send + 'static) {
+    let Some(handle) = HANDLE.get().cloned() else {
+        return;
+    };
+    let thread_handle = handle.clone();
+    handle.update_if(move |s, _| {
         if menu_bar::placed() || waited() {
-            f(s, tx);
-            return;
+            f(s);
+            return true;
         }
-        let Some(handle) = HANDLE.get().cloned() else {
-            return;
-        };
         // Only the main thread can see the item's place: asked there each 50 ms.
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_millis(50));
                 let (tell, told) = mpsc::channel();
-                handle.update_if(move |_, _| {
+                thread_handle.update_if(move |_, _| {
                     let _ = tell.send(menu_bar::placed() || waited());
                     false
                 });
@@ -234,25 +198,29 @@ fn when_placed(f: impl FnOnce(&mut State, &mut Tx) + Send + 'static) {
                     break;
                 }
             }
-            handle.update(f);
+            thread_handle.update(move |s, _| f(s));
         });
+        false
     });
 }
 
-/// Whether the 2 s after launch that the panel waits for the item's place are over.
+fn open_with(opening: Opening) {
+    when_placed(move |s| {
+        show_panel(s);
+        apply(s, opening);
+    });
+}
+
 fn waited() -> bool {
     STARTED
         .get()
         .is_none_or(|at| at.elapsed() >= Duration::from_secs(2))
 }
 
-/// The item's action: opens the panel under it, or closes it.
 pub fn toggle_panel() {
     let Some(handle) = HANDLE.get() else { return };
     if handle.is_visible() {
-        // Closed as a click elsewhere closes it, so `closed` runs. A hide skips `on_close`, and
-        // the focus loss after it closes nothing, as the panel is hidden by then: the panel was
-        // left marked open, and no click opened it again.
+        // Close via `close_window` so `on_close` runs; hiding skips it and leaves `panel_open` true.
         handle.update(|_, tx| tx.close_window());
         return;
     }
@@ -265,11 +233,8 @@ pub fn toggle_panel() {
     handle.update(|s, _| show_panel(s));
 }
 
-/// Opens the panel on its first page with `account` open in place, as a notification about it
-/// asks. Clicked before the first status, as when the click launched the app, the account
-/// opens once the status arrives, since no account is known before.
 pub fn open_panel(account: Option<String>) {
-    when_placed(move |s, _| {
+    when_placed(move |s| {
         show_panel(s);
         let Some(account) = account else { return };
         if s.status.is_none() {
@@ -280,8 +245,6 @@ pub fn open_panel(account: Option<String>) {
     });
 }
 
-/// Opens the panel under the item, on its first page with nothing open, or brings it forward
-/// if it's open.
 fn show_panel(s: &mut State) {
     let Some(handle) = HANDLE.get() else { return };
     if s.panel_open {
@@ -289,18 +252,19 @@ fn show_panel(s: &mut State) {
         return;
     }
     s.reset();
+    s.tallest = Some(settings::tallest());
     s.panel_open = true;
     s.now = minute(turnscope::now());
-    // What used each account is asked as the panel opens, so an account opens with them
-    // already there. Asked for only once it was open, they came up to a quarter of a second
-    // later and pushed the rows below it down a second time.
-    for (account, limit) in asks(s, |_| true) {
-        engine::used_most(account, limit);
+    if engine::running() {
+        // Pre-fetch so expanding a row doesn't jump a second time up to 250 ms later.
+        for (account, limit) in asks(s, |_| true) {
+            engine::used_most(account, limit);
+        }
+        notifier::check();
+        login::check();
+        engine::poke();
+        s.checks_automatically = updater::automatic();
     }
-    notifier::check();
-    login::check();
-    engine::poke();
-    s.checks_automatically = updater::automatic();
     if let Some(place) = menu_bar::panel_place(PANEL_WIDTH as f64, GUTTER as f64) {
         handle.place(DisplayTarget::Primary, place);
     }
@@ -318,8 +282,6 @@ fn closed(s: &mut State, _: &mut Tx) {
     CLOSED.set(Some(Instant::now()));
 }
 
-/// Grows the open row's bars a moment after it opens. Rune shows a change no input caused at
-/// once, so the bars stood at their level without growing, unless it's animated.
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     if s.grow_due.is_some_and(|due| clock >= due) {
@@ -335,18 +297,16 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed
 }
 
-/// Ticks each minute, the finest unit the words use for time, while something counts down.
 fn tick() {
     let ticker = std::thread::spawn(|| {
         loop {
-            // Parked while nothing counts down, it wakes only when something does.
-            while !COUNTING.load(Ordering::Relaxed) {
+            while !COUNTING.load(Ordering::Acquire) {
                 std::thread::park();
             }
             let now = turnscope::now();
-            let next = minute(now) + 60_000;
+            let next = minute(now) + MINUTE;
             std::thread::sleep(Duration::from_millis((next - now).max(0) as u64 + 50));
-            if !COUNTING.load(Ordering::Relaxed) {
+            if !COUNTING.load(Ordering::Acquire) {
                 continue;
             }
             if let Some(handle) = HANDLE.get() {
@@ -357,8 +317,7 @@ fn tick() {
     let _ = TICKER.set(ticker.thread().clone());
 }
 
-/// Ticks once the Mac wakes. The tick's sleep stops while the Mac sleeps, so for up to a
-/// minute after it woke, the item showed the countdowns of when it went to sleep.
+/// Sleep timers pause during macOS sleep, so refresh immediately on wake.
 fn tick_on_wake() {
     let woke = RcBlock::new(|_: NonNull<NSNotification>| {
         engine::poke();
@@ -367,7 +326,6 @@ fn tick_on_wake() {
         }
     });
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
-    // The center keeps the block as long as the app runs.
     unsafe {
         center.addObserverForName_object_queue_usingBlock(
             Some(NSWorkspaceDidWakeNotification),
@@ -378,8 +336,6 @@ fn tick_on_wake() {
     }
 }
 
-/// Moves what counts down to the minute it is: the menu bar item, and the open panel. Whether
-/// the panel changed.
 fn ticked(s: &mut State) -> bool {
     drew(s);
     if s.panel_open {
@@ -387,8 +343,6 @@ fn ticked(s: &mut State) -> bool {
     }
     s.panel_open
 }
-
-// Small things the views need
 
 pub fn beep() {
     objc2_app_kit::NSBeep();
@@ -403,9 +357,8 @@ pub fn open_url(url: &str) {
     objc2_app_kit::NSWorkspace::sharedWorkspace().openURL(&url);
 }
 
-/// Whether the app runs from its disk image, or from the read-only copy macOS runs an app from
-/// when it's opened where it was downloaded (App Translocation). Either is gone once the image
-/// is ejected or the app quits, and so would be the engine an agent was connected to.
+/// True when running from a mounted DMG or App Translocation path, whose
+/// binary path vanishes after eject or quit.
 fn from_disk_image() -> bool {
     let bundle = objc2_foundation::NSBundle::mainBundle()
         .bundlePath()
@@ -424,17 +377,18 @@ fn from_disk_image() -> bool {
 
 // Starting
 
-fn blank() -> State {
-    State::new(Preferences::default())
-}
-
 fn spec() -> AppSpec<State> {
     AppSpec::<State> {
         families: ("System Font", "ui-monospace"),
         fonts: style::fonts(),
         poll: Some(poll),
         on_key: Some(panel::on_key),
-        ..AppSpec::new("Turnscope", (PANEL_WIDTH + 2.0, 420.0), blank, panel::view)
+        ..AppSpec::new(
+            "Turnscope",
+            (PANEL_WIDTH + 2.0, 420.0),
+            State::default,
+            panel::view,
+        )
     }
 }
 
@@ -527,7 +481,8 @@ fn main() {
         return;
     }
     let fixed = launch.fixture.as_deref().map(fixture);
-    if fixed.is_none() {
+    let runs_engine = fixed.is_none();
+    if runs_engine {
         let _ = engine::DATA.set(data.clone());
         // What went wrong is kept in the log, beside the data.
         let panicked = std::panic::take_hook();
@@ -560,7 +515,6 @@ fn main() {
         .on_close(closed);
     let handle = app.handle();
     let _ = HANDLE.set(handle.clone());
-    let runs_engine = launch.fixture.is_none();
     let engine_handle = handle.clone();
     handle.update(move |s, _| {
         drew(s);
@@ -573,10 +527,7 @@ fn main() {
             engine::start(home, data, engine_handle);
         } else if let Some(opening) = s.opening.take() {
             // A fixed status is there from the start.
-            when_placed(move |s, _| {
-                show_panel(s);
-                apply(s, opening);
-            });
+            open_with(opening);
         }
     });
     let options = WindowOptions::launcher_panel().macos(|native| {
@@ -597,11 +548,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The example status in tests/fixtures/status.json, as `--fixture` shows it.
-    fn example() -> Shown {
-        serde_json::from_str(include_str!("../../turnscope/tests/fixtures/status.json")).unwrap()
-    }
+    use crate::state::tests::example;
 
     const CLAUDE: &str = "anthropic:acct-1:org-1";
     const CODEX: &str = "openai:acct-2";

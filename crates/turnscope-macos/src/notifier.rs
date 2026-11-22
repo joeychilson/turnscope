@@ -3,6 +3,7 @@
 //! account can be read (docs/app.md#notifications).
 
 use std::ptr::NonNull;
+use std::sync::OnceLock;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -63,19 +64,19 @@ thread_local! {
     static DELEGATE: std::cell::OnceCell<Retained<Delegate>> = const { std::cell::OnceCell::new() };
 }
 
-/// Whether the app can post: macOS posts only for an app bundle, so `cargo run` posts nothing.
+/// macOS posts notifications only for `.app` bundles, not bare `cargo run` binaries.
 fn bundled() -> bool {
-    let bundle = objc2_foundation::NSBundle::mainBundle();
-    bundle.bundleIdentifier().is_some() && bundle.bundlePath().to_string().ends_with(".app")
+    static BUNDLED: OnceLock<bool> = OnceLock::new();
+    *BUNDLED.get_or_init(|| {
+        let bundle = objc2_foundation::NSBundle::mainBundle();
+        bundle.bundleIdentifier().is_some() && bundle.bundlePath().to_string().ends_with(".app")
+    })
 }
 
 fn center() -> Option<Retained<UNUserNotificationCenter>> {
     bundled().then(UNUserNotificationCenter::currentNotificationCenter)
 }
 
-/// Becomes the notification center's delegate, so clicks reach the app, also one that
-/// launched it, and asks to post. If permission is refused, nothing shows, and Settings says
-/// so.
 pub fn start() {
     let Some(center) = center() else { return };
     DELEGATE.with(|cell| {
@@ -92,27 +93,28 @@ pub fn start() {
     );
 }
 
-/// Checks whether macOS lets the app post, for Settings, which says so when it doesn't. It's
-/// checked each time the panel opens, since it may have just been turned on.
 pub fn check() {
     let Some(center) = center() else { return };
     let got = RcBlock::new(|settings: NonNull<UNNotificationSettings>| {
-        let allowed =
-            unsafe { settings.as_ref() }.authorizationStatus() != UNAuthorizationStatus::Denied;
+        let denied =
+            unsafe { settings.as_ref() }.authorizationStatus() == UNAuthorizationStatus::Denied;
         if let Some(handle) = crate::HANDLE.get() {
             handle.update_if(move |s, _| {
-                let changed = s.notifications_allowed != Some(allowed);
-                s.notifications_allowed = Some(allowed);
-                changed
+                let changed = s.notifications_denied != denied;
+                s.notifications_denied = denied;
+                changed && s.panel_open
             });
         }
     });
     center.getNotificationSettingsWithCompletionHandler(&got);
 }
 
-/// Posts each of `alerts`, worded as of now with the accounts in `s`. Each is acknowledged once
-/// macOS accepts it, so one it refused, as before notifications were allowed, comes again.
+/// Acknowledges each alert only after macOS accepts it, so refused alerts retry
+/// once notification permission is granted.
 pub fn tell(s: &State, alerts: Vec<Alert>) {
+    if alerts.is_empty() {
+        return;
+    }
     let Some(center) = center() else { return };
     let words = s.words_now();
     for alert in alerts {

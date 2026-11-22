@@ -34,7 +34,7 @@ crates/turnscope-macos/
 | `engine.rs` | Passes what the engine tells on to `State`, and the app's requests on to the engine |
 | `state.rs` | The app's state, which every view reads: the last status, where the panel is, and the lists of accounts it shows |
 | `preferences.rs` | The app's own preferences |
-| `standing.rs` | The status's types, with small facts read off them: a limit's standing (lasts, running out, used up), an account's `refilled_at` and `twinned` |
+| `standing.rs` | The status's types, with small facts read off them: a limit's standing (lasts, running out, used up) and an account's `twinned` |
 | `words.rs` | Every figure and sentence made from the status, and its tests |
 | `launch.rs` | Launch arguments: `Launch` and `Opening` |
 | `menu_bar.rs` | Draws the menu bar item, and places the panel under it |
@@ -86,7 +86,7 @@ The engine is the same for every app: an app starts
   keeps it current: it reads the agents' history and logins as they
   change, reads the limits, and tells the app each status that shows
   something new, with the alerts it raised. If the data can't be opened or kept
-  current, it says why (`State::failure`) and tries again every 5 s.
+  current, it says why (`State::problem`) and tries again every 5 s.
   While another app holds the lock, as a second copy of Turnscope does, it
   shows what that one writes. Once a newer Turnscope has written to the
   data, it stops, and says to update. What goes wrong is written to

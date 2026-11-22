@@ -117,26 +117,41 @@ fn typed(text: &str) -> String {
     if text.starts_with("[Request interrupted") {
         return String::new();
     }
-    match super::inner(text, "command-name") {
-        Some(name) => format!(
-            "{name} {}",
-            super::inner(text, "command-args").unwrap_or_default()
-        )
-        .trim()
-        .to_owned(),
-        None => {
-            let mut text = super::without_tags(text, INJECTED);
-            for mark in ["<pasted_content", "</pasted_content"] {
-                while let Some(start) = text.find(mark) {
-                    let end = text[start..]
-                        .find('>')
-                        .map_or(text.len(), |end| start + end + 1);
-                    text.replace_range(start..end, "");
-                }
+    if let Some(name) = super::inner(text, "command-name") {
+        let name = name.trim();
+        let args = super::inner(text, "command-args")
+            .map(str::trim)
+            .unwrap_or_default();
+        return if args.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{name} {args}")
+        };
+    }
+    let mut text = super::without_tags(text, INJECTED);
+    if !text.contains("pasted_content") {
+        return text;
+    }
+    for mark in ["<pasted_content", "</pasted_content"] {
+        let mut from = 0;
+        while let Some(rel) = text[from..].find(mark) {
+            let start = from + rel;
+            let after = start + mark.len();
+            let boundary = text[after..]
+                .chars()
+                .next()
+                .is_some_and(|ch| ch == '>' || ch.is_whitespace());
+            if !boundary {
+                from = after;
+                continue;
             }
-            text.trim().to_owned()
+            let Some(end) = text[after..].find('>') else {
+                break;
+            };
+            text.replace_range(start..after + end + 1, "");
         }
     }
+    text.trim().to_owned()
 }
 
 /// Whether `typed` asks for work, so it can title a session.
@@ -215,7 +230,8 @@ struct Message<'a> {
     id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     model: Option<Cow<'a, str>>,
-    usage: Option<Usage>,
+    #[serde(borrow)]
+    usage: Option<Usage<'a>>,
     /// A string, or a list of blocks; held unparsed so blocks are read only
     /// as far as needed.
     #[serde(borrow)]
@@ -245,7 +261,7 @@ impl Message<'_> {
 /// counts or their `cache_creation` split (not measured), so a cache count
 /// left out is 0. The input and output counts stay required: a line without
 /// them is skipped, and `doctor` says so, which is how a new format shows.
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 struct Counts {
     input_tokens: u64,
     #[serde(default)]
@@ -258,7 +274,7 @@ struct Counts {
     output_tokens: u64,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Clone, Copy, Deserialize, Default)]
 #[serde(default)]
 struct CacheCreation {
     ephemeral_5m_input_tokens: u64,
@@ -286,14 +302,34 @@ impl Counts {
     }
 }
 
+/// Top-level fields are listed directly rather than via `#[serde(flatten)]`
+/// so serde streams each line without buffering the whole usage object.
 #[derive(Deserialize)]
-struct Usage {
-    #[serde(flatten)]
-    counts: Counts,
+struct Usage<'a> {
+    input_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
+    cache_creation: Option<CacheCreation>,
+    output_tokens: u64,
     iterations: Option<Vec<Counts>>,
     output_tokens_details: Option<OutputDetails>,
     server_tool_use: Option<ServerTools>,
-    speed: Option<String>,
+    #[serde(borrow)]
+    speed: Option<Cow<'a, str>>,
+}
+
+impl Usage<'_> {
+    fn counts(&self) -> Counts {
+        Counts {
+            input_tokens: self.input_tokens,
+            cache_read_input_tokens: self.cache_read_input_tokens,
+            cache_creation_input_tokens: self.cache_creation_input_tokens,
+            cache_creation: self.cache_creation,
+            output_tokens: self.output_tokens,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -359,10 +395,18 @@ fn named(file: &Path) -> Option<(String, Option<String>)> {
     }
 }
 
+fn is_own_folder(folder: &Path, home: &Path) -> bool {
+    folder == home.join(".claude")
+}
+
 fn settings(folder: &Path, home: &Path) -> PathBuf {
     // Its own folder's settings are beside it; another's are inside it.
-    let own = folder == home.join(".claude");
-    if own { home } else { folder }.join(".claude.json")
+    if is_own_folder(folder, home) {
+        home
+    } else {
+        folder
+    }
+    .join(".claude.json")
 }
 
 impl Agent for ClaudeCode {
@@ -380,12 +424,14 @@ impl Agent for ClaudeCode {
                 .is_some_and(|extension| extension == "jsonl")
         };
         let mut files = Vec::new();
-        let projects = super::entries(&folder.join("projects"));
-        for path in projects.flat_map(|project| super::entries(&project)) {
-            if jsonl(&path) {
-                files.push(path);
-            } else if path.is_dir() {
-                files.extend(super::entries(&path.join("subagents")).filter(jsonl));
+        for project in super::entries(&folder.join("projects")) {
+            for entry in std::fs::read_dir(&project).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if jsonl(&path) {
+                    files.push(path);
+                } else if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    files.extend(super::entries(&path.join("subagents")).filter(jsonl));
+                }
             }
         }
         files
@@ -394,8 +440,8 @@ impl Agent for ClaudeCode {
     fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
         let (session, agent) = named(file)
             .ok_or_else(|| Error::Failed(format!("{} isn't a Claude Code log", file.display())))?;
-        let own = INFO.session(agent.as_deref().unwrap_or(&session));
-        // Without a cursor a read saved, a log is read from its start.
+        let own_native = agent.as_deref().unwrap_or(&session);
+        let own = INFO.session(own_native);
         let saved = serde_json::from_str::<Cursor>(cursor);
         let (start, mut cursor) = (saved.is_err(), saved.unwrap_or_default());
         let mut read = Read::default();
@@ -430,7 +476,7 @@ impl Agent for ClaudeCode {
                 read.skipped += 1;
                 return;
             };
-            read_line(&line, &own, &mut cursor, &mut read);
+            read_line(&line, own_native, &own, &mut cursor, &mut read);
         })?;
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
         Ok(read)
@@ -449,8 +495,7 @@ impl Agent for ClaudeCode {
         // Its own folder's login is the item `Claude Code-credentials`;
         // another folder's adds the first 8 hex digits of the SHA-256 of its
         // path (Claude Code 2.1.284's code, read 2026-09-29).
-        let own = folder == home.join(".claude");
-        let item = if own {
+        let item = if is_own_folder(folder, home) {
             "Claude Code-credentials".to_owned()
         } else {
             let hex = crate::sha256_hex(folder.as_os_str().as_encoded_bytes(), 4);
@@ -482,10 +527,7 @@ impl Agent for ClaudeCode {
     fn statusline_limits(&self, input: &Value, now: i64) -> Option<InBand> {
         let rate_limits = input.get("rate_limits")?.as_object()?;
         let mut readings = Vec::new();
-        for (key, name, length) in [
-            ("five_hour", "5 hours", 5 * HOUR),
-            ("seven_day", "Weekly", 7 * DAY),
-        ] {
+        for (key, length) in [("five_hour", 5 * HOUR), ("seven_day", 7 * DAY)] {
             let Some(window) = rate_limits.get(key) else {
                 continue;
             };
@@ -496,21 +538,14 @@ impl Agent for ClaudeCode {
                 continue;
             };
             let resets = match &window["resets_at"] {
-                Value::Number(num) => num.as_i64().filter(|&ts| ts > 0).map(|ts| {
-                    // Claude Code writes Unix seconds; accept milliseconds defensively.
-                    if ts > 100_000_000_000 {
-                        ts
-                    } else {
-                        ts.saturating_mul(1000)
-                    }
-                }),
+                Value::Number(num) => num.as_i64().and_then(super::unix_millis),
                 Value::String(text) => crate::time::millis(text),
                 _ => None,
             }
             .or((used == 0.0).then_some(now + length));
             readings.push(Reading {
                 key: key.to_owned(),
-                name: name.to_owned(),
+                name: crate::providers::window_name(length),
                 scope: None,
                 used: used.clamp(0.0, 100.0),
                 size: None,
@@ -566,19 +601,25 @@ fn in_copy(line: &Line, cursor: &mut Cursor) -> bool {
     }
 }
 
-fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
-    let copied = cursor.copy.as_ref().map(|copy| copy.parent.clone());
+fn read_line(line: &Line, own_native: &str, own: &str, cursor: &mut Cursor, read: &mut Read) {
+    let copied = (*line.kind == *"assistant")
+        .then(|| cursor.copy.as_ref().map(|copy| copy.parent.clone()))
+        .flatten();
     if in_copy(line, cursor) {
-        if let (Some(parent), "assistant") = (copied, &*line.kind) {
+        if let Some(parent) = copied {
             respond(line, &parent, true, read);
         }
         return;
     }
     // A subagent's lines name the session it ran in; its agent id says whose
     // they are.
-    let owner = match (&line.agent_id, &line.session_id) {
-        (Some(agent), _) | (None, Some(agent)) if !agent.is_empty() => INFO.session(agent),
-        _ => own.to_owned(),
+    let owner = || -> Cow<'_, str> {
+        match (line.agent_id.as_deref(), line.session_id.as_deref()) {
+            (Some(agent), _) | (None, Some(agent)) if !agent.is_empty() && agent != own_native => {
+                Cow::Owned(INFO.session(agent))
+            }
+            _ => Cow::Borrowed(own),
+        }
     };
     match &*line.kind {
         "user" => {
@@ -589,7 +630,7 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
                 let texts = content.map(super::texts).unwrap_or_default();
                 let asked = texts.iter().map(|text| typed(text)).find(|text| asks(text));
                 if let Some(asked) = asked {
-                    read.session(&owner).title(Title::Prompt, &asked);
+                    read.session(&owner()).title(Title::Prompt, &asked);
                     cursor.titled = true;
                 }
             }
@@ -597,26 +638,28 @@ fn read_line(line: &Line, own: &str, cursor: &mut Cursor, read: &mut Read) {
         "assistant" => {
             let named = line.named.as_deref();
             let copy = named.is_some_and(|named| Some(named) != line.session_id.as_deref());
-            respond(line, &owner, copy, read);
+            respond(line, &owner(), copy, read);
         }
         "attachment" | "system" => {}
         "ai-title" => {
             if let Some(title) = &line.ai_title {
-                read.session(&owner).title(Title::Generated, title);
+                read.session(&owner()).title(Title::Generated, title);
             }
             return;
         }
         "agent-name" | "custom-title" => {
             if let Some(name) = line.agent_name.as_ref().or(line.custom_title.as_ref()) {
-                read.session(&owner).title(Title::Named, name);
+                read.session(&owner()).title(Title::Named, name);
             }
             return;
         }
         _ => return,
     }
-    let session = read.session(&owner);
-    if session.cwd.is_none() {
-        session.cwd = line.cwd.as_deref().map(str::to_owned);
+    if let Some(cwd) = line.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
+        let session = read.session(&owner());
+        if session.cwd.is_none() {
+            session.cwd = Some(cwd.to_owned());
+        }
     }
 }
 
@@ -630,12 +673,12 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
         read.skipped += 1;
         return;
     };
-    // The calls' sum, where the response lists them, at the largest prompt.
+    let single = [usage.counts()];
     let calls = usage
         .iterations
         .as_deref()
         .filter(|calls| !calls.is_empty())
-        .unwrap_or(std::slice::from_ref(&usage.counts));
+        .unwrap_or(&single);
     let (mut tokens, mut prompt) = (Tokens::default(), 0);
     for call in calls.iter().map(Counts::tokens) {
         prompt =
@@ -673,20 +716,14 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
 /// account can be in several.
 fn identity(settings: &Path) -> Result<Option<(String, Option<String>)>> {
     let config = super::json_file(settings)?.unwrap_or_default();
-    let part = |pointer: &str| {
-        config
-            .pointer(pointer)
-            .and_then(Value::as_str)
-            .filter(|part| !part.is_empty())
-    };
     Ok(
         match (
-            part("/oauthAccount/accountUuid"),
-            part("/oauthAccount/organizationUuid"),
+            super::str_at(&config, "/oauthAccount/accountUuid"),
+            super::str_at(&config, "/oauthAccount/organizationUuid"),
         ) {
             (Some(account), Some(organization)) => Some((
                 format!("{account}:{organization}"),
-                part("/oauthAccount/emailAddress").map(str::to_owned),
+                super::str_at(&config, "/oauthAccount/emailAddress").map(str::to_owned),
             )),
             _ => None,
         },
@@ -695,10 +732,7 @@ fn identity(settings: &Path) -> Result<Option<(String, Option<String>)>> {
 
 /// The sign-in that the Keychain item's value `kept` holds, with its `identity`.
 fn credential(kept: &Value, identity: (String, Option<String>)) -> Option<Credential> {
-    let token = kept
-        .pointer("/claudeAiOauth/accessToken")
-        .and_then(Value::as_str)
-        .filter(|token| !token.is_empty())?;
+    let token = super::str_at(kept, "/claudeAiOauth/accessToken")?;
     Some(Credential {
         provider: "anthropic",
         secret: Secret::new(token),
@@ -707,10 +741,7 @@ fn credential(kept: &Value, identity: (String, Option<String>)) -> Option<Creden
             .pointer("/claudeAiOauth/expiresAt")
             .and_then(Value::as_i64),
         identity: Some(identity),
-        plan: kept
-            .pointer("/claudeAiOauth/subscriptionType")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        plan: super::str_at(kept, "/claudeAiOauth/subscriptionType").map(str::to_owned),
         refresh: None,
     })
 }
@@ -889,53 +920,6 @@ mod tests {
     }
 
     #[test]
-    fn a_sign_in_is_its_account_in_its_organization() {
-        let home = tempfile::tempdir().unwrap();
-        let home = home.path();
-        // Its own folder's settings are beside it; another's are inside it.
-        let config = home.join(".claude.json");
-        assert_eq!(settings(&home.join(".claude"), home), config);
-        let work = home.join(".claude-work");
-        assert_eq!(settings(&work, home), work.join(".claude.json"));
-
-        let kept = json!({"claudeAiOauth": {"accessToken": "made-up-token",
-            "expiresAt": 1_790_000_000_000_i64, "subscriptionType": "max"}});
-        std::fs::write(
-            &config,
-            json!({"oauthAccount": {"accountUuid": "acct-1", "organizationUuid": "org-1",
-                "emailAddress": "someone@example.com"}})
-            .to_string(),
-        )
-        .unwrap();
-        let id = identity(&config).unwrap().unwrap();
-        let cred = credential(&kept, id.clone()).unwrap();
-        assert_eq!(cred.secret.expose(), "made-up-token");
-        assert_eq!(
-            (cred.identity, cred.plan, cred.expires, cred.key),
-            (
-                Some((
-                    "acct-1:org-1".to_owned(),
-                    Some("someone@example.com".to_owned())
-                )),
-                Some("max".to_owned()),
-                Some(1_790_000_000_000),
-                false
-            )
-        );
-        // Without its organization, whose it is isn't known.
-        std::fs::write(
-            &config,
-            json!({"oauthAccount": {"accountUuid": "acct-1",
-                "emailAddress": "someone@example.com"}})
-            .to_string(),
-        )
-        .unwrap();
-        assert_eq!(identity(&config).unwrap(), None);
-        // Signed out.
-        assert!(credential(&json!({}), id).is_none());
-    }
-
-    #[test]
     fn a_fork_waits_for_a_description_half_written() {
         let dir = tempfile::tempdir().unwrap();
         let file = log(dir.path(), "s1/subagents/agent-f1.jsonl", &[json!({})]);
@@ -1048,54 +1032,61 @@ mod tests {
     }
 
     #[test]
-    fn logins_reads_settings_before_the_keychain() {
+    fn logins_reads_settings_and_credentials_file_for_main_and_extra_folders() {
         let home = tempfile::tempdir().unwrap();
         let folder = home.path().join(".claude");
+        let work = home.path().join(".claude-work");
         std::fs::create_dir(&folder).unwrap();
-        // Half-written `.claude.json`: must fail before touching the Keychain,
-        // rather than treating a missing Keychain item as signed out.
-        std::fs::write(home.path().join(".claude.json"), "{").unwrap();
+        std::fs::create_dir(&work).unwrap();
+        let config = home.path().join(".claude.json");
+
+        // Half-written `.claude.json` fails before touching the Keychain.
+        std::fs::write(&config, "{").unwrap();
         assert!(ClaudeCode.logins(&folder, home.path()).is_err());
 
-        // Valid settings with no OAuth account: signed out without needing a
-        // Keychain item.
-        std::fs::write(home.path().join(".claude.json"), "{}").unwrap();
-        let logins = ClaudeCode.logins(&folder, home.path()).unwrap();
-        assert_eq!(logins.len(), 1);
-        assert_eq!(logins[0].provider, "anthropic");
-        assert!(logins[0].credential.is_none());
-    }
+        // Missing org or empty settings counts as signed out without Keychain.
+        for incomplete in [
+            json!({}),
+            json!({"oauthAccount": {"accountUuid": "a1", "emailAddress": "me@example.com"}}),
+        ] {
+            std::fs::write(&config, incomplete.to_string()).unwrap();
+            let logins = ClaudeCode.logins(&folder, home.path()).unwrap();
+            assert_eq!(logins.len(), 1);
+            assert_eq!(logins[0].provider, "anthropic");
+            assert!(logins[0].credential.is_none());
+        }
 
-    #[test]
-    fn an_empty_oauth_token_counts_as_signed_out() {
-        let identity = ("acct-1:org-1".to_owned(), Some("me@example.com".to_owned()));
-        let empty = json!({"claudeAiOauth": {"accessToken": ""}});
-        assert!(credential(&empty, identity.clone()).is_none());
+        // Valid settings + `.credentials.json` fallback (main folder beside,
+        // extra folder inside).
+        let account = json!({"oauthAccount": {"accountUuid": "a1", "organizationUuid": "o1", "emailAddress": "me@example.com"}});
+        let creds = json!({"claudeAiOauth": {"accessToken": "file-tok", "expiresAt": 1_790_000_000_000_i64, "subscriptionType": "max"}});
+        std::fs::write(&config, account.to_string()).unwrap();
+        std::fs::write(folder.join(".credentials.json"), creds.to_string()).unwrap();
+        std::fs::write(work.join(".claude.json"), account.to_string()).unwrap();
+        std::fs::write(work.join(".credentials.json"), creds.to_string()).unwrap();
+        for dir in [&folder, &work] {
+            let logins = ClaudeCode.logins(dir, home.path()).unwrap();
+            let cred = logins[0].credential.as_ref().unwrap();
+            assert_eq!(cred.secret.expose(), "file-tok");
+            assert_eq!(
+                cred.identity.as_ref(),
+                Some(&("a1:o1".to_owned(), Some("me@example.com".to_owned())))
+            );
+            assert_eq!(
+                (cred.plan.as_deref(), cred.expires, cred.key),
+                (Some("max"), Some(1_790_000_000_000), false)
+            );
+        }
 
-        let token = json!({"claudeAiOauth": {"accessToken": "tok-1"}});
-        assert!(credential(&token, identity).is_some());
-    }
-
-    #[test]
-    fn logins_reads_credentials_file_when_keychain_has_none() {
-        let home = tempfile::tempdir().unwrap();
-        let folder = home.path().join(".claude");
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::write(
-            home.path().join(".claude.json"),
-            json!({"oauthAccount": {"accountUuid": "a1", "organizationUuid": "o1", "emailAddress": "me@example.com"}}).to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            folder.join(".credentials.json"),
-            json!({"claudeAiOauth": {"accessToken": "file-tok", "expiresAt": 1_790_000_000_000_i64, "subscriptionType": "max"}}).to_string(),
-        )
-        .unwrap();
-        let logins = ClaudeCode.logins(&folder, home.path()).unwrap();
-        let cred = logins[0].credential.as_ref().unwrap();
-        assert_eq!(cred.secret.expose(), "file-tok");
-        assert_eq!(cred.plan.as_deref(), Some("max"));
-        assert_eq!(cred.expires, Some(1_790_000_000_000));
+        // Empty access token or empty JSON counts as signed out.
+        for signed_out in [json!({}), json!({"claudeAiOauth": {"accessToken": ""}})] {
+            std::fs::write(folder.join(".credentials.json"), signed_out.to_string()).unwrap();
+            assert!(
+                ClaudeCode.logins(&folder, home.path()).unwrap()[0]
+                    .credential
+                    .is_none()
+            );
+        }
     }
 
     #[test]

@@ -6,51 +6,39 @@ use crate::state::Tab;
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Launch {
-    /// The status to show instead of the engine's.
     pub fixture: Option<PathBuf>,
-    /// Where to draw the panel before quitting.
     pub snapshot: Option<PathBuf>,
-    /// What to open once the first status arrives, or None to open nothing.
     pub opening: Option<Opening>,
-    /// The data folder, instead of the default.
     pub data: Option<PathBuf>,
-    /// The home folder whose agents are read, instead of the person's.
     pub home: Option<PathBuf>,
 }
 
 impl Launch {
-    /// The options in `arguments`, as the command line gives them, with the program first.
     pub fn parse(arguments: &[String]) -> Launch {
-        // The value given after `option`, or None if it's last or another option follows it.
+        let args = arguments.get(1..).unwrap_or(&[]);
         let value = |option: &str| {
-            let index = arguments.iter().position(|a| a == option)?;
-            arguments
-                .get(index + 1)
+            let index = args.iter().position(|a| a == option)?;
+            args.get(index + 1)
+                .map(String::as_str)
                 .filter(|value| !value.starts_with("--"))
-                .cloned()
         };
         Launch {
             fixture: value("--fixture").map(PathBuf::from),
             snapshot: value("--snapshot").map(PathBuf::from),
-            opening: arguments
+            opening: args
                 .iter()
                 .any(|a| a == "--open")
-                .then(|| Opening::parse(&value("--open").unwrap_or_default())),
+                .then(|| Opening::parse(value("--open").unwrap_or_default())),
             data: value("--data").map(PathBuf::from),
             home: value("--home").map(PathBuf::from),
         }
     }
 }
 
-/// What `--open` opens in the panel: names joined by commas, such as `account,unused`. An
-/// unknown name opens nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Opening {
-    /// The first account in use, opened in place.
     pub account: bool,
-    /// The accounts not used this week, unfolded.
     pub unused: bool,
-    /// Settings, opened at this tab.
     pub settings: Option<Tab>,
 }
 
@@ -84,12 +72,8 @@ mod tests {
     }
 
     #[test]
-    fn nothing_given_opens_nothing() {
+    fn parses_launch_options_and_open_targets() {
         assert_eq!(launch(""), Launch::default());
-    }
-
-    #[test]
-    fn each_option_takes_the_value_after_it() {
         let given =
             launch("--fixture f.json --snapshot out --data d --home h --open account,unused");
         assert_eq!(given.fixture, Some(PathBuf::from("f.json")));
@@ -104,17 +88,9 @@ mod tests {
                 settings: None
             })
         );
-    }
-
-    #[test]
-    fn an_option_followed_by_another_has_no_value() {
-        let given = launch("--fixture --open");
-        assert_eq!(given.fixture, None);
-        assert_eq!(given.opening, Some(Opening::default()));
-    }
-
-    #[test]
-    fn open_names_a_settings_tab() {
+        let bare = launch("--fixture --open");
+        assert_eq!(bare.fixture, None);
+        assert_eq!(bare.opening, Some(Opening::default()));
         assert_eq!(Opening::parse("settings").settings, Some(Tab::General));
         assert_eq!(Opening::parse("agents").settings, Some(Tab::Agents));
         assert_eq!(Opening::parse("accounts").settings, Some(Tab::Accounts));

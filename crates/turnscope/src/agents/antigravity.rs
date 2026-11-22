@@ -36,6 +36,9 @@
 //!
 //! **Not read.** The Antigravity IDE's history, which this Mac doesn't have.
 
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
@@ -68,31 +71,22 @@ static INFO: Info = Info {
     session_var: None,
 };
 
-/// The folders of `~/.gemini` that keep history: the app's, and `agy`'s.
 const KEPT: [&str; 2] = ["antigravity", "antigravity-cli"];
 
 const TITLES: &str = "conversation_summaries.db";
 const TRANSCRIPT: &str = "transcript_full.jsonl";
 
-/// The Keychain item, service and account, where the app and `agy` keep
-/// their one Google sign-in.
 const SIGN_IN: (&str, &str) = ("gemini", "antigravity");
-/// The plain JSON file in `~/.gemini` that Antigravity's
-/// `compositeTokenStorage` falls back to when Keychain fails, times out, or
-/// is bypassed (verified in Antigravity 2.34.0 `NewFileTokenStorage`,
-/// 2026-11-21).
+/// Plain JSON fallback written by Antigravity's `compositeTokenStorage` when
+/// Keychain fails, times out, or is bypassed (Antigravity 2.34.0, 2026-11-21).
 const FALLBACK: &str = "jetski-standalone-oauth-token";
-/// What go-keyring puts before a value it wrote as base64.
 const WRAPPED: &str = "go-keyring-base64:";
 
-/// Where a conversation's database was read to: the model calls numbered
-/// below this were read.
 #[derive(Default, Serialize, Deserialize)]
 struct Rows {
     calls: i64,
 }
 
-/// Where a transcript was read to, and whether its session has its title.
 #[derive(Default, Serialize, Deserialize)]
 struct Lines {
     offset: u64,
@@ -117,6 +111,7 @@ impl Agent for Antigravity {
         let mut files = Vec::new();
         for kept in KEPT.map(|kept| folder.join(kept)) {
             files.push(kept.join(TITLES));
+            let brain = kept.join("brain");
             for database in super::entries(&kept.join("conversations")) {
                 if database
                     .extension()
@@ -126,7 +121,7 @@ impl Agent for Antigravity {
                 }
                 if let Some(id) = database.file_stem() {
                     files.push(
-                        kept.join("brain")
+                        brain
                             .join(id)
                             .join(".system_generated/logs")
                             .join(TRANSCRIPT),
@@ -148,13 +143,17 @@ impl Agent for Antigravity {
 
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
         let (service, account) = SIGN_IN;
-        let keychain = super::keychain(home, service, Some(account), |kept| signed_in(kept, home))
-            .map(Option::flatten);
+        let keychain =
+            super::keychain(home, service, Some(account), signed_in).map(Option::flatten);
         let file = super::json_file(&folder.join(FALLBACK))
-            .map(|kept| kept.and_then(|kept| credential(&kept, home)));
+            .map(|kept| kept.and_then(|kept| credential(&kept)));
+        let mut credential = super::fresher(keychain, file)?;
+        if let Some(refresh) = credential.as_mut().and_then(|c| c.refresh.as_mut()) {
+            refresh.binaries = binaries(home);
+        }
         Ok(vec![Login {
             provider: "google".to_owned(),
-            credential: super::fresher(keychain, file)?,
+            credential,
         }])
     }
 
@@ -192,7 +191,7 @@ impl Agent for Antigravity {
 /// answers a token of Antigravity's other client with limits nothing has
 /// touched, which would pass for the plan's (CodexBar's code, read
 /// 2026-11-10).
-fn signed_in(kept: &[u8], home: &Path) -> std::result::Result<Option<Credential>, String> {
+fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
     let kept = std::str::from_utf8(kept).map_err(|error| error.to_string())?;
     let kept = kept
         .trim()
@@ -202,28 +201,21 @@ fn signed_in(kept: &[u8], home: &Path) -> std::result::Result<Option<Credential>
         .decode(kept)
         .map_err(|error| error.to_string())?;
     let kept: Value = serde_json::from_slice(&kept).map_err(|error| error.to_string())?;
-    Ok(credential(&kept, home))
+    Ok(credential(&kept))
 }
 
 /// The Google consumer sign-in `kept` holds, whether from Keychain or the
 /// plain JSON fallback file.
-fn credential(kept: &Value, home: &Path) -> Option<Credential> {
-    let token = kept["token"]["access_token"]
-        .as_str()
-        .filter(|token| !token.is_empty());
+fn credential(kept: &Value) -> Option<Credential> {
+    let token = super::non_empty(&kept["token"]["access_token"]);
     let (Some(token), Some("consumer")) = (token, kept["auth_method"].as_str()) else {
         return None;
     };
-    let email = kept["id_token_email"]
-        .as_str()
-        .filter(|email| !email.is_empty());
-    let refresh = kept["token"]["refresh_token"]
-        .as_str()
-        .filter(|refresh| !refresh.is_empty())
-        .map(|refresh| Refresh {
-            token: Secret::new(refresh),
-            binaries: binaries(home),
-        });
+    let email = super::non_empty(&kept["id_token_email"]);
+    let refresh = super::non_empty(&kept["token"]["refresh_token"]).map(|refresh| Refresh {
+        token: Secret::new(refresh),
+        binaries: Vec::new(),
+    });
     Some(Credential {
         provider: "google",
         secret: Secret::new(token),
@@ -287,18 +279,20 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
         return Ok(read);
     }
 
-    let about: Option<Vec<u8>> = tx
+    read.session(&session).cwd = tx
         .query_row(
             "SELECT data FROM trajectory_metadata_blob WHERE id = 'main'",
             [],
-            |row| row.get(0),
+            |row| {
+                Ok(row
+                    .get_ref(0)?
+                    .as_bytes_or_null()?
+                    .and_then(|about| within(about, &[1, 1]))
+                    .and_then(folder))
+            },
         )
         .optional()?
         .flatten();
-    read.session(&session).cwd = about
-        .as_deref()
-        .and_then(|about| within(about, &[1, 1]))
-        .and_then(folder);
 
     let mut calls =
         tx.prepare("SELECT idx, data FROM gen_metadata WHERE idx >= ?1 ORDER BY idx")?;
@@ -311,60 +305,73 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
     let mut rows = calls.query([seen - 1])?;
     while let Some(row) = rows.next()? {
         let idx: i64 = row.get(0)?;
-        let data: Option<Vec<u8>> = row.get(1)?;
+        let data = row.get_ref(1)?.as_bytes_or_null()?.unwrap_or(&[]);
         cursor.calls = idx + 1;
-        let data = data.unwrap_or_default();
-        let Some(usage) = within(&data, &[1, 4]) else {
-            continue;
-        };
-        let count = |field| number(usage, field).unwrap_or(0);
-        let tokens = Tokens {
-            input: count(2),
-            cache_read: count(5),
-            cache_write_5m: count(4),
-            cache_write_1h: 0,
-            output: count(3),
-            reasoning: count(9),
-        };
+        let mut chat = None;
+        let mut named = None;
+        for (n, value) in Fields(data) {
+            match (n, value) {
+                (1, Field::Bytes(bytes)) if chat.is_none() => chat = Some(bytes),
+                (2, Field::Bytes(mut steps)) if named.is_none() => named = varint(&mut steps),
+                (2, Field::Number(step)) if named.is_none() => named = Some(step),
+                _ => {}
+            }
+        }
+        let Some(chat) = chat else { continue };
+        let mut usage = None;
+        let mut model = None;
+        for (n, value) in Fields(chat) {
+            match (n, value) {
+                (4, Field::Bytes(bytes)) if usage.is_none() => usage = Some(bytes),
+                (19, Field::Bytes(bytes)) if model.is_none() => {
+                    model = std::str::from_utf8(bytes).ok().filter(|m| !m.is_empty());
+                }
+                _ => {}
+            }
+        }
+        let Some(usage) = usage else { continue };
+        let mut tokens = Tokens::default();
+        let mut message_id = None;
+        for (n, value) in Fields(usage) {
+            match (n, value) {
+                (2, Field::Number(v)) => tokens.input = v,
+                (3, Field::Number(v)) => tokens.output = v,
+                (4, Field::Number(v)) => tokens.cache_write_5m = v,
+                (5, Field::Number(v)) => tokens.cache_read = v,
+                (7, Field::Bytes(bytes)) if message_id.is_none() => {
+                    message_id = std::str::from_utf8(bytes).ok().filter(|id| !id.is_empty());
+                }
+                (9, Field::Number(v)) => tokens.reasoning = v,
+                _ => {}
+            }
+        }
         // Still running, or failed: it's read again, as said above, and not
         // skipped for having no model or time yet.
         if tokens == Tokens::default() {
             continue;
         }
-        let named = match field(&data, 2) {
-            Some(Field::Bytes(mut steps)) => varint(&mut steps),
-            Some(Field::Number(step)) => Some(step),
-            None => None,
-        };
         let at = match named.and_then(|named| i64::try_from(named).ok()) {
             Some(named) => step
-                .query_row([named], |row| row.get::<_, Option<Vec<u8>>>(0))
+                .query_row([named], |row| {
+                    Ok(row.get_ref(0)?.as_bytes_or_null()?.and_then(made))
+                })
                 .optional()?
-                .flatten()
-                .as_deref()
-                .and_then(made),
+                .flatten(),
             None => None,
         };
-        let model = within(&data, &[1, 19])
-            .and_then(|model| std::str::from_utf8(model).ok())
-            .filter(|model| !model.is_empty());
         let (Some(at), Some(model)) = (at, model) else {
             // Counted when first read, not each time it's read again.
             read.skipped += u64::from(idx >= seen);
             continue;
         };
-        let id = bytes(usage, 7)
-            .and_then(|id| std::str::from_utf8(id).ok())
-            .filter(|id| !id.is_empty())
-            .map_or_else(|| format!("{native}/{idx}"), str::to_owned);
+        let id = message_id.map_or_else(|| format!("{native}/{idx}"), str::to_owned);
         read.respond(Response {
             id,
             session: session.clone(),
             copy: false,
             at,
-            // Antigravity signs in to Google only. The Claude and GPT models
-            // it serves from the same plan weren't measured: they're
-            // `google`'s too, where they have no price.
+            // Antigravity signs in to Google only; non-Gemini models it serves
+            // are stored under `google` too and priced via `prices`'s fallback.
             provider: "google".to_owned(),
             model: model.to_owned(),
             prompt: tokens.input + tokens.cache_read + tokens.cache_write_5m,
@@ -397,22 +404,33 @@ fn transcript(file: &Path, cursor: &str) -> Result<Read> {
     let (Some(native), false) = (native, cursor.titled) else {
         return Ok(read);
     };
+    #[derive(Deserialize)]
+    struct Entry<'a> {
+        #[serde(rename = "type", borrow)]
+        kind: Option<Cow<'a, str>>,
+        #[serde(borrow)]
+        source: Option<Cow<'a, str>>,
+        #[serde(borrow)]
+        content: Option<Cow<'a, str>>,
+    }
     let session = INFO.session(native);
-    cursor.offset = super::lines(file, cursor.offset, |bytes| {
-        if cursor.titled {
-            return;
-        }
-        let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
+    cursor.offset = super::try_lines(file, cursor.offset, |bytes| {
+        let Ok(line) = serde_json::from_slice::<Entry<'_>>(bytes) else {
             read.skipped += 1;
-            return;
+            return Ok(ControlFlow::Continue(()));
         };
-        if line["type"] == "USER_INPUT" && line["source"] == "USER_EXPLICIT" {
-            let request = request(line["content"].as_str().unwrap_or_default());
+        if line.kind.as_deref() == Some("USER_INPUT")
+            && line.source.as_deref() == Some("USER_EXPLICIT")
+            && let Some(content) = line.content
+        {
+            let request = request(&content);
             if !request.is_empty() {
                 read.session(&session).title(Title::Prompt, &request);
                 cursor.titled = true;
+                return Ok(ControlFlow::Break(()));
             }
         }
+        Ok(ControlFlow::Continue(()))
     })?;
     read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
     Ok(read)
@@ -428,15 +446,18 @@ fn titles(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
     // either gives no session, which would have a title and no usage.
     // Whether Antigravity leaves such a row behind when it deletes a
     // conversation wasn't measured.
-    let has_database = |native: &str| {
-        let folder = file.parent().and_then(Path::parent);
-        folder.is_some_and(|folder| {
-            KEPT.iter().any(|kept| {
-                let database = format!("conversations/{native}.db");
-                folder.join(kept).join(database).is_file()
-            })
-        })
-    };
+    let known: HashSet<String> = file
+        .parent()
+        .and_then(Path::parent)
+        .into_iter()
+        .flat_map(|folder| KEPT.map(|kept| folder.join(kept).join("conversations")))
+        .flat_map(|dir| super::entries(&dir))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "db"))
+        .filter_map(|path| path.file_stem()?.to_str().map(str::to_owned))
+        .collect();
+    if known.is_empty() {
+        return Ok(read);
+    }
     // Every row is read at each read, over reading on from the latest
     // `last_modified_time` seen, which rested on three things not measured:
     // that a later title moves the time, that a row is committed at most
@@ -447,38 +468,36 @@ fn titles(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
     // reading on from the latest ran 21M more.
     let mut titled = db.prepare(
         "SELECT conversation_id, title, parent_conversation_id FROM conversation_summaries
-         WHERE step_count > 0 AND conversation_id IS NOT NULL",
+         WHERE step_count > 0 AND conversation_id IS NOT NULL
+           AND (trim(title, ' ' || char(9, 10, 13)) != '' OR parent_conversation_id != '')",
     )?;
     let mut rows = titled.query([])?;
     while let Some(row) = rows.next()? {
-        let (native, title, parent): (String, String, String) =
-            (row.get(0)?, row.get(1)?, row.get(2)?);
-        if (title.trim().is_empty() && parent.is_empty()) || !has_database(&native) {
+        let native = row.get_ref(0)?.as_str()?;
+        if !known.contains(native) {
             continue;
         }
-        let facts = read.session(&INFO.session(&native));
-        facts.title(Title::Generated, &title);
+        let title = row.get_ref(1)?.as_str()?;
+        let parent = row.get_ref(2)?.as_str()?;
+        let facts = read.session(&INFO.session(native));
+        facts.title(Title::Generated, title);
         if !parent.is_empty() {
-            facts.parent = Some(INFO.session(&parent));
+            facts.parent = Some(INFO.session(parent));
         }
     }
     Ok(read)
 }
 
-/// When a step was made, from its `metadata`.
 fn made(metadata: &[u8]) -> Option<i64> {
     time(bytes(metadata, 1)?)
 }
 
-/// A protobuf timestamp, seconds (#1) and nanoseconds (#2), in Unix
-/// milliseconds.
 fn time(stamp: &[u8]) -> Option<i64> {
     let seconds = i64::try_from(number(stamp, 1)?).ok()?;
     let nanos = i64::try_from(number(stamp, 2).unwrap_or(0)).ok()?;
     seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000)
 }
 
-/// The folder a `file://` address names, its `%20` a space again.
 fn folder(address: &[u8]) -> Option<String> {
     let mut path = Vec::new();
     let mut rest = address.strip_prefix(b"file://")?.iter();
@@ -494,20 +513,13 @@ fn folder(address: &[u8]) -> Option<String> {
     String::from_utf8(path).ok().filter(|path| !path.is_empty())
 }
 
-/// A protobuf field's value: a number, or bytes that are text, a message
-/// within, or numbers packed together.
 enum Field<'a> {
     Number(u64),
     Bytes(&'a [u8]),
 }
 
-/// A protobuf message's fields in the order written, each with its number,
-/// read without its schema. It ends at the first thing that isn't a field,
-/// so bytes that aren't a message give few fields or none.
-///
-/// Read by hand, over the `prost` crate: with no schema to generate from,
-/// `prost` would have every message written out as a struct, for the ten
-/// fields read here.
+/// Hand-parsed over `prost`: with no schema to generate from, `prost` would
+/// still require handwritten structs for the ~10 fields read here.
 struct Fields<'a>(&'a [u8]);
 
 impl<'a> Iterator for Fields<'a> {
@@ -515,6 +527,10 @@ impl<'a> Iterator for Fields<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = varint(&mut self.0)?;
+        let number = key >> 3;
+        if number == 0 {
+            return None;
+        }
         let value = match key & 7 {
             0 => Field::Number(varint(&mut self.0)?),
             1 => Field::Number(u64::from_le_bytes(take(&mut self.0, 8)?.try_into().ok()?)),
@@ -525,12 +541,10 @@ impl<'a> Iterator for Fields<'a> {
             5 => Field::Number(u32::from_le_bytes(take(&mut self.0, 4)?.try_into().ok()?).into()),
             _ => return None,
         };
-        Some((key >> 3, value))
+        Some((number, value))
     }
 }
 
-/// The number that starts `bytes`, seven bits to a byte, low bits first, and
-/// `bytes` moved past it.
 fn varint(bytes: &mut &[u8]) -> Option<u64> {
     let mut number = 0;
     for (n, &byte) in bytes.iter().enumerate().take(10) {
@@ -543,14 +557,12 @@ fn varint(bytes: &mut &[u8]) -> Option<u64> {
     None
 }
 
-/// The first `length` of `bytes`, and `bytes` moved past them.
 fn take<'a>(bytes: &mut &'a [u8], length: usize) -> Option<&'a [u8]> {
     let (taken, rest) = bytes.split_at_checked(length)?;
     *bytes = rest;
     Some(taken)
 }
 
-/// The first field numbered `number` in `message`.
 fn field(message: &[u8], number: u64) -> Option<Field<'_>> {
     Fields(message).find_map(|(n, value)| (n == number).then_some(value))
 }
@@ -569,8 +581,6 @@ fn bytes(message: &[u8], field_number: u64) -> Option<&[u8]> {
     }
 }
 
-/// The bytes at `path` in `message`: field `path[1]` of the message in
-/// field `path[0]`, and so on.
 fn within<'a>(message: &'a [u8], path: &[u64]) -> Option<&'a [u8]> {
     path.iter()
         .try_fold(message, |message, &number| bytes(message, number))
@@ -959,6 +969,7 @@ mod tests {
             .count(),
             0
         );
+        assert_eq!(Fields(&[0x00, 0x01]).count(), 0);
         assert_eq!(Fields(&[0x0b, 0x01]).count(), 0);
         assert_eq!(time(&[n(1, 2), n(2, 999_999_999)].concat()), Some(2_999));
         assert_eq!(
@@ -989,9 +1000,7 @@ mod tests {
             "id_token_email": "me@example.com",
             "writer_id": "made-up-writer",
         });
-        let credential = signed_in(wrapped(&kept).as_bytes(), home.path())
-            .unwrap()
-            .unwrap();
+        let credential = signed_in(wrapped(&kept).as_bytes()).unwrap().unwrap();
         assert_eq!(
             (
                 credential.provider,
@@ -1013,34 +1022,19 @@ mod tests {
         );
         let refresh = credential.refresh.as_ref().unwrap();
         assert_eq!(refresh.token.expose(), "made-up-refresh");
-        assert_eq!(refresh.binaries.first(), Some(&binary));
 
         // Another way of signing in isn't read, nor a sign-in with no token.
         let mut other = kept.clone();
         other["auth_method"] = json!("enterprise");
-        assert!(
-            signed_in(wrapped(&other).as_bytes(), home.path())
-                .unwrap()
-                .is_none()
-        );
+        assert!(signed_in(wrapped(&other).as_bytes()).unwrap().is_none());
         let mut out = kept.clone();
         out["token"]["access_token"] = json!("");
-        assert!(
-            signed_in(wrapped(&out).as_bytes(), home.path())
-                .unwrap()
-                .is_none()
-        );
+        assert!(signed_in(wrapped(&out).as_bytes()).unwrap().is_none());
 
         // A value that doesn't read isn't taken for signed out.
-        assert!(signed_in(kept.to_string().as_bytes(), home.path()).is_err());
-        assert!(signed_in(format!("{WRAPPED}not base64").as_bytes(), home.path()).is_err());
-        assert!(
-            signed_in(
-                format!("{WRAPPED}{}", STANDARD.encode("not JSON")).as_bytes(),
-                home.path()
-            )
-            .is_err()
-        );
+        assert!(signed_in(kept.to_string().as_bytes()).is_err());
+        assert!(signed_in(format!("{WRAPPED}not base64").as_bytes()).is_err());
+        assert!(signed_in(format!("{WRAPPED}{}", STANDARD.encode("not JSON")).as_bytes()).is_err());
 
         // The plain JSON fallback file in `~/.gemini` is read when Keychain
         // holds no item, and fails if half written.
@@ -1050,10 +1044,9 @@ mod tests {
         let logins = Antigravity.logins(&folder, home.path()).unwrap();
         let from_file = logins[0].credential.as_ref().unwrap();
         assert_eq!(from_file.secret.expose(), "made-up-token");
-        assert_eq!(
-            from_file.refresh.as_ref().unwrap().token.expose(),
-            "made-up-refresh"
-        );
+        let file_refresh = from_file.refresh.as_ref().unwrap();
+        assert_eq!(file_refresh.token.expose(), "made-up-refresh");
+        assert_eq!(file_refresh.binaries.first(), Some(&binary));
         std::fs::write(folder.join(FALLBACK), "{").unwrap();
         assert!(Antigravity.logins(&folder, home.path()).is_err());
     }

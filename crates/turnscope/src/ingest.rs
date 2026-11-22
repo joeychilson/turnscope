@@ -1,10 +1,11 @@
 //! Reading what's new in the agents' history into the database, with each
 //! response's cost and account. How history is kept: docs/architecture.md#data.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
@@ -46,12 +47,46 @@ ON CONFLICT (id) DO UPDATE SET
     title_rank = max(title_rank, excluded.title_rank),
     parent = coalesce(parent, excluded.parent)";
 
-const RESPONSE_COLUMNS: &str = "session, copy, at, provider, model, input, cache_read,
-    cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches, priority, recorded, id";
+macro_rules! response_columns {
+    () => {
+        "session, copy, at, provider, model, input, cache_read,
+    cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches, priority, recorded, id"
+    };
+}
+
+const SELECT_RESPONSE: &str = concat!(
+    "SELECT ",
+    response_columns!(),
+    " FROM response WHERE agent = ?1 AND id = ?2"
+);
+const INSERT_RESPONSE_NEW: &str = concat!(
+    "INSERT INTO response (agent, folder, file, cost, account, ",
+    response_columns!(),
+    ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+     ON CONFLICT (agent, id) DO NOTHING"
+);
+const REPLACE_RESPONSE: &str = concat!(
+    "INSERT OR REPLACE INTO response (agent, folder, file, cost, account, ",
+    response_columns!(),
+    ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"
+);
+const SELECT_REPRICED: &str = concat!(
+    "SELECT ",
+    response_columns!(),
+    ", agent FROM response
+     WHERE EXISTS (
+         SELECT 1 FROM repriced
+         WHERE (repriced.provider = response.provider AND repriced.model = response.model)
+            OR (response.cost IS NULL AND (
+                repriced.model = response.model
+                OR response.model LIKE '%/' || repriced.model
+            ))
+     )"
+);
 
 struct Due {
     agent: &'static dyn Agent,
-    folder: PathBuf,
+    folder: Arc<str>,
     path: PathBuf,
     cursor: String,
     stat: Stat,
@@ -89,12 +124,11 @@ impl Stat {
     }
 }
 
-/// A file as its last read left it.
+/// A file as its last read left it (cursor and agent are fetched by `id`
+/// only for changed or moved files).
 struct Known {
     id: i64,
-    agent: String,
     stat: Stat,
-    cursor: String,
     /// The `READERS` it was last read with.
     readers: i64,
 }
@@ -152,77 +186,98 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     // By the path's bytes: a `PathBuf` hashes component by component. With
     // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
     let mut known: HashMap<OsString, Known> = db
-        .prepare("SELECT path, agent, size, modified, inode, cursor, id, readers FROM file")?
+        .prepare_cached("SELECT path, size, modified, inode, id, readers FROM file")?
         .query_map([], |row| {
             let known = Known {
-                id: row.get(6)?,
-                agent: row.get(1)?,
+                id: row.get(4)?,
                 stat: Stat {
-                    size: row.get(2)?,
-                    modified: row.get(3)?,
-                    inode: row.get(4)?,
+                    size: row.get(1)?,
+                    modified: row.get(2)?,
+                    inode: row.get(3)?,
                 },
-                cursor: row.get(5)?,
-                readers: row.get(7)?,
+                readers: row.get(5)?,
             };
             Ok((OsString::from(row.get::<_, String>(0)?), known))
         })?
         .collect::<rusqlite::Result<_>>()?;
 
-    let mut found = Vec::new();
+    let mut due = Vec::new();
+    let mut unmatched = Vec::new();
+    let mut renames: Vec<(i64, String)> = Vec::new();
+    let mut older = Vec::new();
+    let load_cursor = |id: i64| -> Result<String> {
+        Ok(db
+            .prepare_cached("SELECT cursor FROM file WHERE id = ?1")?
+            .query_row([id], |row| row.get(0))?)
+    };
+
     for &agent in agents::ALL {
         for folder in agent.folders(home) {
+            let folder_key: Arc<str> = Arc::from(folder.to_string_lossy().as_ref());
             for path in agent.files(&folder) {
-                if let Some(stat) = Stat::of(&path) {
-                    found.push((agent, folder.clone(), path, stat));
+                let Some(stat) = Stat::of(&path) else {
+                    continue;
+                };
+                if let Some(was) = known.remove(path.as_os_str()) {
+                    let cursor = if was.readers < READERS {
+                        // Its reader is recorded when the read ends, over when what it
+                        // made is taken out, so a file taken out and then not read, as
+                        // when the process ends between the two, never looks read. The
+                        // cost: one that can't be read yet is taken out again at each
+                        // catch-up, 23 to 25 ms among 120,000 responses (2026-11-14).
+                        older.push(was.id);
+                        String::new()
+                    } else if was.stat == stat {
+                        continue;
+                    } else if was.stat.inode == stat.inode && stat.size >= was.stat.size {
+                        load_cursor(was.id)?
+                    } else {
+                        // A file replaced or cut short is read from the start.
+                        String::new()
+                    };
+                    due.push(Due {
+                        agent,
+                        folder: Arc::clone(&folder_key),
+                        path,
+                        cursor,
+                        stat,
+                    });
+                } else {
+                    unmatched.push((agent, Arc::clone(&folder_key), path, stat));
                 }
             }
         }
     }
+
     // A file at a path that's gone is found again by its inode, so it's read
     // on, not twice: an agent moves a file it archives on the same volume,
     // where it keeps its inode, and APFS numbers new files in order rather
-    // than reusing a number.
-    let listed: HashSet<&OsStr> = found.iter().map(|(.., path, _)| path.as_os_str()).collect();
-    let mut moved: HashMap<i64, (OsString, Known)> = known
-        .extract_if(|path, _| !listed.contains(path.as_os_str()))
-        .map(|(path, was)| (was.stat.inode, (path, was)))
-        .collect();
-
-    let mut due = Vec::new();
-    let mut renames = Vec::new();
-    let mut older = Vec::new();
-    for (agent, folder, path, stat) in found {
-        let was = match known.remove(path.as_os_str()) {
-            Some(was) => Some(was),
-            None => match moved.remove(&stat.inode) {
-                Some((from, was)) if was.agent == agent.info().id => {
-                    renames.push((
-                        from.to_string_lossy().into_owned(),
-                        path.to_string_lossy().into_owned(),
-                    ));
-                    Some(was)
+    // than reusing a number. Anything still in `known` is a gone path.
+    let mut moved: HashMap<i64, Known> = if !unmatched.is_empty() && !known.is_empty() {
+        known
+            .into_values()
+            .map(|was| (was.stat.inode, was))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    for (agent, folder, path, stat) in unmatched {
+        let mut cursor = String::new();
+        if let Some(was) = moved.remove(&stat.inode) {
+            let (was_agent, was_cursor): (String, String) = db
+                .prepare_cached("SELECT agent, cursor FROM file WHERE id = ?1")?
+                .query_row([was.id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            if was_agent == agent.info().id {
+                renames.push((was.id, path.to_string_lossy().into_owned()));
+                if was.readers < READERS {
+                    older.push(was.id);
+                } else if was.stat == stat {
+                    continue;
+                } else if stat.size >= was.stat.size {
+                    cursor = was_cursor;
                 }
-                _ => None,
-            },
-        };
-        let cursor = match &was {
-            // Its reader is recorded when the read ends, over when what it
-            // made is taken out, so a file taken out and then not read, as
-            // when the process ends between the two, never looks read. The
-            // cost: one that can't be read yet is taken out again at each
-            // catch-up, 23 to 25 ms among 120,000 responses (2026-11-14).
-            Some(was) if was.readers < READERS => {
-                older.push(was.id);
-                String::new()
             }
-            Some(was) if was.stat == stat => continue,
-            Some(was) if was.stat.inode == stat.inode && stat.size >= was.stat.size => {
-                was.cursor.clone()
-            }
-            // A file replaced or cut short is read from the start.
-            Some(_) | None => String::new(),
-        };
+        }
         due.push(Due {
             agent,
             folder,
@@ -231,12 +286,13 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
             stat,
         });
     }
+
     if !renames.is_empty() || !older.is_empty() {
         let tx = crate::db::write(db)?;
         if !renames.is_empty() {
-            let mut rename = tx.prepare("UPDATE file SET path = ?1 WHERE path = ?2")?;
-            for (from, to) in &renames {
-                rename.execute(params![to, from])?;
+            let mut rename = tx.prepare_cached("UPDATE file SET path = ?1 WHERE id = ?2")?;
+            for (id, to) in &renames {
+                rename.execute(params![to, id])?;
             }
         }
         if !older.is_empty() {
@@ -273,76 +329,80 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     }
 
     let mut wrote = false;
-    // Files are read in parallel a share at a time, so memory stays bounded,
-    // while the share before is written.
-    std::thread::scope(|scope| -> Result<()> {
-        let (send, reads) = std::sync::mpsc::sync_channel(1);
-        let shares = due.chunks(256);
-        // Moved in, so the channel closes when reading ends.
-        scope.spawn(move || {
-            for share in shares {
-                let read: Vec<Result<Read>> = share
-                    .par_iter()
-                    .map(|due| due.agent.read(&due.path, &due.cursor))
-                    .collect();
-                if send.send((share, read)).is_err() {
-                    return;
+    let mut projects = HashMap::new();
+    if !due.is_empty() {
+        // Files are read in parallel a share at a time, so memory stays bounded,
+        // while the share before is written.
+        std::thread::scope(|scope| -> Result<()> {
+            let (send, reads) = std::sync::mpsc::sync_channel(1);
+            let shares = due.chunks(256);
+            // Moved in, so the channel closes when reading ends.
+            scope.spawn(move || {
+                for share in shares {
+                    let read: Vec<Result<Read>> = share
+                        .par_iter()
+                        .map(|due| due.agent.read(&due.path, &due.cursor))
+                        .collect();
+                    if send.send((share, read)).is_err() {
+                        return;
+                    }
                 }
-            }
-        });
-        for (share, read) in reads {
-            let mut files = share.iter().zip(read).peekable();
-            while files.peek().is_some() {
-                let tx = crate::db::write(db)?;
-                let derived = Derived::load(&tx)?;
-                let began = Instant::now();
-                let mut in_band: BTreeMap<(String, String, Option<String>), agents::InBand> =
-                    BTreeMap::new();
-                while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
-                    match read {
-                        Ok(mut read) => {
-                            let folder = due.folder.to_string_lossy().into_owned();
-                            for snapshot in std::mem::take(&mut read.limits) {
-                                let scope = snapshot
-                                    .readings
-                                    .first()
-                                    .and_then(|reading| reading.scope.clone());
-                                let key = (folder.clone(), snapshot.provider.clone(), scope);
-                                match in_band.entry(key) {
-                                    std::collections::btree_map::Entry::Occupied(mut entry) => {
-                                        if snapshot.at >= entry.get().at {
-                                            entry.insert(snapshot);
+            });
+            for (share, read) in reads {
+                let mut files = share.iter().zip(read).peekable();
+                while files.peek().is_some() {
+                    let tx = crate::db::write(db)?;
+                    let derived = Derived::load(&tx)?;
+                    let began = Instant::now();
+                    let mut in_band: BTreeMap<(Arc<str>, String, Option<String>), agents::InBand> =
+                        BTreeMap::new();
+                    let mut took = false;
+                    while let Some((due, read)) = files.next_if(|_| !took || began.elapsed() < HOLD)
+                    {
+                        took = true;
+                        match read {
+                            Ok(mut read) => {
+                                if !read.limits.is_empty() {
+                                    for snapshot in std::mem::take(&mut read.limits) {
+                                        let key = (
+                                            Arc::clone(&due.folder),
+                                            snapshot.provider.clone(),
+                                            snapshot.scope().map(str::to_owned),
+                                        );
+                                        if !matches!(in_band.get(&key), Some(cur) if cur.at > snapshot.at)
+                                        {
+                                            in_band.insert(key, snapshot);
                                         }
                                     }
-                                    std::collections::btree_map::Entry::Vacant(entry) => {
-                                        entry.insert(snapshot);
-                                    }
                                 }
+                                write(&tx, due, read, home, &derived, &mut projects)?;
+                                wrote = true;
                             }
-                            write(&tx, due, read, home, &derived)?;
-                            wrote = true;
-                        }
-                        Err(error) => failed(&tx, due, &error)?,
-                    }
-                }
-                if !in_band.is_empty() {
-                    let now = crate::now();
-                    for ((folder, provider, _), snapshot) in in_band {
-                        if let Some(account) = derived.account(&folder, &provider, snapshot.at) {
-                            crate::limits::record_in_band(&tx, &account, &snapshot, now)?;
+                            Err(error) => failed(&tx, due, &error)?,
                         }
                     }
-                }
-                tx.commit()?;
-                if files.peek().is_some() {
-                    std::thread::sleep(PAUSE);
+                    if !in_band.is_empty() {
+                        let now = crate::now();
+                        for ((folder, provider, _), snapshot) in in_band {
+                            if let Some(account) = derived.account(&folder, &provider, snapshot.at)
+                            {
+                                crate::limits::record_in_band(&tx, account, &snapshot, now)?;
+                            }
+                        }
+                    }
+                    tx.commit()?;
+                    if files.peek().is_some() {
+                        std::thread::sleep(PAUSE);
+                    }
                 }
             }
-        }
-        Ok(())
-    })?;
-    // Statistics for the query planner, where tables changed enough.
-    db.execute_batch("PRAGMA optimize")?;
+            Ok(())
+        })?;
+    }
+    if wrote {
+        // Statistics for the query planner, where tables changed enough.
+        db.execute_batch("PRAGMA optimize")?;
+    }
     // `history_at` is when the first read finished. Only whether it has is
     // shown, so it's written once: a catch-up after it writes nothing to say
     // it ran. `readers` says, after `READERS` was raised, that all was read
@@ -350,12 +410,10 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     // no word that it reads all (`waits`).
     if first || readers != READERS {
         let tx = crate::db::write(db)?;
-        if first {
-            tx.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
-        }
-        if readers != READERS {
-            tx.execute("UPDATE state SET readers = ?1", [READERS])?;
-        }
+        tx.execute(
+            "UPDATE state SET history_at = coalesce(history_at, ?1), readers = ?2",
+            params![crate::now(), READERS],
+        )?;
         tx.commit()?;
     }
     Ok(wrote)
@@ -364,54 +422,70 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
 /// A file that can't be read now is tried again next time, from where it
 /// was: its row keeps its cursor and what it was, and says why for doctor.
 fn failed(tx: &Transaction, due: &Due, error: &Error) -> Result<()> {
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO file (path, agent, size, modified, inode, cursor, failed, readers)
          VALUES (?1, ?2, -1, 0, ?3, '', ?4, ?5)
          ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
-        params![
-            due.path.to_string_lossy(),
-            due.agent.info().id,
-            due.stat.inode,
-            error.to_string(),
-            READERS,
-        ],
-    )?;
+    )?
+    .execute(params![
+        due.path.to_string_lossy(),
+        due.agent.info().id,
+        due.stat.inode,
+        error.to_string(),
+        READERS,
+    ])?;
     Ok(())
 }
 
-fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived) -> Result<()> {
+fn write(
+    tx: &Transaction,
+    due: &Due,
+    read: Read,
+    home: &Path,
+    derived: &Derived,
+    projects: &mut HashMap<String, String>,
+) -> Result<()> {
     let agent = due.agent.info().id;
-    let folder = due.folder.to_string_lossy();
-    let file: i64 = tx.query_row(
-        "INSERT INTO file (path, agent, size, modified, inode, cursor, skipped, readers)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9)
-         ON CONFLICT (path) DO UPDATE SET size = excluded.size, modified = excluded.modified,
-             inode = excluded.inode, cursor = excluded.cursor, failed = NULL,
-             skipped = iif(?8, excluded.skipped, skipped + excluded.skipped),
-             readers = excluded.readers
-         RETURNING id",
-        params![
-            due.path.to_string_lossy(),
-            agent,
-            due.stat.size,
-            due.stat.modified,
-            due.stat.inode,
-            read.cursor,
-            read.skipped as i64,
-            due.cursor.is_empty(),
-            READERS,
-        ],
-        |row| row.get(0),
-    )?;
+    let folder = due.folder.as_ref();
+    let file: i64 = tx
+        .prepare_cached(
+            "INSERT INTO file (path, agent, size, modified, inode, cursor, skipped, readers)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9)
+             ON CONFLICT (path) DO UPDATE SET size = excluded.size, modified = excluded.modified,
+                 inode = excluded.inode, cursor = excluded.cursor, failed = NULL,
+                 skipped = iif(?8, excluded.skipped, skipped + excluded.skipped),
+                 readers = excluded.readers
+             RETURNING id",
+        )?
+        .query_row(
+            params![
+                due.path.to_string_lossy(),
+                agent,
+                due.stat.size,
+                due.stat.modified,
+                due.stat.inode,
+                read.cursor,
+                read.skipped as i64,
+                due.cursor.is_empty(),
+                READERS,
+            ],
+            |row| row.get(0),
+        )?;
 
     let mut session = tx.prepare_cached(SESSION)?;
     let mut holds =
         tx.prepare_cached("INSERT OR IGNORE INTO session_file (session, file) VALUES (?1, ?2)")?;
     for (id, facts) in &read.sessions {
+        let project_name = facts.cwd.as_deref().and_then(|cwd| {
+            if !projects.contains_key(cwd) {
+                projects.insert(cwd.to_owned(), project(cwd, home));
+            }
+            projects.get(cwd).map(String::as_str)
+        });
         session.execute(params![
             id,
             agent,
-            facts.cwd.as_deref().map(|cwd| project(cwd, home)),
+            project_name,
             facts.title.as_ref().map(|(_, title)| title),
             facts.title.as_ref().map_or(-1, |(rank, _)| *rank as i64),
             facts.parent,
@@ -419,47 +493,67 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
         holds.execute(params![id, file])?;
     }
 
-    let mut known = tx.prepare_cached(&format!(
-        "SELECT {RESPONSE_COLUMNS} FROM response WHERE agent = ?1 AND id = ?2"
-    ))?;
-    let mut store = tx.prepare_cached(&format!(
-        "INSERT OR REPLACE INTO response (agent, folder, file, cost, account, {RESPONSE_COLUMNS})
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"
-    ))?;
+    let mut insert_new = tx.prepare_cached(INSERT_RESPONSE_NEW)?;
+    let mut known = tx.prepare_cached(SELECT_RESPONSE)?;
+    let mut replace = tx.prepare_cached(REPLACE_RESPONSE)?;
     for (_, mut response) in read.responses {
-        if let Some(stored) = known
-            .query_row(params![agent, response.id], stored)
-            .optional()?
-        {
-            response.merge(stored);
-        }
-        let (cost, account) = derived.of(agent, &folder, &response);
-        let tokens = &response.tokens;
-        store.execute(params![
+        let (cost, account) = derived.of(agent, folder, &response);
+        let inserted = execute_response(
+            &mut insert_new,
             agent,
             folder,
             file,
             cost,
             account,
-            response.session,
-            response.copy,
-            response.at,
-            response.provider,
-            response.model,
-            tokens.input as i64,
-            tokens.cache_read as i64,
-            tokens.cache_write_5m as i64,
-            tokens.cache_write_1h as i64,
-            tokens.output as i64,
-            tokens.reasoning as i64,
-            response.prompt as i64,
-            response.web_searches as i64,
-            response.priority,
-            response.cost,
-            response.id,
-        ])?;
+            &response,
+        )?;
+        if inserted == 0 {
+            if let Some(stored) = known
+                .query_row(params![agent, response.id], stored)
+                .optional()?
+            {
+                response.merge(stored);
+            }
+            let (cost, account) = derived.of(agent, folder, &response);
+            execute_response(&mut replace, agent, folder, file, cost, account, &response)?;
+        }
     }
     Ok(())
+}
+
+fn execute_response(
+    stmt: &mut rusqlite::CachedStatement<'_>,
+    agent: &str,
+    folder: &str,
+    file: i64,
+    cost: Option<f64>,
+    account: Option<&str>,
+    response: &Response,
+) -> rusqlite::Result<usize> {
+    let tokens = &response.tokens;
+    stmt.execute(params![
+        agent,
+        folder,
+        file,
+        cost,
+        account,
+        response.session,
+        response.copy,
+        response.at,
+        response.provider,
+        response.model,
+        tokens.input as i64,
+        tokens.cache_read as i64,
+        tokens.cache_write_5m as i64,
+        tokens.cache_write_1h as i64,
+        tokens.output as i64,
+        tokens.reasoning as i64,
+        response.prompt as i64,
+        response.web_searches as i64,
+        response.priority,
+        response.cost,
+        response.id,
+    ])
 }
 
 /// A response as stored, its columns in `RESPONSE_COLUMNS`' order.
@@ -493,21 +587,23 @@ fn stored(row: &Row) -> rusqlite::Result<Response> {
 /// second writes once.
 struct Derived {
     prices: Prices,
-    /// The accounts each agent folder held, by folder and provider: one row
+    /// The accounts each agent folder held, by folder then provider: one row
     /// a sign-in, for each folder, of which there are tens.
-    signed: HashMap<(String, String), History<Option<String>>>,
+    signed: HashMap<String, HashMap<String, History<Option<String>>>>,
 }
 
 impl Derived {
     fn load(db: &Connection) -> Result<Derived> {
-        let mut signed = HashMap::<_, History<_>>::new();
+        let mut signed: HashMap<String, HashMap<String, History<Option<String>>>> = HashMap::new();
         let mut rows = db.prepare_cached(
             "SELECT folder, provider, since, account FROM sign_in ORDER BY since",
         )?;
         let mut rows = rows.query([])?;
         while let Some(row) = rows.next()? {
             signed
-                .entry((row.get(0)?, row.get(1)?))
+                .entry(row.get(0)?)
+                .or_default()
+                .entry(row.get(1)?)
                 .or_default()
                 .push((row.get(2)?, row.get(3)?));
         }
@@ -518,15 +614,16 @@ impl Derived {
     }
 
     /// The account `folder` held for `provider` at `at`, if any.
-    fn account(&self, folder: &str, provider: &str, at: i64) -> Option<String> {
+    fn account(&self, folder: &str, provider: &str, at: i64) -> Option<&str> {
         self.signed
-            .get(&(folder.to_owned(), provider.to_owned()))
+            .get(folder)?
+            .get(provider)
             .and_then(|held| in_force(held, at))
-            .and_then(|account| account.clone())
+            .and_then(|account| account.as_deref())
     }
 
     /// The cost of `response`, and the account it drew on.
-    fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<String>) {
+    fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<&str>) {
         let account = self.account(folder, &response.provider, response.at);
         (self.prices.cost(agent, response), account)
     }
@@ -561,17 +658,7 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     }
     drop(add);
     let rows: Vec<(String, Response)> = tx
-        .prepare(&format!(
-            "SELECT {RESPONSE_COLUMNS}, agent FROM response
-             WHERE EXISTS (
-                 SELECT 1 FROM repriced
-                 WHERE (repriced.provider = response.provider AND repriced.model = response.model)
-                    OR (response.cost IS NULL AND (
-                        repriced.model = response.model
-                        OR response.model LIKE '%/' || repriced.model
-                    ))
-             )"
-        ))?
+        .prepare(SELECT_REPRICED)?
         .query_map([], |row| Ok((row.get(16)?, stored(row)?)))?
         .collect::<rusqlite::Result<_>>()?;
     tx.execute("DROP TABLE repriced", [])?;
@@ -581,7 +668,9 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     let prices = Prices::load(tx)?;
     let mut update = tx.prepare("UPDATE response SET cost = ?3 WHERE agent = ?1 AND id = ?2")?;
     for (agent, response) in &rows {
-        update.execute(params![agent, response.id, prices.cost(agent, response)])?;
+        if let Some(cost) = prices.cost(agent, response) {
+            update.execute(params![agent, response.id, cost])?;
+        }
     }
     Ok(())
 }

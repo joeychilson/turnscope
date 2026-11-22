@@ -29,12 +29,14 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
     let path = login_path();
     for (n, folder) in agent.folders(home).iter().enumerate() {
         let at = (n > 0).then_some(folder.as_path());
-        let by_hand = format!(
-            "{}{} {} '{exe}' mcp",
-            pointed(info, at, home),
-            info.command,
-            info.mcp_add.join(" ")
-        );
+        let by_hand = || {
+            format!(
+                "{}{} {} '{exe}' mcp",
+                pointed(info, at, home),
+                info.command,
+                info.mcp_add.join(" ")
+            )
+        };
         let add = |exe: &str| {
             let args = [info.mcp_add, &[exe, "mcp"]].concat();
             run(info, &args, &path, at, home)
@@ -47,13 +49,16 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
         let failed = match add(&exe) {
             Ok(output) if output.status.success() => continue,
             Ok(output) => format!(
-                "{} couldn't add the server: {}. To add it by hand, run: {by_hand}",
+                "{} couldn't add the server: {}. To add it by hand, run: {}",
                 info.name,
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&output.stderr).trim(),
+                by_hand()
             ),
             Err(error) => format!(
-                "couldn't run {}: {error}. Is {} installed? To add the server by hand, run: {by_hand}",
-                info.command, info.name
+                "couldn't run {}: {error}. Is {} installed? To add the server by hand, run: {}",
+                info.command,
+                info.name,
+                by_hand()
             ),
         };
         if let (Some(_), Some(earlier)) = (info.mcp_remove, earlier) {
@@ -167,18 +172,18 @@ fn pointed(info: &Info, at: Option<&Path>, home: &Path) -> String {
 pub fn connection(agent: &dyn Agent, home: &Path, engine: &Path) -> Connection {
     let real = |path: &Path| std::fs::canonicalize(path).ok();
     let me = real(engine);
-    let mine = |command: &String| me.is_some() && real(Path::new(command)) == me;
-    let commands: Vec<Option<String>> = agent
+    let matches: Vec<Option<bool>> = agent
         .folders(home)
         .iter()
-        .map(|folder| agent.mcp_command(folder, home))
+        .map(|folder| {
+            agent
+                .mcp_command(folder, home)
+                .map(|cmd| me.is_some() && real(Path::new(&cmd)) == me)
+        })
         .collect();
-    if commands
-        .iter()
-        .all(|command| command.as_ref().is_some_and(mine))
-    {
+    if matches.iter().all(|&m| m == Some(true)) {
         Connection::Connected
-    } else if commands.iter().flatten().any(|command| !mine(command)) {
+    } else if matches.contains(&Some(false)) {
         Connection::Outdated
     } else {
         Connection::Available
@@ -198,9 +203,12 @@ fn login_path() -> Option<String> {
     let mut command = Command::new(shell);
     command.args(["-ilc", "printf '__path__=%s' \"$PATH\""]);
     let output = output_within(&mut command, Duration::from_secs(10)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
     let said = String::from_utf8_lossy(&output.stdout);
     let path = said.rsplit_once("__path__=")?.1.trim();
-    (output.status.success() && !path.is_empty()).then(|| path.to_owned())
+    (!path.is_empty()).then(|| path.to_owned())
 }
 
 #[cfg(test)]

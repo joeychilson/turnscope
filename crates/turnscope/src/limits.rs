@@ -1,5 +1,4 @@
-//! Reading accounts' limits: every login the agents hold, grouped by the
-//! account it's to, each account asked of its provider once.
+//! Reading accounts' limits from providers and in-band agent signals.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -11,64 +10,36 @@ use crate::agents::{self, Agent, Credential};
 use crate::providers::{self, Kind, Limits, Problem, Provider, Reading};
 use crate::{Result, now};
 
-/// How long an active account's limits stand before any process reads them
-/// again, and how often login discovery runs to spot sign-ins and sign-outs.
+/// Active polling and sign-in discovery cadence.
 pub const DUE: i64 = 5 * crate::time::MINUTE;
 
-/// How long an idle account's limits stand before its provider is asked
-/// again: 25 minutes, 5 minutes before `status::STALE` (30 minutes), so
-/// healthy idle accounts stay live with 5x fewer API requests.
-pub const IDLE_DUE: i64 = 25 * crate::time::MINUTE;
-
-/// How recently a response must have drawn on an account for it to count as
-/// active when scheduling limit reads.
+// 25 min — 5 min before `status::STALE` (30 min), keeping healthy idle accounts
+// live with 5x fewer API requests.
+const IDLE_DUE: i64 = 25 * crate::time::MINUTE;
 const ACTIVE_WINDOW: i64 = 15 * crate::time::MINUTE;
-
-/// How recently an in-band reading suppresses the active 5-minute API poll
-/// while a full poll has still run within [`IDLE_DUE`].
 const IN_BAND_FRESH: i64 = 2 * crate::time::MINUTE;
-
-/// Short concurrency claim window when a specific account becomes due between
-/// 5-minute discovery ticks (such as after a window reset or resumed work).
 const CLAIM_GAP: i64 = 15 * 1000;
-
-/// Delay past a window's reset time before polling for the fresh counter,
-/// giving the provider's backend a moment to roll the window over.
+// Brief grace past window reset so the provider's backend has rolled over.
 const RESET_GRACE: i64 = 5 * 1000;
 
-/// The longest an account waits between reads while its provider keeps
-/// failing (`backoff`).
+/// Longest wait between reads while a provider keeps failing.
 pub const BACKED_OFF: i64 = 30 * crate::time::MINUTE;
 
-/// How long an account waits for its next read after `reads` reads in a
-/// row found its provider busy or not understood: [`DUE`], doubled with
-/// each read after the first, up to [`BACKED_OFF`], and as long as the
-/// provider asked, up to that too. A read that works ends it.
-///
-/// Only a provider that answered is backed off. With no answer, as when the
-/// Mac is offline, the next read is in five minutes: backed off too, limits
-/// stayed unread for up to half an hour after the Mac was back online. With
-/// a stand-in provider out of reach for 36 minutes, the first read that
-/// worked was at minute 65 (measured 2026-11-18). The cost: a provider
-/// that takes the read's 15 s without answering is asked every five
-/// minutes, as before.
-///
-/// Chosen over asking again in five minutes whatever the answer, as before:
-/// a provider down, or answering 429, was asked every five minutes for as
-/// long as it lasted. At most 30 minutes, so limits are back within half an
-/// hour of the provider, and a `Retry-After` beyond that is cut to it, over
-/// leaving limits unread for hours on one header. A refused login isn't
-/// backed off: signing in again in the agent gives a new login, which the
-/// next read, in five minutes, shows. Nor is a read of some of an API-key
-/// account's keys, as the provider answered. Not measured: no provider's 429 or
-/// `Retry-After` has been seen here.
+// Only a provider that answered is backed off. With no answer, as when the
+// Mac is offline, the next read is in five minutes: backed off too, limits
+// stayed unread for up to half an hour after the Mac was back online. With
+// a stand-in provider out of reach for 36 minutes, the first read that
+// worked was at minute 65 (measured 2026-11-18).
+//
+// Chosen over asking every five minutes regardless of answer. Capped at 30
+// minutes (including `Retry-After`) so limits recover within half an hour.
+// Refused logins and partial API-key reads aren't backed off. Not measured:
+// no provider's 429 or `Retry-After` has been seen here.
 fn backoff(reads: i64, retry_after: Option<i64>) -> i64 {
     let doubled = DUE.saturating_mul(1_i64 << (reads - 1).clamp(0, 8));
     doubled.max(retry_after.unwrap_or(0)).min(BACKED_OFF)
 }
 
-/// Whether `problem` came with an answer, and how long it asked to be left:
-/// of two, the one kept (`keys`).
 fn asked_for(problem: &Problem) -> (bool, Option<i64>) {
     match problem {
         Problem::Unavailable {
@@ -80,15 +51,10 @@ fn asked_for(problem: &Problem) -> (bool, Option<i64>) {
     }
 }
 
-/// How long an account's read is waited for, all its requests together.
-/// Where models.dev's catalog gets 60 s: `guard` reads limits inside an
-/// agent's hook, which holds the agent until it's done, and an answer of
-/// limits is one small JSON object, not a download.
+// Shorter than models.dev's 60 s: `guard` runs in an agent hook and blocks the
+// agent until this returns.
 const WAIT: Duration = Duration::from_secs(15);
 
-/// What a read of an account gave: its limits, if any were read, and what
-/// went wrong, if anything did. Both, when some of an API-key account's
-/// keys were read and others weren't.
 struct Read {
     limits: Option<Limits>,
     problem: Option<Problem>,
@@ -103,7 +69,6 @@ impl Read {
     }
 }
 
-/// An account, and the logins it's read with.
 struct Held {
     provider: &'static dyn Provider,
     account: providers::Account,
@@ -111,8 +76,7 @@ struct Held {
 }
 
 impl Held {
-    /// Read the account with `credential` too, unless it already is: a login
-    /// held in two agent folders is sent once.
+    // Deduplicate identical credentials held across multiple agent folders.
     fn hold(&mut self, credential: Credential) {
         let fingerprint = credential.secret.fingerprint();
         if let Some(known) = self
@@ -129,43 +93,46 @@ impl Held {
     }
 }
 
-/// What an agent folder holds for a provider: the account its login is to,
-/// if any, and an API key's fingerprint.
 struct SignedIn {
     agent: &'static str,
     folder: String,
-    /// The provider as the agent's responses name it.
     provider: String,
     account: Option<String>,
     key: Option<String>,
 }
 
-/// What every folder of `agents` holds: each folder's sign-in, each account to
-/// read with its logins, and each account whose login folder couldn't be read,
-/// with why.
 struct Gathered {
     signed_in: Vec<SignedIn>,
     accounts: BTreeMap<String, Held>,
     unreadable: BTreeMap<String, String>,
 }
 
-/// Read due accounts' limits (and discover sign-in changes at least every
-/// [`DUE`]); whether a refresh ran.
+/// Read due accounts' limits and discover sign-in changes; whether a refresh ran.
 pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
     refresh_with(db, home, false)
 }
 
 /// Check logins now and refresh any account that is stale (`>= DUE`), unread,
-/// past a window reset, or failing (for panel open, Mac wake, or auth file
-/// changes); whether anything changed.
+/// past a reset, or failing; whether anything changed.
 pub fn refresh_stale(db: &mut Connection, home: &Path) -> Result<bool> {
     refresh_with(db, home, true)
 }
 
 fn refresh_with(db: &mut Connection, home: &Path, force: bool) -> Result<bool> {
     let now = now();
+    let last = if force {
+        None
+    } else {
+        let last: Option<i64> = db
+            .prepare_cached("SELECT limits_at FROM state")?
+            .query_row([], |row| row.get(0))?;
+        if last.is_some_and(|last| now - CLAIM_GAP < last && last <= now + DUE) {
+            return Ok(false);
+        }
+        last
+    };
     let due = due_accounts(db, now, force)?;
-    if !claim(db, now, force, !due.is_empty())? {
+    if !claim(db, now, force, !due.is_empty(), last)? {
         return Ok(false);
     }
     let mut gathered = gather(db, home, agents::ALL, providers::ALL)?;
@@ -174,17 +141,22 @@ fn refresh_with(db: &mut Connection, home: &Path, force: bool) -> Result<bool> {
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let newly_signed = newly_signed_in(db, &gathered.signed_in)?;
-    let waiting = waiting(db, now, force)?;
-    gathered.accounts.retain(|id, _| {
-        newly_signed.contains(id)
-            || (!waiting.contains(id) && (due.contains(id) || !known.contains(id)))
-    });
-    // Every due account at once, so the slowest provider sets how long it takes.
+    gathered
+        .accounts
+        .retain(|id, _| newly_signed.contains(id) || due.contains(id) || !known.contains(id));
     let answers: Vec<(Read, Held)> = std::thread::scope(|scope| {
         let reading: Vec<_> = gathered
             .accounts
             .into_values()
-            .map(|mut held| scope.spawn(move || (read(&mut held, now), held)))
+            .map(|mut held| {
+                scope.spawn(move || {
+                    let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        read(&mut held, now)
+                    }))
+                    .unwrap_or_else(|_| Read::failed(Problem::unavailable(PANICKED)));
+                    (answer, held)
+                })
+            })
             .collect();
         reading
             .into_iter()
@@ -192,20 +164,22 @@ fn refresh_with(db: &mut Connection, home: &Path, force: bool) -> Result<bool> {
             .collect()
     });
     let changed = record(db, gathered.signed_in, answers, gathered.unreadable, now)?;
-    // On a normal scheduled claim, return true even when no accounts exist yet
-    // so the engine announces the initial limit check before history ingest.
+    // On a scheduled claim, return true even with no accounts yet so the engine
+    // announces the initial limit check before history ingest.
     Ok(if force { changed } else { true })
 }
 
 /// Signed-in accounts that need a provider poll at `now`.
 fn due_accounts(db: &Connection, now: i64, force: bool) -> Result<HashSet<String>> {
-    let mut rows = db.prepare(
+    let mut rows = db.prepare_cached(
         "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, a.next_check_at, a.problem,
                 f.retry_at,
                 EXISTS (SELECT 1 FROM response r WHERE r.account = a.id AND r.at >= ?1) AS active,
                 EXISTS (
                     SELECT 1 FROM reading rd
                     WHERE rd.account = a.id
+                      AND a.read_at IS NOT NULL
+                      AND rd.at >= coalesce(a.full_read_at, a.read_at, 0)
                       AND rd.at = (
                           SELECT max(at) FROM reading r2
                           WHERE r2.account = a.id
@@ -216,7 +190,7 @@ fn due_accounts(db: &Connection, now: i64, force: bool) -> Result<HashSet<String
                       AND rd.resets + ?3 <= ?2
                       AND (
                           coalesce(a.checked_at, a.read_at) IS NULL
-                          OR coalesce(a.checked_at, a.read_at) < rd.resets
+                          OR coalesce(a.checked_at, a.read_at) < rd.resets + ?3
                       )
                 ) AS reset_passed
          FROM account a
@@ -279,70 +253,62 @@ fn due_accounts(db: &Connection, now: i64, force: bool) -> Result<HashSet<String
     Ok(due)
 }
 
-/// Accounts whose folder sign-in changed since the last refresh (such as a
-/// re-login or account switch), so they are polled right away.
+fn latest_sign_in(
+    db: &Connection,
+    folder: &str,
+    provider: &str,
+) -> Result<Option<(Option<String>, Option<String>)>> {
+    Ok(db
+        .prepare_cached(
+            "SELECT account, key FROM sign_in WHERE folder = ?1 AND provider = ?2
+             ORDER BY since DESC LIMIT 1",
+        )?
+        .query_row(params![folder, provider], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?)
+}
+
+fn sign_in_matches(held: Option<&(Option<String>, Option<String>)>, signed: &SignedIn) -> bool {
+    held.is_some_and(|(account, key)| {
+        account.as_deref() == signed.account.as_deref() && key.as_deref() == signed.key.as_deref()
+    })
+}
+
 fn newly_signed_in(db: &Connection, signed_in: &[SignedIn]) -> Result<HashSet<String>> {
-    let mut latest = db.prepare(
-        "SELECT account, key FROM sign_in WHERE folder = ?1 AND provider = ?2
-         ORDER BY since DESC LIMIT 1",
-    )?;
     let mut changed = HashSet::new();
     for signed in signed_in {
         let Some(account) = &signed.account else {
             continue;
         };
-        let held: Option<(Option<String>, Option<String>)> = latest
-            .query_row(params![signed.folder, signed.provider], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .optional()?;
-        if held.as_ref() != Some(&(signed.account.clone(), signed.key.clone())) {
+        let held = latest_sign_in(db, &signed.folder, &signed.provider)?;
+        if !sign_in_matches(held.as_ref(), signed) {
             changed.insert(account.clone());
         }
     }
     Ok(changed)
 }
 
-/// The accounts whose provider kept failing that wait out their backoff at
-/// `now`. A wait longer than any is a clock set back since. When `force` is
-/// set, accounts last checked at least [`DUE`] ago are retried.
-fn waiting(db: &Connection, now: i64, force: bool) -> Result<HashSet<String>> {
-    if force {
-        let mut stmt = db.prepare(
-            "SELECT f.account FROM failing f
-             LEFT JOIN account a ON a.id = f.account
-             WHERE f.retry_at > ?1 AND f.retry_at <= ?1 + ?2
-               AND coalesce(a.checked_at, a.read_at) IS NOT NULL
-               AND ?1 - coalesce(a.checked_at, a.read_at) < ?3
-               AND coalesce(a.checked_at, a.read_at) <= ?1 + ?3",
-        )?;
-        let rows = stmt.query_map(params![now, BACKED_OFF, DUE], |row| row.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    } else {
-        let mut stmt =
-            db.prepare("SELECT account FROM failing WHERE retry_at > ?1 AND retry_at <= ?1 + ?2")?;
-        let rows = stmt.query_map(params![now, BACKED_OFF], |row| row.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-}
-
-/// Claim reading the limits if they're due, in one statement, so no two
-/// processes read them at once. Not once a newer Turnscope has written.
-fn claim(db: &mut Connection, now: i64, force: bool, has_due: bool) -> Result<bool> {
+// Atomic claim so two processes don't poll providers at once.
+fn claim(
+    db: &mut Connection,
+    now: i64,
+    force: bool,
+    has_due: bool,
+    last: Option<i64>,
+) -> Result<bool> {
     if force {
         let tx = crate::db::write(db)?;
         tx.execute("UPDATE state SET limits_at = ?1", [now])?;
         tx.commit()?;
         return Ok(true);
     }
-    // Looked at first: claiming waits for the write lock, which a hook
-    // shouldn't when nothing is due.
-    let last: Option<i64> = db.query_row("SELECT limits_at FROM state", [], |row| row.get(0))?;
+    // Check before taking the write lock so hooks don't block when nothing is due.
     let gap = if has_due { CLAIM_GAP } else { DUE };
     if last.is_some_and(|last| now - gap < last && last <= now + DUE) {
         return Ok(false);
     }
-    // Claimed more than `DUE` ahead of now is a clock set back since.
+    // Claimed more than `DUE` ahead of now means the clock was set back.
     let tx = crate::db::write(db)?;
     let claimed = tx.execute(
         "UPDATE state SET limits_at = ?1
@@ -353,9 +319,6 @@ fn claim(db: &mut Connection, now: i64, force: bool, has_due: bool) -> Result<bo
     Ok(claimed > 0)
 }
 
-/// What every folder of `agents` signs in to, the accounts those logins are
-/// to, each with its logins, read by one of `providers`, and the accounts
-/// whose login folder couldn't be read, with why.
 fn gather(
     db: &Connection,
     home: &Path,
@@ -365,9 +328,7 @@ fn gather(
     let mut accounts: BTreeMap<String, Held> = BTreeMap::new();
     let mut signed_in = Vec::new();
     let mut unreadable: BTreeMap<String, String> = BTreeMap::new();
-    // A key is to one account for good: the one it was last signed in to,
-    // which may be another key's it was made one with. Only at the same
-    // provider: the same key kept under another is that provider's.
+    // Keep a key bound to the account it was last merged into for the same provider.
     let mut kept = db.prepare(
         "SELECT account FROM sign_in WHERE key = ?1 AND provider = ?2 AND account IS NOT NULL
          ORDER BY since DESC LIMIT 1",
@@ -379,13 +340,12 @@ fn gather(
     )?;
     for &agent in agents {
         let folders = agent.installed_folders(home);
-        // Each folder whose logins were read, with the providers they name.
         let mut read: Vec<(String, Vec<String>)> = Vec::new();
         let mut failed_folders: BTreeMap<String, String> = BTreeMap::new();
         for folder in &folders {
             let folder_name = folder.to_string_lossy().into_owned();
-            // A folder whose logins can't be read keeps what it held in
-            // `sign_in`, and its known accounts record the failure below.
+            // Unreadable folders keep their `sign_in` rows so transient errors
+            // don't sign accounts out.
             let logins = match agent.logins(folder, home) {
                 Ok(logins) => logins,
                 Err(error) => {
@@ -413,7 +373,6 @@ fn gather(
                     && id != account.id
                 {
                     account.id = id;
-                    // Its label named this key, not the account's.
                     account.label = None;
                 }
                 named.push(login.provider.clone());
@@ -437,13 +396,8 @@ fn gather(
             }
             read.push((folder_name, named));
         }
-        // A login gone from a folder that was read is signed out of. So is
-        // every login of a folder no longer listed: one deleted, or a second
-        // account's without the file its agent writes once signed in. A
-        // folder is listed by what's under `home` alone, so none drops off
-        // the list while its agent is signed in there. A home that can't be
-        // listed, as one on a volume that's away, lists no second account's
-        // folder: each then keeps what it held.
+        // Only treat missing folders as signed out when `home` itself is listable
+        // (an unmounted volume hides folders without signing anything out).
         for row in latest.query_map([agent.info().id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })? {
@@ -472,7 +426,6 @@ fn gather(
             }
         }
     }
-    // Another readable folder holding a login for the same account reads it.
     unreadable.retain(|id, _| !accounts.contains_key(id));
     Ok(Gathered {
         signed_in,
@@ -508,45 +461,49 @@ fn record(
         }
     }
     let sign_in_changed = sign_ins(&tx, &signed_in, now)?;
-    let mut own_ok = HashSet::new();
-    let mut plan_ok = HashSet::new();
+    let mut own_ok: HashSet<&str> = HashSet::new();
+    let mut plan_ok: HashSet<&str> = HashSet::new();
     for (read, held) in &answers {
         if read.limits.is_some() {
-            own_ok.insert(held.account.id.clone());
+            own_ok.insert(held.account.id.as_str());
             plan_ok.insert(
                 one.get(&held.account.id)
                     .unwrap_or(&held.account.id)
-                    .clone(),
+                    .as_str(),
             );
         }
     }
-    let mut written = HashSet::new();
+    let mut written: HashSet<&str> = HashSet::new();
     let mut logged = Vec::new();
-    for (read, held) in answers {
+    for (read, held) in &answers {
         // Of one plan, the account that stands for it is written once: by its
         // own read when it succeeded, or by a merged key's when its own wasn't
         // read or failed.
-        let id = one.get(&held.account.id).unwrap_or(&held.account.id);
+        let id = one
+            .get(&held.account.id)
+            .unwrap_or(&held.account.id)
+            .as_str();
         if read.limits.is_none() && plan_ok.contains(id) {
             continue;
         }
         if one.contains_key(&held.account.id) && own_ok.contains(id) {
             continue;
         }
-        let id = id.clone();
-        if !written.insert(id.clone()) {
+        if !written.insert(id) {
             continue;
         }
         let account = &held.account;
+        let named = title(held, read);
         // Named in `app.log` by its title alone: a label can be an email,
         // and `doctor` prints the log for a report someone may post.
-        let (log_line, retry_at) = failing(&tx, &id, &read, &title(&held, &read), now)?;
+        let (log_line, retry_at) = failing(&tx, id, read, &named, now)?;
         logged.extend(log_line);
-        let next_check = next_check_at(&tx, &id, &read, retry_at, now)?;
+        let next_check = next_check_at(&tx, id, read, retry_at, now)?;
+        let read_at = read.limits.is_some().then_some(now);
         // A read that failed may not know the plan, so the title stays.
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO account (id, provider, kind, title, label, read_at, problem, full_read_at, checked_at, next_check_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, ?8, ?9)
              ON CONFLICT (id) DO UPDATE SET
                  title = iif(excluded.read_at IS NULL, title, excluded.title),
                  label = coalesce(excluded.label, label),
@@ -555,38 +512,23 @@ fn record(
                  problem = excluded.problem,
                  checked_at = excluded.checked_at,
                  next_check_at = excluded.next_check_at",
-            params![
-                id,
-                held.provider.info().id,
-                match account.kind {
-                    Kind::Subscription => "subscription",
-                    Kind::ApiKey => "apiKey",
-                },
-                title(&held, &read),
-                account.label,
-                read.limits.is_some().then_some(now),
-                read.problem.as_ref().map(problem_name),
-                read.limits.is_some().then_some(now),
-                now,
-                next_check,
-            ],
-        )?;
-        for reading in read.limits.iter().flat_map(|limits| &limits.readings) {
-            tx.execute(
-                "INSERT OR REPLACE INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    id,
-                    reading.key,
-                    now,
-                    reading.name,
-                    reading.scope,
-                    reading.used.max(0.0),
-                    reading.size,
-                    reading.starts,
-                    reading.resets,
-                ],
-            )?;
+        )?
+        .execute(params![
+            id,
+            held.provider.info().id,
+            match account.kind {
+                Kind::Subscription => "subscription",
+                Kind::ApiKey => "apiKey",
+            },
+            named,
+            account.label,
+            read_at,
+            read.problem.as_ref().map(problem_name),
+            now,
+            next_check,
+        ])?;
+        if let Some(limits) = &read.limits {
+            write_readings(&tx, id, now, &limits.readings)?;
         }
     }
     // Accounts whose login folder couldn't be read aren't signed out, but
@@ -594,14 +536,13 @@ fn record(
     // (such as "expired") frozen in place.
     let mut unreadable_written = false;
     for (id, why) in unreadable {
-        let id = one.get(&id).unwrap_or(&id);
+        let id = one.get(&id).unwrap_or(&id).as_str();
         if written.contains(id) {
             continue;
         }
         let Some(named): Option<String> = tx
-            .query_row("SELECT title FROM account WHERE id = ?1", [id], |row| {
-                row.get(0)
-            })
+            .prepare_cached("SELECT title FROM account WHERE id = ?1")?
+            .query_row([id], |row| row.get(0))
             .optional()?
         else {
             continue;
@@ -609,20 +550,68 @@ fn record(
         let read = Read::failed(Problem::unanswered(why));
         let (log_line, _) = failing(&tx, id, &read, &named, now)?;
         logged.extend(log_line);
-        tx.execute(
+        tx.prepare_cached(
             "UPDATE account SET problem = 'unavailable', checked_at = ?2, next_check_at = ?3
              WHERE id = ?1",
-            params![id, now, now + DUE],
-        )?;
+        )?
+        .execute(params![id, now, now + DUE])?;
         unreadable_written = true;
     }
+    let any_written = !written.is_empty();
     tx.commit()?;
     if let Some(data) = db.path().and_then(|file| Path::new(file).parent()) {
         for line in logged {
             crate::engine::log(data, &line);
         }
     }
-    Ok(sign_in_changed || !written.is_empty() || unreadable_written)
+    Ok(sign_in_changed || any_written || unreadable_written)
+}
+
+fn write_readings<'a>(
+    tx: &Transaction,
+    account: &str,
+    at: i64,
+    readings: impl IntoIterator<Item = &'a Reading>,
+) -> Result<()> {
+    let mut insert = tx.prepare_cached(
+        "INSERT OR REPLACE INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for reading in readings {
+        insert.execute(params![
+            account,
+            reading.key,
+            at,
+            reading.name,
+            reading.scope,
+            reading.used.max(0.0),
+            reading.size,
+            reading.starts,
+            reading.resets,
+        ])?;
+    }
+    Ok(())
+}
+
+/// Pull `next` forward to [`RESET_GRACE`] past the soonest upcoming window
+/// reset among `readings` if earlier (at least `now + CLAIM_GAP`).
+fn cap_at_reset<'a>(
+    mut next: i64,
+    readings: impl IntoIterator<Item = &'a Reading>,
+    now: i64,
+) -> i64 {
+    if let Some(soonest_reset) = readings
+        .into_iter()
+        .filter_map(|reading| reading.resets)
+        .filter(|&resets| resets > now)
+        .min()
+    {
+        let after_reset = soonest_reset.saturating_add(RESET_GRACE);
+        if after_reset < next {
+            next = after_reset.max(now + CLAIM_GAP);
+        }
+    }
+    next
 }
 
 /// When `account` should next be polled after `read` at `now`: its backoff
@@ -642,11 +631,9 @@ fn next_check_at(
     let Some(limits) = &read.limits else {
         return Ok(now + DUE);
     };
-    let mut active: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM response WHERE account = ?1 AND at >= ?2)",
-        params![account, now - ACTIVE_WINDOW],
-        |row| row.get(0),
-    )?;
+    let mut active: bool = tx
+        .prepare_cached("SELECT EXISTS (SELECT 1 FROM response WHERE account = ?1 AND at >= ?2)")?
+        .query_row(params![account, now - ACTIVE_WINDOW], |row| row.get(0))?;
     if !active && let Some(previous) = stored_limits(tx, account)? {
         active = limits.readings.iter().any(|reading| {
             previous
@@ -656,20 +643,8 @@ fn next_check_at(
                 .is_some_and(|before| reading.used > before.used + 0.05)
         });
     }
-    let mut next = now + if active { DUE } else { IDLE_DUE };
-    if let Some(soonest_reset) = limits
-        .readings
-        .iter()
-        .filter_map(|reading| reading.resets)
-        .filter(|&resets| resets > now)
-        .min()
-    {
-        let after_reset = soonest_reset.saturating_add(RESET_GRACE);
-        if after_reset < next {
-            next = after_reset.max(now + CLAIM_GAP);
-        }
-    }
-    Ok(next)
+    let next = now + if active { DUE } else { IDLE_DUE };
+    Ok(cap_at_reset(next, &limits.readings, now))
 }
 
 /// Record live limit readings emitted directly by an agent (such as Codex's
@@ -690,39 +665,36 @@ pub fn record_in_band(
     {
         return Ok(false);
     }
-    struct Stored {
-        kind: String,
-        title: String,
-        read_at: Option<i64>,
-        full_read_at: Option<i64>,
-        problem: Option<String>,
-    }
-    let Some(stored) = tx
-        .query_row(
-            "SELECT kind, title, read_at, full_read_at, problem FROM account WHERE id = ?1",
-            [account],
-            |row| {
-                Ok(Stored {
-                    kind: row.get(0)?,
-                    title: row.get(1)?,
-                    read_at: row.get(2)?,
-                    full_read_at: row.get(3)?,
-                    problem: row.get(4)?,
-                })
-            },
-        )
+    type AccountRow = (
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    );
+    let Some((provider, kind, current_title, read_at, full_read_at, checked_at, problem)) = tx
+        .prepare_cached(
+            "SELECT provider, kind, title, read_at, full_read_at, checked_at, problem
+             FROM account WHERE id = ?1",
+        )?
+        .query_row([account], |row| {
+            Ok::<AccountRow, _>((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })
         .optional()?
     else {
         return Ok(false);
     };
-    let Stored {
-        kind,
-        title: current_title,
-        read_at,
-        full_read_at,
-        problem,
-    } = stored;
-    if kind != "subscription" {
+    if kind != "subscription" || provider != snapshot.provider {
         return Ok(false);
     }
     if full_read_at.is_some_and(|full| snapshot.at <= full) {
@@ -755,7 +727,8 @@ pub fn record_in_band(
         return Ok(false);
     }
 
-    if problem.is_none()
+    let clears_problem = problem.is_some() && snapshot.at >= checked_at.unwrap_or(0);
+    if !clears_problem
         && fresh.iter().all(|reading| {
             latest.get(&reading.key).is_some_and(|(at, used, resets)| {
                 snapshot.at - *at < crate::time::MINUTE
@@ -767,35 +740,14 @@ pub fn record_in_band(
         return Ok(false);
     }
 
-    let mut insert = tx.prepare_cached(
-        "INSERT OR REPLACE INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-    )?;
-    for reading in &fresh {
-        insert.execute(params![
-            account,
-            reading.key,
-            snapshot.at,
-            reading.name,
-            reading.scope,
-            reading.used.max(0.0),
-            reading.size,
-            reading.starts,
-            reading.resets,
-        ])?;
-    }
-    drop(insert);
+    write_readings(tx, account, snapshot.at, fresh.iter().copied())?;
 
     let new_title = snapshot
         .plan
         .as_deref()
         .filter(|plan| !plan.is_empty())
         .and_then(|plan| {
-            let subscription = providers::ALL
-                .iter()
-                .find(|provider| provider.info().id == snapshot.provider)?
-                .info()
-                .subscription?;
+            let subscription = providers::by_id(&snapshot.provider)?.info().subscription?;
             (current_title == subscription)
                 .then(|| format!("{subscription} {}", providers::words(plan)))
         });
@@ -806,29 +758,28 @@ pub fn record_in_band(
     if let Some(full) = full_read_at.or(read_at) {
         next_check = next_check.min(full.saturating_add(IDLE_DUE));
     }
-    if let Some(soonest_reset) = fresh
-        .iter()
-        .filter_map(|reading| reading.resets)
-        .filter(|&resets| resets > now)
-        .min()
-    {
-        let after_reset = soonest_reset.saturating_add(RESET_GRACE);
-        if after_reset < next_check {
-            next_check = after_reset.max(now + CLAIM_GAP);
-        }
-    }
+    let next_check = cap_at_reset(next_check, fresh.iter().copied(), now);
 
-    tx.execute(
+    tx.prepare_cached(
         "UPDATE account
          SET title = coalesce(?2, title),
              full_read_at = coalesce(full_read_at, read_at),
              read_at = max(coalesce(read_at, ?3), ?3),
-             problem = NULL,
+             problem = iif(?5, NULL, problem),
              next_check_at = ?4
          WHERE id = ?1",
-        params![account, new_title, snapshot.at, next_check],
-    )?;
-    tx.execute("DELETE FROM failing WHERE account = ?1", [account])?;
+    )?
+    .execute(params![
+        account,
+        new_title,
+        snapshot.at,
+        next_check,
+        clears_problem
+    ])?;
+    if clears_problem {
+        tx.prepare_cached("DELETE FROM failing WHERE account = ?1")?
+            .execute([account])?;
+    }
     Ok(true)
 }
 
@@ -853,7 +804,6 @@ pub fn record_statusline_limits(
     }
 }
 
-/// How `account.problem` names `problem`.
 fn problem_name(problem: &Problem) -> &'static str {
     match problem {
         Problem::SignIn => "signIn",
@@ -862,9 +812,6 @@ fn problem_name(problem: &Problem) -> &'static str {
     }
 }
 
-/// Note in `failing` how `account`'s read went, before its row says: how
-/// many reads in a row failed as this one did, what it met, and when it's
-/// read next. Returns `(log_line, retry_at)`.
 fn failing(
     tx: &Transaction,
     account: &str,
@@ -887,10 +834,8 @@ fn failing(
     let (was, reads, said) = before.unwrap_or_default();
     let again = was.as_deref() == Some(problem_name(problem));
     let reads = if again { reads.unwrap_or(0) + 1 } else { 1 };
-    // Some keys read, the provider answered: it isn't backed off. Nor is
-    // one that didn't answer. Neither is counted, so the first read backed
-    // off after them waits five minutes: counted, one after an hour offline
-    // waited thirty.
+    // Don't back off or increment `reads` for unanswered/partial errors so the
+    // first backed-off read after being offline starts at `DUE`, not 30 min.
     let (why, retry_at, reads) = match problem {
         Problem::Unavailable {
             why,
@@ -915,54 +860,36 @@ fn failing(
         _ if again && said.as_deref() == why => None,
         Problem::Unavailable { why, .. } => Some(format!("{named}: limits not read: {why}")),
         Problem::SignIn => Some(format!("{named}: its login was refused")),
-        // The status says so, and what to do.
         Problem::Expired => None,
     };
     Ok((line, retry_at))
 }
 
-/// Write each folder's sign-in that changed, and the account of the
-/// responses made in that folder since. Returns whether any sign-in changed.
-///
-/// In the write that records the change, over after it: a process that
-/// ended between the two left the responses on the account before for
-/// good, and the next refresh saw no change to work from. Without
-/// `ingest.lock`, so a hook never waits out a read of history: a read
-/// takes in the sign-ins at each of its writes (`ingest::Derived`), so
-/// it writes nothing with one gone stale.
+// Reassign affected responses in the same transaction (without `ingest.lock`, so
+// hooks don't block on history ingest; ingest re-reads `sign_in` on each write).
 fn sign_ins(tx: &Transaction, signed_in: &[SignedIn], now: i64) -> Result<bool> {
-    // The sign-in in force at each response, or before the folder's first,
-    // the first, as `ingest::Derived::of` finds it.
     let mut update = tx.prepare(&format!(
         "UPDATE response AS r SET account = (SELECT account {})
          WHERE folder = ?1 AND provider = ?2 AND at >= ?3",
         crate::prices::SIGN_IN_AT
     ))?;
+    let mut insert = tx.prepare_cached(
+        "INSERT OR REPLACE INTO sign_in (agent, folder, provider, since, account, key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
     let mut changed = false;
     for signed in signed_in {
-        let held: Option<(Option<String>, Option<String>)> = tx
-            .query_row(
-                "SELECT account, key FROM sign_in WHERE folder = ?1 AND provider = ?2
-                 ORDER BY since DESC LIMIT 1",
-                params![signed.folder, signed.provider],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        if held.as_ref() != Some(&(signed.account.clone(), signed.key.clone())) {
-            tx.execute(
-                "INSERT OR REPLACE INTO sign_in (agent, folder, provider, since, account, key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    signed.agent,
-                    signed.folder,
-                    signed.provider,
-                    now,
-                    signed.account,
-                    signed.key
-                ],
-            )?;
-            // A folder's first sign-in to a provider is in force before it
-            // too; any later one only from now.
+        let held = latest_sign_in(tx, &signed.folder, &signed.provider)?;
+        if !sign_in_matches(held.as_ref(), signed) {
+            insert.execute(params![
+                signed.agent,
+                signed.folder,
+                signed.provider,
+                now,
+                signed.account,
+                signed.key
+            ])?;
+            // A folder's first sign-in applies retroactively; later ones from `now`.
             let from = if held.is_some() { now } else { i64::MIN };
             update.execute(params![signed.folder, signed.provider, from])?;
             changed = true;
@@ -971,40 +898,31 @@ fn sign_ins(tx: &Transaction, signed_in: &[SignedIn], now: i64) -> Result<bool> 
     Ok(changed)
 }
 
-/// What to call `held`: a subscription by its plan, as `read` or else one
-/// of its logins names it; anything else as its provider's API key.
 fn title(held: &Held, read: &Read) -> String {
     let plan = read
         .limits
         .as_ref()
-        .and_then(|limits| limits.plan.clone())
+        .and_then(|limits| limits.plan.as_deref())
         .or_else(|| {
             held.credentials
                 .iter()
-                .find_map(|credential| credential.plan.clone())
+                .find_map(|credential| credential.plan.as_deref())
         })
         .filter(|plan| !plan.is_empty());
     let info = held.provider.info();
     match (held.account.kind, info.subscription) {
         (Kind::Subscription, Some(subscription)) => match plan {
-            Some(plan) => format!("{subscription} {}", providers::words(&plan)),
+            Some(plan) => format!("{subscription} {}", providers::words(plan)),
             None => subscription.to_owned(),
         },
         _ => format!("{} API key", info.name),
     }
 }
 
-/// Each account read as the same plan as another, by its provider's
-/// `plan_mark`, with the account that stands for them: one already known,
-/// so its history is kept, or else the first, accounts being in order.
-///
-/// An account known from before and not read now, or whose login was
-/// refused (`Problem::SignIn`), counts by the mark of its last read: a key
-/// swapped for a new one to the same plan made the plan a second account,
-/// the first signed out or refused, with no readings behind the new. Other
-/// failures don't merge: `merge` can't be undone, and `plan` stops at the
-/// first failure that isn't a refused login, so an old key failing another
-/// way would stop the working key from being read.
+// Merge accounts that share a provider `plan_mark`, keeping an existing id to
+// preserve history. Known unread or `SignIn`-refused accounts match by stored
+// mark so key swaps stay one account; other failures don't merge because `plan`
+// stops at the first non-`SignIn` failure.
 fn same_plan(
     tx: &Transaction,
     answers: &[(Read, Held)],
@@ -1031,13 +949,20 @@ fn same_plan(
         .filter(|(read, _)| read.limits.is_some() || read.problem != Some(Problem::SignIn))
         .map(|(_, held)| held.account.id.as_str())
         .collect();
-    for (id, provider) in stored(tx, &marked)? {
-        if skip_stored.contains(id.as_str()) {
-            continue;
-        }
-        let mark = stored_limits(tx, &id)?.and_then(|limits| marked[provider].plan_mark(&limits));
-        if let Some(ids) = mark.and_then(|mark| plans.get_mut(&(provider, mark))) {
-            ids.push(id);
+    let mut by_provider = tx.prepare("SELECT id FROM account WHERE provider = ?1")?;
+    for (&provider, &impl_) in &marked {
+        let ids: Vec<String> = by_provider
+            .query_map([provider], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for id in ids {
+            if skip_stored.contains(id.as_str()) {
+                continue;
+            }
+            if let Some(mark) = stored_limits(tx, &id)?.and_then(|limits| impl_.plan_mark(&limits))
+                && let Some(group) = plans.get_mut(&(provider, mark))
+            {
+                group.push(id);
+            }
         }
     }
     let mut one = BTreeMap::new();
@@ -1053,24 +978,6 @@ fn same_plan(
     Ok(one)
 }
 
-/// The accounts known of the providers in `marked`, with each one's
-/// provider.
-fn stored<'a>(
-    tx: &Transaction,
-    marked: &BTreeMap<&'a str, &'static dyn Provider>,
-) -> Result<Vec<(String, &'a str)>> {
-    let mut found = Vec::new();
-    let mut accounts = tx.prepare("SELECT id FROM account WHERE provider = ?1")?;
-    for provider in marked.keys() {
-        for id in accounts.query_map([provider], |row| row.get::<_, String>(0))? {
-            found.push((id?, *provider));
-        }
-    }
-    Ok(found)
-}
-
-/// What `account` was last read with, as a provider gave it (preserving
-/// scoped limits from its last full poll alongside any newer in-band readings).
 fn stored_limits(tx: &Transaction, account: &str) -> Result<Option<Limits>> {
     let since: Option<i64> = tx
         .query_row(
@@ -1111,10 +1018,7 @@ fn stored_limits(tx: &Transaction, account: &str) -> Result<Option<Limits>> {
     }))
 }
 
-/// Make `other` part of `first`. The plan stays shown unless both were
-/// hidden, over hidden if either was: of two accounts to one plan, the one
-/// hidden is most likely the one someone took for a copy, as a refused
-/// key's was. An `other` new this read leaves `first` as it was.
+// Keep shown unless both were hidden: a hidden copy is usually an old refused key.
 fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
     for moved in [
         "UPDATE sign_in SET account = ?2 WHERE account = ?1",
@@ -1126,8 +1030,6 @@ fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
     ] {
         tx.execute(moved, params![other, first])?;
     }
-    // Readings and alerts left over duplicate the first's, and how its
-    // reads went is the first's to say.
     for left in [
         "DELETE FROM reading WHERE account = ?1",
         "DELETE FROM alert WHERE account = ?1",
@@ -1139,9 +1041,6 @@ fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
     Ok(())
 }
 
-/// An account's limits with its logins, in [`WAIT`] all told. A login within
-/// a minute of expiring isn't sent unless its provider refreshes non-rotating
-/// tokens in memory and the login carries a refresh token.
 fn read(held: &mut Held, now: i64) -> Read {
     let by = Instant::now() + WAIT;
     let provider = held.provider;
@@ -1155,9 +1054,8 @@ fn read(held: &mut Held, now: i64) -> Read {
     let fresh: Vec<&Credential> = held
         .credentials
         .iter()
-        // One about to expire would be refused on the way, which reads as
-        // a login to sign in to again, where it only needs renewing — unless
-        // the provider refreshes it in memory.
+        // Skip tokens within a minute of expiry so an in-flight expiry isn't
+        // misread as a revoked login — unless the provider refreshes in memory.
         .filter(|credential| {
             is_fresh(credential) || (provider.refreshes() && credential.refresh.is_some())
         })
@@ -1176,10 +1074,6 @@ fn read(held: &mut Held, now: i64) -> Read {
     }
 }
 
-/// A subscription's limits, read with its freshest login, or the next when
-/// one is refused, as the agent may have renewed it since. One out of reach
-/// or not understood ends the read: the next would most likely fare the
-/// same.
 fn plan(provider: &dyn Provider, logins: &[&Credential], now: i64, by: Instant) -> Read {
     let mut problem = None;
     for login in logins {
@@ -1200,18 +1094,9 @@ fn plan(provider: &dyn Provider, logins: &[&Credential], now: i64, by: Instant) 
     }
 }
 
-/// Why a read that panicked failed.
 const PANICKED: &str = "reading it failed unexpectedly";
 
-/// An API-key account's limits: each key's own, as each can carry one, and
-/// the account's, asked once. All at once, over one after another: `guard`
-/// waits on the read in an agent's hook, and three keys to a provider out
-/// of reach held it 45 s, three times [`WAIT`].
-///
-/// Read when anything is. A key that can't be read is the account's
-/// problem, so it isn't shown as read in full with that key's limit gone.
-/// Of a refusal and another problem, the refusal is said, as the one
-/// someone can act on.
+// Poll all keys in parallel so `guard` hooks wait at most one `WAIT`.
 fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) -> Read {
     let (own, shared) = std::thread::scope(|scope| {
         let own: Vec<_> = keys
@@ -1247,10 +1132,7 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
             limits.plan = limits.plan.take().or(read.plan);
             limits.readings.extend(read.readings);
         }
-        // A refusal is kept over any other problem. Of two others, an answer
-        // is kept over none, then the longest `Retry-After` over none or a
-        // shorter one, with its reason, so the log says why it waits. Only
-        // an answer has a `Retry-After`, so the one kept waits longest.
+        // Prefer SignIn over other errors, then answered over unanswered, then longest Retry-After.
         Err(error) => {
             problem = Some(match (problem.take(), error) {
                 (Some(Problem::SignIn), _) | (_, Problem::SignIn) => Problem::SignIn,
@@ -1263,7 +1145,6 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
         add(read);
     }
     match shared {
-        // None asked, or no key had access to them.
         Ok(readings) if readings.is_empty() => {}
         shared => add(shared.map(|readings| Limits {
             plan: None,
@@ -1498,40 +1379,69 @@ mod tests {
         }
     }
 
-    /// The fake provider's account, as signed in to in one folder.
-    fn signed_in() -> Vec<SignedIn> {
-        vec![SignedIn {
-            agent: "fake",
-            folder: "/f".to_owned(),
-            provider: "fake".to_owned(),
-            account: Some("fake:account".to_owned()),
-            key: None,
-        }]
+    fn open_db() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        (dir, db)
     }
 
-    /// Record a read of the fake provider's account that ended in `problem`
-    /// at `at`, and give how the status then says it stands.
+    fn signed_for(folder: &str, account: &str) -> SignedIn {
+        SignedIn {
+            agent: "fake",
+            folder: folder.to_owned(),
+            provider: "fake".to_owned(),
+            account: Some(account.to_owned()),
+            key: account.strip_prefix("fake:key-").map(str::to_owned),
+        }
+    }
+
+    fn signed_in() -> Vec<SignedIn> {
+        vec![signed_for("/f", "fake:account")]
+    }
+
+    fn record_ok(db: &mut Connection, signed: Vec<SignedIn>, answers: Vec<(Read, Held)>, at: i64) {
+        record(db, signed, answers, BTreeMap::new(), at).unwrap();
+    }
+
     fn failed(db: &mut Connection, problem: Problem, at: i64) -> Option<crate::status::Stale> {
         let (_, held) = fake(Kind::Subscription, &[]);
-        record(
-            db,
-            signed_in(),
-            vec![(Read::failed(problem), held)],
-            BTreeMap::new(),
-            at,
-        )
-        .unwrap();
-        let status = crate::status::status(db, at).unwrap();
-        status.accounts[0].state.why()
+        record_ok(db, signed_in(), vec![(Read::failed(problem), held)], at);
+        crate::status::status(db, at).unwrap().accounts[0]
+            .state
+            .why()
     }
 
-    /// An agent may replace its token while a read sends it: refused once,
-    /// it's read at the next try, so it isn't said to need signing in.
+    fn retry_at(db: &Connection) -> Option<i64> {
+        db.query_row("SELECT retry_at FROM failing", [], |row| row.get(0))
+            .optional()
+            .unwrap()
+            .flatten()
+    }
+
+    fn account_hidden(db: &Connection) -> Vec<(String, i64)> {
+        db.prepare("SELECT id, hidden FROM account ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn insert_response(db: &Connection, id: &str, folder: &str, at: i64, account: Option<&str>) {
+        db.execute(
+            "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+                 web_searches, priority, account)
+             VALUES ('fake', ?1, 's1', 0, 1, ?2, ?3, 'fake', 'm', 1, 0, 0, 0, 1, 0, 1, 0, 0, ?4)",
+            params![id, folder, at, account],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn a_login_refused_twice_in_a_row_needs_signing_in_again() {
         use crate::status::Stale;
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open_db();
         let minutes = |count: i64| count * crate::time::MINUTE;
         assert_eq!(
             failed(&mut db, Problem::SignIn, minutes(5)),
@@ -1541,7 +1451,6 @@ mod tests {
             failed(&mut db, Problem::SignIn, minutes(10)),
             Some(Stale::SignIn)
         );
-        // Out of reach between two refusals: they aren't in a row.
         failed(&mut db, Problem::unavailable("down"), minutes(15));
         assert_eq!(
             failed(&mut db, Problem::SignIn, minutes(20)),
@@ -1549,18 +1458,9 @@ mod tests {
         );
     }
 
-    /// When the fake provider's account is read next, as `failing` says.
-    fn retry_at(db: &Connection) -> Option<i64> {
-        db.query_row("SELECT retry_at FROM failing", [], |row| row.get(0))
-            .optional()
-            .unwrap()
-            .flatten()
-    }
-
     #[test]
     fn a_provider_that_keeps_failing_is_asked_less_often() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open_db();
         let minute = crate::time::MINUTE;
         let mut at = 0;
         for waits in [5, 10, 20, 30, 30] {
@@ -1568,79 +1468,54 @@ mod tests {
             failed(&mut db, Problem::unavailable("down"), at);
             assert_eq!(retry_at(&db), Some(at + waits * minute));
         }
-        // As long as it asks, up to as long as any wait.
         let asks = |seconds: i64| Problem::Unavailable {
             why: "busy".to_owned(),
             retry_after: Some(seconds * 1000),
             answered: true,
         };
         let (_, held) = fake(Kind::Subscription, &[]);
-        record(
+        record_ok(
             &mut db,
             signed_in(),
             vec![(Read::failed(asks(0)), held)],
-            BTreeMap::new(),
             at,
-        )
-        .unwrap();
+        );
         assert_eq!(retry_at(&db), Some(at + 30 * minute));
-        // A read that works ends it.
+        // Success resets backoff, as does a partial API-key read or unanswered error.
         let (_, held) = fake(Kind::Subscription, &[]);
-        record(
-            &mut db,
-            signed_in(),
-            vec![(monthly(1), held)],
-            BTreeMap::new(),
-            at,
-        )
-        .unwrap();
+        record_ok(&mut db, signed_in(), vec![(monthly(1), held)], at);
         assert_eq!(retry_at(&db), None);
-        // Nor is a read of some keys, as the provider answered.
         let some = Read {
             problem: Some(Problem::unavailable("down")),
             ..monthly(1)
         };
         let (_, held) = fake(Kind::ApiKey, &[]);
-        record(
-            &mut db,
-            signed_in(),
-            vec![(some, held)],
-            BTreeMap::new(),
-            at,
-        )
-        .unwrap();
+        record_ok(&mut db, signed_in(), vec![(some, held)], at);
         assert_eq!(retry_at(&db), None);
-        // Nor is a provider that didn't answer, as when the Mac is offline,
-        // however long it lasts.
         for _ in 0..6 {
-            let offline = Problem::Unavailable {
-                why: "host not found".to_owned(),
-                retry_after: None,
-                answered: false,
-            };
-            failed(&mut db, offline, at);
+            failed(&mut db, Problem::unanswered("host not found"), at);
             assert_eq!(retry_at(&db), None);
         }
-        // And the first that answers after them waits five minutes.
         failed(&mut db, Problem::unavailable("down"), at);
         assert_eq!(retry_at(&db), Some(at + 5 * minute));
-        // A refused login isn't backed off.
         failed(&mut db, Problem::SignIn, at);
         failed(&mut db, Problem::SignIn, at + 5 * minute);
         assert_eq!(retry_at(&db), None);
-        // Waiting, it isn't read: until its wait is out, or unless the wait
-        // is longer than any, as when the clock was set back.
+        // Backed off until retry_at, or immediately if the clock rolled back.
         failed(&mut db, asks(3600), at);
-        let waiting = |now| waiting(&db, now, false).unwrap().contains("fake:account");
-        assert!(waiting(at + 5 * minute));
-        assert!(!waiting(at + 30 * minute));
-        assert!(!waiting(at - 5 * minute));
+        let is_due = |now| {
+            due_accounts(&db, now, false)
+                .unwrap()
+                .contains("fake:account")
+        };
+        assert!(!is_due(at + 5 * minute));
+        assert!(is_due(at + 30 * minute));
+        assert!(is_due(at - 5 * minute));
     }
 
     #[test]
     fn a_read_that_fails_differently_from_the_last_is_logged() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (dir, mut db) = open_db();
         let minute = crate::time::MINUTE;
         let busy = || Problem::unavailable("https://x: answered 503");
         failed(&mut db, busy(), 5 * minute);
@@ -1699,37 +1574,22 @@ mod tests {
         }
     }
 
-    /// Key a read, then swapped in its folder for key b to the same plan:
-    /// key b is the plan's account, key a's.
     #[test]
     fn a_key_swapped_for_another_to_the_same_plan_keeps_its_account() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let signed = |account: &str| SignedIn {
-            agent: "fake",
-            folder: "/f1".to_owned(),
-            provider: "fake".to_owned(),
-            account: Some(account.to_owned()),
-            key: Some(account.trim_start_matches("fake:key-").to_owned()),
-        };
-        let a = "fake:key-a";
-        record(
+        let (_dir, mut db) = open_db();
+        let (a, b, c) = ("fake:key-a", "fake:key-b", "fake:key-c");
+        record_ok(
             &mut db,
-            vec![signed(a)],
+            vec![signed_for("/f1", a)],
             vec![(monthly(1), held(a))],
-            BTreeMap::new(),
             1_000,
-        )
-        .unwrap();
-        let b = "fake:key-b";
-        record(
+        );
+        record_ok(
             &mut db,
-            vec![signed(b)],
+            vec![signed_for("/f1", b)],
             vec![(monthly(1), held(b))],
-            BTreeMap::new(),
             2_000,
-        )
-        .unwrap();
+        );
         let accounts: Vec<(String, i64, String)> = db
             .prepare("SELECT id, read_at, label FROM account")
             .unwrap()
@@ -1738,24 +1598,15 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(accounts, [(a.to_owned(), 2_000, format!("key {b}"))]);
-        let folders: String = db
+        let folder_acct: String = db
             .query_row(
                 "SELECT account FROM sign_in ORDER BY since DESC LIMIT 1",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(folders, a);
-        // Another plan's key stays its own.
-        let c = "fake:key-c";
-        record(
-            &mut db,
-            Vec::new(),
-            vec![(monthly(2), held(c))],
-            BTreeMap::new(),
-            3_000,
-        )
-        .unwrap();
+        assert_eq!(folder_acct, a);
+        record_ok(&mut db, Vec::new(), vec![(monthly(2), held(c))], 3_000);
         let count: i64 = db
             .query_row("SELECT count(*) FROM account", [], |row| row.get(0))
             .unwrap();
@@ -1780,9 +1631,9 @@ mod tests {
     }
 
     #[test]
-    fn a_login_with_under_a_minute_left_isnt_sent() {
-        let mut held = held("fake:key-a");
-        held.hold(Credential {
+    fn an_expired_login_is_sent_only_to_a_provider_that_refreshes_in_memory() {
+        let mut plain = held("fake:key-a");
+        plain.hold(Credential {
             provider: "fake",
             secret: agents::Secret::new("sk-go-a"),
             key: true,
@@ -1791,11 +1642,8 @@ mod tests {
             plan: None,
             refresh: None,
         });
-        assert_eq!(read(&mut held, 1_000_000).problem, Some(Problem::Expired));
-    }
+        assert_eq!(read(&mut plain, 1_000_000).problem, Some(Problem::Expired));
 
-    #[test]
-    fn an_expired_login_is_sent_to_a_provider_that_refreshes_it_in_memory() {
         let provider: &'static Fake = Box::leak(Box::new(Fake {
             refreshes: true,
             ..Fake::default()
@@ -1825,7 +1673,6 @@ mod tests {
             (keys(&limits), &limits.problem),
             (vec!["key-expired-token"], &None)
         );
-        // Without a refresh token it still isn't sent.
         held.credentials[0].refresh = None;
         assert_eq!(read(&mut held, 1_000_000).problem, Some(Problem::Expired));
     }
@@ -2000,41 +1847,24 @@ mod tests {
 
     #[test]
     fn what_is_read_is_recorded_and_one_plan_keeps_its_history() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let signed = |folder: &str, account: &str| SignedIn {
-            agent: "fake",
-            folder: folder.to_owned(),
-            provider: "fake".to_owned(),
-            account: Some(account.to_owned()),
-            key: Some(account.trim_start_matches("fake:key-").to_owned()),
-        };
-        // A response in each folder before any sign-in, and one later.
+        let (_dir, mut db) = open_db();
         for (id, folder, at) in [("r1", "/f1", 500), ("r2", "/f2", 500), ("r3", "/f1", 3_100)] {
-            db.execute(
-                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                     input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                     web_searches, priority)
-                 VALUES ('fake', ?1, 's', 0, 1, ?2, ?3, 'fake', 'm', 0, 0, 0, 0, 0, 0, 0, 0, 0)",
-                params![id, folder, at],
-            )
-            .unwrap();
+            insert_response(&db, id, folder, at, None);
         }
-        // Key b is read alone, then key a, to the same plan, joins it; key
-        // c, to another plan, and key d, not read, stay their own.
-        record(
+        record_ok(
             &mut db,
-            vec![signed("/f1", "fake:key-b")],
+            vec![signed_for("/f1", "fake:key-b")],
             vec![(monthly(1), held("fake:key-b"))],
-            BTreeMap::new(),
             1_000,
-        )
-        .unwrap();
+        );
         db.execute("UPDATE account SET hidden = 1 WHERE id = 'fake:key-b'", [])
             .unwrap();
-        record(
+        record_ok(
             &mut db,
-            vec![signed("/f1", "fake:key-b"), signed("/f2", "fake:key-a")],
+            vec![
+                signed_for("/f1", "fake:key-b"),
+                signed_for("/f2", "fake:key-a"),
+            ],
             vec![
                 (monthly(1), held("fake:key-a")),
                 (monthly(1), held("fake:key-b")),
@@ -2044,19 +1874,10 @@ mod tests {
                     held("fake:key-d"),
                 ),
             ],
-            BTreeMap::new(),
             2_000,
-        )
-        .unwrap();
-        let accounts: Vec<(String, i64)> = db
-            .prepare("SELECT id, hidden FROM account ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
+        );
         assert_eq!(
-            accounts,
+            account_hidden(&db),
             [
                 ("fake:key-b".to_owned(), 1),
                 ("fake:key-c".to_owned(), 0),
@@ -2072,23 +1893,17 @@ mod tests {
             .unwrap();
         assert_eq!(readings, 2);
 
-        // A read that fails keeps the title, and says why. The first folder
-        // now holds key c.
         db.execute(
             "UPDATE account SET title = 'Fake Max' WHERE id = 'fake:key-b'",
             [],
         )
         .unwrap();
-        record(
+        record_ok(
             &mut db,
-            vec![signed("/f1", "fake:key-c")],
+            vec![signed_for("/f1", "fake:key-c")],
             vec![(Read::failed(Problem::Expired), held("fake:key-b"))],
-            BTreeMap::new(),
             3_000,
-        )
-        .unwrap();
-        // A folder's first sign-in is in force from the start, as the
-        // plan's account it joined, and a later one from when it was read.
+        );
         let whose: Vec<(String, String)> = db
             .prepare("SELECT id, account FROM response ORDER BY id")
             .unwrap()
@@ -2116,9 +1931,7 @@ mod tests {
 
     #[test]
     fn limits_read_once_a_newer_turnscope_has_written_are_not_recorded() {
-        // As when it wrote while the providers answered.
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open_db();
         db.execute("UPDATE state SET version = ?1", [i64::MAX])
             .unwrap();
         let error = record(
@@ -2138,58 +1951,44 @@ mod tests {
 
     #[test]
     fn a_working_key_for_the_same_plan_replaces_a_failing_ones_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let signed = |folder: &str, account: &str| SignedIn {
-            agent: "fake",
-            folder: folder.to_owned(),
-            provider: "fake".to_owned(),
-            account: Some(account.to_owned()),
-            key: Some(account.trim_start_matches("fake:key-").to_owned()),
+        let (_dir, mut db) = open_db();
+        let status_rows = |db: &Connection| -> Vec<(String, Option<i64>, Option<String>)> {
+            db.prepare("SELECT id, read_at, problem FROM account ORDER BY id")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
         };
-        record(
+        record_ok(
             &mut db,
-            vec![signed("/f1", "fake:key-a")],
+            vec![signed_for("/f1", "fake:key-a")],
             vec![(monthly(1), held("fake:key-a"))],
-            BTreeMap::new(),
             1_000,
-        )
-        .unwrap();
-        // Key a fails (e.g. revoked in one agent) while replacement key b in
-        // another agent succeeds on the same monthly reset.
-        record(
+        );
+        record_ok(
             &mut db,
-            vec![signed("/f1", "fake:key-a"), signed("/f2", "fake:key-b")],
+            vec![
+                signed_for("/f1", "fake:key-a"),
+                signed_for("/f2", "fake:key-b"),
+            ],
             vec![
                 (Read::failed(Problem::SignIn), held("fake:key-a")),
                 (monthly(1), held("fake:key-b")),
             ],
-            BTreeMap::new(),
             2_000,
-        )
-        .unwrap();
-        let accounts: Vec<(String, Option<i64>, Option<String>)> = db
-            .prepare("SELECT id, read_at, problem FROM account ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(accounts, [("fake:key-a".to_owned(), Some(2_000), None)]);
-        let readings: i64 = db
-            .query_row(
-                "SELECT count(*) FROM reading WHERE account = 'fake:key-a'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(readings, 2);
-
-        // Another failure (not `SignIn`) does not merge: `plan` stops at the
-        // first non-`SignIn` failure, so merging would block the working key.
-        record(
+        );
+        assert_eq!(
+            status_rows(&db),
+            [("fake:key-a".to_owned(), Some(2_000), None)]
+        );
+        // Non-SignIn failure does not merge.
+        record_ok(
             &mut db,
-            vec![signed("/f1", "fake:key-a"), signed("/f3", "fake:key-c")],
+            vec![
+                signed_for("/f1", "fake:key-a"),
+                signed_for("/f3", "fake:key-c"),
+            ],
             vec![
                 (
                     Read::failed(Problem::unavailable("down")),
@@ -2197,19 +1996,10 @@ mod tests {
                 ),
                 (monthly(1), held("fake:key-c")),
             ],
-            BTreeMap::new(),
             3_000,
-        )
-        .unwrap();
-        let accounts: Vec<(String, Option<i64>, Option<String>)> = db
-            .prepare("SELECT id, read_at, problem FROM account ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
+        );
         assert_eq!(
-            accounts,
+            status_rows(&db),
             [
                 (
                     "fake:key-a".to_owned(),
@@ -2221,29 +2011,22 @@ mod tests {
         );
     }
 
-    /// Two accounts to one plan, as 0.3.0 made one when a key was refused,
-    /// the refused one hidden: once they're one, the plan still shows.
     #[test]
     fn a_plan_made_one_with_a_hidden_copy_still_shows() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let signed = |folder: &str, account: &str| SignedIn {
-            agent: "fake",
-            folder: folder.to_owned(),
-            provider: "fake".to_owned(),
-            account: Some(account.to_owned()),
-            key: Some(account.trim_start_matches("fake:key-").to_owned()),
+        let (_dir, mut db) = open_db();
+        let both = || {
+            vec![
+                signed_for("/f1", "fake:key-a"),
+                signed_for("/f2", "fake:key-b"),
+            ]
         };
-        let both = || vec![signed("/f1", "fake:key-a"), signed("/f2", "fake:key-b")];
-        record(
+        record_ok(
             &mut db,
-            vec![signed("/f1", "fake:key-a")],
+            vec![signed_for("/f1", "fake:key-a")],
             vec![(monthly(1), held("fake:key-a"))],
-            BTreeMap::new(),
             1_000,
-        )
-        .unwrap();
-        record(
+        );
+        record_ok(
             &mut db,
             both(),
             vec![
@@ -2253,31 +2036,20 @@ mod tests {
                 ),
                 (monthly(1), held("fake:key-b")),
             ],
-            BTreeMap::new(),
             2_000,
-        )
-        .unwrap();
+        );
         db.execute("UPDATE account SET hidden = 1 WHERE id = 'fake:key-a'", [])
             .unwrap();
-        record(
+        record_ok(
             &mut db,
             both(),
             vec![
                 (Read::failed(Problem::SignIn), held("fake:key-a")),
                 (monthly(1), held("fake:key-b")),
             ],
-            BTreeMap::new(),
             3_000,
-        )
-        .unwrap();
-        let accounts: Vec<(String, i64)> = db
-            .prepare("SELECT id, hidden FROM account ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(accounts, [("fake:key-b".to_owned(), 0)]);
+        );
+        assert_eq!(account_hidden(&db), [("fake:key-b".to_owned(), 0)]);
     }
 
     #[test]
@@ -2406,28 +2178,25 @@ mod tests {
 
     #[test]
     fn scheduling_polls_idle_every_25m_active_every_5m_and_promptly_after_reset() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open_db();
         let minute = crate::time::MINUTE;
         let t0 = 1_790_856_000_000_i64;
-        // Idle account with a reset 2 hours away: scheduled 25 minutes out.
         let (_, held_idle) = fake(Kind::Subscription, &[]);
-        record(
+        record_ok(
             &mut db,
             signed_in(),
             vec![(monthly(t0 + 120 * minute), held_idle)],
-            BTreeMap::new(),
             t0,
-        )
-        .unwrap();
-        let next: i64 = db
-            .query_row(
+        );
+        let next = |db: &Connection| -> i64 {
+            db.query_row(
                 "SELECT next_check_at FROM account WHERE id = 'fake:account'",
                 [],
-                |row| row.get(0),
+                |r| r.get(0),
             )
-            .unwrap();
-        assert_eq!(next, t0 + IDLE_DUE);
+            .unwrap()
+        };
+        assert_eq!(next(&db), t0 + IDLE_DUE);
         assert!(
             due_accounts(&db, t0 + 10 * minute, false)
                 .unwrap()
@@ -2438,8 +2207,6 @@ mod tests {
                 .unwrap()
                 .contains("fake:account")
         );
-        // `force` (panel open / wake) refreshes an account that is >= 5m old,
-        // but skips one read 2 minutes ago.
         assert!(due_accounts(&db, t0 + 2 * minute, true).unwrap().is_empty());
         assert!(
             due_accounts(&db, t0 + DUE, true)
@@ -2447,43 +2214,25 @@ mod tests {
                 .contains("fake:account")
         );
 
-        // Once a response lands on the idle account, it wakes to the 5m cadence.
-        db.execute(
-            "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                 web_searches, priority, account)
-             VALUES ('fake', 'r1', 's1', 0, 1, '/f', ?1, 'fake', 'm', 1, 0, 0, 0, 1, 0, 1,
-                 0, 0, 'fake:account')",
-            [t0 + 6 * minute],
-        )
-        .unwrap();
+        // Activity wakes the account to the 5m cadence.
+        insert_response(&db, "r1", "/f", t0 + 6 * minute, Some("fake:account"));
         assert!(
             due_accounts(&db, t0 + 7 * minute, false)
                 .unwrap()
                 .contains("fake:account")
         );
 
-        // An account with a reset 8 minutes away schedules RESET_GRACE past it,
-        // and becomes due right after the reset even while idle.
+        // An upcoming reset pulls the next poll to RESET_GRACE past it.
         let (_, held_reset) = fake(Kind::Subscription, &[]);
         let t1 = t0 + 60 * minute;
         let resets = t1 + 8 * minute;
-        record(
+        record_ok(
             &mut db,
             signed_in(),
             vec![(monthly(resets), held_reset)],
-            BTreeMap::new(),
             t1,
-        )
-        .unwrap();
-        let next_reset: i64 = db
-            .query_row(
-                "SELECT next_check_at FROM account WHERE id = 'fake:account'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(next_reset, resets + RESET_GRACE);
+        );
+        assert_eq!(next(&db), resets + RESET_GRACE);
         assert!(due_accounts(&db, resets, false).unwrap().is_empty());
         assert!(
             due_accounts(&db, resets + RESET_GRACE, false)
@@ -2597,5 +2346,25 @@ mod tests {
                 .unwrap()
                 .contains("openai:acct-1")
         );
+
+        // An in-band snapshot older than a newer failed poll (`checked_at`)
+        // must not erase that newer `signIn` problem.
+        let t3 = t2 + 5 * minute;
+        db.execute(
+            "UPDATE account SET problem = 'signIn', checked_at = ?1 WHERE id = 'openai:acct-1'",
+            [t3],
+        )
+        .unwrap();
+        let tx = crate::db::write(&mut db).unwrap();
+        assert!(record_in_band(&tx, "openai:acct-1", &make(t3 - minute, 40.0), t3).unwrap());
+        tx.commit().unwrap();
+        let problem: Option<String> = db
+            .query_row(
+                "SELECT problem FROM account WHERE id = 'openai:acct-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(problem.as_deref(), Some("signIn"));
     }
 }

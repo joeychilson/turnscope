@@ -30,10 +30,11 @@
 //! **Logins** are `auth.json`, an entry per provider under the name its
 //! responses give it.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::value::RawValue;
 
 use super::{Agent, Info, Login, Read, Response, Title, Tokens};
 use crate::Result;
@@ -63,6 +64,66 @@ struct Cursor {
     model: Option<(String, String)>,
 }
 
+#[derive(Deserialize)]
+struct Line<'a> {
+    #[serde(rename = "type", borrow, default)]
+    kind: Cow<'a, str>,
+    #[serde(borrow)]
+    id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    timestamp: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    cwd: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    name: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    provider: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    model: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    usage: Option<&'a RawValue>,
+    #[serde(borrow)]
+    message: Option<Message<'a>>,
+}
+
+#[derive(Deserialize)]
+struct Message<'a> {
+    #[serde(borrow)]
+    role: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    content: Option<&'a RawValue>,
+    #[serde(borrow)]
+    provider: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    model: Option<Cow<'a, str>>,
+    #[serde(rename = "responseModel", borrow)]
+    response_model: Option<Cow<'a, str>>,
+    #[serde(rename = "responseId", borrow)]
+    response_id: Option<Cow<'a, str>>,
+    timestamp: Option<i64>,
+    #[serde(borrow)]
+    usage: Option<&'a RawValue>,
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    input: u64,
+    #[serde(rename = "cacheRead")]
+    cache_read: u64,
+    #[serde(rename = "cacheWrite")]
+    cache_write: u64,
+    #[serde(rename = "cacheWrite1h")]
+    cache_write_1h: Option<u64>,
+    output: u64,
+    reasoning: Option<u64>,
+    cost: Option<Cost>,
+}
+
+#[derive(Deserialize)]
+struct Cost {
+    total: Option<f64>,
+}
+
 impl Agent for Pi {
     fn info(&self) -> &'static Info {
         &INFO
@@ -86,7 +147,7 @@ impl Agent for Pi {
         let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
         let mut read = Read::default();
         cursor.offset = super::lines(file, cursor.offset, |bytes| {
-            let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
+            let Ok(line) = serde_json::from_slice::<Line<'_>>(bytes) else {
                 read.skipped += 1;
                 return;
             };
@@ -117,22 +178,22 @@ impl Agent for Pi {
     }
 }
 
-fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
-    let at = line["timestamp"].as_str().and_then(crate::time::millis);
-    if line["type"] == "session" {
-        let Some(native) = line["id"].as_str() else {
+fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
+    let at = line.timestamp.as_deref().and_then(crate::time::millis);
+    if line.kind == "session" {
+        let Some(native) = line.id.as_deref() else {
             return;
         };
         let session = INFO.session(native);
-        let facts = read.session(&session);
-        facts.cwd = line["cwd"]
-            .as_str()
+        read.session(&session).cwd = line
+            .cwd
+            .as_deref()
             .filter(|cwd| !cwd.is_empty())
             .map(str::to_owned);
         (cursor.session, cursor.began) = (Some(session), at);
         return;
     }
-    let Some(session) = cursor.session.clone() else {
+    let Some(session) = cursor.session.as_deref() else {
         return;
     };
     // An entry from before the session began is a fork's copy of its
@@ -140,118 +201,126 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
     let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
     // A copy's entry id is its parent's, under the parent's own
     // session, so it can't name a response of this one.
-    let entry = line["id"]
-        .as_str()
-        .filter(|_| !copy)
-        .map(|entry| format!("{session}:{entry}"));
-    let (usage, provider, model, id, at) = match line["type"].as_str() {
-        Some("session_info") if !copy => {
-            if let Some(name) = line["name"].as_str() {
-                read.session(&session).title(Title::Named, name);
+    let entry = || {
+        (!copy)
+            .then(|| line.id.as_deref().map(|id| format!("{session}:{id}")))
+            .flatten()
+    };
+    let (usage, provider, model, id, at) = match &*line.kind {
+        "session_info" if !copy => {
+            if let Some(name) = line.name.as_deref() {
+                read.session(session).title(Title::Named, name);
             }
             return;
         }
-        Some("usage") => {
+        "usage" => {
             let (Some(provider), Some(model), Some(id)) =
-                (line["provider"].as_str(), line["model"].as_str(), entry)
+                (line.provider.as_deref(), line.model.as_deref(), entry())
             else {
                 return;
             };
-            (
-                &line["usage"],
-                provider.to_owned(),
-                model.to_owned(),
-                id,
-                at,
-            )
+            (line.usage, provider.to_owned(), model.to_owned(), id, at)
         }
-        Some("compaction" | "branch_summary") => {
-            let (Some((provider, model)), Some(id), true) =
-                (cursor.model.clone(), entry, line["usage"].is_object())
-            else {
+        "compaction" | "branch_summary" => {
+            let Some(usage) = line.usage.filter(|raw| raw.get().starts_with('{')) else {
                 return;
             };
-            (&line["usage"], provider, model, id, at)
+            let (Some((provider, model)), Some(id)) = (cursor.model.as_ref(), entry()) else {
+                return;
+            };
+            (Some(usage), provider.clone(), model.clone(), id, at)
         }
-        Some("message") => {
-            let message = &line["message"];
-            match message["role"].as_str() {
+        "message" => {
+            let Some(message) = &line.message else {
+                return;
+            };
+            match message.role.as_deref() {
                 // The first thing the person asked titles the session: its
-                // first text.
+                // first non-blank text part.
                 Some("user") if !copy && !cursor.titled => {
-                    let asked = super::texts(&message["content"]).into_iter().next();
+                    let asked = message
+                        .content
+                        .map(super::texts)
+                        .into_iter()
+                        .flatten()
+                        .find(|text| !text.trim().is_empty());
                     if let Some(asked) = asked {
-                        read.session(&session).title(Title::Prompt, &asked);
+                        read.session(session).title(Title::Prompt, &asked);
                         cursor.titled = true;
                     }
                     return;
                 }
                 Some("assistant") => {
                     // The model the provider answered with, where it said.
-                    let model = message["responseModel"]
-                        .as_str()
-                        .or(message["model"].as_str());
-                    let (Some(provider), Some(model)) = (message["provider"].as_str(), model)
+                    let model = message
+                        .response_model
+                        .as_deref()
+                        .filter(|model| !model.is_empty())
+                        .or(message.model.as_deref())
+                        .filter(|model| !model.is_empty());
+                    let (Some(provider), Some(model)) = (message.provider.as_deref(), model) else {
+                        return;
+                    };
+                    if cursor
+                        .model
+                        .as_ref()
+                        .is_none_or(|(p, m)| p != provider || m != model)
+                    {
+                        cursor.model = Some((provider.to_owned(), model.to_owned()));
+                    }
+                    // A copy without a response id couldn't be told
+                    // from its parent's.
+                    let Some(id) = message
+                        .response_id
+                        .as_deref()
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned)
+                        .or_else(entry)
                     else {
                         return;
                     };
-                    cursor.model = Some((provider.to_owned(), model.to_owned()));
-                    // A copy without a response id couldn't be told
-                    // from its parent's.
-                    let id = message["responseId"].as_str().map(str::to_owned).or(entry);
-                    let Some(id) = id else { return };
-                    let at = message["timestamp"].as_i64().or(at);
-                    (
-                        &message["usage"],
-                        provider.to_owned(),
-                        model.to_owned(),
-                        id,
-                        at,
-                    )
+                    let at = message.timestamp.or(at);
+                    (message.usage, provider.to_owned(), model.to_owned(), id, at)
                 }
                 _ => return,
             }
         }
         _ => return,
     };
-    let count = |name: &str| usage[name].as_u64();
-    let (Some(input), Some(cache_read), Some(cache_write), Some(output), Some(at)) = (
-        count("input"),
-        count("cacheRead"),
-        count("cacheWrite"),
-        count("output"),
+    let (Some(usage), Some(at)) = (
+        usage.and_then(|raw| serde_json::from_str::<Usage>(raw.get()).ok()),
         at,
     ) else {
         read.skipped += 1;
         return;
     };
-    let cache_write_1h = count("cacheWrite1h").unwrap_or_default();
+    let cache_write_1h = usage.cache_write_1h.unwrap_or_default();
     let tokens = Tokens {
-        input,
-        cache_read,
-        cache_write_5m: cache_write.saturating_sub(cache_write_1h),
+        input: usage.input,
+        cache_read: usage.cache_read,
+        cache_write_5m: usage.cache_write.saturating_sub(cache_write_1h),
         cache_write_1h,
-        output,
-        reasoning: count("reasoning").unwrap_or_default(),
+        output: usage.output,
+        reasoning: usage.reasoning.unwrap_or_default(),
     };
     read.respond(Response {
         id,
-        session,
+        session: session.to_owned(),
         copy,
         at,
         provider,
         model,
-        prompt: input + cache_read + cache_write,
+        prompt: usage.input + usage.cache_read + usage.cache_write,
         tokens,
         web_searches: 0,
         priority: false,
-        cost: usage["cost"]["total"].as_f64(),
+        cost: usage.cost.and_then(|cost| cost.total),
     });
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -356,13 +425,14 @@ mod tests {
         };
         let lines = [
             json!({"type": "session", "id": "s1", "cwd": "/work/cli", "timestamp": "2026-09-30T09:00:00Z"}),
+            json!({"type": "message", "id": "e0", "timestamp": "2026-09-30T09:00:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "  \n "}]}}),
             json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:01Z", "message": {"role": "user", "content": "Add a --verbose flag."}}),
             reply("e2", "2026-09-30T09:00:05Z", "resp_1"),
             json!({"type": "message", "id": "e3", "timestamp": "2026-09-30T09:05:00Z", "message": {"role": "user", "content": "Now document it."}}),
             reply("e4", "2026-09-30T09:05:09Z", "resp_2"),
         ];
         let name = "2026-09-30T09-00-00-000Z_s1.jsonl";
-        let file = session(dir.path(), name, &lines[..3]);
+        let file = session(dir.path(), name, &lines[..4]);
         let first = Pi.read(&file, "").unwrap();
         session(dir.path(), name, &lines);
         let later = Pi.read(&file, &first.cursor).unwrap();

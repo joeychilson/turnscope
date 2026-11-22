@@ -14,10 +14,8 @@ use crate::state::State;
 
 static ENGINE: OnceLock<Engine> = OnceLock::new();
 
-/// The `turnscope` binary agents run: the bundle's `Contents/Helpers/turnscope`,
-/// or beside this one when it runs from `target/`, where Cargo builds both.
-/// Never from the environment: its path is what connecting writes into each
-/// agent's settings.
+/// Resolves the bundled `Helpers/turnscope` (or sibling binary under `target/`)
+/// rather than searching `PATH`, because `connect` writes this path into agent configs.
 pub fn binary() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     let folder = exe.parent().unwrap_or(Path::new("/"));
@@ -27,8 +25,6 @@ pub fn binary() -> PathBuf {
     }
 }
 
-/// Start keeping the data in `data` current from the agents' folders in
-/// `home`.
 pub fn start(home: PathBuf, data: PathBuf, handle: AppHandle<State>) {
     let engine = Engine::start(data, home, binary(), move |event| {
         handle.update_if(move |s, tx| took(s, event, tx));
@@ -36,16 +32,16 @@ pub fn start(home: PathBuf, data: PathBuf, handle: AppHandle<State>) {
     let _ = ENGINE.set(engine);
 }
 
-/// Takes in what the engine told. Whether the panel changed.
 fn took(s: &mut State, event: Event, tx: &mut Tx) -> bool {
     match event {
-        Event::Shown(shown, alerts) => {
-            let alerts = std::mem::take(&mut s.alerts_waiting)
-                .into_iter()
-                .chain(alerts)
-                .collect();
+        Event::Shown(shown, mut alerts) => {
+            if !s.alerts_waiting.is_empty() {
+                let mut combined = std::mem::take(&mut s.alerts_waiting);
+                combined.append(&mut alerts);
+                alerts = combined;
+            }
             crate::took(s, *shown, alerts, tx);
-            true
+            s.panel_open
         }
         Event::Pending(alerts) if s.status.is_none() => {
             s.alerts_waiting.extend(alerts);
@@ -56,15 +52,12 @@ fn took(s: &mut State, event: Event, tx: &mut Tx) -> bool {
             false
         }
         Event::Kept(stopped) => {
-            let failure = stopped.as_ref().map(|stopped| stopped.why.clone());
-            let trying_again = stopped.is_none_or(|stopped| stopped.trying_again);
-            if s.failure == failure && s.trying_again == trying_again {
+            if s.problem == stopped {
                 return false;
             }
-            s.failure = failure;
-            s.trying_again = trying_again;
+            s.problem = stopped;
             crate::menu_bar::draw(s);
-            true
+            s.panel_open
         }
         Event::UsedMost {
             account,
@@ -100,17 +93,15 @@ fn took(s: &mut State, event: Event, tx: &mut Tx) -> bool {
                     }
                 }
             }
-            true
+            s.panel_open
         }
     }
 }
 
-/// Whether the engine runs here, rather than the app showing a fixed status.
 pub fn running() -> bool {
     ENGINE.get().is_some()
 }
 
-/// Asks the engine, if it runs here.
 fn ask(request: impl FnOnce(&Engine)) {
     if let Some(engine) = ENGINE.get() {
         request(engine);
@@ -141,27 +132,20 @@ pub fn poke() {
     ask(|engine| engine.poke());
 }
 
-/// Add `line` to the log beside the data, once the engine runs.
 pub fn log(line: &str) {
     if let Some(data) = DATA.get() {
         turnscope::engine::log(data, line);
     }
 }
 
-/// The data directory, for the log.
 pub static DATA: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::preferences::Preferences;
+    use crate::state::tests::example;
     use turnscope::alerts::{Alert, Kind};
-    use turnscope::engine::{Shown, Stopped};
-
-    /// The example status in tests/fixtures/status.json, as `--fixture` shows it.
-    fn example() -> Shown {
-        serde_json::from_str(include_str!("../../turnscope/tests/fixtures/status.json")).unwrap()
-    }
+    use turnscope::engine::Stopped;
 
     fn sign_in(account: &str) -> Alert {
         Alert {
@@ -179,16 +163,17 @@ mod tests {
 
     #[test]
     fn alerts_told_before_the_first_status_wait_for_it() {
-        let mut s = State::new(Preferences::default());
+        let mut s = State::default();
         let mut tx = Tx::default();
         let alert = sign_in("opencode-go:key-0123456789abcdef");
         assert!(!took(&mut s, Event::Pending(vec![alert.clone()]), &mut tx));
         assert_eq!(s.alerts_waiting.len(), 1);
-        took(
+        // Closed, a status updates state without rebuilding the panel.
+        assert!(!took(
             &mut s,
             Event::Shown(Box::new(example()), Vec::new()),
             &mut tx,
-        );
+        ));
         assert_eq!(s.alerts_waiting.len(), 0);
         // Once there's a status, they're posted as they come.
         took(&mut s, Event::Pending(vec![alert]), &mut tx);
@@ -197,15 +182,18 @@ mod tests {
 
     #[test]
     fn why_the_data_isnt_kept_current_shows_as_it_changes() {
-        let mut s = State::new(Preferences::default());
+        let mut s = State {
+            panel_open: true,
+            ..State::default()
+        };
         let mut tx = Tx::default();
         let stopped = Stopped {
             why: "The disk is full.".into(),
             trying_again: true,
         };
         assert!(took(&mut s, Event::Kept(Some(stopped.clone())), &mut tx));
-        assert_eq!(s.failure.as_deref(), Some("The disk is full."));
-        assert!(s.trying_again);
+        assert_eq!(s.problem.as_ref(), Some(&stopped));
+        assert!(!s.stopped());
         // Told again the same, nothing changes on screen.
         assert!(!took(&mut s, Event::Kept(Some(stopped)), &mut tx));
         // A newer Turnscope wrote to the data: this one stops trying.
@@ -214,15 +202,18 @@ mod tests {
             trying_again: false,
         };
         assert!(took(&mut s, Event::Kept(Some(newer)), &mut tx));
-        assert!(!s.trying_again);
+        assert!(s.stopped());
         assert!(took(&mut s, Event::Kept(None), &mut tx));
-        assert_eq!(s.failure, None);
-        assert!(s.trying_again);
+        assert_eq!(s.problem, None);
+        assert!(!s.stopped());
     }
 
     #[test]
     fn a_connect_that_ends_shows_at_once_and_one_that_fails_says_why() {
-        let mut s = State::new(Preferences::default());
+        let mut s = State {
+            panel_open: true,
+            ..State::default()
+        };
         let mut tx = Tx::default();
         s.take(example());
         let codex = |s: &State| {

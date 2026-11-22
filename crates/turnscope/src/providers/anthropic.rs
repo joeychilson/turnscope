@@ -52,9 +52,7 @@ impl Provider for Anthropic {
 
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
         let answer = super::ask(USAGE, credential, &["anthropic-beta: oauth-2025-04-20"], by)?;
-        let readings = parse(&answer, now)
-            .filter(|readings| !readings.is_empty())
-            .ok_or_else(|| Problem::not_understood(USAGE))?;
+        let readings = parse(&answer, now).ok_or_else(|| Problem::not_understood(USAGE))?;
         // The plan is the credential's, which the account's title takes.
         Ok(Limits {
             plan: None,
@@ -66,7 +64,7 @@ impl Provider for Anthropic {
 fn parse(answer: &Value, now: i64) -> Option<Vec<Reading>> {
     let mut readings = Vec::new();
     for (key, window) in answer.as_object()? {
-        if super::absent(window) || window.get("utilization").is_none() {
+        if super::absent(window) {
             continue;
         }
         let (name, scope, length) = match key.as_str() {
@@ -80,19 +78,18 @@ fn parse(answer: &Value, now: i64) -> Option<Vec<Reading>> {
             // no scope, it did all three. Not measured: no answer read here
             // has carried it.
             "seven_day_oauth_apps" => ("Weekly", Some("Other apps".to_owned()), 7 * DAY),
-            other => match other.strip_prefix("seven_day_") {
+            other => match other.strip_prefix("seven_day_").filter(|m| !m.is_empty()) {
                 Some(model) => ("Weekly", Some(super::words(model)), 7 * DAY),
                 None => continue,
             },
         };
-        let read = window["utilization"]
-            .as_f64()
+        let read = window
+            .get("utilization")
+            .and_then(Value::as_f64)
             .zip(super::reset(&window["resets_at"]));
         let Some((used, resets)) = read else {
-            match key.as_str() {
-                "five_hour" | "seven_day" => return None,
-                _ => continue,
-            }
+            scope.as_ref()?;
+            continue;
         };
         let resets = resets.or((used == 0.0).then_some(now + length));
         readings.push(Reading {
@@ -105,7 +102,7 @@ fn parse(answer: &Value, now: i64) -> Option<Vec<Reading>> {
             resets,
         });
     }
-    Some(readings)
+    (!readings.is_empty()).then_some(readings)
 }
 
 #[cfg(test)]
@@ -119,6 +116,7 @@ mod tests {
         let answer = json!({
             "five_hour": {"utilization": 52.0, "resets_at": "2026-10-01T15:00:00Z"},
             "seven_day": {"utilization": 44.0, "resets_at": "2026-10-05T00:00:00Z"},
+            "seven_day_oauth_apps": {"utilization": 100.0, "resets_at": "2026-10-05T00:00:00Z"},
             "seven_day_opus": {"utilization": 10.0, "resets_at": null},
             "seven_day_sonnet": null,
             "seven_day_breakdown": {"opus": 3},
@@ -141,6 +139,7 @@ mod tests {
             [
                 ("five_hour", "5 hours", None, 52.0),
                 ("seven_day", "Weekly", None, 44.0),
+                ("seven_day_oauth_apps", "Weekly", Some("Other apps"), 100.0),
                 ("seven_day_opus", "Weekly", Some("Opus"), 10.0)
             ]
         );
@@ -157,22 +156,6 @@ mod tests {
         );
     }
 
-    /// Scoped, so used up it doesn't decide the account, hold back another
-    /// limit's return, or list Claude Code's sessions as what used it.
-    #[test]
-    fn other_apps_weekly_covers_other_apps_alone() {
-        let answer = json!({
-            "seven_day": {"utilization": 44.0, "resets_at": "2026-10-05T00:00:00Z"},
-            "seven_day_oauth_apps": {"utilization": 100.0, "resets_at": "2026-10-05T00:00:00Z"},
-        });
-        let readings = super::parse(&answer, 0).unwrap();
-        let other = &readings[1];
-        assert_eq!(
-            (other.name.as_str(), other.scope.as_deref()),
-            ("Weekly", Some("Other apps"))
-        );
-    }
-
     #[test]
     fn a_window_beside_the_plans_own_that_doesnt_read_is_passed_over() {
         let answer = json!({
@@ -186,12 +169,13 @@ mod tests {
             .map(|reading| reading.key.clone())
             .collect();
         assert_eq!(read, ["five_hour"]);
-        // One of the plan's own fails the answer, which would otherwise pass
-        // for a plan without it.
-        let answer = json!({
-            "five_hour": {"utilization": "n/a", "resets_at": null},
-            "seven_day": {"utilization": 44.0, "resets_at": "2026-10-05T00:00:00Z"},
-        });
-        assert!(super::parse(&answer, 0).is_none());
+        // One of the plan's own fails the answer (whether invalid or missing
+        // utilization), which would otherwise pass for a plan without it.
+        for bad in [
+            json!({"five_hour": {"utilization": "n/a", "resets_at": null}, "seven_day": {"utilization": 44.0, "resets_at": "2026-10-05T00:00:00Z"}}),
+            json!({"five_hour": {"resets_at": "2026-10-01T15:00:00Z"}, "seven_day": {"utilization": 44.0, "resets_at": "2026-10-05T00:00:00Z"}}),
+        ] {
+            assert!(super::parse(&bad, 0).is_none());
+        }
     }
 }

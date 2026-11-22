@@ -59,7 +59,7 @@ fn waiting(on: bool) {
         handle.update_if(move |s, _| {
             let changed = s.update_available != on;
             s.update_available = on;
-            changed
+            changed && s.panel_open
         });
     }
 }
@@ -119,13 +119,10 @@ fn with<T>(f: impl FnOnce(&AnyObject) -> T) -> Option<T> {
     })
 }
 
-/// Whether this copy can update itself.
 pub fn available() -> bool {
     with(|_| ()).is_some()
 }
 
-/// Checks for an update now and shows what's found. An update that's waiting is brought
-/// forward.
 pub fn check() {
     with(|controller| {
         if let Some(mtm) = MainThreadMarker::new() {
@@ -136,7 +133,6 @@ pub fn check() {
     });
 }
 
-/// Whether it checks for updates automatically.
 pub fn automatic() -> bool {
     with(|controller| unsafe {
         let updater: *mut AnyObject = msg_send![controller, updater];
@@ -146,11 +142,7 @@ pub fn automatic() -> bool {
     .unwrap_or(false)
 }
 
-/// Checks for updates automatically, or stops. Not on a fixed status, whose changes go nowhere.
 pub fn set_automatic(on: bool) {
-    if !crate::engine::running() {
-        return;
-    }
     with(|controller| unsafe {
         let updater: *mut AnyObject = msg_send![controller, updater];
         let _: () = msg_send![updater, setAutomaticallyChecksForUpdates: Bool::new(on)];

@@ -9,13 +9,33 @@ use crate::status::{Account, Limit, Moment, Outlook, State, Status};
 use crate::time::DAY;
 use crate::{Result, forecast};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     RunningOut,
     UsedUp,
     Reset,
     SignIn,
+}
+
+impl Kind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Kind::RunningOut => "runningOut",
+            Kind::UsedUp => "usedUp",
+            Kind::Reset => "reset",
+            Kind::SignIn => "signIn",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Kind> {
+        match text {
+            "runningOut" => Some(Kind::RunningOut),
+            "usedUp" => Some(Kind::UsedUp),
+            "reset" => Some(Kind::Reset),
+            "signIn" => Some(Kind::SignIn),
+            _ => None,
+        }
+    }
 }
 
 /// An alert, as sent: when each kind is raised is in
@@ -44,7 +64,6 @@ pub struct Alert {
     pub runs_out: Option<Moment>,
 }
 
-/// What an alert says, as it was raised.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Detail {
@@ -54,7 +73,6 @@ struct Detail {
     runs_out: Option<i64>,
 }
 
-/// Raise the alerts `status` makes due, and give back those to tell.
 pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
     let now = status.at;
     let notify = status.settings.notify;
@@ -71,11 +89,12 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
         // within the drift $10 more would match.
         let drift = if window < 0 { 0 } else { forecast::DRIFT };
         let known = tx
-            .query_row(
+            .prepare_cached(
                 "SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3 AND window BETWEEN ?4 - ?5 AND ?4 + ?5",
-                params![account.id, key, kind_name(kind), window, drift],
-                |_| Ok(()),
-            )
+            )?
+            .query_row(params![account.id, key, kind.as_str(), window, drift], |_| {
+                Ok(())
+            })
             .optional()?;
         if known.is_some() {
             return Ok(());
@@ -98,10 +117,18 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
                 .map(|window| window.resets.at),
             runs_out,
         };
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO alert (account, limit_key, kind, window, at, acknowledged, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![account.id, key, kind_name(kind), window, now, !told, serde_json::to_string(&detail).unwrap_or_default()],
-        )?;
+        )?
+        .execute(params![
+            account.id,
+            key,
+            kind.as_str(),
+            window,
+            now,
+            !told,
+            serde_json::to_string(&detail).unwrap_or_default()
+        ])?;
         if told {
             let id = tx.last_insert_rowid();
             raised.push(alert(id, kind, &account.id, key, detail, now));
@@ -140,26 +167,29 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             // money is back once a cent is left, as $5 is under 1% of $1,000
             // bought. Of two used up with none back between, one back tells
             // both.
-            let used_up: Option<i64> = tx
-                .prepare_cached(
-                    "SELECT window FROM alert WHERE account = ?1 AND limit_key = ?2
-                     AND kind = 'usedUp' AND (window >= ?3 OR window < 0)
-                     ORDER BY id DESC LIMIT 1",
-                )?
-                .query_row(params![account.id, limit.key, now - DAY], |row| row.get(0))
-                .optional()?;
-            if let Some(ended) = used_up {
-                let left = match limit.money {
-                    Some(money) => money.left_usd > 0.0,
-                    None => limit.left_percent > 0,
-                };
+            let left = match limit.money {
+                Some(money) => money.left_usd > 0.0,
+                None => limit.left_percent > 0,
+            };
+            if left
+                && let Some(ended) = tx
+                    .prepare_cached(
+                        "SELECT window FROM alert WHERE account = ?1 AND limit_key = ?2
+                         AND kind = 'usedUp' AND (window >= ?3 OR window < 0)
+                         ORDER BY id DESC LIMIT 1",
+                    )?
+                    .query_row(params![account.id, limit.key, now - DAY], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .optional()?
+            {
                 let this = limit.window.is_some_and(|window| {
                     forecast::same_reset(Some(ended), Some(window.resets.at))
                 });
                 // Reset early, a read shows a new window with a new reset:
                 // waiting for the old one told it days late.
                 let moved = limit.window.is_some() && !this;
-                if (left && (ended <= now || moved)) || (this && limit.left_percent > 1) {
+                if ended <= now || moved || (this && limit.left_percent > 1) {
                     raise(account, Some(limit), Kind::Reset, ended, None)?;
                 }
             }
@@ -184,9 +214,6 @@ fn window(limit: &Limit) -> Option<i64> {
     }
 }
 
-/// Whether a limit other than `limit` that stops what it covers is used up:
-/// one on the whole account, or one on the same models, as a plan's 5-hour
-/// and weekly limits on them are.
 fn blocked(account: &Account, limit: &Limit) -> bool {
     account.limits.iter().any(|other| {
         other.key != limit.key
@@ -195,10 +222,8 @@ fn blocked(account: &Account, limit: &Limit) -> bool {
     })
 }
 
-/// Every alert not yet acknowledged that still stands, as `status` says:
-/// without it, a sign-in for an account that can be read again would be
-/// posted with its sound, then removed at once, and credits bought since
-/// would be posted as used up.
+/// Unacknowledged alerts that still apply against `status`, so resolved sign-in
+/// or refilled-credits alerts aren't posted and immediately retracted.
 pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>> {
     let mut statement = db.prepare(
         "SELECT id, kind, at, account, limit_key, detail FROM alert WHERE acknowledged = 0 ORDER BY id",
@@ -206,56 +231,37 @@ pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>>
     let mut rows = statement.query([])?;
     let mut pending = Vec::new();
     while let Some(row) = rows.next()? {
-        let kind = serde_json::from_value::<Kind>(row.get::<_, String>(1)?.into());
-        let detail = serde_json::from_str::<Detail>(&row.get::<_, String>(5)?);
-        let (Ok(kind), Ok(detail)) = (kind, detail) else {
+        let (Some(kind), Ok(detail)) = (
+            Kind::parse(row.get_ref(1)?.as_str()?),
+            serde_json::from_str::<Detail>(row.get_ref(5)?.as_str()?),
+        ) else {
             continue;
         };
-        let (id, at, account, limit): (i64, i64, String, String) =
-            (row.get(0)?, row.get(2)?, row.get(3)?, row.get(4)?);
+        let (id, at): (i64, i64) = (row.get(0)?, row.get(2)?);
+        let account = row.get_ref(3)?.as_str()?;
+        let limit = row.get_ref(4)?.as_str()?;
+        let known = status.accounts.iter().find(|known| known.id == account);
+        let known_limit = known.and_then(|known| known.limits.iter().find(|l| l.key == limit));
         let stands = match kind {
             Kind::RunningOut | Kind::UsedUp => match detail.resets {
-                Some(resets) => resets > now && !moved(status, &account, &limit, resets),
-                None => status.accounts.iter().any(|known| {
-                    known.id == account
-                        && known.limits.iter().any(|known| {
-                            known.key == limit && matches!(known.outlook, Outlook::UsedUp { .. })
-                        })
-                }),
+                Some(resets) => {
+                    let moved = known_limit.and_then(|l| l.window).is_some_and(|window| {
+                        !forecast::same_reset(Some(resets), Some(window.resets.at))
+                    });
+                    resets > now && !moved
+                }
+                None => known_limit.is_some_and(|l| matches!(l.outlook, Outlook::UsedUp { .. })),
             },
             Kind::Reset => now - at <= DAY,
-            Kind::SignIn => {
-                now - at <= DAY
-                    && status
-                        .accounts
-                        .iter()
-                        .any(|known| known.id == account && known.refused())
-            }
+            Kind::SignIn => now - at <= DAY && known.is_some_and(Account::refused),
         };
         if stands {
-            pending.push(alert(id, kind, &account, &limit, detail, now));
+            pending.push(alert(id, kind, account, limit, detail, now));
         }
     }
     Ok(pending)
 }
 
-/// Whether `account`'s `limit` reads a window other than the one that
-/// resets at `resets`: reset early, as a provider may.
-fn moved(status: &Status, account: &str, limit: &str, resets: i64) -> bool {
-    status
-        .accounts
-        .iter()
-        .filter(|known| known.id == account)
-        .flat_map(|known| &known.limits)
-        .any(|known| {
-            known.key == limit
-                && known.window.is_some_and(|window| {
-                    !forecast::same_reset(Some(resets), Some(window.resets.at))
-                })
-        })
-}
-
-/// Mark alerts shown, so they aren't sent again.
 pub fn acknowledge(db: &mut Connection, ids: &[i64]) -> Result<usize> {
     if ids.is_empty() {
         return Ok(0);
@@ -287,15 +293,6 @@ fn alert(id: i64, kind: Kind, account: &str, limit: &str, detail: Detail, now: i
         limit_name: detail.limit_name,
         resets: detail.resets.map(|at| Moment::of(at, now)),
         runs_out: detail.runs_out.map(|at| Moment::of(at, now)),
-    }
-}
-
-fn kind_name(kind: Kind) -> &'static str {
-    match kind {
-        Kind::RunningOut => "runningOut",
-        Kind::UsedUp => "usedUp",
-        Kind::Reset => "reset",
-        Kind::SignIn => "signIn",
     }
 }
 
@@ -353,12 +350,9 @@ mod tests {
     use crate::status::{Horizon, LimitWindow};
     use crate::time::MINUTE;
 
-    /// The example status's Claude Max, in use, with only its 5 hours: `left`
-    /// percent left of a window from 0 to day 10, at `at`.
     fn status(at: i64, left: u8, outlook: Outlook) -> Status {
-        let example: serde_json::Value =
+        let mut status: Status =
             serde_json::from_str(include_str!("../tests/fixtures/status.json")).unwrap();
-        let mut status: Status = serde_json::from_value(example).unwrap();
         status.at = at;
         status.accounts.truncate(1);
         let account = &mut status.accounts[0];
@@ -380,14 +374,19 @@ mod tests {
         left_at_reset: None,
     };
 
+    fn open() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        (dir, db)
+    }
+
     fn kinds(raised: &[Alert]) -> Vec<Kind> {
         raised.iter().map(|alert| alert.kind).collect()
     }
 
     #[test]
     fn a_limit_used_up_is_told_once_and_its_return_after() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         let used_up = status(DAY, 0, Outlook::UsedUp { back: None });
         let raised = raise(&mut db, &used_up).unwrap();
         assert_eq!(kinds(&raised), [Kind::UsedUp]);
@@ -426,8 +425,7 @@ mod tests {
 
     #[test]
     fn credits_are_told_used_up_once_a_size_and_back_once_a_cent_is_left() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         let used_up = credits(DAY, 1000.0, 0.0);
         let raised = raise(&mut db, &used_up).unwrap();
         assert_eq!(kinds(&raised), [Kind::UsedUp]);
@@ -460,8 +458,7 @@ mod tests {
 
     #[test]
     fn credits_used_up_are_sent_again_only_while_they_still_are() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         let used_up = credits(DAY, 10.0, 0.0);
         assert_eq!(kinds(&raise(&mut db, &used_up).unwrap()), [Kind::UsedUp]);
         // Not acknowledged, as when notifications were off: a week on, it
@@ -479,8 +476,7 @@ mod tests {
 
     #[test]
     fn a_sign_in_is_sent_again_only_while_its_account_cant_be_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         let mut refused = status(DAY, 60, LASTS);
         refused.accounts[0].state = State::AsOf {
             read_at: DAY - MINUTE,
@@ -542,8 +538,7 @@ mod tests {
             (used_up, "usedUp"),
             (running_out, "runningOut"),
         ] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut db = crate::db::open(dir.path()).unwrap();
+            let (_dir, mut db) = open();
             assert!(raise(&mut db, &status).unwrap().is_empty());
             assert_eq!(recorded(&db), [(kind.to_owned(), true)]);
             assert!(pending(&db, &status, DAY).unwrap().is_empty());
@@ -555,8 +550,7 @@ mod tests {
 
     #[test]
     fn running_out_is_told_once_while_its_reset_drifts() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         let mut status = runs_out(DAY);
         assert_eq!(kinds(&raise(&mut db, &status).unwrap()), [Kind::RunningOut]);
         let window = status.accounts[0].limits[0].window.as_mut().unwrap();
@@ -577,8 +571,7 @@ mod tests {
     #[test]
     fn only_a_limit_used_up_is_back_and_only_once_the_account_can_be_used() {
         // Warned it would run out, it reset before it did: nothing is back.
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         let soon = Moment {
             at: 9 * DAY,
             horizon: Horizon::Later,
@@ -596,8 +589,7 @@ mod tests {
         let reset = status(10 * DAY + MINUTE, 100, LASTS);
         assert!(raise(&mut db, &reset).unwrap().is_empty());
         // Its 5 hours back while its week is still used up: not said.
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         let mut used_up = status(DAY, 0, Outlook::UsedUp { back: None });
         let mut week = used_up.accounts[0].limits[0].clone();
         week.key = "seven_day".to_owned();
@@ -622,8 +614,7 @@ mod tests {
 
     #[test]
     fn a_week_used_up_long_before_it_resets_says_its_back_after() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         raise(&mut db, &status(DAY, 0, Outlook::UsedUp { back: None })).unwrap();
         // Nine days on, an hour after the window reset.
         let back = status(10 * DAY + 60 * MINUTE, 100, LASTS);
@@ -634,8 +625,7 @@ mod tests {
     /// day 3 to a new window: it's back then, and used up no more.
     #[test]
     fn a_limit_reset_early_is_back_at_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
+        let (_dir, mut db) = open();
         raise(&mut db, &status(DAY, 0, Outlook::UsedUp { back: None })).unwrap();
         let mut early = status(3 * DAY, 100, LASTS);
         early.accounts[0].limits[0].window = Some(LimitWindow {

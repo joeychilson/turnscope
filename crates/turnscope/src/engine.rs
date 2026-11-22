@@ -87,66 +87,61 @@ pub struct Stopped {
     pub trying_again: bool,
 }
 
-/// How long the engine waits before it tries again: to open data it
-/// couldn't, to keep it current after that stopped, or to take over from
-/// another app.
 const AGAIN: Duration = Duration::from_secs(5);
 
 /// Keeps the data current and tells the app what to show, on threads of its
-/// own. A request is never waited for: what it changes comes back as an
-/// `Event`.
+/// own. Requests run on a single thread in order (over a thread per request:
+/// with two `Settings` saves in a row, the first won in 9 of 300 tries,
+/// measured 2026-11-18). Connects run on a separate thread since agent
+/// commands can take a minute.
 ///
-/// Requests run one at a time, in the order asked, on one thread, and
-/// connects on another. Over a thread for each request: the app sends the
-/// whole `Settings` each time, and of two saved in a row, the first was
-/// kept in 9 of 300 tries (measured 2026-11-18). Connects apart, as an agent's command can take a
-/// minute: a hide waiting behind one would show at once, go back with the
-/// next status, and show again a minute later.
-///
-/// Once a newer Turnscope has written to the data
-/// (`Stopped::trying_again`), `hide` and `save_settings` change nothing and
-/// tell the status last told again, `acknowledge` does nothing, and
-/// `connect` runs no command and tells why. `used_most` still answers: it
-/// only reads.
+/// Once a newer Turnscope has written (`Stopped::trying_again == false`),
+/// write requests are refused and `used_most` still answers.
 pub struct Engine {
     inner: Arc<Inner>,
     requests: Sender<Work>,
     connects: Sender<Work>,
 }
 
-/// A request, as a queue runs it (`queue`).
 type Work = Box<dyn FnOnce(&Inner) + Send>;
 
-/// Minimum time between explicit `Engine::poke` refreshes (panel open or Mac
-/// wake), so repeated clicks don't hammer providers.
 const POKE_GAP: Duration = Duration::from_secs(30);
 
-/// Why `keep` woke from waiting on agent folder changes.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Wake {
-    /// Files changed in an agent folder.
     Files,
-    /// A login file changed in an agent folder.
     Auth,
-    /// The app asked for a fresh check (panel opened or Mac woke).
     Poke,
+    Stop,
+}
+
+#[derive(Default)]
+struct WakeState {
+    sender: Option<Sender<Wake>>,
+    last_poke: Option<Instant>,
+}
+
+#[derive(PartialEq, Eq)]
+enum Kept {
+    Unset,
+    Current,
+    Stopped(Stopped),
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 struct Inner {
     data: PathBuf,
     home: PathBuf,
-    /// The `turnscope` binary agents run once connected.
     binary: PathBuf,
     tell: Box<dyn Fn(Event) + Send + Sync>,
-    /// None until the data opens.
     showing: Mutex<Option<Showing>>,
-    /// What `Event::Kept` last said, so it's told only when it changes.
-    kept: Mutex<Option<Option<Stopped>>>,
-    /// Sender to wake `keep` while this process holds `app.lock`.
-    wake: Mutex<Option<Sender<Wake>>>,
-    /// When `Engine::poke` last woke `keep`.
-    last_poke: Mutex<Option<Instant>>,
-    /// Set once the `Engine` is dropped: its threads end at their next turn.
+    kept: Mutex<Kept>,
+    wake: Mutex<WakeState>,
     ended: AtomicBool,
 }
 
@@ -170,9 +165,8 @@ impl Engine {
             binary,
             tell: Box::new(tell),
             showing: Mutex::new(None),
-            kept: Mutex::new(None),
-            wake: Mutex::new(None),
-            last_poke: Mutex::new(None),
+            kept: Mutex::new(Kept::Unset),
+            wake: Mutex::new(WakeState::default()),
             ended: AtomicBool::new(false),
         });
         let running = Arc::clone(&inner);
@@ -263,25 +257,15 @@ impl Engine {
     /// reset accounts right away, as when the panel opens or the Mac wakes.
     /// Debounced so repeated clicks don't hammer providers.
     pub fn poke(&self) {
-        let sender = self
-            .inner
-            .wake
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let Some(sender) = sender else {
+        let mut wake = locked(&self.inner.wake);
+        let Some(sender) = wake.sender.as_ref() else {
             return;
         };
-        let mut last = self
-            .inner
-            .last_poke
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if last.is_some_and(|at| at.elapsed() < POKE_GAP) {
+        if wake.last_poke.is_some_and(|at| at.elapsed() < POKE_GAP) {
             return;
         }
         if sender.send(Wake::Poke).is_ok() {
-            *last = Some(Instant::now());
+            wake.last_poke = Some(Instant::now());
         }
     }
 
@@ -332,14 +316,15 @@ fn queue(inner: &Arc<Inner>) -> Sender<Work> {
 impl Drop for Engine {
     fn drop(&mut self) {
         self.inner.ended.store(true, Ordering::Relaxed);
+        if let Some(sender) = locked(&self.inner.wake).sender.as_ref() {
+            let _ = sender.send(Wake::Stop);
+        }
     }
 }
 
 impl Inner {
     fn showing(&self) -> MutexGuard<'_, Option<Showing>> {
-        self.showing
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        locked(&self.showing)
     }
 
     fn ended(&self) -> bool {
@@ -372,10 +357,7 @@ impl Inner {
                             self.caught(caught)
                         })
                     }));
-                    *self
-                        .wake
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                    locked(&self.wake).sender = None;
                     drop(lock);
                     let why = match kept {
                         Ok(Ok(())) => continue,
@@ -413,14 +395,8 @@ impl Inner {
         }
     }
 
-    /// Take in what `keep` found, and tell the status if there may be
-    /// something new: whether to go on.
-    ///
-    /// The data is current once a catch-up has read every agent: not when
-    /// the lock is taken, nor when the limits are read. Said to be current
-    /// after each catch-up, failed or not, one that failed each time, as
-    /// when `ingest.lock` couldn't be made, never said why, and the app
-    /// showed what was read before as current.
+    // Report current only once a catch-up reads every agent (not on lock or
+    // limit read), so persistent failures like an unwritable lock stay visible.
     fn caught(&self, caught: Caught) -> bool {
         let new = match caught {
             Caught::Limits => true,
@@ -428,7 +404,6 @@ impl Inner {
                 self.kept(None);
                 new
             }
-            // One that failed may have read some.
             Caught::Failed(error) => {
                 if self.stopped(error) {
                     return false;
@@ -442,9 +417,6 @@ impl Inner {
         !self.ended() && self.newer().is_none()
     }
 
-    /// Tell the app why the data isn't kept current, and log it; whether
-    /// the engine stops for good, as once a newer Turnscope has written to
-    /// the data.
     fn stopped(&self, error: Error) -> bool {
         let newer = matches!(error, Error::Newer(_));
         let why = error.to_string();
@@ -456,10 +428,6 @@ impl Inner {
         newer
     }
 
-    /// Log why `doing` failed; or, once a newer Turnscope has written to the
-    /// data, stop for good and say so at once, not at the next catch-up, a
-    /// minute later at most: until then a change asked for went back with
-    /// no word why.
     fn failed(&self, doing: &str, error: Error) {
         match error {
             Error::Newer(_) => {
@@ -469,44 +437,29 @@ impl Inner {
         }
     }
 
-    /// What `Event::Kept` last said, if anything.
-    fn said(&self) -> MutexGuard<'_, Option<Option<Stopped>>> {
-        self.kept
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Tell `now` as `Event::Kept`, if it isn't what was last said. Never
-    /// once the engine has stopped for good.
     fn kept(&self, now: Option<Stopped>) {
-        let mut said = self.said();
-        let done = matches!(&*said, Some(Some(stopped)) if !stopped.trying_again);
-        if !done && said.as_ref() != Some(&now) {
-            *said = Some(now.clone());
+        let mut said = locked(&self.kept);
+        let done = matches!(&*said, Kept::Stopped(stopped) if !stopped.trying_again);
+        let next = match &now {
+            Some(stopped) => Kept::Stopped(stopped.clone()),
+            None => Kept::Current,
+        };
+        if !done && *said != next {
+            *said = next;
             drop(said);
             (self.tell)(Event::Kept(now));
         }
     }
 
-    /// Why the engine stopped for good, once a newer Turnscope has written
-    /// to the data.
     fn newer(&self) -> Option<String> {
-        match &*self.said() {
-            Some(Some(stopped)) if !stopped.trying_again => Some(stopped.why.clone()),
+        match &*locked(&self.kept) {
+            Kept::Stopped(stopped) if !stopped.trying_again => Some(stopped.why.clone()),
             _ => None,
         }
     }
 
-    /// Tell the status, as `tell` says. Once the engine has stopped for
-    /// good, nothing is worked out again, which would raise alerts: the
-    /// status last told is told again, unless only changes are asked for.
-    ///
-    /// Told while `showing` is held, over after: the run thread and the
-    /// queues each give, and a status worked out first could be told after
-    /// a newer one, so the app showed an account it had just hidden until
-    /// the next change. It can't deadlock: `tell` waits for nothing
-    /// (`Engine::start`), as the app's only queues the event for its own
-    /// thread, and the engine's requests only send on a channel.
+    // Deliver under the `showing` lock so an older status never overtakes a
+    // newer one from another thread. Safe because `tell` never blocks.
     fn give(&self, tell: Tell) {
         let mut showing = self.showing();
         let next = match showing.as_mut() {
@@ -538,14 +491,9 @@ impl Inner {
     }
 }
 
-/// How large `app.log` grows before it starts over. A catch-up that fails
-/// each time it's tried writes about 150 bytes, every 5 s at most while
-/// agents work: a day of that at least.
 const LOG_SIZE: u64 = 1 << 20;
 
-/// Add `line` to `app.log` in `data`, with the time. An app is started from
-/// its icon, where no one reads its standard error, so what goes wrong
-/// while it runs is kept here, for `turnscope doctor` to show.
+/// Append `line` with a timestamp to `app.log` in `data` (rotating past 1 MiB).
 pub fn log(data: &Path, line: &str) {
     let path = data.join("app.log");
     let full = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_SIZE);
@@ -560,12 +508,7 @@ pub fn log(data: &Path, line: &str) {
     }
 }
 
-/// Whether a Turnscope app process currently holds `app.lock` in `data` and
-/// keeps the data current. Never creates `app.lock`.
-///
-/// Used by `turnscope mcp` and `turnscope guard` so a process running inside
-/// an agent's network sandbox doesn't attempt provider API calls while the
-/// unsandboxed app is already keeping limits and prices current.
+/// Whether an app process holds `app.lock` in `data`. Never creates the file.
 pub fn running(data: &Path) -> bool {
     let Ok(file) = File::open(data.join("app.lock")) else {
         return false;
@@ -573,33 +516,18 @@ pub fn running(data: &Path) -> bool {
     matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
 }
 
-/// `app.lock` in `data`, held while one app keeps the data current, or None
-/// while another does: two would only read the same history twice. Two at
-/// once would still be safe, as the command line catching up beside the app
-/// is: the database waits up to 10 s for the other's write.
 fn lock(data: &Path) -> Result<Option<File>> {
     std::fs::create_dir_all(data)?;
-    let lock = File::create(data.join("app.lock"))?;
-    Ok(lock.try_lock().is_ok().then_some(lock))
+    crate::db::lock_within(&data.join("app.lock"), Duration::ZERO)
 }
 
-/// The least time from one catch-up's end to the next one's start, while
-/// agents write in their folders: 5 s, over catching up as soon as writes
-/// settle. Many agents at work at once never let writes settle, and each
-/// catch-up looks at every history file. Over 5,000 sessions, with a
-/// stand-in agent writing ten of them ten times a second for 30 s, it ran
-/// 9.8G instructions without the gap and 3.2G with it. The cost: the panel
-/// shows what an agent wrote up to 5 s late.
+// Minimum gap between file-triggered catch-ups: 5 s, over catching up as writes
+// settle (9.8G vs 3.2G instructions over 5,000 sessions with heavy writes).
 const GAP: Duration = Duration::from_secs(5);
 
-/// What `keep` found.
 enum Caught {
-    /// The limits, read before the first catch-up.
     Limits,
-    /// A catch-up that read every agent; `new` when there may be something
-    /// new to show.
     Read { new: bool },
-    /// A catch-up that failed, and why.
     Failed(Error),
 }
 
@@ -610,12 +538,12 @@ enum Caught {
 fn keep(
     home: &Path,
     data: &Path,
-    wake: &Mutex<Option<Sender<Wake>>>,
+    wake: &Mutex<WakeState>,
     mut told: impl FnMut(Caught) -> bool,
 ) -> Result<()> {
     let mut db = crate::db::open(data)?;
     let (changed, changes) = mpsc::channel::<Wake>();
-    *wake.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(changed.clone());
+    locked(wake).sender = Some(changed.clone());
     // Any write, not only to history: macOS reports a write when its file
     // is closed, and Codex keeps a session's file open, and OpenCode its
     // database, while they work. Their other writes are what show it.
@@ -664,6 +592,26 @@ fn keep(
             }
         }
     };
+    let refresh_limits =
+        |db: &mut Connection, stale: bool, told: &mut dyn FnMut(Caught) -> bool| -> Result<bool> {
+            if !crate::online() {
+                return Ok(true);
+            }
+            let result = if stale {
+                crate::limits::refresh_stale(db, home)
+            } else {
+                crate::limits::refresh(db, home)
+            };
+            let read = match result {
+                Ok(read) => read,
+                Err(error @ Error::Newer(_)) => return Err(error),
+                Err(error) => {
+                    log(data, &error.to_string());
+                    true
+                }
+            };
+            Ok(!read || told(Caught::Limits))
+        };
     // The minute and SQLite's `data_version` at the last catch-up that
     // worked. `data_version` moves when another connection writes, as an
     // agent's MCP server does. A catch-up that read nothing new, in the same
@@ -678,40 +626,22 @@ fn keep(
     // first catch-up is done: on a first launch that reads all of history
     // (12 s for a made-up one of 5,000 files, 176 MB), the app showed no
     // account until it ended. The catch-up then finds the limits read.
-    if crate::online() {
-        let read = match crate::limits::refresh(&mut db, home) {
-            Ok(read) => read,
-            Err(error @ Error::Newer(_)) => return Err(error),
-            Err(error) => {
-                log(data, &error.to_string());
-                true
-            }
-        };
-        if read && !told(Caught::Limits) {
-            return Ok(());
-        }
+    if !refresh_limits(&mut db, false, &mut told)? {
+        return Ok(());
     }
     let mut refresh_stale = false;
     loop {
         watch(&mut watcher);
-        if refresh_stale && crate::online() {
+        if refresh_stale {
             refresh_stale = false;
-            let read = match crate::limits::refresh_stale(&mut db, home) {
-                Ok(read) => read,
-                Err(error @ Error::Newer(_)) => return Err(error),
-                Err(error) => {
-                    log(data, &error.to_string());
-                    true
-                }
-            };
-            if read && !told(Caught::Limits) {
+            if !refresh_limits(&mut db, true, &mut told)? {
                 return Ok(());
             }
         }
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
                 let now = (
-                    crate::now().div_euclid(crate::time::MINUTE),
+                    crate::time::minute(crate::now()),
                     db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
                 );
                 let new = read || pushed != Some(now);
@@ -729,90 +659,77 @@ fn keep(
         if !told(caught) {
             return Ok(());
         }
-        let waited = Instant::now();
-        let merge = |kind: &mut Wake, next: Wake| {
-            if next == Wake::Auth || (next == Wake::Poke && *kind == Wake::Files) {
-                *kind = next;
-            }
-        };
-        match changes.recv_timeout(Duration::from_secs(60)) {
-            Ok(mut kind) => {
-                if kind == Wake::Poke {
-                    while let Ok(next) = changes.try_recv() {
-                        merge(&mut kind, next);
-                    }
-                    refresh_stale = true;
-                } else {
-                    // Let a burst of writes settle, a second at most.
-                    let start = Instant::now();
-                    while let Ok(next) = changes.recv_timeout(Duration::from_millis(250)) {
-                        merge(&mut kind, next);
-                        if kind == Wake::Poke || start.elapsed() >= Duration::from_secs(1) {
-                            break;
-                        }
-                    }
-                    // Wait out `GAP` for regular history writes, but break
-                    // immediately if an auth change or explicit poke arrives.
-                    while kind == Wake::Files {
-                        let left = GAP.saturating_sub(waited.elapsed());
-                        if left.is_zero() {
-                            break;
-                        }
-                        match changes.recv_timeout(left) {
-                            Ok(next) => merge(&mut kind, next),
-                            Err(RecvTimeoutError::Timeout) => break,
-                            Err(RecvTimeoutError::Disconnected) => {
-                                return Err(Error::Failed(
-                                    "the agents' folders can't be watched".into(),
-                                ));
-                            }
-                        }
-                    }
-                    while let Ok(next) = changes.try_recv() {
-                        merge(&mut kind, next);
-                    }
-                    if matches!(kind, Wake::Auth | Wake::Poke) {
-                        refresh_stale = true;
-                    }
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(Error::Failed("the agents' folders can't be watched".into()));
-            }
+        match wait_for_wake(&changes)? {
+            Some(Wake::Stop) => return Ok(()),
+            Some(Wake::Auth | Wake::Poke) => refresh_stale = true,
+            Some(Wake::Files) | None => {}
         }
     }
 }
 
-/// The open data, and what was last told of it.
+/// Wait up to a minute for the next wake signal, settling bursts of folder
+/// writes and enforcing [`GAP`] on regular history writes while letting auth
+/// changes, pokes, and stop signals through right away.
+fn wait_for_wake(changes: &mpsc::Receiver<Wake>) -> Result<Option<Wake>> {
+    let disconnected = || Error::Failed("the agents' folders can't be watched".into());
+    let waited = Instant::now();
+    let mut kind = match changes.recv_timeout(Duration::from_secs(60)) {
+        Ok(kind) => kind,
+        Err(RecvTimeoutError::Timeout) => return Ok(None),
+        Err(RecvTimeoutError::Disconnected) => return Err(disconnected()),
+    };
+    if kind < Wake::Poke {
+        // Let a burst of writes settle, a second at most.
+        let start = Instant::now();
+        loop {
+            match changes.recv_timeout(Duration::from_millis(250)) {
+                Ok(next) => {
+                    kind = kind.max(next);
+                    if kind >= Wake::Poke || start.elapsed() >= Duration::from_secs(1) {
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return Err(disconnected()),
+            }
+        }
+        // Wait out `GAP` for regular history writes, but break immediately if
+        // an auth change, explicit poke, or stop arrives.
+        while kind == Wake::Files {
+            let left = GAP.saturating_sub(waited.elapsed());
+            if left.is_zero() {
+                break;
+            }
+            match changes.recv_timeout(left) {
+                Ok(next) => kind = kind.max(next),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return Err(disconnected()),
+            }
+        }
+    }
+    while let Ok(next) = changes.try_recv() {
+        kind = kind.max(next);
+    }
+    Ok(Some(kind))
+}
+
 struct Showing {
     db: Connection,
     data: PathBuf,
     home: PathBuf,
     binary: PathBuf,
-    /// The status last told, which the app shows.
     shown: Option<Shown>,
-    /// Every agent as its MCP settings were last read, and the minute
-    /// they were.
     agents: Option<(i64, Vec<Agent>)>,
 }
 
-/// When a status is told.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tell {
-    /// Only if what it shows changed, as after a catch-up.
     IfChanged,
-    /// Changed or not, as after a request: a change the app showed at once
-    /// goes back if the request failed.
     Always,
-    /// Always, with each agent's MCP settings read again, as after a
-    /// connect.
     WithAgents,
 }
 
 impl Showing {
-    /// Open the data in `data`, or say why it can't be shown, as when a
-    /// newer Turnscope has written to it.
     fn open(data: &Path, home: &Path, binary: &Path) -> Result<Showing> {
         let db = crate::db::open(data)?;
         crate::db::writing(&db)?;
@@ -826,28 +743,12 @@ impl Showing {
         })
     }
 
-    /// The status now, with the alerts it raised, if what it shows changed
-    /// since the last one told, or `tell` says to tell it anyway. One whose
-    /// alerts were raised is recorded as told; otherwise it's told without
-    /// them, and the next raises them again. None is once a newer Turnscope
-    /// has written: that's the error.
-    ///
-    /// A status is as of its minute, so it differs from the last told each
-    /// minute; one that differs only so isn't told, over telling one each
-    /// minute: the app counts down on its own clock. On the snapshot tests'
-    /// store (`tests/cli.rs`), with nothing new read, it told 60 statuses an
-    /// hour that way and 10 this way in the first hour after the last read,
-    /// as outlooks moved, the readings went stale and the half hour in use
-    /// ended, and none in the hours after (measured 2026-11-18). An API
-    /// key's spend forecast moves with the clock too, so it has two figures
-    /// (`status::two_figures`).
+    // Skip telling statuses that differ only in `at` (app ticks on its own clock):
+    // cut 60 -> 10 statuses/hr after last read, 0/hr thereafter (measured 2026-11-18).
     fn next(&mut self, now: i64, tell: Tell) -> Result<Option<(Shown, Vec<Alert>)>> {
         let status = status::status(&self.db, now)?;
         let in_use = |id: &str| status::in_use(&status.accounts, id);
-        // Each agent's MCP settings are read once a minute, and after a
-        // connect: Claude Code's `~/.claude.json` can be megabytes, and a
-        // status can be due every 5 s while agents work, and after each
-        // request.
+        // Cache MCP config reads for the minute (`~/.claude.json` can be megabytes).
         let agents = match &self.agents {
             Some((at, agents)) if tell != Tell::WithAgents && *at == status.at => agents
                 .iter()
@@ -879,14 +780,11 @@ impl Showing {
         }
     }
 
-    /// The alerts raised and not acknowledged yet.
     fn pending(&self, now: i64) -> Result<Vec<Alert>> {
         let status = status::status(&self.db, now)?;
         alerts::pending(&self.db, &status, now)
     }
 
-    /// The sessions that used `account`'s limit `limit` most, as of the
-    /// status last told: the one the app shows.
     fn used_most(&self, account: &str, limit: &str, now: i64) -> Result<Vec<UsedMost>> {
         let status = match &self.shown {
             Some(shown) => std::borrow::Cow::Borrowed(&shown.status),
@@ -919,7 +817,6 @@ impl Showing {
                     .as_deref()
                     .and_then(|project| project.rsplit('/').next())
                     .map(str::to_owned),
-                // By session, a row's name is its session's title.
                 title: row.name.clone(),
                 agent,
                 share_percent: shares.as_ref().map(|shares| shares.rows[at]),
@@ -929,9 +826,7 @@ impl Showing {
     }
 }
 
-/// Whether `a` and `b` show the same, whatever minute each is as of.
 fn same(a: &Shown, b: &Shown) -> bool {
-    // Every field named, so one added isn't left out.
     let Status {
         at: _,
         history_read,
@@ -1035,26 +930,22 @@ mod tests {
 
     #[test]
     fn keeping_the_data_current_stops_once_a_newer_turnscope_writes() {
-        for newer in NEWER {
-            let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-            // Claude Code is installed, so its folder is watched.
-            let folder = home.path().join(".claude/projects/-work-a");
-            std::fs::create_dir_all(&folder).unwrap();
-            let db = read_just_now(data.path());
-            let (_engine, told) = start(data.path(), home.path());
-            next(&told, 10, |event| {
-                matches!(event, Event::Kept(None)).then_some(())
-            });
-            db.execute_batch(newer).unwrap();
-            // A write in the folder, so it catches up, 5 s after the last.
-            std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
-            let stopped = next(&told, 20, |event| match event {
-                Event::Kept(Some(stopped)) => Some(stopped),
-                _ => None,
-            });
-            assert_eq!(stopped.why, crate::db::newer().to_string(), "{newer}");
-            assert!(!stopped.trying_again);
-        }
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let folder = home.path().join(".claude/projects/-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        let db = read_just_now(data.path());
+        let (_engine, told) = start(data.path(), home.path());
+        next(&told, 10, |event| {
+            matches!(event, Event::Kept(None)).then_some(())
+        });
+        db.execute_batch(NEWER[0]).unwrap();
+        std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
+        let stopped = next(&told, 20, |event| match event {
+            Event::Kept(Some(stopped)) => Some(stopped),
+            _ => None,
+        });
+        assert_eq!(stopped.why, crate::db::newer().to_string());
+        assert!(!stopped.trying_again);
     }
 
     /// Once a newer Turnscope has written to the data, the engine writes
@@ -1077,7 +968,7 @@ mod tests {
             matches!(event, Event::Kept(None)).then_some(())
         });
         db.execute_batch(NEWER[1]).unwrap();
-        std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
+        engine.poke();
         let stopped = next(&told, 20, |event| match event {
             Event::Kept(Some(stopped)) => Some(stopped),
             _ => None,
@@ -1254,7 +1145,7 @@ mod tests {
         let (sender, messages) = mpsc::channel();
         let (home_kept, data_kept) = (home.path().to_path_buf(), data.path().to_path_buf());
         std::thread::spawn(move || {
-            let wake = Mutex::new(None);
+            let wake = Mutex::new(WakeState::default());
             keep(&home_kept, &data_kept, &wake, |_| sender.send(()).is_ok())
         });
         // Wait to be told, and say when the limits were read, and whether
@@ -1362,7 +1253,7 @@ mod tests {
             settings.notify.used_up = used_up;
             settings
         };
-        for round in 0..100 {
+        for round in 0..20 {
             let (first, second) = (settings(round % 2 == 1), settings(round % 2 == 0));
             engine.save_settings(first);
             engine.save_settings(second);

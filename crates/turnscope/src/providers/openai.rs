@@ -65,19 +65,20 @@ fn workspace(credential: &Credential) -> Option<(String, Option<String>)> {
     let workspace = claims["https://api.openai.com/auth"]["chatgpt_account_id"]
         .as_str()
         .filter(|workspace| !workspace.is_empty());
-    let email = claims["https://api.openai.com/profile"]["email"]
-        .as_str()
-        .filter(|email| !email.is_empty());
     match workspace {
-        Some(workspace) => Some((
-            workspace.to_owned(),
-            email.map(str::to_owned).or_else(|| {
-                credential
-                    .identity
-                    .as_ref()
-                    .and_then(|(_, mail)| mail.clone())
-            }),
-        )),
+        Some(workspace) => {
+            let email = claims["https://api.openai.com/profile"]["email"]
+                .as_str()
+                .filter(|email| !email.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    credential
+                        .identity
+                        .as_ref()
+                        .and_then(|(_, mail)| mail.clone())
+                });
+            Some((workspace.to_owned(), email))
+        }
         None => credential.identity.clone(),
     }
 }
@@ -85,7 +86,8 @@ fn workspace(credential: &Credential) -> Option<(String, Option<String>)> {
 /// `None` for an answer with no `rate_limit` at all, such as an error sent
 /// with 200, so it isn't taken for a plan without limits.
 fn parse(answer: &Value, now: i64) -> Option<Limits> {
-    let mut readings = windows(answer.get("rate_limit")?, None, now)?;
+    let rate_limit = answer.get("rate_limit").filter(|rate| rate.is_object())?;
+    let mut readings = windows(rate_limit, None, now)?;
     for extra in answer["additional_rate_limits"]
         .as_array()
         .into_iter()
@@ -114,21 +116,23 @@ fn windows(rate: &Value, scope: Option<&str>, now: i64) -> Option<Vec<Reading>> 
         let seconds = window["limit_window_seconds"]
             .as_i64()
             .filter(|seconds| *seconds > 0)?;
-        let length = seconds * 1000;
+        let length = seconds.checked_mul(1000)?;
         // An unknown reset comes as zero; the countdown beside it still says when.
         let resets = match window["reset_at"].as_i64() {
-            Some(at) if at > 0 => Some(at * 1000),
+            Some(at) if at > 0 => Some(at.checked_mul(1000)?),
             _ => window["reset_after_seconds"]
                 .as_i64()
-                .map(|after| now + after * 1000),
+                .filter(|&after| after >= 0)
+                .and_then(|after| after.checked_mul(1000))
+                .and_then(|ms| now.checked_add(ms)),
         };
         readings.push(Reading {
-            key: scope.map_or(key.to_owned(), |scope| format!("{key}:{scope}")),
+            key: scope.map_or_else(|| key.to_owned(), |scope| format!("{key}:{scope}")),
             name: super::window_name(length),
             scope: scope.map(str::to_owned),
             used: window["used_percent"].as_f64()?,
             size: None,
-            starts: resets.map(|resets| resets - length),
+            starts: resets.and_then(|resets| resets.checked_sub(length)),
             resets,
         });
     }

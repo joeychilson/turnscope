@@ -51,10 +51,10 @@
 //! `subagent_history_start_ordinal`.
 
 use std::borrow::Cow;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use serde_json::value::RawValue;
 
 use super::{Agent, Credential, InBand, Info, Login, Read, Response, Secret, Title, Tokens};
@@ -141,12 +141,15 @@ impl Copy {
     /// (`core/src/session/mod.rs`). A Codex before 2026-08-29
     /// (openai/codex#41567) named no thread there, so the rest of such a
     /// fork reads as the copy until a current Codex resumes it.
-    fn holds(&mut self, line: &Line, payload: &Payload, thread: &str) -> bool {
+    fn holds(&mut self, line: &Line<'_>, payload: &Payload<'_>, thread: &str) -> bool {
         if self.legacy_fork {
-            let names = |native: &Option<String>| {
-                native
-                    .as_deref()
-                    .is_some_and(|native| INFO.session(native) == thread)
+            let names = |native: &Option<Cow<'_, str>>| {
+                native.as_deref().is_some_and(|native| {
+                    thread
+                        .strip_prefix(INFO.id)
+                        .and_then(|rest| rest.strip_prefix(':'))
+                        == Some(native)
+                })
             };
             match (&*line.kind, payload.kind.as_deref()) {
                 ("session_meta", _) if !names(&payload.id) => self.copying = true,
@@ -249,22 +252,32 @@ struct Payload<'a> {
     #[serde(rename = "type", borrow)]
     kind: Option<Cow<'a, str>>,
     // session_meta
-    id: Option<String>,
-    cwd: Option<String>,
-    model_provider: Option<String>,
-    parent_thread_id: Option<String>,
-    forked_from_id: Option<String>,
+    #[serde(borrow)]
+    id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    cwd: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    model_provider: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    parent_thread_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    forked_from_id: Option<Cow<'a, str>>,
     forked_from_ordinal_exclusive: Option<i64>,
-    history_mode: Option<String>,
+    #[serde(borrow)]
+    history_mode: Option<Cow<'a, str>>,
     subagent_history_start_ordinal: Option<i64>,
     /// The history a rewind's or a paginated fork's rollout goes on from.
     #[serde(borrow)]
     history_base: Option<&'a RawValue>,
-    agent_nickname: Option<String>,
-    thread_source: Option<String>,
+    #[serde(borrow)]
+    agent_nickname: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    thread_source: Option<Cow<'a, str>>,
     // turn_context, and thread_settings_applied's `thread_settings`
-    model: Option<String>,
-    service_tier: Option<String>,
+    #[serde(borrow)]
+    model: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    service_tier: Option<Cow<'a, str>>,
     #[serde(borrow)]
     thread_settings: Option<&'a RawValue>,
     // token_count
@@ -273,8 +286,10 @@ struct Payload<'a> {
     #[serde(borrow)]
     rate_limits: Option<&'a RawValue>,
     // token_usage_record, and thread_settings_applied's `thread_id`
-    response_id: Option<String>,
-    thread_id: Option<String>,
+    #[serde(borrow)]
+    response_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    thread_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     usage: Option<&'a RawValue>,
     // response_item
@@ -299,11 +314,12 @@ struct Base {
     end_ordinal_exclusive: i64,
 }
 
-/// A `turn_context`, or a `thread_settings_applied` event's settings.
 #[derive(Deserialize)]
-struct Settings {
-    model: Option<String>,
-    service_tier: Option<String>,
+struct Settings<'a> {
+    #[serde(borrow)]
+    model: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    service_tier: Option<Cow<'a, str>>,
 }
 
 #[derive(Deserialize)]
@@ -366,14 +382,13 @@ impl Agent for Codex {
                 }
             }
         }
-        let mut files = Vec::new();
+        let mut files = vec![folder.join("session_index.jsonl")];
         rollouts(&folder.join("sessions"), &mut files);
         rollouts(&folder.join("archived_sessions"), &mut files);
         // A name starts with the time its rollout was made, so this is
         // oldest first, and the folder a thread began in is stored before a
         // rewind's.
-        files.sort_by(|one, other| one.file_name().cmp(&other.file_name()));
-        files.insert(0, folder.join("session_index.jsonl"));
+        files[1..].sort_by(|one, other| one.file_name().cmp(&other.file_name()));
         files
     }
 
@@ -384,30 +399,33 @@ impl Agent for Codex {
             .file_name()
             .is_some_and(|name| name == "session_index.jsonl")
         {
-            // A line per naming, the last standing.
             #[derive(Deserialize)]
-            struct Named {
-                id: String,
-                thread_name: String,
+            struct Named<'a> {
+                #[serde(borrow)]
+                id: Cow<'a, str>,
+                #[serde(borrow)]
+                thread_name: Cow<'a, str>,
             }
             cursor.offset =
                 super::lines(file, cursor.offset, |bytes| {
-                    match serde_json::from_slice::<Named>(bytes) {
+                    match serde_json::from_slice::<Named<'_>>(bytes) {
                         Ok(named) => read
                             .session(&INFO.session(&named.id))
                             .title(Title::Generated, &named.thread_name),
                         Err(_) => read.skipped += 1,
                     }
                 })?;
-        } else {
-            cursor.offset = super::lines(file, cursor.offset, |bytes| {
-                if cursor.review {
-                    return;
-                }
-                match serde_json::from_slice::<Line>(bytes) {
+        } else if !cursor.review {
+            cursor.offset = super::try_lines(file, cursor.offset, |bytes| {
+                match serde_json::from_slice::<Line<'_>>(bytes) {
                     Ok(line) => read_line(&line, &mut cursor, &mut read),
                     Err(_) => read.skipped += 1,
                 }
+                Ok(if cursor.review {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                })
             })?;
         }
         read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
@@ -416,29 +434,31 @@ impl Agent for Codex {
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
         let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
-        let text = |pointer: &str| {
-            kept.pointer(pointer)
-                .and_then(Value::as_str)
-                .filter(|text| !text.is_empty())
-        };
         let (secret, key) = match kept["auth_mode"].as_str() {
-            Some("chatgpt") => (text("/tokens/access_token"), false),
-            Some("apikey") => (text("/OPENAI_API_KEY"), true),
+            Some("chatgpt") => (super::str_at(&kept, "/tokens/access_token"), false),
+            Some("apikey") => (super::str_at(&kept, "/OPENAI_API_KEY"), true),
             _ => (None, false),
         };
-        let identity = (!key).then(|| {
-            let id = text("/tokens/account_id")?;
-            let email = text("/tokens/id_token")
-                .and_then(|token| super::claims(token)["email"].as_str().map(str::to_owned))
-                .filter(|email| !email.is_empty());
-            Some((id.to_owned(), email))
-        });
-        let identity = identity.flatten();
+        let identity = (!key)
+            .then(|| {
+                let id = super::str_at(&kept, "/tokens/account_id")?;
+                let email = super::str_at(&kept, "/tokens/id_token").and_then(|token| {
+                    super::non_empty(&super::claims(token)["email"]).map(str::to_owned)
+                });
+                Some((id.to_owned(), email))
+            })
+            .flatten();
         Ok(vec![Login {
             provider: "openai".to_owned(),
             credential: secret.map(|secret| Credential {
                 provider: "openai",
-                expires: super::claims(secret)["exp"].as_i64().map(|exp| exp * 1000),
+                expires: (!key)
+                    .then(|| {
+                        super::claims(secret)["exp"]
+                            .as_i64()
+                            .and_then(super::unix_millis)
+                    })
+                    .flatten(),
                 secret: Secret::new(secret),
                 key,
                 identity,
@@ -457,25 +477,27 @@ impl Agent for Codex {
     }
 }
 
-fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
+fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
     let Some(payload) = &line.payload else { return };
-    let Some(thread) = cursor.thread.clone() else {
+    let Some(thread) = cursor.thread.as_deref() else {
         if line.kind == "session_meta" {
             open(payload, cursor, read);
         }
         return;
     };
-    let copied = cursor.copy.holds(line, payload, &thread);
+    let copied = cursor.copy.holds(line, payload, thread);
     match (&*line.kind, payload.kind.as_deref()) {
         // Settings are taken from a copy too: its records were made under them.
         ("turn_context", _) => {
-            if !copied {
-                let session = read.session(&thread);
-                session.cwd = session.cwd.take().or(payload.cwd.clone());
+            if !copied && let Some(cwd) = payload.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
+                let session = read.session(thread);
+                if session.cwd.is_none() {
+                    session.cwd = Some(cwd.to_owned());
+                }
             }
             let settings = Settings {
-                model: payload.model.clone(),
-                service_tier: payload.service_tier.clone(),
+                model: payload.model.as_deref().map(Cow::Borrowed),
+                service_tier: payload.service_tier.as_deref().map(Cow::Borrowed),
             };
             apply(settings, cursor, read);
         }
@@ -483,7 +505,7 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
         ("event_msg", Some("token_count")) => {
             if let Some(info) = payload.info {
                 match serde_json::from_str(info.get()) {
-                    Ok(totals) => total(totals, line, &thread, copied, cursor, read),
+                    Ok(totals) => total(totals, line, copied, cursor, read),
                     Err(_) => read.skipped += 1,
                 }
             }
@@ -501,9 +523,10 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
             }
         }
         ("token_usage_record", _) => {
-            let (Some(response), Some(usage)) =
-                (&payload.response_id, parsed::<Usage>(payload.usage))
-            else {
+            let (Some(response), Some(usage)) = (
+                payload.response_id.as_deref(),
+                parsed::<Usage>(payload.usage),
+            ) else {
                 read.skipped += 1;
                 return;
             };
@@ -513,9 +536,9 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
             let session = payload
                 .thread_id
                 .as_deref()
-                .map_or(thread.clone(), |native| INFO.session(native));
+                .map_or_else(|| thread.to_owned(), |native| INFO.session(native));
             let prompt = usage.input_tokens;
-            match report(response.clone(), session, copied, usage, prompt, line) {
+            match report(response.to_owned(), session, copied, usage, prompt, line) {
                 Some(report) => respond(report, cursor, read),
                 None => read.skipped += 1,
             }
@@ -531,7 +554,7 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
                 .map(|text| typed(text))
                 .find(|text| !text.is_empty());
             if let Some(asked) = asked {
-                read.session(&thread).title(Title::Prompt, &asked);
+                read.session(thread).title(Title::Prompt, &asked);
                 cursor.titled = true;
             }
         }
@@ -539,15 +562,20 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
     }
 }
 
-/// Take in the rollout's own `session_meta`.
-fn open(meta: &Payload, cursor: &mut Cursor, read: &mut Read) {
+fn open(meta: &Payload<'_>, cursor: &mut Cursor, read: &mut Read) {
     if meta.thread_source.as_deref() == Some("guardian_review") {
         cursor.review = true;
         return;
     }
-    let Some(native) = &meta.id else { return };
+    let Some(native) = meta.id.as_deref() else {
+        return;
+    };
     let thread = INFO.session(native);
-    cursor.provider = meta.model_provider.clone();
+    cursor.provider = meta
+        .model_provider
+        .as_deref()
+        .filter(|provider| !provider.is_empty())
+        .map(str::to_owned);
     cursor.copy = Copy::of(meta);
     let session = read.session(&thread);
     // A subagent's parent. A fork names the thread it was forked from, and
@@ -556,8 +584,12 @@ fn open(meta: &Payload, cursor: &mut Cursor, read: &mut Read) {
         .parent_thread_id
         .as_deref()
         .map(|parent| INFO.session(parent));
-    session.cwd = meta.cwd.clone();
-    if let Some(nickname) = &meta.agent_nickname {
+    session.cwd = meta
+        .cwd
+        .as_deref()
+        .filter(|cwd| !cwd.is_empty())
+        .map(str::to_owned);
+    if let Some(nickname) = meta.agent_nickname.as_deref() {
         session.title(Title::Task, nickname);
     }
     // A rollout that goes on from the thread's own history, as a rewind's
@@ -569,29 +601,23 @@ fn open(meta: &Payload, cursor: &mut Cursor, read: &mut Read) {
     cursor.thread = Some(thread);
 }
 
-/// Put the model and service tier `settings` name in force, and count the
-/// responses waiting for a model under it.
-fn apply(settings: Settings, cursor: &mut Cursor, read: &mut Read) {
-    if let Some(tier) = &settings.service_tier {
+fn apply(settings: Settings<'_>, cursor: &mut Cursor, read: &mut Read) {
+    if let Some(tier) = settings.service_tier.as_deref() {
         cursor.priority = tier == "priority";
     }
-    if let Some(model) = settings.model {
+    if let Some(model) = settings.model.as_deref().filter(|model| !model.is_empty()) {
         for mut waiting in cursor.waiting.drain(..) {
-            waiting.model = model.clone();
+            waiting.model = model.to_owned();
+            waiting.priority = cursor.priority;
             read.respond(waiting);
         }
-        cursor.model = Some(model);
+        if cursor.model.as_deref() != Some(model) {
+            cursor.model = Some(model.to_owned());
+        }
     }
 }
 
-fn total(
-    info: Totals,
-    line: &Line,
-    thread: &str,
-    copied: bool,
-    cursor: &mut Cursor,
-    read: &mut Read,
-) {
+fn total(info: Totals, line: &Line<'_>, copied: bool, cursor: &mut Cursor, read: &mut Read) {
     let now = info.total_token_usage;
     let before = cursor.total.replace(now);
     let recorded = std::mem::take(&mut cursor.recorded);
@@ -618,33 +644,36 @@ fn total(
     else {
         return;
     };
-    let Some(stamp) = &line.timestamp else {
+    let Some(stamp) = line.timestamp.as_deref() else {
+        read.skipped += 1;
+        return;
+    };
+    let Some(thread) = cursor.thread.as_deref() else {
         return;
     };
     // An older rollout's lines have no ordinal; their times tell them apart.
-    let ordinal = line
-        .ordinal
-        .map_or(String::new(), |ordinal| format!("{ordinal}:"));
+    let id = match line.ordinal {
+        Some(ordinal) => format!("{thread}:{ordinal}:{stamp}"),
+        None => format!("{thread}:{stamp}"),
+    };
+    let session = thread.to_owned();
     // The latest request's prompt, which sets the tier it was charged at.
     let prompt = info
         .last_token_usage
         .map_or(growth.input_tokens, |last| last.input_tokens);
-    let id = format!("{thread}:{ordinal}{stamp}");
-    match report(id, thread.to_owned(), false, growth, prompt, line) {
+    match report(id, session, false, growth, prompt, line) {
         Some(report) => respond(report, cursor, read),
         None => read.skipped += 1,
     }
 }
 
-/// A report of `usage` at the time of `line`, or `None` when that can't be
-/// read.
 fn report(
     id: String,
     session: String,
     copy: bool,
     usage: Usage,
     prompt: u64,
-    line: &Line,
+    line: &Line<'_>,
 ) -> Option<Response> {
     Some(Response {
         id,
@@ -689,14 +718,7 @@ fn in_band(limits: RateLimits, provider: Option<&str>, at: i64) -> Option<InBand
             continue;
         }
         let length = minutes.saturating_mul(MINUTE);
-        let resets = window.resets_at.filter(|&ts| ts > 0).map(|ts| {
-            // Codex writes Unix seconds; accept milliseconds defensively.
-            if ts > 100_000_000_000 {
-                ts
-            } else {
-                ts.saturating_mul(1000)
-            }
-        });
+        let resets = window.resets_at.and_then(super::unix_millis);
         readings.push(Reading {
             key: match &scope {
                 Some(scope) => format!("{base_key}:{scope}"),
@@ -1181,6 +1203,22 @@ mod tests {
     #[test]
     fn token_count_rate_limits_become_latest_in_band_readings() {
         let dir = tempfile::tempdir().unwrap();
+        let snapshot = |ordinal: i64, primary: f64, secondary: f64| {
+            line(
+                ordinal,
+                "event_msg",
+                json!({
+                    "type": "token_count",
+                    "info": null,
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "plan_type": "plus",
+                        "primary": {"used_percent": primary, "window_minutes": 300, "resets_at": 1_790_870_000},
+                        "secondary": {"used_percent": secondary, "window_minutes": 10080, "resets_at": 1_791_450_000}
+                    }
+                }),
+            )
+        };
         let file = rollout(
             dir.path(),
             "t-limits",
@@ -1191,36 +1229,8 @@ mod tests {
                     json!({"id": "t-limits", "model_provider": "openai"}),
                 ),
                 line(1, "turn_context", json!({"model": "gpt-5.5"})),
-                json!({
-                    "timestamp": "2026-10-01T10:00:00Z",
-                    "ordinal": 2,
-                    "type": "event_msg",
-                    "payload": {
-                        "type": "token_count",
-                        "info": null,
-                        "rate_limits": {
-                            "limit_id": "codex",
-                            "plan_type": "plus",
-                            "primary": {"used_percent": 15.0, "window_minutes": 300, "resets_at": 1_790_870_000},
-                            "secondary": {"used_percent": 4.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
-                        }
-                    }
-                }),
-                json!({
-                    "timestamp": "2026-10-01T10:05:00Z",
-                    "ordinal": 3,
-                    "type": "event_msg",
-                    "payload": {
-                        "type": "token_count",
-                        "info": null,
-                        "rate_limits": {
-                            "limit_id": "codex",
-                            "plan_type": "plus",
-                            "primary": {"used_percent": 22.5, "window_minutes": 300, "resets_at": 1_790_870_000},
-                            "secondary": {"used_percent": 6.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
-                        }
-                    }
-                }),
+                snapshot(2, 15.0, 4.0),
+                snapshot(3, 22.5, 6.0),
             ],
         );
         let read = Codex.read(&file, "").unwrap();
@@ -1230,7 +1240,7 @@ mod tests {
         assert_eq!(snap.plan.as_deref(), Some("plus"));
         assert_eq!(
             snap.at,
-            crate::time::millis("2026-10-01T10:05:00Z").unwrap()
+            crate::time::millis("2026-09-30T09:00:03Z").unwrap()
         );
         let pairs: Vec<_> = snap
             .readings

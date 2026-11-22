@@ -1,7 +1,9 @@
 //! What was used and what it cost, and what used a limit.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
+use jiff::tz::TimeZone;
 use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use serde::Serialize;
 
@@ -32,7 +34,6 @@ impl By {
         }
     }
 
-    /// The title of the column its rows are under.
     fn title(self) -> &'static str {
         match self {
             By::Day => "Day",
@@ -46,7 +47,6 @@ impl By {
         }
     }
 
-    /// What one row is, singular, for the rest row's label.
     fn noun(self) -> &'static str {
         match self {
             By::Day => "day",
@@ -67,11 +67,9 @@ pub struct Query {
     pub by: By,
     pub agent: Option<String>,
     pub account: Option<String>,
-    /// Only responses of a model whose id holds one of these, in lowercase.
-    /// Every model's, when empty.
+    /// Lowercase substrings matched against `response.model`; empty means all models.
     pub models: Vec<String>,
-    /// Only responses made in an agent folder signed in with this key, by
-    /// its fingerprint, when they were made.
+    /// API key fingerprint; filters to responses made under that key.
     pub key: Option<String>,
     pub top: usize,
 }
@@ -83,9 +81,7 @@ pub struct Usage {
     pub until: i64,
     pub by: By,
     pub total: Row,
-    /// The largest first, or for time, the earliest first.
     pub rows: Vec<Row>,
-    /// The rest, past the top rows, added up: for time, the earliest.
     pub rest: Option<Row>,
 }
 
@@ -93,18 +89,14 @@ pub struct Usage {
 #[serde(rename_all = "camelCase")]
 pub struct Row {
     pub key: String,
-    /// What people call it, where that isn't the key.
     pub name: Option<String>,
     pub responses: u64,
     pub tokens: Tokens,
-    /// Of the responses with a known price.
     pub cost_usd: f64,
     pub unpriced: u64,
 }
 
 impl Row {
-    /// What to call it, grouped `by`: an empty key is usage on no account,
-    /// in no project, or of no model named.
     pub fn label(&self, by: By) -> &str {
         match (&self.name, by) {
             (Some(name), _) => name,
@@ -131,6 +123,26 @@ WITH RECURSIVE tree (root, id) AS (
     UNION ALL
     SELECT tree.root, s.id FROM session s JOIN tree ON s.parent = tree.id
 )";
+
+impl Query {
+    fn where_clause(&self) -> (String, Vec<Value>) {
+        let mut filters = vec!["r.at >= ?".to_owned(), "r.at < ?".to_owned()];
+        let mut values: Vec<Value> = vec![self.since.into(), self.until.into()];
+        for (filter, value) in [
+            ("r.agent = ?", &self.agent),
+            ("r.account = ?", &self.account),
+        ] {
+            if let Some(value) = value {
+                filters.push(filter.to_owned());
+                values.push(value.clone().into());
+            }
+        }
+        let (limited, given) = limited(&self.models, self.key.as_ref());
+        filters.extend(limited);
+        values.extend(given);
+        (filters.join(" AND "), values)
+    }
+}
 
 pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     // Time is grouped by quarter hours here and into local days in Rust: every
@@ -161,26 +173,13 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
         By::Session => TREES,
         _ => "",
     };
-    let mut filters = vec!["r.at >= ?".to_owned(), "r.at < ?".to_owned()];
-    let mut values: Vec<Value> = vec![query.since.into(), query.until.into()];
-    for (filter, value) in [
-        ("r.agent = ?", &query.agent),
-        ("r.account = ?", &query.account),
-    ] {
-        if let Some(value) = value {
-            filters.push(filter.to_owned());
-            values.push(value.clone().into());
-        }
-    }
-    let (limited, given) = limited(&query.models, query.key.as_ref());
-    filters.extend(limited);
-    values.extend(given);
+    let (where_sql, values) = query.where_clause();
     let sql = format!(
         "{trees} SELECT {key}, {name}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
              sum(r.cache_write_1h), sum(r.output), sum(r.reasoning), total(r.cost), count(*) - count(r.cost)
-         FROM response r {join} WHERE {} GROUP BY 1",
-        filters.join(" AND ")
+         FROM response r {join} WHERE {where_sql} GROUP BY 1",
     );
+    let zone = query.by.period().map(|_| TimeZone::system());
     let mut groups: BTreeMap<String, Row> = BTreeMap::new();
     let mut statement = db.prepare(&sql)?;
     let mut rows = statement.query(params_from_iter(values))?;
@@ -188,30 +187,30 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
         let count = |at: usize| row.get::<_, i64>(at).map(|count| count as u64);
         let found = Row {
             key: String::new(),
-            name: row.get(1)?,
+            name: None,
             responses: count(2)?,
             tokens: crate::db::tokens(row, 3)?,
             cost_usd: row.get(9)?,
             unpriced: count(10)?,
         };
-        let key = if let Some(period) = query.by.period() {
-            time::local(time::start_of(period, row.get(0)?))
-                .date()
-                .to_string()
+        let key = if let (Some(period), Some(zone)) = (query.by.period(), &zone) {
+            time::period_date(period, row.get(0)?, zone).to_string()
         } else if query.by == By::Model {
             // One model through several providers: OpenRouter's
             // `google/gemini-3.8-flash` is Google's `gemini-3.8-flash`.
-            let model: String = row.get(0)?;
-            model.rsplit('/').next().unwrap_or(&model).to_owned()
+            let model = row.get_ref(0)?.as_str()?;
+            model.rsplit('/').next().unwrap_or(model).to_owned()
         } else {
             row.get(0)?
         };
-        let group = groups.entry(key.clone()).or_default();
-        if query.by == By::Agent {
-            group.name = Some(agents::name(&key).to_owned());
+        let group = groups.entry(key).or_insert_with_key(|key| Row {
+            key: key.clone(),
+            name: (query.by == By::Agent).then(|| agents::name(key).to_owned()),
+            ..Row::default()
+        });
+        if group.name.is_none() {
+            group.name = row.get(1)?;
         }
-        group.name = group.name.take().or(found.name.clone());
-        group.key = key;
         group.add(&found);
     }
     let mut total = Row {
@@ -222,39 +221,48 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     for row in &rows {
         total.add(row);
     }
-    let time = query.by.period().is_some();
-    if !time {
+    if query.by.period().is_none() {
         rows.sort_by(|a, b| {
             b.cost_usd
                 .total_cmp(&a.cost_usd)
                 .then(b.responses.cmp(&a.responses))
         });
     }
-    let rest = (rows.len() > query.top).then(|| {
-        let folded: Vec<Row> = match time {
-            true => rows.drain(..rows.len() - query.top).collect(),
-            false => rows.drain(query.top..).collect(),
-        };
-        let mut rest = Row {
-            key: format!("{} {}", folded.len(), if time { "earlier" } else { "more" }),
-            ..Row::default()
-        };
-        for row in &folded {
-            rest.add(row);
-        }
-        rest
-    });
-    Ok(Usage {
+    let mut usage = Usage {
         since: query.since,
         until: query.until,
         by: query.by,
         total,
         rows,
-        rest,
-    })
+        rest: None,
+    };
+    fold(&mut usage, None, query.top);
+    Ok(usage)
 }
 
-/// A count with its thousands marked: `196,813`.
+pub fn fold(usage: &mut Usage, shares: Option<&mut Shares>, top: usize) {
+    if usage.rows.len() <= top {
+        return;
+    }
+    let time = usage.by.period().is_some();
+    let range = if time {
+        0..usage.rows.len() - top
+    } else {
+        top..usage.rows.len()
+    };
+    let mut rest = Row {
+        key: format!("{} {}", range.len(), if time { "earlier" } else { "more" }),
+        ..Row::default()
+    };
+    for row in usage.rows.drain(range.clone()) {
+        rest.add(&row);
+    }
+    usage.rest = Some(rest);
+    if let Some(shares) = shares {
+        shares.rest = Some(shares.rows.drain(range).sum());
+    }
+}
+
 pub fn count(number: u64) -> String {
     let digits = number.to_string();
     let mut out = String::new();
@@ -267,8 +275,13 @@ pub fn count(number: u64) -> String {
     out
 }
 
-/// What usage cost, with how many responses had no known price, which
-/// aren't free: `$0.47`, `$0.47 (+3 unpriced)`.
+pub fn counted(n: u64, singular: &str) -> String {
+    match n {
+        1 => format!("1 {singular}"),
+        n => format!("{} {singular}s", count(n)),
+    }
+}
+
 pub fn cost(usd: f64, unpriced_count: u64) -> String {
     dollars(usd) + &unpriced(unpriced_count)
 }
@@ -285,7 +298,6 @@ pub fn dollars(amount: f64) -> String {
     format!("${}.{:02}", count(cents / 100), cents % 100)
 }
 
-/// To the point, as shares are approximate.
 pub fn share(points: f64) -> String {
     if points < 0.5 {
         "<1%".to_owned()
@@ -294,19 +306,16 @@ pub fn share(points: f64) -> String {
     }
 }
 
-/// The points of a limit each of a usage's rows took, in the rows' order,
-/// and its rest row's. They're known for every row or for none, as each is
-/// its part of the points used.
 pub struct Shares {
     pub rows: Vec<f64>,
-    /// None with no rest row.
     pub rest: Option<f64>,
 }
 
 pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>) -> String {
     let date = |at: i64| {
-        let minute = (at + time::MINUTE / 2) / time::MINUTE * time::MINUTE;
-        time::local(minute).strftime("%a %b %-d %H:%M").to_string()
+        time::local(time::round_minute(at))
+            .strftime("%a %b %-d %H:%M")
+            .to_string()
     };
     let mut out = format!(
         "{} to {}: {} responses, {}\n",
@@ -351,26 +360,25 @@ pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>) -> 
     let costs: Vec<String> = rows.iter().map(|(row, ..)| dollars(row.cost_usd)).collect();
     let cost_wide = costs.iter().map(String::len).max().unwrap_or(4).max(4);
     let share_head = shares.map(|(limit, _)| format!("% of {}", limit.named()));
-    out += &format!(
-        "\n  {what:<wide$}  {:>9}  {:>cost_wide$}{}\n",
-        "Responses",
-        "Cost",
-        share_head
-            .as_ref()
-            .map_or(String::new(), |head| format!("  {head}"))
+    let _ = write!(
+        out,
+        "\n  {what:<wide$}  {:>9}  {:>cost_wide$}",
+        "Responses", "Cost"
     );
+    if let Some(head) = &share_head {
+        let _ = write!(out, "  {head}");
+    }
+    out.push('\n');
     for ((row, points, label), cost) in rows.iter().zip(&costs) {
-        let points = match (&share_head, points) {
-            (Some(head), Some(points)) => {
-                format!("  {:>width$}", share(*points), width = head.len())
-            }
-            _ => String::new(),
-        };
-        out += &format!(
-            "  {label:<wide$}  {:>9}  {cost:>cost_wide$}{points}{}\n",
-            count(row.responses),
-            unpriced(row.unpriced)
+        let _ = write!(
+            out,
+            "  {label:<wide$}  {:>9}  {cost:>cost_wide$}",
+            count(row.responses)
         );
+        if let (Some(head), Some(points)) = (&share_head, points) {
+            let _ = write!(out, "  {:>width$}", share(*points), width = head.len());
+        }
+        let _ = writeln!(out, "{}", unpriced(row.unpriced));
     }
     out + "\nCosts are at list prices: what the same tokens cost on each provider's API."
 }
@@ -390,22 +398,23 @@ pub fn markdown(
         ),
         None => format!("| {what} | Cost | Responses |\n|---|--:|--:|\n"),
     };
-    let cell = |points: Option<f64>| {
-        points.map_or(String::new(), |points| format!(" {} |", share(points)))
-    };
     let rest_line = usage.rest.as_ref().map(|rest| {
-        let points = cell(shares.and_then(|(_, shares)| shares.rest));
-        // Its key, made in `usage`, counts the rows it adds up: `3 more` or `3 earlier`.
+        // Its key, made in `fold`, counts the rows it adds up: `3 more` or `3 earlier`.
         let noun = usage.by.noun();
         let rows = match rest.key.as_str() {
             "1 more" | "1 earlier" => format!("{} {noun}", rest.key),
             other => format!("{other} {noun}s"),
         };
-        format!(
-            "| {rows} | {} | {} |{points}\n",
+        let mut line = format!(
+            "| {rows} | {} | {} |",
             cost(rest.cost_usd, rest.unpriced),
             count(rest.responses)
-        )
+        );
+        if let Some(points) = shares.and_then(|(_, shares)| shares.rest) {
+            let _ = write!(line, " {} |", share(points));
+        }
+        line.push('\n');
+        line
     });
     let time = usage.by.period().is_some();
     if time && let Some(line) = &rest_line {
@@ -429,12 +438,16 @@ pub fn markdown(
         // A `|` in a title or path would end its cell: one titled
         // `ok | $0.01 | 1 | 1% |` wrote cells of its own.
         let name = name.replace('|', "\\|");
-        let points = cell(shares.map(|(_, shares)| shares.rows[at]));
-        out += &format!(
-            "| {name} | {} | {} |{points}\n",
+        let _ = write!(
+            out,
+            "| {name} | {} | {} |",
             cost(row.cost_usd, row.unpriced),
             count(row.responses)
         );
+        if let Some((_, shares)) = shares {
+            let _ = write!(out, " {} |", share(shares.rows[at]));
+        }
+        out.push('\n');
     }
     if !time && let Some(line) = &rest_line {
         out += line;
@@ -463,9 +476,9 @@ pub fn markdown(
 /// it (`Provider::rolls`), whenever it resets: OpenCode Go's 5 hours, with no
 /// start, listed a week of sessions.
 ///
-/// Usage with no known price gives no shares (`unshared`): a share is of
-/// cost, so a model not yet priced took `<1%` and the priced rows its
-/// points, at each model's launch until models.dev lists it.
+/// Significant unpriced usage (`>= 5%` of weighted token volume) gives no
+/// shares (`unshared`): a share is of cost, so a model not yet priced would
+/// otherwise show `<1%` and push its points onto priced rows.
 pub fn breakdown(
     db: &Connection,
     account: &crate::status::Account,
@@ -533,29 +546,13 @@ pub fn breakdown(
     Ok((usage, shares))
 }
 
-/// Fraction of weighted token volume
-/// (`input + cache_write + 5*(output + reasoning) + 0.1*cache_read`)
-/// in `query`'s responses that has no known price (`cost IS NULL`).
 fn unpriced_token_share(db: &Connection, query: &Query) -> Result<f64> {
-    let mut filters = vec!["r.at >= ?".to_owned(), "r.at < ?".to_owned()];
-    let mut values: Vec<Value> = vec![query.since.into(), query.until.into()];
-    if let Some(agent) = &query.agent {
-        filters.push("r.agent = ?".to_owned());
-        values.push(agent.clone().into());
-    }
-    if let Some(account) = &query.account {
-        filters.push("r.account = ?".to_owned());
-        values.push(account.clone().into());
-    }
-    let (limited, given) = limited(&query.models, query.key.as_ref());
-    filters.extend(limited);
-    values.extend(given);
+    let (where_sql, values) = query.where_clause();
     let weight = "r.input + r.cache_write_5m + r.cache_write_1h + (r.output + r.reasoning) * 5 + r.cache_read * 0.1";
     let sql = format!(
         "SELECT total(iif(r.cost IS NOT NULL, {weight}, 0.0)),
                 total(iif(r.cost IS NULL, {weight}, 0.0))
-         FROM response r WHERE {}",
-        filters.join(" AND ")
+         FROM response r WHERE {where_sql}",
     );
     let (priced, unpriced): (f64, f64) = db.query_row(&sql, params_from_iter(values), |row| {
         Ok((row.get(0)?, row.get(1)?))
@@ -564,14 +561,11 @@ fn unpriced_token_share(db: &Connection, query: &Query) -> Result<f64> {
     Ok(if total > 0.0 { unpriced / total } else { 1.0 })
 }
 
-/// Why `usage` of `limit`'s window gives no shares, when it's that some of
-/// it has no known price.
 pub fn unshared(usage: &Usage, limit: &crate::status::Limit) -> Option<String> {
-    let responses = match usage.total.unpriced {
-        0 => return None,
-        1 => "1 response".to_owned(),
-        n => format!("{} responses", count(n)),
-    };
+    if usage.total.unpriced == 0 {
+        return None;
+    }
+    let responses = counted(usage.total.unpriced, "response");
     limit.started().map(|_| {
         format!(
             "No shares of {} are given: {responses} with no known price, and a share is of cost.",
@@ -580,11 +574,6 @@ pub fn unshared(usage: &Usage, limit: &crate::status::Limit) -> Option<String> {
     })
 }
 
-/// What a limit on some models is used by: responses of a model whose id
-/// names one, as "Opus" is in `claude-opus-5`. A scope that names several
-/// joins them with "and", as Google's "Claude and GPT" does, and any of
-/// them counts. A scope that names no model, as "Other apps", counts none.
-/// Every model, with no scope.
 pub fn models(scope: Option<&str>) -> Vec<String> {
     scope
         .into_iter()
@@ -593,15 +582,10 @@ pub fn models(scope: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// What a key's own limit, `limit_key`, is used by: the responses made with
-/// that key, by its fingerprint. An API-key account holds every key to its
-/// provider, and Pi's usage on another key was listed under OpenCode's.
 pub fn key(limit_key: &str) -> Option<String> {
     limit_key.strip_prefix("key-").map(str::to_owned)
 }
 
-/// The filters a response `r` passes to be of `models` and `key`, with the
-/// values of their `?`s, in order.
 pub fn limited(models: &[String], key: Option<&String>) -> (Vec<String>, Vec<Value>) {
     let mut filters = Vec::new();
     let mut values: Vec<Value> = Vec::new();
@@ -610,8 +594,6 @@ pub fn limited(models: &[String], key: Option<&String>) -> (Vec<String>, Vec<Val
         filters.push(format!("({})", any.join(" OR ")));
         values.extend(models.iter().map(|model| model.clone().into()));
     }
-    // The key its folder's sign-in held when it was made, as `ingest` works
-    // out its account.
     if let Some(key) = key {
         filters.push(format!("(SELECT key {}) = ?", crate::prices::SIGN_IN_AT));
         values.push(key.clone().into());
@@ -619,7 +601,6 @@ pub fn limited(models: &[String], key: Option<&String>) -> (Vec<String>, Vec<Val
     (filters, values)
 }
 
-/// The project and agent of the session `id`.
 pub fn brief(db: &Connection, id: &str) -> Result<(Option<String>, String)> {
     db.prepare_cached("SELECT project, agent FROM session WHERE id = ?1")?
         .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -628,17 +609,15 @@ pub fn brief(db: &Connection, id: &str) -> Result<(Option<String>, String)> {
 }
 
 pub fn session_account(db: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
-    db.query_row(
+    db.prepare_cached(
         "SELECT account FROM response WHERE session = ?1 AND account IS NOT NULL ORDER BY at DESC LIMIT 1",
-        [id],
-        |row| row.get(0),
-    )
+    )?
+    .query_row([id], |row| row.get(0))
     .optional()
 }
 
-/// The first 8 characters of the agent's own id, over the whole id, some 45
-/// characters a row in an answer to an agent. Nothing takes an id: it only
-/// tells two sessions with one title apart, which 8 characters do.
+/// First 8 chars of the agent's native id (over the full ~45-char id): only
+/// disambiguates duplicate titles.
 fn start(id: &str) -> String {
     let native = id.split_once(':').map_or(id, |(_, native)| native);
     native.chars().take(8).collect()
@@ -653,11 +632,9 @@ fn short(text: &str, most: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
-/// A title is the session's own words, often what a person asked there, and
-/// an agent reading the answer must not take them for Turnscope's. So each
-/// is quoted where it stands, over one note at the top that a reader is far
-/// past by the last row. Double quotes, as the session's id beside it is in
-/// backticks; JSON's escapes keep a quote inside from ending it early.
+/// Quotes each user-authored title as a JSON string where it appears (over a
+/// single header warning) so an agent reading the table can't mistake it for
+/// Turnscope's own output or break out with embedded quotes.
 fn title(title: Option<&str>) -> String {
     title.map_or("(untitled)".to_owned(), |title| {
         serde_json::Value::String(short(title, 80)).to_string()
@@ -669,16 +646,12 @@ mod tests {
     use super::*;
     use crate::status::Account;
 
-    /// The accounts of the example status, and when it's as of.
     fn example() -> (Vec<Account>, i64) {
-        let example: serde_json::Value =
+        let example: crate::status::Status =
             serde_json::from_str(include_str!("../tests/fixtures/status.json")).unwrap();
-        let accounts = serde_json::from_value(example["accounts"].clone()).unwrap();
-        (accounts, example["at"].as_i64().unwrap())
+        (example.accounts, example.at)
     }
 
-    /// A store with `agent`'s responses on `account`: the id of each, which
-    /// is its session's too, its model, its cost and when it was.
     fn store(
         account: &Account,
         agent: &str,

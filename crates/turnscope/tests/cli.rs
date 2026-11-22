@@ -165,6 +165,43 @@ fn tools(mcp: &mut Command, calls: &[(&str, &str)]) -> Vec<String> {
         .collect()
 }
 
+struct Mcp {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    replies: std::io::Lines<BufReader<std::process::ChildStdout>>,
+}
+
+impl Mcp {
+    fn spawn(cmd: &mut Command) -> Mcp {
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let replies = BufReader::new(child.stdout.take().unwrap()).lines();
+        Mcp {
+            child,
+            stdin,
+            replies,
+        }
+    }
+
+    fn usage(&mut self) -> (String, bool) {
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
+        writeln!(self.stdin, "{request}").unwrap();
+        let reply: serde_json::Value =
+            serde_json::from_str(&self.replies.next().unwrap().unwrap()).unwrap();
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        (text.to_owned(), reply["result"]["isError"] == true)
+    }
+
+    fn close(mut self) {
+        drop(self.stdin);
+        assert!(self.child.wait().unwrap().success());
+    }
+}
+
 /// A store with the fixture's history read, and four accounts:
 /// - Claude Max, Claude Code's: its five hours running out within the hour
 ///   at the pace of the last three, its week lasting;
@@ -175,8 +212,7 @@ fn tools(mcp: &mut Command, calls: &[(&str, &str)]) -> Vec<String> {
 ///   read.
 fn store() -> tempfile::TempDir {
     let data = tempfile::tempdir().unwrap();
-    assert!(turnscope(data.path(), &["accounts"], None).status.success());
-    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    let db = turnscope::db::open(data.path()).unwrap();
     db.execute(
         "INSERT INTO account (id, provider, kind, title, label, read_at, problem) VALUES
              ('anthropic:acct-1:org-1', 'anthropic', 'subscription', 'Claude Max', 'me@example.com', ?1, NULL),
@@ -224,13 +260,14 @@ fn store() -> tempfile::TempDir {
         params![home().to_string_lossy(), NOW - 48 * HOUR],
     )
     .unwrap();
-    db.execute_batch(
-        "INSERT INTO price (provider, model, since, cost) VALUES ('anthropic', 'claude-opus-5', 0, '{\"input\":5,\"output\":25,\"cache_read\":0.5,\"cache_write\":6.25}');
-         -- Read the history again, now priced and attributed.
-         UPDATE state SET readers = 0;
-         UPDATE file SET readers = 0;",
+    db.execute(
+        "INSERT INTO price (provider, model, since, cost)
+         VALUES ('anthropic', 'claude-opus-5', 0, '{\"input\":5,\"output\":25,\"cache_read\":0.5,\"cache_write\":6.25}')",
+        [],
     )
     .unwrap();
+    drop(db);
+    assert!(turnscope(data.path(), &["accounts"], None).status.success());
     data
 }
 
@@ -529,8 +566,6 @@ fn a_command_says_when_it_waits_for_another_turnscope_reading_history() {
 #[test]
 fn the_callers_account_is_its_agent_folders_however_its_written() {
     let data = store();
-    // Read the history first: neither command below does.
-    assert!(turnscope(data.path(), &["usage"], None).status.success());
     let folder = format!("{}/.codex/", home().display());
     let run = |args: &[&str]| {
         command_as("codex", data.path(), args)
@@ -657,8 +692,6 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
 #[test]
 fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
     let data = store();
-    // Read the history: a status line doesn't.
-    assert!(turnscope(data.path(), &["usage"], None).status.success());
     let new = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
     let line = |agent: &str, session: &str, folder: &str| {
         let mut line = command_as(agent, data.path(), &["statusline"])
@@ -915,30 +948,13 @@ fn with_no_account_to_show_every_front_end_says_why() {
 #[test]
 fn a_tool_call_says_its_usage_is_part_of_it_while_all_of_history_is_read() {
     let data = store();
-    assert!(turnscope(data.path(), &["usage"], None).status.success());
     // As when `ingest::READERS` was raised, with another Turnscope reading.
     let db = Connection::open(data.path().join("turnscope.db")).unwrap();
     db.execute("UPDATE state SET readers = 0", []).unwrap();
     let reading = std::fs::File::create(data.path().join("ingest.lock")).unwrap();
     reading.lock().unwrap();
-    let mut mcp = command(data.path(), &["mcp"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = mcp.stdin.take().unwrap();
-    let mut replies = BufReader::new(mcp.stdout.take().unwrap()).lines();
-    let mut usage = || {
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
-        writeln!(stdin, "{request}").unwrap();
-        let reply: serde_json::Value =
-            serde_json::from_str(&replies.next().unwrap().unwrap()).unwrap();
-        reply["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    };
-    let text = usage();
+    let mut mcp = Mcp::spawn(&mut command(data.path(), &["mcp"]));
+    let (text, _) = mcp.usage();
     assert!(
         text.ends_with(
             "\n\nYour agents' history is still being read, so the usage here is only part of \
@@ -948,7 +964,7 @@ fn a_tool_call_says_its_usage_is_part_of_it_while_all_of_history_is_read() {
     );
     db.execute("UPDATE state SET version = 99000000", [])
         .unwrap();
-    let text = usage();
+    let (text, _) = mcp.usage();
     assert!(
         text.ends_with(
             "\n\nWhat's new couldn't be read first, so this is as of the last read: a newer \
@@ -956,8 +972,7 @@ fn a_tool_call_says_its_usage_is_part_of_it_while_all_of_history_is_read() {
         ),
         "{text}"
     );
-    drop(stdin);
-    assert!(mcp.wait().unwrap().success());
+    mcp.close();
 }
 
 /// An MCP server left running while a newer Turnscope changes the schema,
@@ -966,31 +981,16 @@ fn a_tool_call_says_its_usage_is_part_of_it_while_all_of_history_is_read() {
 #[test]
 fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
     let data = store();
-    let mut mcp = command(data.path(), &["mcp"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = mcp.stdin.take().unwrap();
-    let mut replies = BufReader::new(mcp.stdout.take().unwrap()).lines();
-    // An answer's text, and whether it says the call failed.
-    let mut usage = || {
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
-        writeln!(stdin, "{request}").unwrap();
-        let reply: serde_json::Value =
-            serde_json::from_str(&replies.next().unwrap().unwrap()).unwrap();
-        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
-        (text.to_owned(), reply["result"]["isError"] == true)
-    };
+    let mut mcp = Mcp::spawn(&mut command(data.path(), &["mcp"]));
     // Its first answer, with the data open and all of history read.
-    let (before, _) = usage();
+    let (before, _) = mcp.usage();
     assert!(!before.contains("couldn't be read"), "{before}");
 
     // The schema is changed under it, and Codex's file is one not read yet.
     let db = Connection::open(data.path().join("turnscope.db")).unwrap();
     db.execute_batch("PRAGMA user_version = 99; DELETE FROM file WHERE agent = 'codex';")
         .unwrap();
-    let (after, failed) = usage();
+    let (after, failed) = mcp.usage();
     assert!(!failed);
     assert_eq!(
         after,
@@ -1010,7 +1010,7 @@ fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
     // A query that no longer fits fails, and says why first.
     db.execute("ALTER TABLE session RENAME COLUMN title TO name", [])
         .unwrap();
-    let (said, failed) = usage();
+    let (said, failed) = mcp.usage();
     assert!(failed);
     assert!(
         said.starts_with(
@@ -1018,8 +1018,7 @@ fn a_server_left_running_stops_catching_up_once_the_schema_is_newer() {
         ),
         "{said}"
     );
-    drop(stdin);
-    assert!(mcp.wait().unwrap().success());
+    mcp.close();
 }
 
 #[test]
@@ -1029,24 +1028,8 @@ fn a_server_left_running_stops_writing_once_a_newer_turnscope_has() {
     let folder = tempfile::tempdir().unwrap();
     let binary = folder.path().join("turnscope");
     std::fs::copy(env!("CARGO_BIN_EXE_turnscope"), &binary).unwrap();
-    let mut mcp = command_of(&binary, "claude", data.path(), &["mcp"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = mcp.stdin.take().unwrap();
-    let mut replies = BufReader::new(mcp.stdout.take().unwrap()).lines();
-    let mut usage = || {
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"since":"2026-09-29"}}}"#;
-        writeln!(stdin, "{request}").unwrap();
-        let reply: serde_json::Value =
-            serde_json::from_str(&replies.next().unwrap().unwrap()).unwrap();
-        reply["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    };
-    let before = usage();
+    let mut mcp = Mcp::spawn(&mut command_of(&binary, "claude", data.path(), &["mcp"]));
+    let (before, _) = mcp.usage();
     // A newer version writes, and Codex's file is one not read yet.
     let db = Connection::open(data.path().join("turnscope.db")).unwrap();
     db.execute_batch(
@@ -1054,7 +1037,7 @@ fn a_server_left_running_stops_writing_once_a_newer_turnscope_has() {
     )
     .unwrap();
     assert_eq!(
-        usage(),
+        mcp.usage().0,
         format!(
             "{before}\n\nWhat's new couldn't be read first, so this is as of the last read: \
              a newer Turnscope has updated this data; update Turnscope"
@@ -1073,14 +1056,13 @@ fn a_server_left_running_stops_writing_once_a_newer_turnscope_has() {
     std::fs::remove_file(&binary).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_turnscope"), &binary).unwrap();
     assert_eq!(
-        usage(),
+        mcp.usage().0,
         format!(
             "{before}\n\nWhat's new couldn't be read first, so this is as of the last read: \
              Turnscope was updated after this one started; start it again"
         )
     );
-    drop(stdin);
-    assert!(mcp.wait().unwrap().success());
+    mcp.close();
 }
 
 #[test]
