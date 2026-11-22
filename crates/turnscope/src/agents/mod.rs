@@ -14,12 +14,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 use rusqlite::{Connection, OpenFlags};
-use serde::Deserialize as _;
+use serde::Deserialize;
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 use crate::{Error, Result};
 
@@ -46,6 +48,17 @@ pub fn find(id: &str) -> crate::Result<&'static dyn Agent> {
 
 pub fn name(id: &str) -> &str {
     by_id(id).map_or(id, |agent| agent.info().name)
+}
+
+/// Whether `path` is a file an agent keeps a login in (`Info::login_file`).
+pub fn login_file(path: &Path) -> bool {
+    let name = path.file_name();
+    ALL.iter().any(|agent| {
+        agent
+            .info()
+            .login_file
+            .is_some_and(|file| name == Some(file.as_ref()))
+    })
 }
 
 pub trait Agent: Sync {
@@ -96,14 +109,6 @@ pub trait Agent: Sync {
     /// The command that `folder`'s configuration runs for Turnscope's MCP
     /// server, if any. Each of its folders keeps its own.
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
-
-    /// Whether `path` is a file the agent keeps a login in, so a write to
-    /// it asks for limits (`limits::refresh_asked`), as once it signs in
-    /// again. Not one it keeps other things in too, as Claude Code's
-    /// `.claude.json`.
-    fn login_file(&self, _path: &Path) -> bool {
-        false
-    }
 }
 
 /// What Turnscope knows of an agent as a program.
@@ -130,6 +135,10 @@ pub struct Info {
     pub charges: bool,
     /// What it sets in an MCP server it starts: its session's id.
     pub session_var: Option<&'static str>,
+    /// The name of a file it keeps a login in, so a write to it asks for
+    /// limits (`limits::refresh`), as once it signs in again. Not one
+    /// it keeps other things in too, as Claude Code's `.claude.json`.
+    pub login_file: Option<&'static str>,
 }
 
 impl Info {
@@ -164,23 +173,37 @@ pub struct InBand {
     pub readings: Vec<crate::providers::Reading>,
 }
 
+impl InBand {
+    fn scope(&self) -> Option<&str> {
+        self.readings.first().and_then(|r| r.scope.as_deref())
+    }
+}
+
 impl Read {
     pub fn session(&mut self, id: &str) -> &mut Session {
-        self.sessions.entry(id.to_owned()).or_default()
+        if !self.sessions.contains_key(id) {
+            self.sessions.insert(id.to_owned(), Session::default());
+        }
+        self.sessions.get_mut(id).expect("session just inserted")
     }
 
     /// Take in limits the agent wrote, over any it wrote before of the same
     /// provider and scope: a long file's first read keeps its latest alone.
     pub fn in_band(&mut self, snapshot: InBand) {
-        let scope = |limits: &InBand| limits.readings.first().map(|reading| reading.scope.clone());
-        let same = self
+        if snapshot.readings.is_empty() {
+            return;
+        }
+        let scope = snapshot.scope();
+        if let Some(existing) = self
             .limits
             .iter_mut()
-            .find(|known| known.provider == snapshot.provider && scope(known) == scope(&snapshot));
-        match same {
-            Some(known) if known.at > snapshot.at => {}
-            Some(known) => *known = snapshot,
-            None => self.limits.push(snapshot),
+            .find(|known| known.provider == snapshot.provider && known.scope() == scope)
+        {
+            if snapshot.at >= existing.at {
+                *existing = snapshot;
+            }
+        } else {
+            self.limits.push(snapshot);
         }
     }
 
@@ -191,10 +214,7 @@ impl Read {
         if response.tokens == Tokens::default() && response.cost.is_none_or(|cost| cost == 0.0) {
             return;
         }
-        if !self.sessions.contains_key(&response.session) {
-            self.sessions
-                .insert(response.session.clone(), Session::default());
-        }
+        self.session(&response.session);
         match self.responses.get_mut(&response.id) {
             Some(known) => known.merge(response),
             None => {
@@ -223,17 +243,29 @@ pub struct Session {
 const TITLE: usize = 200;
 
 impl Session {
-    /// Offer a title; a better kind replaces a worse, and a later one of the
-    /// same kind the earlier.
-    ///
-    /// It's kept as written, a key pasted into it too, over taking keys out:
-    /// the person gave that text to an agent already, and the agent's own
-    /// files hold it beside this database. Of 13,652 titles in one database,
-    /// at most 159 had held a key (November 2026).
+    /// Kept as written, a pasted key included: the agent's own files hold it
+    /// too, and at most 159 of 13,652 titles had one (November 2026).
     pub fn title(&mut self, kind: Title, text: &str) {
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !text.is_empty() && self.title.as_ref().is_none_or(|(had, _)| kind >= *had) {
-            self.title = Some((kind, text.chars().take(TITLE).collect()));
+        if self.title.as_ref().is_some_and(|(had, _)| kind < *had) {
+            return;
+        }
+        let mut out = String::new();
+        let mut left = TITLE;
+        for word in text.split_whitespace() {
+            if !out.is_empty() {
+                if left <= 1 {
+                    break;
+                }
+                out.push(' ');
+                left -= 1;
+            }
+            for ch in word.chars().take(left) {
+                out.push(ch);
+                left -= 1;
+            }
+        }
+        if !out.is_empty() {
+            self.title = Some((kind, out));
         }
     }
 }
@@ -397,24 +429,22 @@ impl Secret {
     }
 }
 
-pub fn reading(path: &Path, error: impl Display) -> Error {
+fn reading(path: &Path, error: impl Display) -> Error {
     Error::Failed(format!("reading {}: {error}", path.display()))
 }
 
-/// What `read` makes of the SQLite database `file`, an agent's, which is
-/// never written: not even the files SQLite keeps beside one.
-///
-/// A database keeps a write-ahead log, `<file>-wal`, while its agent has it
-/// open. With no log beside it, all it holds is in the file, which is then
-/// read as one that can't change: read as any other, SQLite makes a log and
-/// its index beside it and leaves them, 14 files after reading 7 databases
-/// (measured 2026-11-10), and the log's new time makes the next catch-up
-/// read the database again. With a log, it's read as any other.
-///
-/// SQLite takes no lock on a file it's told can't change. So one that
-/// changed while it was read, or that its agent opened meanwhile, fails,
-/// and is read again at the next catch-up.
-pub fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
+fn non_empty(value: &Value) -> Option<&str> {
+    value.as_str().filter(|text| !text.is_empty())
+}
+
+fn str_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
+    value.pointer(pointer).and_then(non_empty)
+}
+
+/// Read an agent's SQLite database: with no `-wal` beside it, immutable, which
+/// leaves no files behind (a plain open left 14 by 7 databases, 2026-11-10),
+/// failing if the database or its log changed meanwhile.
+fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
     let mut log = file.as_os_str().to_owned();
     log.push("-wal");
     let alone = || {
@@ -424,7 +454,6 @@ pub fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result
     let before = file.to_str().zip(alone());
     let db = match before {
         Some((path, _)) => {
-            // What would end the path in an address.
             let path = path
                 .replace('%', "%25")
                 .replace('?', "%3f")
@@ -436,7 +465,6 @@ pub fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result
         }
         None => Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY),
     }
-    // SQLite ends its message with the address it was given, the path again.
     .map_err(|error| {
         let error = error.to_string();
         reading(file, error.split(": file:").next().unwrap_or_default())
@@ -453,14 +481,22 @@ pub fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result
     }
 }
 
-/// Pass each complete line of `path` from byte `from` to `visit`, and say
-/// where the next read starts: past the last line that ended with a newline,
-/// since one without is still being written.
-pub fn lines(path: &Path, from: u64, mut visit: impl FnMut(&[u8])) -> Result<u64> {
+/// Visit each line of `path` from `from`, and return where the next read
+/// starts: before a last line with no `\n`, as one still being written.
+fn try_lines(
+    path: &Path,
+    from: u64,
+    mut visit: impl FnMut(&[u8]) -> Result<ControlFlow<()>>,
+) -> Result<u64> {
     let failed = |error| reading(path, error);
     let mut file = File::open(path).map_err(failed)?;
-    file.seek(SeekFrom::Start(from)).map_err(failed)?;
-    let mut reader = BufReader::with_capacity(1 << 20, file);
+    let capacity = file.metadata().ok().map_or(64 << 10, |meta| {
+        (meta.len().saturating_sub(from) as usize).clamp(4096, 1 << 20)
+    });
+    if from > 0 {
+        file.seek(SeekFrom::Start(from)).map_err(failed)?;
+    }
+    let mut reader = BufReader::with_capacity(capacity, file);
     let mut line = Vec::new();
     let mut offset = from;
     loop {
@@ -470,14 +506,20 @@ pub fn lines(path: &Path, from: u64, mut visit: impl FnMut(&[u8])) -> Result<u64
             return Ok(offset);
         }
         offset += read as u64;
-        if line.len() > 1 {
-            visit(&line);
+        if !line.trim_ascii().is_empty() && visit(&line)?.is_break() {
+            return Ok(offset);
         }
     }
 }
 
-/// What the folder `dir` holds; nothing where it can't be read.
-pub fn entries(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
+fn lines(path: &Path, from: u64, mut visit: impl FnMut(&[u8])) -> Result<u64> {
+    try_lines(path, from, |line| {
+        visit(line);
+        Ok(ControlFlow::Continue(()))
+    })
+}
+
+fn entries(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -485,21 +527,38 @@ pub fn entries(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
         .map(|entry| entry.path())
 }
 
-/// The text of a message's `content`: the string, or its parts' `text`.
-pub fn texts<'a>(content: impl serde::Deserializer<'a> + Copy) -> Vec<String> {
-    #[derive(serde::Deserialize)]
+/// The texts of a message's `content`: a string, or parts with `text`.
+fn texts(content: &RawValue) -> Vec<String> {
+    #[derive(Deserialize)]
     struct Part<'a> {
         #[serde(borrow)]
         text: Option<Cow<'a, str>>,
     }
-    if let Ok(text) = String::deserialize(content) {
-        return vec![text];
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Content<'a> {
+        Text(#[serde(borrow)] Cow<'a, str>),
+        Parts(#[serde(borrow)] Vec<Part<'a>>),
     }
-    Vec::<Part>::deserialize(content)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|part| part.text.map(Cow::into_owned))
-        .collect()
+    match serde_json::from_str(content.get()) {
+        Ok(Content::Text(text)) => vec![text.into_owned()],
+        Ok(Content::Parts(parts)) => parts
+            .into_iter()
+            .filter_map(|part| Some(part.text?.into_owned()))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// For a field a reader can do without: one null or of another type reads as
+/// its default, so it doesn't lose the line it's on.
+fn lenient<'de, D, T>(field: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    let raw = <&RawValue>::deserialize(field)?;
+    Ok(serde_json::from_str(raw.get()).unwrap_or_default())
 }
 
 /// The newer of the sign-in in the Keychain and the one in the file: the one
@@ -527,7 +586,7 @@ fn expiry(credential: &Credential) -> i64 {
     credential.expires.unwrap_or(i64::MAX)
 }
 
-pub fn json_file(path: &Path) -> Result<Option<Value>> {
+pub(crate) fn json_file(path: &Path) -> Result<Option<Value>> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
@@ -541,7 +600,7 @@ pub fn json_file(path: &Path) -> Result<Option<Value>> {
 /// `{type: "oauth", access, expires}` for a sign-in, or `{type, key}` for an
 /// API key, its type `key_type`. `reads` is the id of the provider that
 /// reads it; a login no provider reads has no credential.
-pub fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> Login {
+fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> Login {
     let reads = crate::providers::by_id(reads);
     // A sign-in to a provider that sells no plan gives the agent a key.
     let sells_none = reads.is_some_and(|reads| reads.info().subscription.is_none());
@@ -565,16 +624,9 @@ pub fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> 
     }
 }
 
-/// What the Keychain item with `service`, and with `account` where its agent
-/// keeps several under one service, holds, as `parse` reads it. `None` when
-/// there's no such item.
-///
-/// Read with `/usr/bin/security`, the tool an agent writes its item with,
-/// so no permission prompt appears; it finds the Keychain under `home`.
-/// Under a home with none, as a test's, it searches the System keychain
-/// alone (`HOME=<empty folder> security list-keychains`, November 2026), so
-/// a test never reads a real login.
-pub fn keychain<T>(
+/// The Keychain item `service`, read with `/usr/bin/security` as the agents
+/// write it, so macOS asks nothing; under `home`, so a test's sees no item.
+fn keychain<T>(
     home: &Path,
     service: &str,
     account: Option<&str>,
@@ -593,10 +645,6 @@ pub fn keychain<T>(
     kept.map(|kept| parse(&kept)).transpose().map_err(failed)
 }
 
-/// What `security` found, by how it ended: the item's value, or `None` when
-/// there's no such item (44). For any other end, why: what it wrote on
-/// standard error, as "User interaction is not allowed." for a locked
-/// Keychain, and how it ended.
 fn found(output: std::process::Output) -> std::result::Result<Option<Vec<u8>>, String> {
     match output.status.code() {
         Some(0) => Ok(Some(output.stdout)),
@@ -612,9 +660,8 @@ fn found(output: std::process::Output) -> std::result::Result<Option<Vec<u8>>, S
     }
 }
 
-/// The claims of a JWT, read without checking its signature: they only tell
-/// accounts apart and when a token expires. Null when it isn't one.
-pub fn claims(token: &str) -> Value {
+/// A JWT's claims, unverified: read only for its account and expiry.
+pub(crate) fn claims(token: &str) -> Value {
     token
         .split('.')
         .nth(1)
@@ -627,10 +674,7 @@ pub fn claims(token: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// `home/own`, then the folders beside it named `prefix` and more that hold
-/// `signed`, the file the agent writes once signed in there: how a second
-/// account's folder is kept. Each once, a link counting as what it links to.
-pub fn own_and_found(home: &Path, own: &str, prefix: &str, signed: &str) -> Vec<PathBuf> {
+pub(crate) fn own_and_found(home: &Path, own: &str, prefix: &str, signed: &str) -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = entries(home)
         .filter(|path| {
             path.file_name()
@@ -642,84 +686,79 @@ pub fn own_and_found(home: &Path, own: &str, prefix: &str, signed: &str) -> Vec<
     folders.sort();
     folders.insert(0, home.join(own));
     let mut seen = std::collections::HashSet::new();
-    folders.retain(|folder| seen.insert(std::fs::canonicalize(folder).unwrap_or(folder.clone())));
+    folders.retain(|folder| {
+        seen.insert(std::fs::canonicalize(folder).unwrap_or_else(|_| folder.clone()))
+    });
     folders
 }
 
-/// Where `<tag>`, or `<tag` with attributes, opens in `text`: its start, and
-/// where what it holds starts.
-fn opening(text: &str, tag: &str) -> Option<(usize, usize)> {
-    let open = format!("<{tag}");
+/// Where in `text` the first mark of `tag` is that begins with `opens`, `<`
+/// or `</`: as `<tag>`, or `<tag …>` with attributes.
+fn mark(text: &str, opens: &str, tag: &str) -> Option<(usize, usize)> {
     let mut from = 0;
-    while let Some(at) = text[from..].find(&open).map(|at| from + at) {
-        let after = at + open.len();
-        match text[after..].chars().next() {
-            Some('>') => return Some((at, after + 1)),
-            Some(space) if space.is_whitespace() => {
-                let end = text[after..].find('>')?;
-                return Some((at, after + end + 1));
+    while let Some(rel) = text[from..].find(opens) {
+        let at = from + rel;
+        let named = at + opens.len() + tag.len();
+        if text[at + opens.len()..].starts_with(tag) {
+            let rest = &text[named..];
+            match rest.chars().next() {
+                Some('>') => return Some((at, named + 1)),
+                Some(space) if space.is_whitespace() => {
+                    return Some((at, named + rest.find('>')? + 1));
+                }
+                _ => {}
             }
-            _ => from = after,
         }
+        from = at + opens.len();
     }
     None
 }
 
-/// What `<tag>…</tag>` holds in `text`.
-pub fn inner<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
-    let after = &text[opening(text, tag)?.1..];
-    Some(
-        after
-            .split_once(&format!("</{tag}>"))
-            .map_or(after, |(inner, _)| inner),
-    )
+fn inner<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let after = &text[mark(text, "<", tag)?.1..];
+    Some(match mark(after, "</", tag) {
+        Some((end, _)) => &after[..end],
+        None => after,
+    })
 }
 
-/// `text` without the blocks `<tag>…</tag>` of `tags`, attributes or not:
-/// what an agent adds to a message sent as the person's.
-///
-/// An opening tag with no closing one is the agent's only where the text,
-/// its blocks taken out, opens with it, as an agent may write an image's
-/// `<image name=[Image #1]>` in a part of its own. Further in, it's a word
-/// the person typed, as in `Add a <skill> element to the schema`, and what
-/// follows it is theirs too: chosen over taking it out to the end of the
-/// text, which cut such a message at the tag. A mention before a block of
-/// the same tag still loses the words between them: tags alone don't tell
-/// the two apart. (Not measured: no real message was read for it.)
-pub fn without_tags(text: &str, tags: &[&str]) -> String {
+/// `text` without the agent's `<tag>…</tag>` blocks. A tag never closed is
+/// the agent's only at the start, so "Add a <skill> element" is kept.
+fn without_tags(text: &str, tags: &[&str]) -> String {
+    if !text.contains('<') {
+        return text.trim().to_owned();
+    }
     let mut text = text.to_owned();
     for tag in tags {
-        let close = format!("</{tag}>");
-        while let Some((start, inside)) = opening(&text, tag)
-            && let Some(end) = text[inside..].find(&close)
+        while let Some((start, inside)) = mark(&text, "<", tag)
+            && let Some((_, end)) = mark(&text[inside..], "</", tag)
         {
-            text.replace_range(start..inside + end + close.len(), "");
+            text.replace_range(start..inside + end, "");
         }
-        // One left closing a block an agent split across parts.
-        text = text.replace(&close, "");
+        while let Some((start, end)) = mark(&text, "</", tag) {
+            text.replace_range(start..end, "");
+        }
     }
-    let text = text.trim();
-    // One left opening such a block, which the text then opens with.
-    let opens = tags
-        .iter()
-        .any(|tag| opening(text, tag).is_some_and(|(start, _)| start == 0));
+    let trimmed = text.trim();
+    let opens = trimmed.starts_with('<')
+        && tags
+            .iter()
+            .any(|tag| mark(trimmed, "<", tag).is_some_and(|(start, _)| start == 0));
     if opens {
         String::new()
+    } else if trimmed.len() == text.len() {
+        text
     } else {
-        text.to_owned()
+        trimmed.to_owned()
     }
 }
 
-/// The command at `pointer` in the JSON file at `path`, where an agent
-/// keeps Turnscope's MCP server.
-pub fn json_mcp_command(path: &Path, pointer: &str) -> Option<String> {
+fn json_mcp_command(path: &Path, pointer: &str) -> Option<String> {
     let config = json_file(path).ok()??;
     Some(config.pointer(pointer)?.as_str()?.to_owned())
 }
 
-/// The `command` of `[mcp_servers.turnscope]` in the TOML file at `path`, as
-/// an agent's own command writes it: one key to a line.
-pub fn toml_mcp_command(path: &Path) -> Option<String> {
+fn toml_mcp_command(path: &Path) -> Option<String> {
     let config = std::fs::read_to_string(path).ok()?;
     config
         .lines()
@@ -728,11 +767,10 @@ pub fn toml_mcp_command(path: &Path) -> Option<String> {
         .take_while(|line| !line.trim_start().starts_with('['))
         .find_map(|line| {
             let (key, value) = line.split_once('=')?;
-            (key.trim() == "command").then(|| value.trim().trim_matches('"').to_owned())
+            (key.trim() == "command").then(|| value.trim().trim_matches(['"', '\'']).to_owned())
         })
 }
 
-/// `lines` written to `file` as JSON Lines, in a folder made for it.
 #[cfg(test)]
 fn jsonl(file: PathBuf, lines: &[Value]) -> PathBuf {
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -741,8 +779,6 @@ fn jsonl(file: PathBuf, lines: &[Value]) -> PathBuf {
     file
 }
 
-/// `login`'s credential as its provider, kind, expiry and secret, to compare
-/// in a test.
 #[cfg(test)]
 fn credential(login: &Login) -> Option<(&'static str, bool, Option<i64>, &str)> {
     let credential = login.credential.as_ref()?;
@@ -767,6 +803,9 @@ mod tests {
         assert_eq!(title.chars().count(), 200);
         session.title(Title::Named, " \n ");
         assert_eq!(session.title.as_ref().unwrap().1.chars().count(), 200);
+        let full = "a".repeat(199);
+        session.title(Title::Named, &format!("{full} b"));
+        assert_eq!(session.title.unwrap().1, full);
     }
 
     #[test]

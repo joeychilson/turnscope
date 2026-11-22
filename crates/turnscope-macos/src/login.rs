@@ -2,9 +2,9 @@
 
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
-/// Whether the app opens at login.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Login {
+    #[default]
     Off,
     On,
     /// It's registered, but macOS holds it until it's allowed in System Settings.
@@ -21,19 +21,9 @@ impl Login {
 /// Reads whether the app opens at login into the state, off the main thread: macOS answers in
 /// 1.7 to 6.2 ms (measured November 2026), which held up the panel as it opened.
 pub fn check() {
-    std::thread::spawn(|| {
-        let login = status();
-        if let Some(handle) = crate::HANDLE.get() {
-            handle.update_if(move |s, _| {
-                let changed = s.login != login;
-                s.login = login;
-                changed
-            });
-        }
-    });
+    std::thread::spawn(|| crate::set(|s| &mut s.login, status()));
 }
 
-/// Whether the app opens at login now.
 fn status() -> Login {
     let status = unsafe { SMAppService::mainAppService().status() };
     match status {
@@ -59,7 +49,7 @@ pub fn set(on: bool) -> Login {
     };
     if let Err(error) = done {
         crate::engine::log(&format!("open at login: {}", error.localizedDescription()));
-        crate::beep();
+        objc2_app_kit::NSBeep();
     }
     status()
 }

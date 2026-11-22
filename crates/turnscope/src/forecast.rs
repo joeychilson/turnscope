@@ -41,7 +41,12 @@ impl Projection {
     fn at_rate(used: f64, rate: f64, at: i64, resets: i64) -> Projection {
         let at_reset = used + rate * ((resets - at) as f64 / HOUR as f64).max(0.0);
         let runs_out = (rate > 0.0 && used < 100.0)
-            .then(|| at + ((100.0 - used) / rate * HOUR as f64) as i64)
+            .then(|| {
+                let remaining = (100.0 - used) / rate * HOUR as f64;
+                (remaining.is_finite() && remaining < (resets - at) as f64)
+                    .then(|| at.saturating_add(remaining as i64))
+            })
+            .flatten()
             .filter(|out| *out < resets);
         Projection {
             at,
@@ -440,9 +445,17 @@ mod tests {
                 )),
             }
         }
-        // By length: a day or less, then longer. Forecasts, declined, point
-        // errors, ranges that held, run-outs, run-out ranges that held.
-        let mut scores: [(usize, usize, Vec<f64>, usize, usize, usize); 2] = Default::default();
+        #[derive(Default)]
+        struct Score {
+            forecasts: usize,
+            declined: usize,
+            errors: Vec<f64>,
+            held: usize,
+            outs: usize,
+            outs_held: usize,
+        }
+        // By length: a day or less, then longer.
+        let mut scores: [Score; 2] = Default::default();
         for (_, window) in &windows {
             let ran_out = window
                 .readings
@@ -465,51 +478,51 @@ mod tests {
             let end = ran_out.unwrap_or(window.resets).min(window.resets);
             let mut origin = window.readings[0].0 + step / 2;
             while origin + step / 2 < end {
+                let cutoff = window.readings.partition_point(|(at, _)| *at <= origin);
                 let seen = Window {
                     starts: window.starts,
                     resets: window.resets,
-                    readings: window
-                        .readings
-                        .iter()
-                        .copied()
-                        .filter(|(at, _)| *at <= origin)
-                        .collect(),
+                    readings: window.readings[..cutoff].to_vec(),
                 };
                 origin += step;
                 let Some(projection) = project(&seen, origin - step) else {
-                    score.1 += 1;
+                    score.declined += 1;
                     continue;
                 };
-                score.0 += 1;
+                score.forecasts += 1;
                 score
-                    .2
+                    .errors
                     .push((came_to - projection.at_reset.min(100.0)).abs());
                 let band = band(&seen, projection.at);
                 let (low, high) = at_reset(&projection, band);
-                score.3 +=
+                score.held +=
                     usize::from((low.min(100.0) - 0.5..=high.min(100.0) + 0.5).contains(&came_to));
                 if let Some(out) = ran_out {
-                    score.4 += 1;
+                    score.outs += 1;
                     let (soonest, latest) = runs_out(&projection, band, window.resets);
                     let held = soonest.is_some_and(|soonest| {
                         soonest - out <= 15 * MINUTE
                             && latest.is_none_or(|latest| out - latest <= 15 * MINUTE)
                     });
-                    score.5 += usize::from(held);
+                    score.outs_held += usize::from(held);
                 }
             }
         }
-        for (name, (forecasts, declined, mut errors, held, outs, outs_held)) in
-            ["a day or less", "longer"].into_iter().zip(scores)
-        {
-            errors.sort_by(f64::total_cmp);
-            let median = errors.get(errors.len() / 2).copied().unwrap_or(f64::NAN);
+        for (name, mut score) in ["a day or less", "longer"].into_iter().zip(scores) {
+            score.errors.sort_by(f64::total_cmp);
+            let median = score
+                .errors
+                .get(score.errors.len() / 2)
+                .copied()
+                .unwrap_or(f64::NAN);
             let share = |part: usize, whole: usize| 100.0 * part as f64 / whole.max(1) as f64;
             println!(
-                "{name}: {forecasts} forecasts, {:.0}% declined, median error {median:.1} points, 80% range held {:.0}%, run-out range held {:.0}% of {outs}",
-                share(declined, forecasts + declined),
-                share(held, forecasts),
-                share(outs_held, outs),
+                "{name}: {} forecasts, {:.0}% declined, median error {median:.1} points, 80% range held {:.0}%, run-out range held {:.0}% of {}",
+                score.forecasts,
+                share(score.declined, score.forecasts + score.declined),
+                share(score.held, score.forecasts),
+                share(score.outs_held, score.outs),
+                score.outs,
             );
         }
     }

@@ -1,6 +1,7 @@
-// Running another program: the Keychain's `security`, an agent's own command.
+//! Running another program: the Keychain's `security`, an agent's own command.
 
 use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Run `command` to its end, with nothing on its standard input, waiting no
@@ -13,61 +14,60 @@ pub fn output_within(command: &mut Command, wait: Duration) -> std::io::Result<O
         .stderr(Stdio::piped())
         .spawn()?;
     // Read as written, so a child that writes more than a pipe holds
-    // doesn't wait on us.
+    // doesn't wait on us, both pipes onto one channel so a process left
+    // holding them waits one `QUIET`, not two.
     fn drain(
         pipe: Option<impl std::io::Read + Send + 'static>,
-    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
-        let (sent, read) = std::sync::mpsc::channel();
+        is_stdout: bool,
+        sent: mpsc::Sender<(bool, Vec<u8>)>,
+    ) {
+        let Some(mut pipe) = pipe else { return };
         std::thread::spawn(move || {
-            let Some(mut pipe) = pipe else { return };
             let mut bytes = [0; 8192];
             while let Ok(count @ 1..) = pipe.read(&mut bytes) {
-                if sent.send(bytes[..count].to_vec()).is_err() {
+                if sent.send((is_stdout, bytes[..count].to_vec())).is_err() {
                     return;
                 }
             }
         });
-        read
     }
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
+    let (sent, read) = mpsc::channel();
+    drain(child.stdout.take(), true, sent.clone());
+    drain(child.stderr.take(), false, sent);
     let deadline = Instant::now() + wait;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
         if Instant::now() >= deadline {
-            child.kill()?;
-            child.wait()?;
+            let _ = child.kill();
+            let _ = child.wait();
             let message = format!("no answer within {} s", wait.as_secs());
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, message));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
     // A child can leave a process holding its pipes open, as a login
-    // shell's background job does, so each pipe is read until it closes or
-    // is quiet for `QUIET`: until the deadline, or `QUIET` past it for a
-    // child that ended just before. Chosen over reading to the deadline,
-    // which waited all of it: 10 s for a login shell's `PATH`. The cost:
-    // output is lost if its reader waits longer than `QUIET` for a
-    // processor. Measured 2026-11-14 at a load of 7 on 8 cores: `sleep 4 &
-    // echo said` came back in 0.22 s, not 4 s, and 300 children writing
-    // 1 MB per pipe lost nothing.
+    // shell's background job does, so the pipes are read until they close or
+    // are quiet for `QUIET`: read to the deadline, a login shell's `PATH`
+    // took all 10 s. At a load of 7 on 8 cores (2026-11-14), `sleep 4 & echo
+    // said` came back in 0.22 s, and 300 children writing 1 MB lost nothing.
     const QUIET: Duration = Duration::from_millis(100);
     let until = deadline.max(Instant::now() + QUIET);
-    let collect = |read: std::sync::mpsc::Receiver<Vec<u8>>| {
-        let mut bytes = Vec::new();
-        while let Ok(more) =
-            read.recv_timeout(QUIET.min(until.saturating_duration_since(Instant::now())))
-        {
-            bytes.extend(more);
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    while let Ok((is_stdout, more)) =
+        read.recv_timeout(QUIET.min(until.saturating_duration_since(Instant::now())))
+    {
+        if is_stdout {
+            stdout.extend(more);
+        } else {
+            stderr.extend(more);
         }
-        bytes
-    };
+    }
     Ok(Output {
         status,
-        stdout: collect(stdout),
-        stderr: collect(stderr),
+        stdout,
+        stderr,
     })
 }
 

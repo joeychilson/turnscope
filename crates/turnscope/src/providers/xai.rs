@@ -33,14 +33,12 @@ impl Provider for Xai {
 
     fn account(&self, credential: &Credential) -> Option<Account> {
         super::account(INFO.id, credential, || {
-            if let Some(identity) = &credential.identity {
-                return Some(identity.clone());
-            }
-            // Where the agent's files don't say, the token's `sub`.
-            let sub = claims(credential.secret.expose())["sub"]
-                .as_str()?
-                .to_owned();
-            Some((sub, None))
+            credential.identity.clone().or_else(|| {
+                // Where the agent's files don't say, the token's `sub`.
+                let claims = claims(credential.secret.expose());
+                let sub = claims["sub"].as_str().filter(|sub| !sub.is_empty())?;
+                Some((sub.to_owned(), None))
+            })
         })
     }
 
@@ -76,7 +74,10 @@ fn parse(answer: &Value) -> Option<Reading> {
         period => {
             let starts = millis(period["start"].as_str()?)?;
             let resets = millis(period["end"].as_str()?)?;
-            Some((resets > starts).then_some((starts, resets))?)
+            if resets <= starts {
+                return None;
+            }
+            Some((starts, resets))
         }
     };
     let used = match (config.get("creditUsagePercent"), period) {
@@ -86,9 +87,10 @@ fn parse(answer: &Value) -> Option<Reading> {
     };
     Some(Reading {
         key: "pool".to_owned(),
-        name: period.map_or("Usage".to_owned(), |(starts, resets)| {
-            super::window_name(resets - starts)
-        }),
+        name: period.map_or_else(
+            || "Usage".to_owned(),
+            |(starts, resets)| super::window_name(resets - starts),
+        ),
         scope: None,
         used,
         size: None,

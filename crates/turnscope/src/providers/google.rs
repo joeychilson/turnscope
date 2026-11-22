@@ -1,85 +1,45 @@
 //! Google: the limits of a Google AI plan, which only Antigravity signs in
-//! to, and the account Gemini API keys draw on. An API key carries no limit
-//! an agent's key can read.
+//! to, and the account Gemini API keys draw on, whose keys read no limit.
 //!
-//! A plan's limits are read as Antigravity reads them, with two POSTs, which
-//! change nothing, to the service its app and `agy` talk to. None of it is
-//! documented: what follows was measured with this Mac's sign-in on
-//! 2026-11-10, asking as OpenUsage and CodexBar do (their code, read that
-//! day).
+//! None of it is documented. Measured with this Mac's sign-in on 2026-11-10,
+//! asking as OpenUsage and CodexBar do (their code, read that day):
 //!
-//! - `loadCodeAssist` gives the plan paid for, `paidTier` (`currentTier` was
-//!   `free-tier` beside it), and the project Google keeps the usage under,
-//!   `cloudaicompanionProject`. Google makes the project when Antigravity is
-//!   first used, and Turnscope never does: without one there's nothing to
-//!   ask.
+//! - `loadCodeAssist` gives the plan paid for, `paidTier`, and the project
+//!   the usage is kept under, `cloudaicompanionProject`, which Google makes
+//!   when Antigravity is first used. Asked as `Turnscope`, it answered
+//!   `UNSUPPORTED_CLIENT`, so both requests name the client as the app does.
 //! - `retrieveUserQuotaSummary`, asked with that project, gives `groups` of
-//!   `buckets`, each a `window` (`5h`, `weekly`) with the fraction left,
-//!   `remainingFraction`, and `resetTime`.
+//!   `buckets`, each a `window` (`5h`, `weekly`) with `remainingFraction`
+//!   and `resetTime`. It's asked of the `daily-` host: at the same moment,
+//!   the other had every bucket full where `daily-` had 2.3% of the Gemini
+//!   week used.
+//! - A plan has a pool for Gemini models and one for Claude and GPT, each
+//!   with a 5-hour and a weekly bucket. Each is scoped by its pool, as
+//!   `Weekly (Gemini)`: unscoped, Gemini's work rate counted Claude's usage,
+//!   which never draws on it. A limit is keyed by its window, and one not
+//!   Gemini's by its bucket too, as `weekly:3p-weekly`, so Gemini's are
+//!   listed first.
+//! - A pool nothing had drawn on reset a whole window after the request, so
+//!   it reads as a window beginning now.
 //!
-//! **The client.** Asked as `Turnscope`, `loadCodeAssist` answered 200 with
-//! no tier, no project, and the reason `UNSUPPORTED_CLIENT`. So both
-//! requests name the client as Antigravity's app does.
+//! **Renewing.** From the app 2.33.1 on, the Keychain item's token expires
+//! within an hour of sign-in (`agents::antigravity`). It's renewed as the app
+//! does, in memory alone: the item's refresh token goes to Google with the
+//! app's OAuth client, and the token given is kept in this process until it
+//! expires. A Google refresh token isn't replaced when used, so this takes
+//! nothing from the app. Dropped: asking the running app for its limits, as
+//! 0.3.1 did, which read nothing while it was closed, nor from 2.34.0 on.
+//! The client's secret is read from the app's program: its `__TEXT,__rodata`
+//! held 3 `GOCSPX-` secrets in 2.34.0 and in `agy` (read 2026-11-22), none
+//! marked as this client's, so each is tried until Google takes one. Google
+//! answers a wrong one `invalid_client`, and a refresh token it no longer
+//! takes `invalid_grant`: a login to sign in to again.
 //!
-//! **The host.** Limits are asked of the `daily-` host, over the one that
-//! tells the plan: asked at the same moment, that one had every bucket full
-//! and resetting a whole window later, where `daily-` had 2.3% of the Gemini
-//! week used.
-//!
-//! **Windows.** A pool nothing had drawn on reset a whole window after the
-//! request, so it reads as a window beginning now. In the pool in use, the
-//! 5-hour window reset 10 hours after the week began: 5-hour windows follow
-//! one another from the week's first use.
-//!
-//! **Pools.** A plan has a pool for Gemini models and one for Claude and
-//! GPT models, each with a 5-hour and a weekly bucket, and none on all
-//! usage. Each bucket is scoped by its pool, as `Weekly (Gemini)` and
-//! `Weekly (Claude and GPT)`, over leaving the Gemini pool's unscoped as the
-//! plan's own: unscoped, its work rate and shares counted Claude's usage,
-//! which never draws on it. An account stands by the pool its latest
-//! response drew on (`status::pool`), and with none, by Gemini's, which
-//! Antigravity's own models draw on.
-//!
-//! **Keys.** A limit is keyed by its window, and one not Gemini's by its
-//! bucket too, as `weekly:3p-weekly`, over the bucket's id alone: the
-//! status lists limits by key, so Gemini's come first, and by id the Claude
-//! and GPT pool's came before them.
-//!
-//! **Renewing.** From the app 2.33.1 on, Antigravity doesn't write the
-//! token it renews back to its Keychain item (`agents::antigravity`), so
-//! the item's token expires within an hour of signing in. Turnscope renews
-//! it as the app does, in memory alone: it sends the item's refresh token
-//! to Google with the app's OAuth client, and keeps the token Google gives
-//! in this process until it expires, written nowhere. A Google refresh
-//! token isn't replaced when used, so renewing takes nothing from the app
-//! or `agy`. Chosen over asking the running app for its limits, as 0.3.1
-//! did: that read nothing while the app was closed, and nothing from 2.34.0
-//! on, which stopped passing the token it's asked with on its command line;
-//! and over waiting for Antigravity to write the item, which it doesn't.
-//!
-//! **The app's client.** Its id is below. Its secret is read from the
-//! app's program, where Go keeps its strings, in `__TEXT,__rodata`: that
-//! held 3 client ids, this one among them, and 3 secrets, each `GOCSPX-`
-//! and 28 characters, in the app 2.34.0's `language_server` and in `agy`
-//! (read 2026-11-22). Nothing there says which secret is this client's, so
-//! each is tried until Google takes one, and the one taken is tried first
-//! after. Google answers a wrong secret `invalid_client`, and a refresh
-//! token it no longer takes `invalid_grant`: a login to sign in to again.
-//!
-//! **Not measured.** A refused sign-in: only a 401 is taken for one, since a
-//! 403 from this service can mean a client or an account it doesn't serve.
-//! An account that pays for no plan. A group for one model, which OpenUsage
-//! reads as `Gemini 4 Argon`. A `disabled` bucket, passed over as OpenUsage
-//! does. A Claude or GPT response through Antigravity: the limit on them
-//! counts models whose id holds `claude` or `gpt`, and the Gemini limits
-//! count every model's. A used-up bucket: it should still have
-//! `remainingFraction: 0`, as CodexBar reads `agy`'s form of the answer,
-//! where a fraction that's set is written even at zero. So a bucket without
-//! it says nothing of what's left and is passed over, as OpenUsage does,
-//! over reading it as used up. A renewal with a real sign-in: that the
-//! client id is the one consumer sign-ins are made with, and how Google
-//! answers a wrong secret, are as the app's program and Google's OAuth
-//! documentation say.
+//! **Not measured.** A refused sign-in: only a 401 is one, as a 403 can mean
+//! a client or account the service doesn't serve. An account with no plan. A
+//! `disabled` bucket. A used-up bucket: one without `remainingFraction` says
+//! nothing of what's left, and is passed over as OpenUsage does. A renewal
+//! with a real sign-in.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -90,18 +50,16 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use super::{Account, Answered, Info, Limits, Problem, Provider, Reading};
+use super::{Answered, Info, Limits, Problem, Provider, Reading};
 use crate::agents::{Credential, Refresh, Secret};
 use crate::time::{DAY, HOUR, MINUTE};
 
 pub struct Google;
 
-/// What Google's plans are called, before the plan.
 const PLANS: &str = "Google AI";
 
 static INFO: Info = Info {
     id: "google",
-    // What Google calls a key made for its models: a Gemini API key.
     name: "Gemini",
     subscription: Some(PLANS),
     key_limits: false,
@@ -133,10 +91,6 @@ const MOST: usize = 64 * 1024 * 1024;
 impl Provider for Google {
     fn info(&self) -> &'static Info {
         &INFO
-    }
-
-    fn account(&self, credential: &Credential) -> Option<Account> {
-        super::account(INFO.id, credential, || credential.identity.clone())
     }
 
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
@@ -353,24 +307,15 @@ fn rodata(program: &Path) -> Option<Vec<u8>> {
     None
 }
 
-/// The plan in `loadCodeAssist`'s answer: the tier paid for, or for an
-/// account that pays for none, the tier it's on.
+/// The plan in `loadCodeAssist`'s answer: the name of the tier paid for,
+/// without the `Google AI` it begins with, over its id (`Google AI Ultra`'s
+/// was `g1-ultra-lite-tier`); or else the id of the tier it's on, `free-tier`
+/// as `free`.
 fn plan(signed_in: &Value) -> Option<String> {
-    named(
-        signed_in["paidTier"]["name"].as_str(),
-        signed_in["currentTier"]["id"].as_str(),
-    )
-}
-
-/// A plan by the name of the tier paid for, `paid`, without the `Google AI`
-/// it begins with, over a name from its id: `Google AI Ultra`'s was
-/// `g1-ultra-lite-tier`. Without one, by the id of the `tier` it's on,
-/// `free-tier` as `free`.
-fn named(paid: Option<&str>, tier: Option<&str>) -> Option<String> {
-    let plan = match paid {
+    let plan = match signed_in["paidTier"]["name"].as_str() {
         Some(name) => name.strip_prefix(PLANS).unwrap_or(name).trim(),
         None => {
-            let tier = tier?;
+            let tier = signed_in["currentTier"]["id"].as_str()?;
             tier.strip_suffix("-tier").unwrap_or(tier)
         }
     };
@@ -382,6 +327,10 @@ fn named(paid: Option<&str>, tier: Option<&str>) -> Option<String> {
 fn parse(answer: &Value) -> Option<Vec<Reading>> {
     let mut readings = Vec::new();
     for group in answer.get("groups")?.as_array()? {
+        let group_scope = group["displayName"]
+            .as_str()
+            .map(scope)
+            .filter(|group| !group.is_empty());
         for bucket in group["buckets"].as_array().into_iter().flatten() {
             // One the plan doesn't have, or with nothing said of what's left.
             let (Some(left), false) = (
@@ -400,19 +349,20 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
             // The Gemini pool's: `gemini-5h`, `gemini-weekly`.
             let own = id.strip_prefix("gemini-") == Some(window);
             readings.push(Reading {
-                key: match own {
-                    true => window.to_owned(),
-                    false => format!("{window}:{id}"),
+                key: if own {
+                    window.to_owned()
+                } else {
+                    format!("{window}:{id}")
                 },
                 name: super::window_name(length),
-                scope: match group["displayName"].as_str().map(scope) {
-                    Some(group) if !group.is_empty() => Some(group.to_owned()),
-                    _ if own => Some("Gemini".to_owned()),
-                    _ => Some(super::words(id)),
+                scope: match group_scope {
+                    Some(group) => Some(group.to_owned()),
+                    None if own => Some("Gemini".to_owned()),
+                    None => Some(super::words(id)),
                 },
                 used: ((1.0 - left) * 100.0).clamp(0.0, 100.0),
                 size: None,
-                starts: resets.map(|resets| resets - length),
+                starts: resets.and_then(|resets| resets.checked_sub(length)),
                 resets,
             });
         }
@@ -420,9 +370,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
     Some(readings)
 }
 
-/// A group's name as a limit's scope, without a last word `models`: `Claude
-/// and GPT models` is `Claude and GPT`. A scope names models already, and
-/// with the word the app's panel cut the limit's reset short.
+/// Drops a trailing `models` so the panel's reset line fits without clipping.
 fn scope(group: &str) -> &str {
     let group = group.trim();
     match group.rsplit_once(' ') {
@@ -506,14 +454,6 @@ mod tests {
             (readings[1].starts, readings[1].resets),
             (Some(hours - 5 * HOUR), Some(hours))
         );
-    }
-
-    #[test]
-    fn a_scope_is_its_groups_name_without_the_word_models() {
-        assert_eq!(super::scope("Claude and GPT models"), "Claude and GPT");
-        assert_eq!(super::scope("Gemini Models"), "Gemini");
-        assert_eq!(super::scope("Gemini 4 Argon"), "Gemini 4 Argon");
-        assert_eq!(super::scope("Models"), "Models");
     }
 
     #[test]

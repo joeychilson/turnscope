@@ -34,13 +34,13 @@ define_class!(
         #[unsafe(method(standardUserDriverWillHandleShowingUpdate:forUpdate:state:))]
         fn will_show(&self, handle_showing: Bool, _update: &AnyObject, _state: &AnyObject) {
             if !handle_showing.as_bool() {
-                waiting(true);
+                crate::set(|s| &mut s.update_available, true);
             }
         }
 
         #[unsafe(method(standardUserDriverWillFinishUpdateSession))]
         fn finished(&self) {
-            waiting(false);
+            crate::set(|s| &mut s.update_available, false);
         }
     }
 );
@@ -52,16 +52,6 @@ struct Sparkle {
 
 thread_local! {
     static SPARKLE: OnceCell<Option<Sparkle>> = const { OnceCell::new() };
-}
-
-fn waiting(on: bool) {
-    if let Some(handle) = crate::HANDLE.get() {
-        handle.update_if(move |s, _| {
-            let changed = s.update_available != on;
-            s.update_available = on;
-            changed
-        });
-    }
 }
 
 /// Starts Sparkle, if this copy can update itself: it has a public key, and Sparkle is in its
@@ -119,13 +109,10 @@ fn with<T>(f: impl FnOnce(&AnyObject) -> T) -> Option<T> {
     })
 }
 
-/// Whether this copy can update itself.
 pub fn available() -> bool {
     with(|_| ()).is_some()
 }
 
-/// Checks for an update now and shows what's found. An update that's waiting is brought
-/// forward.
 pub fn check() {
     with(|controller| {
         if let Some(mtm) = MainThreadMarker::new() {
@@ -136,7 +123,6 @@ pub fn check() {
     });
 }
 
-/// Whether it checks for updates automatically.
 pub fn automatic() -> bool {
     with(|controller| unsafe {
         let updater: *mut AnyObject = msg_send![controller, updater];
@@ -146,11 +132,7 @@ pub fn automatic() -> bool {
     .unwrap_or(false)
 }
 
-/// Checks for updates automatically, or stops. Not on a fixed status, whose changes go nowhere.
 pub fn set_automatic(on: bool) {
-    if !crate::engine::running() {
-        return;
-    }
     with(|controller| unsafe {
         let updater: *mut AnyObject = msg_send![controller, updater];
         let _: () = msg_send![updater, setAutomaticallyChecksForUpdates: Bool::new(on)];

@@ -13,6 +13,8 @@ runs.
   the fixture home `cargo test --test cli` builds. Never the data directory
   (`~/Library/Application Support/com.joeychilson.turnscope`) or the
   agents' own folders.
+- Never run the binaries inside `/Applications/Turnscope.app`: the disk is
+  case-insensitive, so its `turnscope` starts the app on the real data.
 - `turnscope connect <agent>` and `disconnect` change an agent's
   configuration: don't run them unless asked.
 - Fixtures, tests and snapshots hold no real ids, emails, keys or session
@@ -20,13 +22,24 @@ runs.
 
 ## Rules
 
+- **Less code.** Before adding, look for what to remove. No unused
+  options, layers, wrappers or fallbacks; no code for cases that don't
+  happen.
 - **Delete the old way.** When an agent changes what it writes, change its
   reader and remove the code for the old format. When Turnscope renames or
   removes something, the old name stops working: no fallbacks or aliases.
 - **One place per rule.** An agent or provider is named only in its own
-  file and its registry, `agents::ALL` or `providers::ALL`.
-- **Decisions are written where they apply:** what was chosen, over what,
-  why, and what was measured. `forecast.rs` and `ingest.rs` show how.
+  file and its registry, `agents::ALL` or `providers::ALL`. Logic used
+  twice is written once.
+- **Comments say only what the code can't:** a measured number behind a
+  constant, an approach tried and dropped, or an outside fact (what an agent
+  writes and the version it was read from, how a provider answers). A line
+  or two. No history, no restating the code. Why a change was made goes in
+  its commit.
+- **Tests check what a user or agent sees,** the fewest that fail without
+  the behavior. No tests of internals, no padding.
+- **Measure or don't claim.** A speed, size or reliability claim in code,
+  docs or a PR comes with its numbers.
 - **Plain wording** in everything the user reads: short sentences, no
   filler, and the same word for the same thing, as the
   [glossary](docs/architecture.md#glossary) defines it.
@@ -37,14 +50,14 @@ runs.
 |---|---|
 | A command or flag of the command line, or its output | `docs/cli.md`; its case in `crates/turnscope/tests/cli.rs`; the README's command line section if it's shown there |
 | An MCP tool, its description or inputs, or its answer | `docs/mcp.md` |
-| The status, an alert, or what the engine tells an app | The Rust types and their doc comments; `crates/turnscope/tests/fixtures/status.json` for a status field; each app's `engine.rs` for an `engine::Event` |
-| An agent, or how an agent's files are read | [docs/adding-an-agent.md](docs/adding-an-agent.md), which lists the docs to update. Raise `ingest::READERS` when a reader would read a file it read before differently |
-| A provider | [docs/adding-a-provider.md](docs/adding-a-provider.md), which lists the docs to update |
-| The forecast | The decision written in `forecast.rs`, [architecture.md](docs/architecture.md#forecast); run the backtest |
+| The status, an alert, or what the engine tells an app | The Rust types; `crates/turnscope/tests/fixtures/status.json` for a status field; each app's `engine.rs` for an `engine::Event` |
+| An agent, or how an agent's files are read | [docs/adding-an-agent.md](docs/adding-an-agent.md). Raise `ingest::READERS` when a reader would read a file it read before differently |
+| A provider | [docs/adding-a-provider.md](docs/adding-a-provider.md) |
+| The forecast | [architecture.md](docs/architecture.md#forecast); run the backtest |
 | The database schema | A new script at the end of `db::REVISIONS`: a shipped one is never edited. The tables in [architecture.md](docs/architecture.md#data) |
-| An alert kind or a notification setting | `alerts.rs`; the `CHECK` on `alert.kind`, in a new revision; `alerts::Notify`; the app's `Words::note` and `settings.rs`; [architecture.md](docs/architecture.md#alerts) |
-| Text the app shows | `Words` and its tests, or the view that shows a fixed label; run `scripts/screenshots.sh` if the panel looks different |
-| An app setting or launch argument | [docs/app.md](docs/app.md), which says how to add one |
+| An alert kind or a notification setting | `alerts.rs`; the `CHECK` on `alert.kind`, in a new revision; `alerts::Notify`; the app's words and `settings.rs`; [architecture.md](docs/architecture.md#alerts) |
+| Text the app shows | `words.rs` and its tests, or the view that shows a fixed label; run `scripts/screenshots.sh` if the panel looks different |
+| An app setting or launch argument | [docs/app.md](docs/app.md) |
 | A time form | `src/time.rs`, the flags' help in `main.rs`, the MCP tools' descriptions, [cli.md](docs/cli.md#time-forms) |
 | An environment variable | [cli.md](docs/cli.md#environment) if the binary reads it, otherwise `docs/development.md` |
 | A script, workflow, secret or requirement | `docs/development.md` |

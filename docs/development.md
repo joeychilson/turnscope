@@ -31,25 +31,39 @@ cargo build       # target/debug/turnscope and target/debug/turnscope-app
 scripts/app.sh    # target/debug/Turnscope.app, signed ad hoc
 ```
 
-Run either on a scratch data directory, so your own data is left alone:
+## Run on scratch data
+
+Run on an empty data directory, the test fixture's home and off the
+network, so neither your own data nor your agents' are touched:
 
 ```sh
-target/debug/turnscope --data /tmp/ts status
-cargo run -p turnscope-macos -- --data /tmp/ts --open
-open target/debug/Turnscope.app --args --data /tmp/ts --open
+cargo test --test cli     # copies the fixture home to target/tmp/home
+export TURNSCOPE_OFFLINE=1
+target/debug/turnscope --data "$(mktemp -d)" --home "$PWD/target/tmp/home" usage --since 2026-09-01
+cargo run -p turnscope-macos -- --data "$(mktemp -d)" --home "$PWD/target/tmp/home" --open
+cargo run -p turnscope-macos -- --fixture crates/turnscope/tests/fixtures/status.json --open agents
+```
+
+The fixture home holds made-up sessions of every agent, from September
+2026, and no logins, so no account's limits are read. `--fixture` shows a
+made-up status with accounts, and runs no engine.
+
+Without `--home`, Turnscope reads your agents' history and logins, and
+without `TURNSCOPE_OFFLINE`, it asks the providers for their limits. Never
+point `--data` at the real data directory: a newer build migrates it, and
+the installed app then refuses it.
+
+`open` starts the app in `/` without your shell's environment, so give it
+absolute paths and the variables it needs:
+
+```sh
+open --env TURNSCOPE_OFFLINE=1 target/debug/Turnscope.app --args \
+  --data "$(mktemp -d)" --home "$PWD/target/tmp/home" --open
 ```
 
 The app posts notifications and updates itself only from a bundle.
 
-Both still read your agents' history and logins, and ask the providers for
-your limits. To leave your agents out too, add `--home` with a copy of a
-home, or the test fixture's. OpenCode's and Antigravity's sessions are SQL
-in `crates/turnscope/tests/fixtures/home`; `cargo test --test cli` builds
-their databases in a copy you can use: `--home "$PWD/target/tmp/home"`. To
-keep off the network, set `TURNSCOPE_OFFLINE=1`
-([cli.md](cli.md#environment)).
-
-`connect <agent>` and `disconnect` still run your agent's own command, with
+`connect <agent>` and `disconnect` run your agent's own command, with
 `HOME` set to the home `--home` names. Don't run them to try something out:
 not every agent has been checked to keep its settings in that home.
 
@@ -74,19 +88,16 @@ CI runs the tests in the `America/Chicago` time zone, so a test that takes
 local time for UTC fails there. Run `TZ=America/Chicago cargo test` to see
 it here.
 
-| Tests | Where | Cover |
-|---|---|---|
-| Unit | `#[cfg(test)]` in each module of `crates/turnscope` | Each agent's reader on synthetic logs, merging reports in any order, reading a growing file across catch-ups, opening the database and taking in 0.1's and 0.2's, prices, the forecast, each provider's answers, alerts, time, the engine an app runs |
-| End to end | `crates/turnscope/tests/cli.rs` | The text of `status`, `usage`, `accounts`, `connect` and `doctor`, and the `--json` of `status`, `usage`, `usage --limit`, `accounts` and `connect`, by snapshot, with a session of every agent in the usage; the `console` examples in `cli.md`; mistakes and their exit codes; `guard`; `statusline`; an MCP session |
-| App | `#[cfg(test)]` in `crates/turnscope-macos` | The wording, what the panel lists, launch arguments |
+Unit tests are in each module. The end-to-end tests,
+`crates/turnscope/tests/cli.rs`, run the binary on a fixture home and
+compare its answers with snapshots.
 
 **Fixtures.** `crates/turnscope/tests/cli.rs` reads a home
 (`crates/turnscope/tests/fixtures/home`) with two synthetic Claude Code
 sessions and one of each other agent, and writes a database of four
 synthetic accounts in SQL. It copies the home to `target/tmp/home` once a
-run and builds each database there from the `.sql` file beside it, as
-OpenCode's `opencode.db` from `opencode.sql`, so no binary database is kept
-in the repository. `crates/turnscope/tests/fixtures/status.json` is a
+run and builds each database there from the `.sql` file beside it, so no
+binary database is kept in the repository. `crates/turnscope/tests/fixtures/status.json` is a
 made-up status, which the app's tests, `--fixture` and the README's
 screenshots use. Fixtures never hold real ids, emails, keys or session
 text.
@@ -99,8 +110,9 @@ write them again and review the diff:
 TURNSCOPE_BLESS=1 cargo test --test cli
 ```
 
-Each line of output in [cli.md](cli.md)'s `console` examples must be a line
-of some snapshot, so update an example that shows output you changed.
+Each line of output in the examples of [cli.md](cli.md) and
+[mcp.md](mcp.md) must be a line of some snapshot, so update an example
+that shows output you changed.
 
 **The caller.** Turnscope takes the nearest agent above it for the caller,
 so each end-to-end test runs `turnscope` under a shell named as an agent's
@@ -137,33 +149,26 @@ with.
 
 ## Scripts
 
-| Script | Does |
-|---|---|
-| `scripts/app.sh` | Builds `target/debug/Turnscope.app` for this Mac, signed ad hoc, with the version in `Cargo.toml`. It's the one place the bundle's layout is written. |
-| `scripts/app.sh --release` | Builds `target/dist/Turnscope.app` for Apple silicon and Intel, unsigned, with `SPARKLE_PUBLIC_KEY` in it. |
-| `scripts/sparkle.sh` | Fetches Sparkle's framework and tools into `target/sparkle/`, at the version it names, checked against its checksum. `app.sh` runs it. |
-| `scripts/sign-release.sh` | Signs the app `app.sh --release` built, notarizes it, and makes `Turnscope-<version>.dmg` and `appcast.xml` beside it. Its header lists the environment variables it reads. |
-| `scripts/check-app.sh [app]` | Checks that a built app's `turnscope`, `mcp` and panel work, for each architecture this Mac can run, off the network and in throwaway folders. The default app is `target/dist/Turnscope.app`. |
-| `scripts/screenshots.sh` | Draws the README's screenshots, light and dark, from `crates/turnscope/tests/fixtures/status.json` into `.github/screenshots/`. |
-| `scripts/release-notes.sh X.Y.Z` | Prints the version's section of `CHANGELOG.md`, without its heading. Fails if the section is missing or empty. |
-
-To build and sign a release on a Mac, run `scripts/app.sh --release &&
-scripts/sign-release.sh`. Without `SIGN_IDENTITY`, `sign-release.sh` signs
-ad hoc and notarizes nothing: a build to try here.
+Each script in `scripts/` says in its header what it does and what it
+reads. To build and sign a release on a Mac, run `scripts/app.sh --release
+&& scripts/sign-release.sh`. Without `SIGN_IDENTITY`, `sign-release.sh`
+signs ad hoc and notarizes nothing: a build to try here.
 
 ## CI
 
 **Verify** (`.github/workflows/ci.yml`) runs on every pull request, since
 its checks are required to merge. On pushes to `main` it runs unless only
 Markdown, `docs/` or `.github/screenshots/` changed; a change to
-`docs/cli.md` runs it, since a test checks its examples. The release runs
-it too. A new push to a pull request cancels its earlier run.
+`docs/cli.md` or `docs/mcp.md` runs it, since a test checks their
+examples. The release runs it too. A new push to a pull request cancels
+its earlier run.
 
-| Job | Runner | Steps |
-|---|---|---|
-| `lint` | Ubuntu 24.04 | `shellcheck scripts/*.sh`, `actionlint`, then `cargo deny check advisories`, which fails when a crate built for either Mac (`deny.toml`) has a [RustSec](https://rustsec.org) advisory |
-| `rust` | macOS 26, in `America/Chicago` | `cargo fmt --all --check`, clippy, `cargo test` and `cargo doc` for the workspace, warnings as errors |
-| `app` | macOS 26, Xcode 26.6 | `scripts/app.sh --release` and `scripts/sign-release.sh` signed ad hoc, then `scripts/check-app.sh`. Not on a tag: the release builds and checks its own app, signed. |
+Its jobs: `lint`, on Ubuntu, runs shellcheck, actionlint and `cargo deny
+check advisories` (a [RustSec](https://rustsec.org) advisory on a crate
+built for either Mac fails it); `rust`, on macOS 26 in `America/Chicago`,
+runs the Rust checks of [Test](#test); `app` builds the release app, signs
+it ad hoc and runs `scripts/check-app.sh`, but not on a tag, where the
+release builds and checks its own.
 
 The `main` ruleset (Settings → Rules) takes changes only by squashed pull
 request, once Verify's `lint`, `rust` and `app` pass.

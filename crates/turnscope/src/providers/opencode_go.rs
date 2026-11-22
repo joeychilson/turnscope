@@ -44,12 +44,14 @@ impl Provider for OpenCodeGo {
     }
 
     fn account(&self, credential: &Credential) -> Option<Account> {
-        let fingerprint = credential.secret.fingerprint();
-        credential.key.then(|| Account {
-            id: format!("opencode-go:key-{fingerprint}"),
-            kind: Kind::Subscription,
-            // Two keys to two plans are otherwise named alike.
-            label: Some(format!("key {}", &fingerprint[..6])),
+        credential.key.then(|| {
+            let fingerprint = credential.secret.fingerprint();
+            Account {
+                id: format!("{}:key-{fingerprint}", INFO.id),
+                kind: Kind::Subscription,
+                // Two keys to two plans are otherwise named alike.
+                label: Some(format!("key {}", &fingerprint[..6])),
+            }
         })
     }
 
@@ -81,9 +83,9 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
     let usage = answer.get("usage").filter(|usage| usage.is_object())?;
     let mut readings = Vec::new();
     for (key, name, length) in [
-        ("rolling", super::window_name(ROLLING), None),
-        ("weekly", "Weekly".to_owned(), Some(1.week())),
-        ("monthly", "Monthly".to_owned(), Some(1.month())),
+        ("rolling", None, None),
+        ("weekly", Some("Weekly"), Some(1.week())),
+        ("monthly", Some("Monthly"), Some(1.month())),
     ] {
         let window = &usage[key];
         if super::absent(window) {
@@ -97,7 +99,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         });
         readings.push(Reading {
             key: key.to_owned(),
-            name,
+            name: name.map_or_else(|| super::window_name(ROLLING), str::to_owned),
             scope: None,
             used: window["percent"].as_f64()?,
             size: None,

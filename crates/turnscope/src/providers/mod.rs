@@ -43,8 +43,12 @@ pub fn maker(model: &str) -> Option<&'static dyn Provider> {
 /// A provider of models and the accounts that pay for them.
 pub trait Provider: Sync {
     fn info(&self) -> &'static Info;
-    /// The account `credential` is to, from the credential alone.
-    fn account(&self, credential: &Credential) -> Option<Account>;
+    /// The account `credential` is to, from the credential alone: by
+    /// default, a key's is the API account, and a sign-in's the one the
+    /// agent's files name.
+    fn account(&self, credential: &Credential) -> Option<Account> {
+        account(self.info().id, credential, || credential.identity.clone())
+    }
     /// The limits `credential` reads, asked by `by`: a sign-in's are its
     /// account's, and a key's its own. Never given a key where
     /// `Info::key_limits` is false.
@@ -111,6 +115,27 @@ pub enum Kind {
     ApiKey,
 }
 
+/// Stored as it's serialized.
+impl rusqlite::ToSql for Kind {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(match self {
+            Kind::Subscription => "subscription",
+            Kind::ApiKey => "apiKey",
+        }
+        .into())
+    }
+}
+
+impl rusqlite::types::FromSql for Kind {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Kind> {
+        match value.as_str()? {
+            "subscription" => Ok(Kind::Subscription),
+            "apiKey" => Ok(Kind::ApiKey),
+            _ => Err(rusqlite::types::FromSqlError::InvalidType),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Limits {
     /// The plan, as the provider reports it: `max`, `plus`.
@@ -156,7 +181,6 @@ pub enum Problem {
 }
 
 impl Problem {
-    /// An answer that can't be used, or a read that failed some other way.
     pub fn unavailable(why: impl Into<String>) -> Problem {
         Problem::Unavailable {
             why: why.into(),
@@ -165,7 +189,6 @@ impl Problem {
         }
     }
 
-    /// No answer from the provider.
     pub fn unanswered(why: impl Into<String>) -> Problem {
         Problem::Unavailable {
             why: why.into(),
@@ -174,13 +197,11 @@ impl Problem {
         }
     }
 
-    /// An answer from `url` that isn't what it should be.
     fn not_understood(url: &str) -> Problem {
         Problem::unavailable(format!("{url}: an answer not understood"))
     }
 }
 
-/// The account every API key of `provider` draws on.
 fn api_account(provider: &str) -> Account {
     Account {
         id: format!("{provider}:api"),
@@ -189,9 +210,6 @@ fn api_account(provider: &str) -> Account {
     }
 }
 
-/// The account `credential` is to: for an API key, the one every key of
-/// `provider` draws on; for a sign-in, the plan whose id and label
-/// `identity` gives.
 fn account(
     provider: &str,
     credential: &Credential,
@@ -208,7 +226,6 @@ fn account(
     })
 }
 
-/// Ask `url` with `credential`'s token and `headers`, for JSON, by `by`.
 fn ask(
     url: &str,
     credential: &Credential,
@@ -218,9 +235,7 @@ fn ask(
     asked(url, &credential.secret, headers, None, &[401, 403], by)
 }
 
-/// As [`ask`], with `token` and `refused` the statuses that are a refused
-/// login. With a `body`, a POST of it as JSON. A body goes in curl's
-/// arguments, so it must hold no secret. Past `by`, nothing is asked.
+/// Body goes in curl's arguments, so it must hold no secret.
 fn asked(
     url: &str,
     token: &Secret,
@@ -242,8 +257,7 @@ fn asked(
     answer(url, &answered, refused)
 }
 
-/// The time left until `by` to ask `url` in, or why it isn't asked: under a
-/// millisecond, curl's `--max-time` would be 0.000, no limit.
+/// Under 1 ms, curl's `--max-time` formats as `0.000` (no limit).
 fn time_left(url: &str, by: Instant) -> Result<Duration, Problem> {
     let left = by.saturating_duration_since(Instant::now());
     if left < Duration::from_millis(1) {
@@ -302,52 +316,40 @@ fn answer(url: &str, answered: &Answered, refused: &[u16]) -> Result<Value, Prob
         status if refused.contains(&status) && !body.trim_ascii_start().starts_with(b"<") => {
             Err(Problem::SignIn)
         }
-        status => Err(Problem::Unavailable {
-            why: format!("{url}: answered {status}"),
-            retry_after: answered.retry_after,
-            answered: true,
-        }),
+        _ => Err(answered.unavailable(url)),
     }
 }
 
-/// What a provider answered.
 struct Answered {
     status: u16,
-    /// How long it asked to be left, in milliseconds: its `Retry-After`.
     retry_after: Option<i64>,
     body: Vec<u8>,
 }
 
-/// Ask `url` over HTTPS with `headers`, giving the status and body, or
-/// giving up after `seconds`: a GET, or a POST of `body`.
-///
-/// Headers go to curl on standard input, so a credential among them is in
-/// no process listing; `-q` keeps a `~/.curlrc` from adding a trace. A
-/// header with a line break could add headers of its own, so none is sent.
-/// A connection not made in 5 s won't be: on a network that drops what's
-/// sent, curl otherwise waits out all of `seconds` (measured 2026-10-12 at
-/// an address that drops everything: 5.0 s with `--connect-timeout 5`, all
-/// of `--max-time` without).
-///
-/// A body is an argument, so it shows in a process listing.
-pub fn request(
-    url: &str,
-    headers: &[&str],
-    body: Option<&str>,
-    seconds: u32,
-) -> crate::Result<(u16, Vec<u8>)> {
-    requested(url, headers, body, Duration::from_secs(seconds.into()))
+impl Answered {
+    fn unavailable(&self, url: &str) -> Problem {
+        Problem::Unavailable {
+            why: format!("{url}: answered {}", self.status),
+            retry_after: self.retry_after,
+            answered: true,
+        }
+    }
+}
+
+/// GET `url`, giving up after `seconds`.
+pub fn get(url: &str, seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
+    curl(url, &[], &[], Duration::from_secs(seconds.into()))
         .map(|answered| (answered.status, answered.body))
         .map_err(|why| Error::Failed(format!("asking {url}: {why}")))
 }
 
-/// As [`request`], giving up after `time`, or why there's no answer.
 fn requested(
     url: &str,
     headers: &[&str],
     body: Option<&str>,
     time: Duration,
 ) -> std::result::Result<Answered, String> {
+    // A line break would add a header of its own.
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err("a header holds a line break, so nothing was sent".to_owned());
     }
@@ -360,7 +362,9 @@ fn requested(
 }
 
 /// Run curl for `url` with `args`, writing `input` to its standard input,
-/// giving up after `time`.
+/// giving up after `time`. Headers go on standard input, out of process
+/// listings; `-q` ignores `~/.curlrc`. `--connect-timeout 5` gives up on a
+/// host that never answers in 5 s, over all of `time` (measured 2026-10-12).
 fn curl(
     url: &str,
     args: &[&str],
@@ -373,17 +377,20 @@ fn curl(
         .args(["--connect-timeout", "5"])
         .args(["--max-time", &format!("{:.3}", time.as_secs_f64())])
         .args(["--max-filesize", "67108864", "--user-agent", "Turnscope"])
-        .args(["--write-out", "%{stderr}%{http_code} %header{retry-after}"])
+        .args([
+            "--write-out",
+            "%{stderr}\n%{http_code} %header{retry-after}",
+        ])
         .args(args)
+        .arg("--")
         .arg(url)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
-    // Headers and a form are far smaller than a pipe holds, so writing them
-    // first can't wait on curl's output. Still reap curl and prefer its
-    // error when it exited before reading them.
+    // Headers and forms fit in the pipe's buffer, so this doesn't block. A
+    // curl that exited before reading them says why, over the failed write.
     let write = curl
         .stdin
         .take()
@@ -394,20 +401,20 @@ fn curl(
         return Err(unanswered(output.status.code(), &stderr));
     }
     write.map_err(|error| error.to_string())?;
-    // What curl writes last on standard error is the status and the
-    // `Retry-After`, if any.
     let last = stderr.trim().rsplit('\n').next().unwrap_or_default();
     let (status, after) = last.split_once(' ').unwrap_or((last, ""));
+    let after = after.trim();
     Ok(Answered {
         status: status.parse().map_err(|_| format!("status {status:?}"))?,
-        retry_after: retry_after(after, crate::now()),
+        retry_after: (!after.is_empty())
+            .then(|| retry_after(after, crate::now()))
+            .flatten(),
         body: output.stdout,
     })
 }
 
-/// Why curl got no answer, from its exit code where that says, in words
-/// that are the same each time: its own message names how many
-/// milliseconds it waited.
+/// Why curl failed, the same each time for the log: its own message holds the
+/// milliseconds it took.
 fn unanswered(code: Option<i32>, said: &str) -> String {
     match code {
         Some(6) => "host not found",
@@ -416,30 +423,31 @@ fn unanswered(code: Option<i32>, said: &str) -> String {
         Some(35 | 60) => "no secure connection",
         Some(52) => "an empty answer",
         Some(56) => "the connection broke",
-        _ => said.lines().next().unwrap_or("curl failed").trim(),
+        _ => said
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("curl failed"),
     }
     .to_owned()
 }
 
-/// A `Retry-After` as a wait in milliseconds from `now`: seconds, or an
-/// HTTP date.
 fn retry_after(value: &str, now: i64) -> Option<i64> {
     let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
     let wait = match value.parse::<i64>() {
         Ok(seconds) => seconds.saturating_mul(1000),
-        Err(_) => {
-            jiff::fmt::rfc2822::parse(value)
-                .ok()?
-                .timestamp()
-                .as_millisecond()
-                - now
-        }
+        Err(_) => jiff::fmt::rfc2822::parse(value)
+            .ok()?
+            .timestamp()
+            .as_millisecond()
+            .saturating_sub(now),
     };
     Some(wait.max(0))
 }
 
-/// A reset as providers write one, null or a time: `Some(None)` for null,
-/// and `None` for one that doesn't read as a time.
 fn reset(value: &Value) -> Option<Option<i64>> {
     match value {
         Value::Null => Some(None),
@@ -447,8 +455,6 @@ fn reset(value: &Value) -> Option<Option<i64>> {
     }
 }
 
-/// Whether `window` is no window: null, or every value null, as providers
-/// write one a plan doesn't have.
 fn absent(window: &Value) -> bool {
     match window {
         Value::Null => true,
@@ -457,22 +463,19 @@ fn absent(window: &Value) -> bool {
     }
 }
 
-/// A provider's key as words, each capitalized: `opus` is Opus,
-/// `super_heavy` Super Heavy.
 pub fn words(key: &str) -> String {
-    key.split(['_', '-', ' '])
-        .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut letters = word.chars();
-            letters
-                .next()
-                .into_iter()
-                .flat_map(char::to_uppercase)
-                .chain(letters)
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::with_capacity(key.len());
+    for word in key.split(['_', '-', ' ']).filter(|word| !word.is_empty()) {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let mut letters = word.chars();
+        if let Some(first) = letters.next() {
+            out.extend(first.to_uppercase());
+            out.push_str(letters.as_str());
+        }
+    }
+    out
 }
 
 /// A limit `used` percent of a window `length` ms long that resets at
@@ -492,7 +495,7 @@ pub fn window(
         scope: scope.map(str::to_owned),
         used,
         size: None,
-        starts: resets.map(|resets| resets - length),
+        starts: resets.and_then(|resets| resets.checked_sub(length)),
         resets,
     }
 }
@@ -503,8 +506,8 @@ fn window_name(length: i64) -> String {
     // Whole days, as a window across a clock change is an hour off.
     let days = (length + DAY / 2) / DAY;
     match (hours, days) {
-        (0 | 1, _) => "Hourly".to_owned(),
-        (hours, _) if hours < 23 => format!("{hours} hours"),
+        (..=1, _) => "Hourly".to_owned(),
+        (2..23, _) => format!("{hours} hours"),
         (_, 1) => "Daily".to_owned(),
         (_, 7) => "Weekly".to_owned(),
         (_, 28..=31) => "Monthly".to_owned(),
@@ -519,8 +522,6 @@ mod tests {
     use super::Problem;
     use crate::time::{DAY, HOUR, MINUTE};
 
-    /// What `status` and `body` from a provider come to: the JSON, or
-    /// `signIn`, or the reason it's unavailable.
     fn answered(status: u16, body: &[u8], refused: &[u16]) -> Result<Value, String> {
         let answered = super::Answered {
             status,

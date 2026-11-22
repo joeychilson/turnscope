@@ -29,12 +29,14 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
     let path = login_path();
     for (n, folder) in agent.folders(home).iter().enumerate() {
         let at = (n > 0).then_some(folder.as_path());
-        let by_hand = format!(
-            "{}{} {} '{exe}' mcp",
-            pointed(info, at, home),
-            info.command,
-            info.mcp_add.join(" ")
-        );
+        let by_hand = || {
+            format!(
+                "{}{} {} '{exe}' mcp",
+                pointed(info, at, home),
+                info.command,
+                info.mcp_add.join(" ")
+            )
+        };
         let add = |exe: &str| {
             let args = [info.mcp_add, &[exe, "mcp"]].concat();
             run(info, &args, &path, at, home)
@@ -47,13 +49,16 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
         let failed = match add(&exe) {
             Ok(output) if output.status.success() => continue,
             Ok(output) => format!(
-                "{} couldn't add the server: {}. To add it by hand, run: {by_hand}",
+                "{} couldn't add the server: {}. To add it by hand, run: {}",
                 info.name,
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&output.stderr).trim(),
+                by_hand()
             ),
             Err(error) => format!(
-                "couldn't run {}: {error}. Is {} installed? To add the server by hand, run: {by_hand}",
-                info.command, info.name
+                "couldn't run {}: {error}. Is {} installed? To add the server by hand, run: {}",
+                info.command,
+                info.name,
+                by_hand()
             ),
         };
         if let (Some(_), Some(earlier)) = (info.mcp_remove, earlier) {
@@ -131,11 +136,8 @@ fn command(
     if let Some(path) = path {
         command.env("PATH", path);
     }
-    // An agent keeps its settings under its home, so it's run with `HOME`
-    // set to the home Turnscope was given, over the process's own: with
-    // `--home` at a copy, Turnscope read the copy, found no server there,
-    // and had the agent add one to the person's own settings. That each
-    // agent takes its home from `HOME` isn't tested: that runs its command.
+    // The home Turnscope was given, over the process's own: with `--home` at
+    // a copy, the agent added the server to the person's own settings.
     command.env("HOME", home);
     // A second account's folder, as `~/.claude-work`, keeps its own
     // settings: the agent is pointed at it as it's run for that account.
@@ -167,40 +169,39 @@ fn pointed(info: &Info, at: Option<&Path>, home: &Path) -> String {
 pub fn connection(agent: &dyn Agent, home: &Path, engine: &Path) -> Connection {
     let real = |path: &Path| std::fs::canonicalize(path).ok();
     let me = real(engine);
-    let mine = |command: &String| me.is_some() && real(Path::new(command)) == me;
-    let commands: Vec<Option<String>> = agent
+    let matches: Vec<Option<bool>> = agent
         .folders(home)
         .iter()
-        .map(|folder| agent.mcp_command(folder, home))
+        .map(|folder| {
+            agent
+                .mcp_command(folder, home)
+                .map(|cmd| me.is_some() && real(Path::new(&cmd)) == me)
+        })
         .collect();
-    if commands
-        .iter()
-        .all(|command| command.as_ref().is_some_and(mine))
-    {
+    if matches.iter().all(|&m| m == Some(true)) {
         Connection::Connected
-    } else if commands.iter().flatten().any(|command| !mine(command)) {
+    } else if matches.contains(&Some(false)) {
         Connection::Outdated
     } else {
         Connection::Available
     }
 }
 
-/// An app started from Finder runs with a bare `PATH`, so the
-/// agent's command is found with the `PATH` of the person's interactive
-/// login shell, where agents' installers add their folders: on 2026-09-30,
-/// `zsh -lc` found none of four agents, and `zsh -ilc` all four, in 0.15 s.
-///
-/// Asked in the person's own home, whatever home Turnscope was given: the
-/// shell sets its `PATH` from the files it reads there, as `~/.zshrc`. A
-/// copy of a home may hold none, and the agent's command wouldn't be found.
+/// An app started from Finder runs with a bare `PATH`, so the agent's
+/// command is found with the `PATH` of the person's interactive login shell,
+/// in their own home: on 2026-09-30, `zsh -lc` found none of four agents,
+/// and `zsh -ilc` all four, in 0.15 s.
 fn login_path() -> Option<String> {
     let shell = std::env::var("SHELL").unwrap_or("/bin/zsh".to_owned());
     let mut command = Command::new(shell);
     command.args(["-ilc", "printf '__path__=%s' \"$PATH\""]);
     let output = output_within(&mut command, Duration::from_secs(10)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
     let said = String::from_utf8_lossy(&output.stdout);
     let path = said.rsplit_once("__path__=")?.1.trim();
-    (output.status.success() && !path.is_empty()).then(|| path.to_owned())
+    (!path.is_empty()).then(|| path.to_owned())
 }
 
 #[cfg(test)]

@@ -78,43 +78,45 @@ pub enum Event {
 
 /// Why the data isn't kept current.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Stopped {
-    pub why: String,
-    /// False once a newer Turnscope has written to the data. The engine
-    /// then stops for good: this is the last `Event::Kept` it tells, it
-    /// writes nothing more, raises no alert, and refuses every request but
-    /// `used_most` (`Engine`), so the app shows what was read.
-    pub trying_again: bool,
+pub enum Stopped {
+    /// Reading or writing the data failed, for this reason: it's tried
+    /// again.
+    Failing(String),
+    /// A newer Turnscope has written to the data (`Error::Newer`). The
+    /// engine then stops for good: this is the last `Event::Kept` it tells,
+    /// it writes nothing more, raises no alert, and refuses every request
+    /// but `used_most` (`Engine`), so the app shows what was read.
+    Newer { replaced: bool },
 }
 
-/// How long the engine waits before it tries again: to open data it
-/// couldn't, to keep it current after that stopped, or to take over from
-/// another app.
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Stopped::Failing(why) => f.write_str(why),
+            Stopped::Newer { replaced } => Error::Newer {
+                replaced: *replaced,
+            }
+            .fmt(f),
+        }
+    }
+}
+
 const AGAIN: Duration = Duration::from_secs(5);
 
 /// Keeps the data current and tells the app what to show, on threads of its
-/// own. A request is never waited for: what it changes comes back as an
-/// `Event`.
+/// own. Requests run on a single thread in order (over a thread per request:
+/// with two `Settings` saves in a row, the first won in 9 of 300 tries,
+/// measured 2026-11-18). Connects run on a separate thread since agent
+/// commands can take a minute.
 ///
-/// Requests run one at a time, in the order asked, on one thread, and
-/// connects on another. Over a thread for each request: the app sends the
-/// whole `Settings` each time, and of two saved in a row, the first was
-/// kept in 9 of 300 tries (measured 2026-11-18). Connects apart, as an agent's command can take a
-/// minute: a hide waiting behind one would show at once, go back with the
-/// next status, and show again a minute later.
-///
-/// Once a newer Turnscope has written to the data
-/// (`Stopped::trying_again`), `hide` and `save_settings` change nothing and
-/// tell the status last told again, `acknowledge` does nothing, and
-/// `connect` runs no command and tells why. `used_most` still answers: it
-/// only reads.
+/// Once a newer Turnscope has written (`Stopped::Newer`),
+/// write requests are refused and `used_most` still answers.
 pub struct Engine {
     inner: Arc<Inner>,
     requests: Sender<Work>,
     connects: Sender<Work>,
 }
 
-/// A request, as a queue runs it (`queue`).
 type Work = Box<dyn FnOnce(&Inner) + Send>;
 
 /// What woke `keep`.
@@ -123,23 +125,31 @@ enum Wake {
     /// Something was written in an agent's folder.
     Written,
     /// Limits were asked for: the panel opened (`Engine::ask_limits`), or
-    /// an agent wrote a login (`Agent::login_file`).
+    /// an agent wrote a login (`agents::login_file`).
     Asked,
+}
+
+#[derive(PartialEq, Eq)]
+enum Kept {
+    Unset,
+    Current,
+    Stopped(Stopped),
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 struct Inner {
     data: PathBuf,
     home: PathBuf,
-    /// The `turnscope` binary agents run once connected.
     binary: PathBuf,
     tell: Box<dyn Fn(Event) + Send + Sync>,
-    /// None until the data opens.
     showing: Mutex<Option<Showing>>,
-    /// What `Event::Kept` last said, so it's told only when it changes.
-    kept: Mutex<Option<Option<Stopped>>>,
-    /// What wakes `keep`, while it runs.
+    kept: Mutex<Kept>,
     wake: Mutex<Option<Sender<Wake>>>,
-    /// Set once the `Engine` is dropped: its threads end at their next turn.
     ended: AtomicBool,
 }
 
@@ -163,7 +173,7 @@ impl Engine {
             binary,
             tell: Box::new(tell),
             showing: Mutex::new(None),
-            kept: Mutex::new(None),
+            kept: Mutex::new(Kept::Unset),
             wake: Mutex::new(None),
             ended: AtomicBool::new(false),
         });
@@ -201,7 +211,7 @@ impl Engine {
                 return;
             }
             let done = match inner.showing().as_mut() {
-                Some(showing) => alerts::acknowledge(&mut showing.db, &ids).map(|_| ()),
+                Some(showing) => alerts::acknowledge(&mut showing.db, &ids),
                 None => return,
             };
             if let Err(error) = done {
@@ -238,7 +248,7 @@ impl Engine {
                 return;
             };
             let done = match inner.newer() {
-                Some(why) => Err(Error::Newer(why)),
+                Some(newer) => Err(newer),
                 None if connecting => crate::connect::connect(found, &inner.home, &inner.binary),
                 None => crate::connect::disconnect(found, &inner.home),
             };
@@ -253,15 +263,10 @@ impl Engine {
 
     /// Ask for limits read `limits::DUE` ago or more to be read again, and
     /// any whose read failed, as when the panel opens
-    /// (`limits::refresh_asked`). Nothing, while another app keeps the data
+    /// (`limits::refresh`). Nothing, while another app keeps the data
     /// current.
     pub fn ask_limits(&self) {
-        let wake = self
-            .inner
-            .wake
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(wake) = wake.as_ref() {
+        if let Some(wake) = locked(&self.inner.wake).as_ref() {
             let _ = wake.send(Wake::Asked);
         }
     }
@@ -294,8 +299,7 @@ impl Engine {
 
 /// A thread that runs what's sent to it, in the order sent, until the
 /// `Engine` is dropped. A request that panics is logged and the next runs:
-/// unguarded, the panic ended the thread, and every later request went
-/// unanswered until the app restarted.
+/// unguarded, every later request went unanswered until the app restarted.
 fn queue(inner: &Arc<Inner>) -> Sender<Work> {
     let (send, received) = mpsc::channel::<Work>();
     let inner = Arc::clone(inner);
@@ -318,9 +322,7 @@ impl Drop for Engine {
 
 impl Inner {
     fn showing(&self) -> MutexGuard<'_, Option<Showing>> {
-        self.showing
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        locked(&self.showing)
     }
 
     fn ended(&self) -> bool {
@@ -353,10 +355,7 @@ impl Inner {
                             self.caught(caught)
                         })
                     }));
-                    *self
-                        .wake
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                    *locked(&self.wake) = None;
                     drop(lock);
                     let why = match kept {
                         Ok(Ok(())) => continue,
@@ -368,16 +367,15 @@ impl Inner {
                     }
                 }
                 // Another app keeps it current: this one shows what that
-                // one writes, until it's gone. It writes nothing, so it
-                // looks for a newer Turnscope's writes itself: otherwise,
-                // behind a newer app, it failed to raise alerts every 5 s
-                // for good and never said to update.
+                // one writes. It writes nothing, so it looks for a newer
+                // Turnscope's writes itself: else, behind a newer app, it
+                // failed to raise alerts every 5 s and never said to update.
                 Ok(None) => {
                     let newer = match self.showing().as_ref() {
                         Some(showing) => crate::db::writing(&showing.db),
                         None => Ok(()),
                     };
-                    if let Err(error @ Error::Newer(_)) = newer {
+                    if let Err(error @ Error::Newer { .. }) = newer {
                         self.stopped(error);
                         return;
                     }
@@ -394,14 +392,8 @@ impl Inner {
         }
     }
 
-    /// Take in what `keep` found, and tell the status if there may be
-    /// something new: whether to go on.
-    ///
-    /// The data is current once a catch-up has read every agent: not when
-    /// the lock is taken, nor when the limits are read. Said to be current
-    /// after each catch-up, failed or not, one that failed each time, as
-    /// when `ingest.lock` couldn't be made, never said why, and the app
-    /// showed what was read before as current.
+    // Report current only once a catch-up reads every agent (not on lock or
+    // limit read), so persistent failures like an unwritable lock stay visible.
     fn caught(&self, caught: Caught) -> bool {
         let new = match caught {
             Caught::Limits => true,
@@ -409,7 +401,6 @@ impl Inner {
                 self.kept(None);
                 new
             }
-            // One that failed may have read some.
             Caught::Failed(error) => {
                 if self.stopped(error) {
                     return false;
@@ -423,71 +414,52 @@ impl Inner {
         !self.ended() && self.newer().is_none()
     }
 
-    /// Tell the app why the data isn't kept current, and log it; whether
-    /// the engine stops for good, as once a newer Turnscope has written to
-    /// the data.
     fn stopped(&self, error: Error) -> bool {
-        let newer = matches!(error, Error::Newer(_));
         let why = error.to_string();
         log(&self.data, &why);
-        self.kept(Some(Stopped {
-            why,
-            trying_again: !newer,
-        }));
+        let stopped = match error {
+            Error::Newer { replaced } => Stopped::Newer { replaced },
+            _ => Stopped::Failing(why),
+        };
+        let newer = matches!(stopped, Stopped::Newer { .. });
+        self.kept(Some(stopped));
         newer
     }
 
-    /// Log why `doing` failed; or, once a newer Turnscope has written to the
-    /// data, stop for good and say so at once, not at the next catch-up, a
-    /// minute later at most: until then a change asked for went back with
-    /// no word why.
     fn failed(&self, doing: &str, error: Error) {
         match error {
-            Error::Newer(_) => {
+            Error::Newer { .. } => {
                 self.stopped(error);
             }
             error => log(&self.data, &format!("{doing}: {error}")),
         }
     }
 
-    /// What `Event::Kept` last said, if anything.
-    fn said(&self) -> MutexGuard<'_, Option<Option<Stopped>>> {
-        self.kept
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Tell `now` as `Event::Kept`, if it isn't what was last said. Never
-    /// once the engine has stopped for good.
     fn kept(&self, now: Option<Stopped>) {
-        let mut said = self.said();
-        let done = matches!(&*said, Some(Some(stopped)) if !stopped.trying_again);
-        if !done && said.as_ref() != Some(&now) {
-            *said = Some(now.clone());
+        let mut said = locked(&self.kept);
+        let done = matches!(&*said, Kept::Stopped(Stopped::Newer { .. }));
+        let next = match &now {
+            Some(stopped) => Kept::Stopped(stopped.clone()),
+            None => Kept::Current,
+        };
+        if !done && *said != next {
+            *said = next;
             drop(said);
             (self.tell)(Event::Kept(now));
         }
     }
 
-    /// Why the engine stopped for good, once a newer Turnscope has written
-    /// to the data.
-    fn newer(&self) -> Option<String> {
-        match &*self.said() {
-            Some(Some(stopped)) if !stopped.trying_again => Some(stopped.why.clone()),
+    fn newer(&self) -> Option<Error> {
+        match &*locked(&self.kept) {
+            Kept::Stopped(Stopped::Newer { replaced }) => Some(Error::Newer {
+                replaced: *replaced,
+            }),
             _ => None,
         }
     }
 
-    /// Tell the status, as `tell` says. Once the engine has stopped for
-    /// good, nothing is worked out again, which would raise alerts: the
-    /// status last told is told again, unless only changes are asked for.
-    ///
-    /// Told while `showing` is held, over after: the run thread and the
-    /// queues each give, and a status worked out first could be told after
-    /// a newer one, so the app showed an account it had just hidden until
-    /// the next change. It can't deadlock: `tell` waits for nothing
-    /// (`Engine::start`), as the app's only queues the event for its own
-    /// thread, and the engine's requests only send on a channel.
+    // Deliver under the `showing` lock so an older status never overtakes a
+    // newer one from another thread. Safe because `tell` never blocks.
     fn give(&self, tell: Tell) {
         let mut showing = self.showing();
         let next = match showing.as_mut() {
@@ -519,14 +491,9 @@ impl Inner {
     }
 }
 
-/// How large `app.log` grows before it starts over. A catch-up that fails
-/// each time it's tried writes about 150 bytes, every 5 s at most while
-/// agents work: a day of that at least.
 const LOG_SIZE: u64 = 1 << 20;
 
-/// Add `line` to `app.log` in `data`, with the time. An app is started from
-/// its icon, where no one reads its standard error, so what goes wrong
-/// while it runs is kept here, for `turnscope doctor` to show.
+/// Append `line` with a timestamp to `app.log` in `data` (rotating past 1 MiB).
 pub fn log(data: &Path, line: &str) {
     let path = data.join("app.log");
     let full = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_SIZE);
@@ -541,9 +508,8 @@ pub fn log(data: &Path, line: &str) {
     }
 }
 
-/// Whether an app keeps the data in `data` current, holding `app.lock`
-/// (`lock`), without making the file. A shared lock, so two processes
-/// asking at once don't each find the other.
+/// Whether an app process holds `app.lock` in `data`. Never creates the file.
+/// Shared, so two processes asking at once don't take each other for the app.
 pub fn running(data: &Path) -> bool {
     let Ok(file) = File::open(data.join("app.lock")) else {
         return false;
@@ -554,41 +520,24 @@ pub fn running(data: &Path) -> bool {
     )
 }
 
-/// `app.lock` in `data`, held while one app keeps the data current, or None
-/// while another does: two would only read the same history twice. Two at
-/// once would still be safe, as the command line catching up beside the app
-/// is: the database waits up to 10 s for the other's write.
 fn lock(data: &Path) -> Result<Option<File>> {
     std::fs::create_dir_all(data)?;
-    let lock = File::create(data.join("app.lock"))?;
-    Ok(lock.try_lock().is_ok().then_some(lock))
+    crate::db::lock_within(&data.join("app.lock"), Duration::ZERO)
 }
 
-/// The least time from one catch-up's end to the next one's start, while
-/// agents write in their folders: 5 s, over catching up as soon as writes
-/// settle. Many agents at work at once never let writes settle, and each
-/// catch-up looks at every history file. Over 5,000 sessions, with a
-/// stand-in agent writing ten of them ten times a second for 30 s, it ran
-/// 9.8G instructions without the gap and 3.2G with it. The cost: the panel
-/// shows what an agent wrote up to 5 s late.
+// Minimum gap between file-triggered catch-ups: 5 s, over catching up as writes
+// settle (9.8G vs 3.2G instructions over 5,000 sessions with heavy writes).
 const GAP: Duration = Duration::from_secs(5);
 
 /// The least time between two reads of limits asked for
-/// (`limits::refresh_asked`): asked for again sooner, they're read once it's
-/// passed. Each read gathers every agent's logins, the Keychain's with
-/// `/usr/bin/security`, and asks again a provider that failed, so opening
-/// the panel again and again would ask that often. 30 s is a guess at how
-/// soon someone looks again, not measured.
+/// (`limits::refresh`): each gathers every agent's logins, the
+/// Keychain's with `security`, and asks a failing provider again. A guess
+/// at how soon someone opens the panel again, not measured.
 const ASKED: Duration = Duration::from_secs(30);
 
-/// What `keep` found.
 enum Caught {
-    /// The limits, read before the first catch-up.
     Limits,
-    /// A catch-up that read every agent; `new` when there may be something
-    /// new to show.
     Read { new: bool },
-    /// A catch-up that failed, and why.
     Failed(Error),
 }
 
@@ -604,24 +553,19 @@ fn keep(
 ) -> Result<()> {
     let mut db = crate::db::open(data)?;
     let (changed, changes) = mpsc::channel::<Wake>();
-    *wake.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(changed.clone());
+    *locked(wake) = Some(changed.clone());
     // Any write, not only to history: macOS reports a write when its file
-    // is closed, and Codex keeps a session's file open, and OpenCode its
-    // database, while they work. Their other writes are what show it.
-    // But not a SQLite database's `-shm` file, which Turnscope writes too
-    // when it opens the database: counted, a database that fails every read,
-    // with a log left beside it, started a catch-up every 5 s for good (21 in
-    // 100 s, measured 2026-11-11). An agent's writes to its database are in
-    // the `-wal` file.
+    // is closed, and Codex and OpenCode keep theirs open while they work.
+    // Not a SQLite `-shm` file, which opening a database writes: counted, a
+    // database that failed every read started a catch-up every 5 s (21 in
+    // 100 s, measured 2026-11-11). An agent's writes are in its `-wal`.
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let paths = event.as_ref().map_or(&[][..], |event| &event.paths[..]);
         let ours = !paths.is_empty()
             && paths
                 .iter()
                 .all(|path| path.to_string_lossy().ends_with("-shm"));
-        let login = paths
-            .iter()
-            .any(|path| agents::ALL.iter().any(|agent| agent.login_file(path)));
+        let login = paths.iter().any(|path| agents::login_file(path));
         if !ours {
             let _ = changed.send(if login { Wake::Asked } else { Wake::Written });
         }
@@ -630,10 +574,8 @@ fn keep(
     let mut watched: Vec<PathBuf> = Vec::new();
     let mut watch = |watcher: &mut notify::RecommendedWatcher| {
         for agent in agents::ALL {
-            // Watching an uninstalled agent's folder, such as `~/.gemini` when
-            // only the Gemini command line is there, would start a catch-up on
-            // every write it makes. Once the agent is installed, the next
-            // minute's pass watches it.
+            // Not an uninstalled agent's folder, as `~/.gemini` with only the
+            // Gemini command line there: each of its writes would catch up.
             for folder in agent.installed_folders(home) {
                 if watched.contains(&folder) {
                     continue;
@@ -647,53 +589,33 @@ fn keep(
             }
         }
     };
-    // The minute and SQLite's `data_version` at the last catch-up that
-    // worked. `data_version` moves when another connection writes, as an
-    // agent's MCP server does. A catch-up that read nothing new, in the same
-    // minute, with no other write since, has nothing new to show, and no
-    // status is worked out: as when an agent writes anything but history in
-    // its folder. Chosen over working one out after every catch-up: with a
-    // stand-in agent writing so three times a second for 30 s, it ran 11.3G
-    // instructions that way and 0.4G with this. The cost: an agent's MCP
-    // settings changed outside the app show at the next minute.
+    // The minute and SQLite's `data_version`, which another connection's
+    // write moves, at the last catch-up that worked: with neither moved and
+    // nothing read, there's nothing new to show. Working out a status after
+    // every catch-up ran 11.3G instructions, with a stand-in agent writing
+    // three times a second for 30 s, against 0.4G with this.
     let mut pushed = None;
-    // The limits first, and `told` called, over calling it only once the
-    // first catch-up is done: on a first launch that reads all of history
-    // (12 s for a made-up one of 5,000 files, 176 MB), the app showed no
-    // account until it ended. The catch-up then finds the limits read.
-    if crate::online() {
-        let read = match crate::limits::refresh(&mut db, home) {
-            Ok(read) => read,
-            Err(error @ Error::Newer(_)) => return Err(error),
-            Err(error) => {
-                log(data, &error.to_string());
-                true
-            }
-        };
-        if read && !told(Caught::Limits) {
-            return Ok(());
-        }
+    // The limits before history: on a first launch that reads all of it (12 s
+    // for a made-up 5,000 files), the app showed no account until it ended.
+    if crate::online() && read_limits(&mut db, home, data, false)? && !told(Caught::Limits) {
+        return Ok(());
     }
     // Limits asked for and not read yet, and when they last were.
     let (mut asked, mut asked_at) = (false, None::<Instant>);
     loop {
         watch(&mut watcher);
         let mut read_asked = false;
-        if asked && crate::online() && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+        if asked && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
             (asked, asked_at) = (false, Some(Instant::now()));
-            read_asked = match crate::limits::refresh_asked(&mut db, home) {
-                Ok(read) => read,
-                Err(error @ Error::Newer(_)) => return Err(error),
-                Err(error) => {
-                    log(data, &error.to_string());
-                    true
-                }
-            };
+            // Offline, the catch-up still takes in limits agents wrote.
+            if crate::online() {
+                read_asked = read_limits(&mut db, home, data, true)?;
+            }
         }
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
                 let now = (
-                    crate::now().div_euclid(crate::time::MINUTE),
+                    crate::time::minute(crate::now()),
                     db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
                 );
                 let new = read || read_asked || pushed != Some(now);
@@ -711,61 +633,68 @@ fn keep(
         if !told(caught) {
             return Ok(());
         }
+        // A write waits for a burst of writes to settle, a second at most,
+        // and out the gap: the next catch-up reads what's written meanwhile.
+        // Limits asked for are read at once, unless read under `ASKED` ago:
+        // waiting out the gap, they were read 5 s later.
         let waited = Instant::now();
-        match changes.recv_timeout(Duration::from_secs(60)) {
-            Ok(wake) => {
-                asked |= wake == Wake::Asked;
-                // Let a burst of writes settle, a second at most.
-                let start = Instant::now();
-                while let Ok(wake) = changes.recv_timeout(Duration::from_millis(250)) {
+        let (mut first, mut settled) = (None::<Instant>, false);
+        loop {
+            let wait = match first {
+                None => Duration::from_secs(60),
+                Some(_) if !settled => Duration::from_millis(250),
+                Some(_) => GAP.saturating_sub(waited.elapsed()),
+            };
+            match changes.recv_timeout(wait) {
+                Ok(wake) => {
                     asked |= wake == Wake::Asked;
-                    if start.elapsed() >= Duration::from_secs(1) {
-                        break;
-                    }
+                    let first = *first.get_or_insert_with(Instant::now);
+                    settled |= first.elapsed() >= Duration::from_secs(1);
                 }
-                // The next catch-up reads what's written meanwhile.
-                std::thread::sleep(GAP.saturating_sub(waited.elapsed()));
-                while let Ok(wake) = changes.try_recv() {
-                    asked |= wake == Wake::Asked;
+                Err(RecvTimeoutError::Timeout) if first.is_none() || settled => break,
+                Err(RecvTimeoutError::Timeout) => settled = true,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(Error::Failed("the agents' folders can't be watched".into()));
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(Error::Failed("the agents' folders can't be watched".into()));
+            if asked && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+                break;
             }
         }
     }
 }
 
-/// The open data, and what was last told of it.
+/// Read the limits due (`limits::refresh`), or asked for; whether any were.
+/// A failure is logged, and counts as a read so the status is told again,
+/// unless a newer Turnscope wrote.
+fn read_limits(db: &mut Connection, home: &Path, data: &Path, asked: bool) -> Result<bool> {
+    match crate::limits::refresh(db, home, asked) {
+        Err(error @ Error::Newer { .. }) => Err(error),
+        Err(error) => {
+            log(data, &error.to_string());
+            Ok(true)
+        }
+        read => read,
+    }
+}
+
 struct Showing {
     db: Connection,
     data: PathBuf,
     home: PathBuf,
     binary: PathBuf,
-    /// The status last told, which the app shows.
     shown: Option<Shown>,
-    /// Every agent as its MCP settings were last read, and the minute
-    /// they were.
     agents: Option<(i64, Vec<Agent>)>,
 }
 
-/// When a status is told.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tell {
-    /// Only if what it shows changed, as after a catch-up.
     IfChanged,
-    /// Changed or not, as after a request: a change the app showed at once
-    /// goes back if the request failed.
     Always,
-    /// Always, with each agent's MCP settings read again, as after a
-    /// connect.
     WithAgents,
 }
 
 impl Showing {
-    /// Open the data in `data`, or say why it can't be shown, as when a
-    /// newer Turnscope has written to it.
     fn open(data: &Path, home: &Path, binary: &Path) -> Result<Showing> {
         let db = crate::db::open(data)?;
         crate::db::writing(&db)?;
@@ -779,28 +708,12 @@ impl Showing {
         })
     }
 
-    /// The status now, with the alerts it raised, if what it shows changed
-    /// since the last one told, or `tell` says to tell it anyway. One whose
-    /// alerts were raised is recorded as told; otherwise it's told without
-    /// them, and the next raises them again. None is once a newer Turnscope
-    /// has written: that's the error.
-    ///
-    /// A status is as of its minute, so it differs from the last told each
-    /// minute; one that differs only so isn't told, over telling one each
-    /// minute: the app counts down on its own clock. On the snapshot tests'
-    /// store (`tests/cli.rs`), with nothing new read, it told 60 statuses an
-    /// hour that way and 10 this way in the first hour after the last read,
-    /// as outlooks moved, the readings went stale and the half hour in use
-    /// ended, and none in the hours after (measured 2026-11-18). An API
-    /// key's spend forecast moves with the clock too, so it has two figures
-    /// (`status::two_figures`).
+    // Skip telling statuses that differ only in `at` (app ticks on its own clock):
+    // cut 60 -> 10 statuses/hr after last read, 0/hr thereafter (measured 2026-11-18).
     fn next(&mut self, now: i64, tell: Tell) -> Result<Option<(Shown, Vec<Alert>)>> {
         let status = status::status(&self.db, now)?;
         let in_use = |id: &str| status::in_use(&status.accounts, id);
-        // Each agent's MCP settings are read once a minute, and after a
-        // connect: Claude Code's `~/.claude.json` can be megabytes, and a
-        // status can be due every 5 s while agents work, and after each
-        // request.
+        // Cache MCP config reads for the minute (`~/.claude.json` can be megabytes).
         let agents = match &self.agents {
             Some((at, agents)) if tell != Tell::WithAgents && *at == status.at => agents
                 .iter()
@@ -824,7 +737,7 @@ impl Showing {
                 self.shown = Some(shown.clone());
                 Ok(Some((shown, raised)))
             }
-            Err(error @ Error::Newer(_)) => Err(error),
+            Err(error @ Error::Newer { .. }) => Err(error),
             Err(error) => {
                 log(&self.data, &format!("raising alerts: {error}"));
                 Ok(Some((shown, Vec::new())))
@@ -832,14 +745,11 @@ impl Showing {
         }
     }
 
-    /// The alerts raised and not acknowledged yet.
     fn pending(&self, now: i64) -> Result<Vec<Alert>> {
         let status = status::status(&self.db, now)?;
         alerts::pending(&self.db, &status, now)
     }
 
-    /// The sessions that used `account`'s limit `limit` most, as of the
-    /// status last told: the one the app shows.
     fn used_most(&self, account: &str, limit: &str, now: i64) -> Result<Vec<UsedMost>> {
         let status = match &self.shown {
             Some(shown) => std::borrow::Cow::Borrowed(&shown.status),
@@ -872,7 +782,6 @@ impl Showing {
                     .as_deref()
                     .and_then(|project| project.rsplit('/').next())
                     .map(str::to_owned),
-                // By session, a row's name is its session's title.
                 title: row.name.clone(),
                 agent,
                 share_percent: shares.as_ref().map(|shares| shares.rows[at]),
@@ -882,9 +791,7 @@ impl Showing {
     }
 }
 
-/// Whether `a` and `b` show the same, whatever minute each is as of.
 fn same(a: &Shown, b: &Shown) -> bool {
-    // Every field named, so one added isn't left out.
     let Status {
         at: _,
         history_read,
@@ -927,12 +834,8 @@ mod tests {
     /// An engine on `data` and `home`, and what it tells.
     fn start(data: &Path, home: &Path) -> (Engine, Receiver<Event>) {
         let (sender, told) = mpsc::channel();
-        let sender = Mutex::new(sender);
         let engine = Engine::start(data.into(), home.into(), home.into(), move |event| {
-            let _ = sender
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .send(event);
+            let _ = sender.send(event);
         });
         (engine, told)
     }
@@ -947,6 +850,14 @@ mod tests {
                 return picked;
             }
         }
+    }
+
+    /// The next stop told, within `wait`.
+    fn stopped(told: &Receiver<Event>, wait: u64) -> Stopped {
+        next(told, wait, |event| match event {
+            Event::Kept(Some(stopped)) => Some(stopped),
+            _ => None,
+        })
     }
 
     /// Prices and limits count as read just now, so nothing is asked over
@@ -970,49 +881,17 @@ mod tests {
                 .execute_batch(newer)
                 .unwrap();
             let (_engine, told) = start(data.path(), home.path());
-            let stopped = next(&told, 10, |event| match event {
-                Event::Kept(Some(stopped)) => Some(stopped),
-                _ => None,
-            });
-            let why = crate::db::newer().to_string();
             assert_eq!(
-                stopped,
-                Stopped {
-                    why,
-                    trying_again: false
-                },
+                stopped(&told, 10),
+                Stopped::Newer { replaced: false },
                 "{newer}"
             );
         }
     }
 
-    #[test]
-    fn keeping_the_data_current_stops_once_a_newer_turnscope_writes() {
-        for newer in NEWER {
-            let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-            // Claude Code is installed, so its folder is watched.
-            let folder = home.path().join(".claude/projects/-work-a");
-            std::fs::create_dir_all(&folder).unwrap();
-            let db = read_just_now(data.path());
-            let (_engine, told) = start(data.path(), home.path());
-            next(&told, 10, |event| {
-                matches!(event, Event::Kept(None)).then_some(())
-            });
-            db.execute_batch(newer).unwrap();
-            // A write in the folder, so it catches up, 5 s after the last.
-            std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
-            let stopped = next(&told, 20, |event| match event {
-                Event::Kept(Some(stopped)) => Some(stopped),
-                _ => None,
-            });
-            assert_eq!(stopped.why, crate::db::newer().to_string(), "{newer}");
-            assert!(!stopped.trying_again);
-        }
-    }
-
-    /// Once a newer Turnscope has written to the data, the engine writes
-    /// nothing more: a hide changes nothing, and the status told after says
-    /// so; a connect runs no command, and says why.
+    /// Once a newer Turnscope has written to the data, the engine stops and
+    /// writes nothing more: a hide changes nothing, and the status told after
+    /// says so; a connect runs no command, and says why.
     #[test]
     fn once_a_newer_turnscope_writes_requests_are_refused() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -1031,11 +910,8 @@ mod tests {
         });
         db.execute_batch(NEWER[1]).unwrap();
         std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
-        let stopped = next(&told, 20, |event| match event {
-            Event::Kept(Some(stopped)) => Some(stopped),
-            _ => None,
-        });
-        assert!(!stopped.trying_again);
+        let stop = stopped(&told, 20);
+        assert_eq!(stop, Stopped::Newer { replaced: false });
         engine.hide("anthropic:a".to_owned(), true);
         let hidden = next(&told, 10, |event| match event {
             Event::Shown(shown, _) => Some(shown.status.accounts[0].hidden),
@@ -1047,7 +923,7 @@ mod tests {
             Event::Connected { error, .. } => Some(error),
             _ => None,
         });
-        assert_eq!(error, Some(stopped.why));
+        assert_eq!(error, Some(stop.to_string()));
     }
 
     /// A status worked out before a hide, and slow to be told, is told
@@ -1066,11 +942,9 @@ mod tests {
         let (sender, told) = mpsc::channel();
         let (holding, held) = mpsc::channel();
         let (release, released) = mpsc::channel::<()>();
-        let (sender, holding, released) = (
-            Mutex::new(sender),
-            Mutex::new(holding),
-            Mutex::new(released),
-        );
+        // Called from any thread, the closure must be `Sync`: a `Receiver`
+        // isn't.
+        let released = Mutex::new(released);
         let first = AtomicBool::new(true);
         // The first status is held until the test lets it go.
         let engine = Engine::start(
@@ -1081,16 +955,13 @@ mod tests {
                 if let Event::Shown(shown, _) = &event
                     && first.swap(false, Ordering::Relaxed)
                 {
-                    let _ = holding
-                        .lock()
-                        .unwrap()
-                        .send(shown.status.accounts[0].hidden);
+                    let _ = holding.send(shown.status.accounts[0].hidden);
                     let _ = released
                         .lock()
                         .unwrap()
                         .recv_timeout(Duration::from_secs(10));
                 }
-                let _ = sender.lock().unwrap().send(event);
+                let _ = sender.send(event);
             },
         );
         let hidden = held.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -1129,7 +1000,7 @@ mod tests {
         };
         let failed = kept(10).expect("said to be current");
         assert!(
-            failed.trying_again && failed.why.contains("ingest.lock"),
+            matches!(&failed, Stopped::Failing(why) if why.contains("ingest.lock")),
             "{failed:?}"
         );
         std::fs::remove_dir(&blocked).unwrap();
@@ -1164,12 +1035,7 @@ mod tests {
             matches!(event, Event::Kept(None)).then_some(())
         });
         db.execute_batch(NEWER[1]).unwrap();
-        let stopped = next(&told, 10, |event| match event {
-            Event::Kept(Some(stopped)) => Some(stopped),
-            _ => None,
-        });
-        assert_eq!(stopped.why, crate::db::newer().to_string());
-        assert!(!stopped.trying_again);
+        assert_eq!(stopped(&told, 10), Stopped::Newer { replaced: false });
     }
 
     /// One app keeps a data directory current at a time, and the next can
@@ -1230,6 +1096,39 @@ mod tests {
         assert!(limits.is_some() && !history);
         drop(reading);
         assert_eq!(told(), (limits, true));
+    }
+
+    /// Limits asked for, as when the panel opens, are read at once, not
+    /// after the gap between catch-ups.
+    #[test]
+    fn limits_asked_for_are_read_at_once() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // Nothing is asked over the network: the home holds no login.
+        read_just_now(data.path());
+        let wake = Arc::new(Mutex::new(None));
+        let (sender, told) = mpsc::channel();
+        let (home_kept, data_kept, wake_kept) = (
+            home.path().to_path_buf(),
+            data.path().to_path_buf(),
+            Arc::clone(&wake),
+        );
+        std::thread::spawn(move || {
+            keep(&home_kept, &data_kept, &wake_kept, |_| {
+                sender.send(Instant::now()).is_ok()
+            })
+        });
+        told.recv_timeout(Duration::from_secs(10)).unwrap();
+        // As when an agent at work writes just before the panel opens.
+        locked(&wake).as_ref().unwrap().send(Wake::Written).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let asked = Instant::now();
+        locked(&wake).as_ref().unwrap().send(Wake::Asked).unwrap();
+        let answered = told.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            answered - asked < Duration::from_secs(1),
+            "{:?}",
+            answered - asked
+        );
     }
 
     /// A status is told when what it shows changed, and only then: not

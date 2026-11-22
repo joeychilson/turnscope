@@ -3,12 +3,16 @@
 //! account can be read (docs/app.md#notifications).
 
 use std::ptr::NonNull;
+use std::sync::OnceLock;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, ProtocolObject};
 use objc2::{AnyThread, define_class, msg_send};
-use objc2_foundation::{NSArray, NSDictionary, NSError, NSObjectProtocol, NSString};
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{
+    NSArray, NSBundle, NSDictionary, NSError, NSObjectProtocol, NSString, NSURL,
+};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
     UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
@@ -63,19 +67,19 @@ thread_local! {
     static DELEGATE: std::cell::OnceCell<Retained<Delegate>> = const { std::cell::OnceCell::new() };
 }
 
-/// Whether the app can post: macOS posts only for an app bundle, so `cargo run` posts nothing.
+/// macOS posts notifications only for `.app` bundles, not bare `cargo run` binaries.
 fn bundled() -> bool {
-    let bundle = objc2_foundation::NSBundle::mainBundle();
-    bundle.bundleIdentifier().is_some() && bundle.bundlePath().to_string().ends_with(".app")
+    static BUNDLED: OnceLock<bool> = OnceLock::new();
+    *BUNDLED.get_or_init(|| {
+        let bundle = NSBundle::mainBundle();
+        bundle.bundleIdentifier().is_some() && bundle.bundlePath().to_string().ends_with(".app")
+    })
 }
 
 fn center() -> Option<Retained<UNUserNotificationCenter>> {
     bundled().then(UNUserNotificationCenter::currentNotificationCenter)
 }
 
-/// Becomes the notification center's delegate, so clicks reach the app, also one that
-/// launched it, and asks to post. If permission is refused, nothing shows, and Settings says
-/// so.
 pub fn start() {
     let Some(center) = center() else { return };
     DELEGATE.with(|cell| {
@@ -92,27 +96,22 @@ pub fn start() {
     );
 }
 
-/// Checks whether macOS lets the app post, for Settings, which says so when it doesn't. It's
-/// checked each time the panel opens, since it may have just been turned on.
 pub fn check() {
     let Some(center) = center() else { return };
     let got = RcBlock::new(|settings: NonNull<UNNotificationSettings>| {
-        let allowed =
-            unsafe { settings.as_ref() }.authorizationStatus() != UNAuthorizationStatus::Denied;
-        if let Some(handle) = crate::HANDLE.get() {
-            handle.update_if(move |s, _| {
-                let changed = s.notifications_allowed != Some(allowed);
-                s.notifications_allowed = Some(allowed);
-                changed
-            });
-        }
+        let denied =
+            unsafe { settings.as_ref() }.authorizationStatus() == UNAuthorizationStatus::Denied;
+        crate::set(|s| &mut s.notifications_denied, denied);
     });
     center.getNotificationSettingsWithCompletionHandler(&got);
 }
 
-/// Posts each of `alerts`, worded as of now with the accounts in `s`. Each is acknowledged once
-/// macOS accepts it, so one it refused, as before notifications were allowed, comes again.
+/// Acknowledges each alert only after macOS accepts it, so refused alerts retry
+/// once notification permission is granted.
 pub fn tell(s: &State, alerts: Vec<Alert>) {
+    if alerts.is_empty() {
+        return;
+    }
     let Some(center) = center() else { return };
     let words = s.words_now();
     for alert in alerts {
@@ -127,12 +126,9 @@ pub fn tell(s: &State, alerts: Vec<Alert>) {
             &[&*NSString::from_str("account")],
             &[&*NSString::from_str(&alert.account)],
         );
-        unsafe {
-            content.setUserInfo(
-                &*(Retained::as_ptr(&info)
-                    as *const NSDictionary<objc2::runtime::AnyObject, objc2::runtime::AnyObject>),
-            )
-        };
+        // SAFETY: a dictionary of strings is a dictionary of objects.
+        let info: Retained<NSDictionary> = unsafe { Retained::cast_unchecked(info) };
+        unsafe { content.setUserInfo(&info) };
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
             &NSString::from_str(&alert.replaces),
             &content,
@@ -144,7 +140,7 @@ pub fn tell(s: &State, alerts: Vec<Alert>) {
             if !error.is_null() {
                 return;
             }
-            crate::engine::acknowledge(vec![id]);
+            crate::engine::ask(|e| e.acknowledge(vec![id]));
             // The account may have been read again while it was posted.
             if let Some(account) = sign_in.clone()
                 && let Some(handle) = crate::HANDLE.get()
@@ -170,18 +166,20 @@ pub fn renewed(accounts: &[String]) {
     let Some(center) = center() else { return };
     let ids: Vec<Retained<NSString>> = accounts
         .iter()
-        .map(|id| NSString::from_str(&format!("account:{id}")))
+        .map(|id| NSString::from_str(&turnscope::alerts::replaces(id, None)))
         .collect();
     center.removeDeliveredNotificationsWithIdentifiers(&NSArray::from_retained_slice(&ids));
 }
 
 /// Opens Turnscope's notifications in System Settings.
 pub fn open_settings() {
-    let id = objc2_foundation::NSBundle::mainBundle()
+    let id = NSBundle::mainBundle()
         .bundleIdentifier()
         .map(|id| id.to_string())
         .unwrap_or_default();
     let url =
         format!("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id={id}");
-    crate::open_url(&url);
+    if let Some(url) = NSURL::URLWithString(&NSString::from_str(&url)) {
+        NSWorkspace::sharedWorkspace().openURL(&url);
+    }
 }

@@ -45,13 +45,12 @@ pub enum Error {
     /// Exit 1; the message says how to fix it.
     Failed(String),
     /// A newer Turnscope has written to the data, so this one writes
-    /// nothing more (`db::newer`). Exit 1. A variant, over comparing the
-    /// message, which changes once an update replaces the binary.
-    Newer(String),
+    /// nothing more (`db::newer`). `replaced`: this copy's binary was
+    /// replaced since it started, so starting it again updates it. Exit 1.
+    Newer { replaced: bool },
     /// Another Turnscope was reading history for longer than this one
-    /// waited (`ingest::ingest`). Exit 1. A variant, so an MCP answer can say
-    /// its usage is only part of it while all of history is read, over
-    /// saying so for any error then: it hid "start it again".
+    /// waited (`ingest::ingest`), so an MCP answer says its usage is only
+    /// part of it. Exit 1.
     Busy(String),
 }
 
@@ -59,17 +58,29 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let (Error::Usage(message)
-        | Error::NotFound(message)
-        | Error::Failed(message)
-        | Error::Newer(message)
-        | Error::Busy(message)) = self;
-        f.write_str(message)
+        f.write_str(match self {
+            Error::Usage(message)
+            | Error::NotFound(message)
+            | Error::Failed(message)
+            | Error::Busy(message) => message,
+            Error::Newer { replaced: true } => {
+                "Turnscope was updated after this one started; start it again"
+            }
+            Error::Newer { replaced: false } => {
+                "a newer Turnscope has updated this data; update Turnscope"
+            }
+        })
     }
 }
 
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Error {
+        Error::Failed(format!("the database: {error}"))
+    }
+}
+
+impl From<rusqlite::types::FromSqlError> for Error {
+    fn from(error: rusqlite::types::FromSqlError) -> Error {
         Error::Failed(format!("the database: {error}"))
     }
 }
@@ -91,10 +102,14 @@ pub fn now() -> i64 {
 
 pub fn sha256_hex(data: &[u8], bytes: usize) -> String {
     use sha2::Digest as _;
-    sha2::Sha256::digest(data)[..bytes]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = sha2::Sha256::digest(data);
+    let mut out = String::with_capacity(bytes * 2);
+    for &byte in &digest[..bytes] {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Bring the database up to date: prices and limits when due, then what's
@@ -114,12 +129,12 @@ pub fn catch_up(
     let (priced, limits) = match online() {
         true => (
             prices::refresh(db).unwrap_or(false),
-            limits::refresh(db, home),
+            limits::refresh(db, home, false),
         ),
         false => (false, Ok(false)),
     };
     let read = ingest::ingest(db, home, patience)?;
-    Ok(limits? | priced | read)
+    Ok(limits? || priced || read)
 }
 
 pub fn online() -> bool {

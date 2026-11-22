@@ -205,7 +205,7 @@ pub fn open(dir: &Path) -> Result<Connection> {
         return Ok(db);
     }
     let id: i32 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    if done == 0 && id != 0 && id != APPLICATION_ID {
+    if id != 0 && id != APPLICATION_ID {
         return Err(Error::Failed(format!(
             "{} isn't Turnscope's database",
             path.display()
@@ -281,30 +281,14 @@ const OLD_REVISIONS: i64 = 6;
 
 /// Take in all of the old database, into a new one, by its columns' names:
 /// each revision's columns are a subset or superset of the next's. Its rows
-/// are left as they were, for a release, in case what's taken in has to be
-/// looked at. `serve.lock`, which 0.1 and 0.2 kept beside it, 0.2's
-/// `serve.log`, and the `serve.sock` a `serve` that crashed left are
-/// removed after: nothing uses them now.
+/// are left as they were. A copy, over a fresh read of the agents' history:
+/// agents delete their own (Claude Code after 30 days), and readings,
+/// prices, sign-ins and alerts exist only here. A made-up 0.2.1 database of
+/// 240 MB took 6.9 s (November 2026), while every process waited.
 ///
-/// It runs once, while every process that opens the database waits. A
-/// made-up 0.2.1 database of 240 MB, 467,000 responses and 100,000
-/// readings, took 6.9 s: 2.3 s of it user and 4.4 s system (November 2026).
-///
-/// Its schema's revision is raised past 0.2's last, so a Turnscope 0.2
-/// still running, as an agent's MCP server started before the update,
-/// writes nothing more there and says why. Left alone, it went on reading
-/// history and limits into a file no one else reads. 0.1 doesn't look:
-/// 0.1.7 and 0.1.8 went on reading into it (November 2026).
-///
-/// Chosen over keeping the old file and its six revisions, two of which
-/// dropped tables and columns, so the schema is one script. A copy, not a
-/// fresh read of the agents' history: agents delete their own (Claude Code
-/// after 30 days), and limit readings, prices, sign-ins, hidden accounts and
-/// alerts exist only here.
-///
-/// A file with no revision, as one that's empty, never held 0.1's or 0.2's
-/// data, which set its revision with its first tables: there's nothing to
-/// take in. 0.2 started such a file anew.
+/// Its revision is raised past 0.2's last, so a 0.2 still running, as an
+/// agent's MCP server, writes nothing more there and says why. A file with
+/// no revision never held 0.1's or 0.2's data.
 fn import(tx: &Transaction) -> rusqlite::Result<()> {
     let revision: i64 = tx.query_row("PRAGMA old.user_version", [], |row| row.get(0))?;
     if revision == 0 {
@@ -342,7 +326,10 @@ fn import(tx: &Transaction) -> rusqlite::Result<()> {
              SELECT id, agent, project, substr(title, 1, 200), title_rank, {parent} FROM old.session;
          INSERT INTO session_file (session, file)
              SELECT session, file FROM old.session_file WHERE file IN (SELECT id FROM main.file);
-         INSERT INTO response SELECT agent, id, session, copy, file, folder, at, provider, model,
+         INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+             input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+             web_searches, priority, recorded, cost, account)
+             SELECT agent, id, session, copy, file, folder, at, provider, model,
              input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
              web_searches, priority, recorded, cost, account FROM old.response;
          INSERT INTO account (id, provider, kind, title, label, hidden, read_at, problem,
@@ -351,12 +338,16 @@ fn import(tx: &Transaction) -> rusqlite::Result<()> {
              FROM old.account;
          INSERT INTO failing (account, reads)
              SELECT id, 2 FROM old.account WHERE problem = 'signIn';
-         INSERT INTO reading SELECT account, limit_key, at, name, scope, used, size, starts, resets
+         INSERT INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
+             SELECT account, limit_key, at, name, scope, used, size, starts, resets
              FROM old.reading;
-         INSERT INTO sign_in SELECT agent, folder, provider, since, account, key FROM old.sign_in;
-         INSERT INTO alert SELECT id, account, limit_key, kind, window, at, acknowledged, detail
+         INSERT INTO sign_in (agent, folder, provider, since, account, key)
+             SELECT agent, folder, provider, since, account, key FROM old.sign_in;
+         INSERT INTO alert (id, account, limit_key, kind, window, at, acknowledged, detail)
+             SELECT id, account, limit_key, kind, window, at, acknowledged, detail
              FROM old.alert;
-         INSERT INTO price SELECT provider, model, since, cost, fast FROM old.price;
+         INSERT INTO price (provider, model, since, cost, fast)
+             SELECT provider, model, since, cost, fast FROM old.price;
          UPDATE state SET (readers, history_at, limits_at, prices_at, settings, version) =
              (SELECT readers, history_at, limits_at, prices_at, settings, {version} FROM old.state)
              WHERE EXISTS (SELECT 1 FROM old.state);",
@@ -370,30 +361,56 @@ fn import(tx: &Transaction) -> rusqlite::Result<()> {
 
 /// Begin a write: a transaction that holds the write lock from its start,
 /// with `writing` checked inside it, as a newer Turnscope may have written
-/// while this one waited, for the lock or for anything before.
-///
-/// Every write of more than one statement begins here, over each writer
-/// checking by hand, which one missed: costs worked out after waiting out
-/// another process's read of history were written over a newer
-/// Turnscope's.
+/// while this one waited. Every write of more than one statement begins
+/// here: checked by hand, one writer missed it.
 pub fn write(db: &mut Connection) -> Result<Transaction<'_>> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     writing(&tx)?;
     Ok(tx)
 }
 
-/// Hold the lock file at `path`, made if it's missing, until the file
-/// returned is dropped.
-pub fn lock(path: &Path) -> Result<File> {
-    File::create(path)
-        .and_then(|file| file.lock().map(|()| file))
+/// Claim a job for this process, in one statement, unless another claimed
+/// it less than `gap` ago, so no two do it at once: `state`'s `column` is
+/// set to `to`. A claim more than five minutes ahead of now is of a clock
+/// set back since. Looked at first: claiming waits for the write lock,
+/// which a hook shouldn't when nothing is due.
+pub fn claim(db: &mut Connection, column: &str, now: i64, gap: i64, to: i64) -> Result<bool> {
+    const AHEAD: i64 = 5 * crate::time::MINUTE;
+    let last: Option<i64> =
+        db.query_row(&format!("SELECT {column} FROM state"), [], |row| row.get(0))?;
+    if last.is_some_and(|last| now - gap < last && last <= now + AHEAD) {
+        return Ok(false);
+    }
+    let tx = write(db)?;
+    let claimed = tx.execute(
+        &format!(
+            "UPDATE state SET {column} = ?1
+             WHERE {column} IS NULL OR {column} <= ?2 - ?3 OR {column} > ?2 + ?4"
+        ),
+        rusqlite::params![to, now, gap, AHEAD],
+    )?;
+    tx.commit()?;
+    Ok(claimed > 0)
+}
+
+fn open_lock(path: &Path) -> Result<File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
         .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
 }
 
-/// `lock`, or None when another process still holds it after `wait`.
-pub fn lock_within(path: &Path, wait: std::time::Duration) -> Result<Option<File>> {
-    let file = File::create(path)
+pub fn lock(path: &Path) -> Result<File> {
+    let file = open_lock(path)?;
+    file.lock()
         .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))?;
+    Ok(file)
+}
+
+pub fn lock_within(path: &Path, wait: std::time::Duration) -> Result<Option<File>> {
+    let file = open_lock(path)?;
     let began = std::time::Instant::now();
     loop {
         match file.try_lock() {
@@ -412,9 +429,6 @@ pub fn lock_within(path: &Path, wait: std::time::Duration) -> Result<Option<File
     }
 }
 
-/// The schema's revision in `db`, or the error when it's one a newer
-/// Turnscope made: before `db` is opened, or since, as under an agent's
-/// MCP server left running through an update.
 fn revision(db: &Connection) -> Result<i64> {
     let revision: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if revision > REVISIONS.len() as i64 {
@@ -423,8 +437,6 @@ fn revision(db: &Connection) -> Result<i64> {
     Ok(revision)
 }
 
-/// This Turnscope's version, as `state.version` holds it: major * 1,000,000
-/// + minor * 1,000 + patch.
 const VERSION: i64 = number(env!("CARGO_PKG_VERSION_MAJOR")) * 1_000_000
     + number(env!("CARGO_PKG_VERSION_MINOR")) * 1_000
     + number(env!("CARGO_PKG_VERSION_PATCH"));
@@ -439,33 +451,29 @@ const fn number(digits: &str) -> i64 {
     number
 }
 
-/// Called first by each function that writes, and again inside each write
-/// of more than one statement (`write`): the error when a newer Turnscope has
-/// written here, its schema or anything else, and otherwise this one is
-/// recorded as the newest that has. An older one still running, as an
-/// agent's MCP server started before an update, then only answers.
-///
-/// By the version, over a number raised by hand when what's written
-/// changes, as `ingest::READERS` is: it can't be forgotten. An older one
-/// read limits and prices its way among the newer one's, as after a
-/// provider changed what it sends. The cost: after each update, such an
-/// MCP server says on each answer that it has to be started again, until
-/// its agent does, even when nothing it writes changed.
+/// Refuses writes once a newer Turnscope version has written here, recording
+/// this version otherwise. Chosen over a manual counter (like `ingest::READERS`)
+/// because it can't be forgotten; the cost is an older MCP server asking to
+/// restart after any update.
 pub fn writing(db: &Connection) -> Result<()> {
     revision(db)?;
     let newest = || -> Result<Option<i64>> {
-        Ok(db.query_row("SELECT version FROM state", [], |row| row.get(0))?)
+        Ok(db
+            .prepare_cached("SELECT version FROM state")?
+            .query_row([], |row| row.get(0))?)
     };
-    // Looked at first: raising it waits for the write lock, which a hook
-    // shouldn't once this one is recorded.
+    // Read first so hooks don't contend on the write lock once recorded.
     let mut newest_now = newest()?;
     if newest_now < Some(VERSION) {
-        // Raised, never lowered, so an older one at once can't undo it.
-        db.execute(
+        let updated = db.execute(
             "UPDATE state SET version = ?1 WHERE version IS NULL OR version < ?1",
             [VERSION],
         )?;
-        newest_now = newest()?;
+        newest_now = if updated > 0 {
+            Some(VERSION)
+        } else {
+            newest()?
+        };
     }
     match newest_now > Some(VERSION) {
         true => Err(newer()),
@@ -473,47 +481,27 @@ pub fn writing(db: &Connection) -> Result<()> {
     }
 }
 
-/// The file this process runs, as it was when the process started.
 static STARTED_FROM: OnceLock<Option<(u64, SystemTime)>> = OnceLock::new();
 
-/// Note the file this process runs, first thing, so `newer` can tell if an
-/// update has replaced it since.
 pub fn started() {
     STARTED_FROM.get_or_init(binary);
 }
 
-/// The file this process runs: its inode and when it was modified.
 fn binary() -> Option<(u64, SystemTime)> {
     let file = std::fs::metadata(std::env::current_exe().ok()?).ok()?;
     Some((file.ino(), file.modified().ok()?))
 }
 
-/// The error when a newer Turnscope has updated the data: this one would
-/// misread it, or undo what that one did. Said so when the file this
-/// process runs was replaced since it started, as an update does: it's
-/// left over from before, as an agent's MCP server is, and has to be
-/// started again, which updating doesn't do. Telling everyone to update
-/// told someone who just had.
+/// Why this Turnscope writes nothing more.
 pub fn newer() -> Error {
-    let updated = matches!(
-        (STARTED_FROM.get(), binary()),
-        (Some(Some(then)), Some(now)) if *then != now
-    );
-    Error::Newer(
-        match updated {
-            true => UPDATED_SINCE,
-            false => "a newer Turnscope has updated this data; update Turnscope",
-        }
-        .to_owned(),
-    )
+    Error::Newer {
+        replaced: matches!(
+            (STARTED_FROM.get(), binary()),
+            (Some(Some(then)), Some(now)) if *then != now
+        ),
+    }
 }
 
-/// What `newer` says when the file this process runs was replaced since it
-/// started, which the app's footer shortens.
-pub const UPDATED_SINCE: &str = "Turnscope was updated after this one started; start it again";
-
-/// Tokens from six columns of `row` starting at `from`, in `response`'s
-/// order: `input` to `reasoning`. A sum of no rows is NULL, which is 0.
 pub fn tokens(row: &Row, from: usize) -> rusqlite::Result<Tokens> {
     let count = |at: usize| {
         row.get::<_, Option<i64>>(from + at)
@@ -530,17 +518,68 @@ pub fn tokens(row: &Row, from: usize) -> rusqlite::Result<Tokens> {
 }
 
 #[cfg(test)]
+pub(crate) mod test {
+    use rusqlite::Connection;
+    use rusqlite::types::{FromSql, ValueRef};
+
+    /// The one value `sql` gives.
+    pub(crate) fn one<T: FromSql>(db: &Connection, sql: &str) -> T {
+        db.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    /// Each row `sql` gives, its columns joined by `|`.
+    pub(crate) fn rows(db: &Connection, sql: &str) -> Vec<String> {
+        db.prepare(sql)
+            .unwrap()
+            .query_map([], |row| {
+                Ok((0..row.as_ref().column_count())
+                    .map(|at| match row.get_ref(at).unwrap() {
+                        ValueRef::Null => "NULL".to_owned(),
+                        ValueRef::Integer(n) => n.to_string(),
+                        ValueRef::Real(n) => n.to_string(),
+                        ValueRef::Text(text) => String::from_utf8_lossy(text).into_owned(),
+                        ValueRef::Blob(_) => "blob".to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|"))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    /// A response of a million input tokens, its session its id, `from` an
+    /// agent's folder, a provider and the account it drew on.
+    pub(crate) fn response(
+        db: &Connection,
+        from: (&str, &str, &str, Option<&str>),
+        id: &str,
+        at: i64,
+        model: &str,
+        cost: Option<f64>,
+    ) {
+        let (agent, folder, provider, account) = from;
+        db.execute(
+            "INSERT INTO response (agent, folder, provider, account, id, at, model, cost, session,
+                 copy, file, input, cache_read, cache_write_5m, cache_write_1h, output, reasoning,
+                 prompt, web_searches, priority)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?5, 0, 1, 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0)",
+            rusqlite::params![agent, folder, provider, account, id, at, model, cost],
+        )
+        .unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test::{one, rows};
     use super::*;
 
     #[test]
     fn an_older_turnscope_stops_writing_once_a_newer_one_has() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(dir.path()).unwrap();
-        let newest = || -> Option<i64> {
-            db.query_row("SELECT version FROM state", [], |row| row.get(0))
-                .unwrap()
-        };
+        let newest = || one::<Option<i64>>(&db, "SELECT version FROM state");
         assert_eq!(newest(), None);
         writing(&db).unwrap();
         assert_eq!(newest(), Some(VERSION));
@@ -571,10 +610,7 @@ mod tests {
         });
         assert!(opened.iter().all(|opened| *opened), "{opened:?}");
         let db = open(dir.path()).unwrap();
-        let mode: String = db
-            .pragma_query_value(None, "journal_mode", |row| row.get(0))
-            .unwrap();
-        assert_eq!(mode, "wal");
+        assert_eq!(rows(&db, "PRAGMA journal_mode"), ["wal"]);
     }
 
     #[test]
@@ -654,29 +690,6 @@ mod tests {
         INSERT INTO price VALUES ('xai', 'grok-5', 0, '{"input":3,"output":15}', NULL);
         UPDATE state SET readers = 6, history_at = 800, limits_at = 900, prices_at = 700,
             settings = '{"notify":{"reset":false}}';"#;
-
-    fn rows(db: &Connection, sql: &str) -> Vec<String> {
-        db.prepare(sql)
-            .unwrap()
-            .query_map([], |row| {
-                let count = row.as_ref().column_count();
-                Ok((0..count)
-                    .map(|at| match row.get_ref(at).unwrap() {
-                        rusqlite::types::ValueRef::Null => "NULL".to_owned(),
-                        rusqlite::types::ValueRef::Integer(n) => n.to_string(),
-                        rusqlite::types::ValueRef::Real(n) => n.to_string(),
-                        rusqlite::types::ValueRef::Text(text) => {
-                            String::from_utf8_lossy(text).into_owned()
-                        }
-                        rusqlite::types::ValueRef::Blob(_) => "blob".to_owned(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("|"))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    }
 
     #[test]
     fn what_turnscope_0_1_kept_is_taken_in_and_left_where_it_was() {

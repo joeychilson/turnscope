@@ -146,27 +146,18 @@ impl Caller {
         let info = agent.map(|agent| agent.info());
         Caller {
             agent,
-            session: info
-                .and_then(|info| Some(format!("{}:{}", info.id, variable(info.session_var?)?))),
+            session: info.and_then(|info| Some(info.session(&variable(info.session_var?)?))),
             agent_folder: info
                 .and_then(|info| variable(info.folder_var?))
                 .map(|folder| folded(Path::new(&folder))),
         }
     }
 
-    pub fn account<'a>(
-        &self,
-        db: &Connection,
-        home: &Path,
-        status: &'a status::Status,
-    ) -> Result<Option<&'a status::Account>> {
-        let found = |id: Option<String>| {
-            id.and_then(|id| status.accounts.iter().find(|account| account.id == id))
-        };
+    pub fn account_id(&self, db: &Connection, home: &Path) -> Result<Option<String>> {
         if let Some(session) = &self.session {
             let account = usage::session_account(db, session)?;
             if account.is_some() {
-                return Ok(found(account));
+                return Ok(account);
             }
         }
         let Some(agent) = self.agent else {
@@ -176,14 +167,30 @@ impl Caller {
             .agent_folder
             .clone()
             .or_else(|| agent.folders(home).into_iter().next());
-        Ok(found(db
-            .query_row(
+        Ok(db
+            .prepare_cached(
                 "SELECT account FROM response WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
                  ORDER BY at DESC LIMIT 1",
-                rusqlite::params![agent.info().id, folder.map(|folder| folder.to_string_lossy().into_owned())],
+            )?
+            .query_row(
+                rusqlite::params![
+                    agent.info().id,
+                    folder.map(|folder| folder.to_string_lossy().into_owned())
+                ],
                 |row| row.get(0),
             )
-            .optional()?))
+            .optional()?)
+    }
+
+    pub fn account<'a>(
+        &self,
+        db: &Connection,
+        home: &Path,
+        status: &'a status::Status,
+    ) -> Result<Option<&'a status::Account>> {
+        Ok(self
+            .account_id(db, home)?
+            .and_then(|id| status.accounts.iter().find(|account| account.id == id)))
     }
 }
 
@@ -216,24 +223,26 @@ fn folded(given: &Path) -> PathBuf {
 /// is an agent by its command, or by being the program in its app that
 /// starts the server without its command, as Antigravity's does.
 fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
-    let rows: Vec<(u32, u32, Vec<&str>)> = table
+    let rows: Vec<(u32, u32, &str)> = table
         .lines()
         .filter_map(|line| {
-            let mut words = line.split_whitespace();
-            let (pid, parent) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
-            Some((pid, parent, words.collect()))
+            let line = line.trim_start();
+            let (pid, rest) = line.split_once(char::is_whitespace)?;
+            let rest = rest.trim_start();
+            let (parent, args) = rest.split_once(char::is_whitespace)?;
+            Some((pid.parse().ok()?, parent.parse().ok()?, args.trim_start()))
         })
         .collect();
     // Up to eight ancestors; one a runtime runs is its script.
     for _ in 0..8 {
         let (_, parent, args) = rows.iter().find(|(id, _, _)| *id == pid)?;
-        let program = args.first().copied().unwrap_or_default();
-        let mut words = args
-            .iter()
-            .map(|word| word.rsplit('/').next().unwrap_or(word));
-        let first = words.next().unwrap_or_default();
+        let mut words = args.split_whitespace();
+        let program = words.next().unwrap_or_default();
+        let first = program.rsplit('/').next().unwrap_or(program);
         let name = match first {
-            "node" | "bun" | "deno" | "python" | "python3" => words.next().unwrap_or_default(),
+            "node" | "bun" | "deno" | "python" | "python3" => words
+                .next()
+                .map_or("", |word| word.rsplit('/').next().unwrap_or(word)),
             _ => first,
         };
         // A login shell's name opens with a dash; a versioned build adds
@@ -241,8 +250,8 @@ fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
         let name = name.trim_start_matches('-');
         let found = agents::ALL.iter().copied().find(|agent| {
             let info = agent.info();
-            name == info.command
-                || name.starts_with(&format!("{}-", info.command))
+            name.strip_prefix(info.command)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
                 || info
                     .app
                     .is_some_and(|app| Path::new(program).ends_with(app))
@@ -282,7 +291,7 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
         let reply = match std::str::from_utf8(&line) {
             Ok(line) if line.trim().is_empty() => continue,
             Ok(line) => reply(&mut server, line),
-            Err(_) => Some(failure(Value::Null, -32700, "not UTF-8".to_owned())),
+            Err(_) => Some(failure(Value::Null, -32700, "not UTF-8")),
         };
         if let Some(reply) = reply {
             writeln!(stdout, "{reply}")?;
@@ -291,8 +300,8 @@ pub fn run(home: &Path, data: &Path) -> Result<()> {
     }
 }
 
-fn failure(id: Value, code: i64, message: String) -> Value {
-    let error = json!({ "code": code, "message": message });
+fn failure(id: Value, code: i64, message: impl Into<String>) -> Value {
+    let error = json!({ "code": code, "message": message.into() });
     json!({ "jsonrpc": "2.0", "id": id, "error": error })
 }
 
@@ -305,39 +314,46 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
     };
     // MCP sends one message a line: no batches.
     if !message.is_object() {
-        let message = "a message is one JSON-RPC object".to_owned();
-        return Some(failure(Value::Null, -32600, message));
+        return Some(failure(
+            Value::Null,
+            -32600,
+            "a message is one JSON-RPC object",
+        ));
     }
     let id = message.get("id").cloned();
     if let Some(id) = &id
         && !(id.is_string() || id.is_i64() || id.is_u64())
     {
-        let message = "an id is a string or an integer".to_owned();
-        return Some(failure(Value::Null, -32600, message));
+        return Some(failure(
+            Value::Null,
+            -32600,
+            "an id is a string or an integer",
+        ));
     }
     let Some(method) = message["method"].as_str() else {
-        return id.map(|id| failure(id, -32600, "a request needs a method".to_owned()));
+        return id.map(|id| failure(id, -32600, "a request needs a method"));
     };
     // A notification asks for no reply.
     let id = id?;
     let params = &message["params"];
     let modern = params["_meta"].get("io.modelcontextprotocol/protocolVersion");
     if let Some(version) = modern.filter(|version| *version != MODERN) {
-        let mut reply = failure(id, -32022, "Unsupported protocol version".to_owned());
+        let mut reply = failure(id, -32022, "Unsupported protocol version");
         reply["error"]["data"] = json!({ "supported": SUPPORTED, "requested": version });
         return Some(reply);
     }
-    let instructions = format!(
-        "Turnscope reads the history and subscription limits of the coding agents on this Mac ({}). {INSTRUCTIONS}",
-        agents::ALL
-            .iter()
-            .map(|agent| agent.info().name)
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    let capabilities = json!({ "tools": { "listChanged": false } });
-    let server_info =
-        json!({ "name": "turnscope", "title": "Turnscope", "version": env!("CARGO_PKG_VERSION") });
+    let instructions = || {
+        format!(
+            "Turnscope reads the history and subscription limits of the coding agents on this Mac ({}). {INSTRUCTIONS}",
+            agents::ALL
+                .iter()
+                .map(|agent| agent.info().name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let capabilities = || json!({ "tools": { "listChanged": false } });
+    let server_info = || json!({ "name": "turnscope", "title": "Turnscope", "version": env!("CARGO_PKG_VERSION") });
     let mut result = match method {
         "initialize" => {
             let asked = params["protocolVersion"].as_str().unwrap_or_default();
@@ -345,12 +361,12 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
                 .iter()
                 .find(|known| **known == asked)
                 .unwrap_or(&EARLIER[0]);
-            json!({ "protocolVersion": version, "capabilities": capabilities, "serverInfo": server_info, "instructions": instructions })
+            json!({ "protocolVersion": version, "capabilities": capabilities(), "serverInfo": server_info(), "instructions": instructions() })
         }
         "server/discover" => json!({
             "supportedVersions": SUPPORTED,
-            "capabilities": capabilities,
-            "instructions": instructions,
+            "capabilities": capabilities(),
+            "instructions": instructions(),
             "ttlMs": TTL_MS,
             "cacheScope": CACHE_SCOPE,
         }),
@@ -397,7 +413,7 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
         fields.insert("resultType".to_owned(), json!("complete"));
         fields.insert(
             "_meta".to_owned(),
-            json!({ "io.modelcontextprotocol/serverInfo": server_info }),
+            json!({ "io.modelcontextprotocol/serverInfo": server_info() }),
         );
     }
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
@@ -481,15 +497,17 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     let status = status::status(ask.db, turnscope::now())?;
     let mine = ask.caller.account(ask.db, ask.home, &status)?;
     let yours = mine.map(|mine| mine.id.as_str());
-    let visible: Vec<&status::Account> = status
-        .accounts
-        .iter()
-        .filter(|account| !account.hidden)
-        .collect();
     let (mut shown, unknown) = match (&input.account, input.all, mine) {
         (Some(name), _, _) => (status::named(&status, name)?, false),
         (None, false, Some(mine)) => (vec![mine], false),
-        (None, all, _) => (visible, !all && mine.is_none()),
+        (None, all, _) => (
+            status
+                .accounts
+                .iter()
+                .filter(|account| !account.hidden)
+                .collect(),
+            !all && mine.is_none(),
+        ),
     };
     shown.sort_by_key(|account| Some(account.id.as_str()) != yours);
     let Some(first) = shown.first() else {
@@ -521,7 +539,24 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     ))
 }
 
-fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
+/// What `explain_usage` was asked for, checked.
+struct UsageAsked<'a> {
+    /// Said first: that whose account is asking isn't known, if it isn't.
+    lead: &'static str,
+    account: Option<&'a status::Account>,
+    limit: Option<&'a status::Limit>,
+    since: Option<i64>,
+    until: Option<i64>,
+    by: By,
+    top: usize,
+}
+
+fn usage_asked<'a>(
+    ask: &Ask,
+    arguments: Value,
+    status: &'a status::Status,
+    now: i64,
+) -> Result<UsageAsked<'a>> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -535,13 +570,11 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
         top: Option<usize>,
     }
     let input: Input = input(arguments)?;
-    let now = turnscope::now();
-    let status = status::status(ask.db, now)?;
-    let mut lead = String::new();
+    let mut lead = "";
     let account = match (input.account.as_deref(), input.all) {
-        (Some(name), _) => Some(status::one_account(&status, name)?),
+        (Some(name), _) => Some(status::one_account(status, name)?),
         (None, true) => None,
-        (None, false) => match ask.caller.account(ask.db, ask.home, &status)? {
+        (None, false) => match ask.caller.account(ask.db, ask.home, status)? {
             Some(account) => Some(account),
             None if input.limit.is_some() => {
                 return Err(Error::NotFound(
@@ -549,8 +582,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
                 ));
             }
             None => {
-                lead =
-                    "Which account is yours isn't known, so this is every account's.\n".to_owned();
+                lead = "Which account is yours isn't known, so this is every account's.\n";
                 None
             }
         },
@@ -602,44 +634,93 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
             )));
         }
     };
-    let top = input.top.unwrap_or(5).clamp(1, 20);
-    let breakdown = |by: By, top: usize| match account {
+    Ok(UsageAsked {
+        lead,
+        account,
+        limit,
+        since,
+        until,
+        by,
+        top: input.top.unwrap_or(5).clamp(1, 20),
+    })
+}
+
+fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
+    let now = turnscope::now();
+    let status = status::status(ask.db, now)?;
+    let UsageAsked {
+        lead,
+        account,
+        limit,
+        since,
+        until,
+        by,
+        top,
+    } = usage_asked(ask, arguments, &status, now)?;
+    let yours = ask.caller.session.as_deref();
+    // Every row, so the caller's own session is found past the top.
+    let fetch_top = if by == By::Session && yours.is_some() {
+        usize::MAX
+    } else {
+        top
+    };
+    let query = match account {
         Some(account) => {
             let between = since.map(|since| (since, until.unwrap_or(now)));
-            usage::breakdown(ask.db, account, limit, between, by, top, now)
+            usage::query(account, limit, between, by, fetch_top, now)
         }
-        None => usage::usage(
-            ask.db,
-            &usage::Query {
-                since: since.unwrap_or(now - 30 * time::DAY),
-                until: until.unwrap_or(now),
-                by,
-                agent: None,
-                models: Vec::new(),
-                key: None,
-                account: None,
-                top,
-            },
-        )
-        .map(|used| (used, None)),
+        None => usage::Query {
+            since: since.unwrap_or(now - 30 * time::DAY),
+            until: until.unwrap_or(now),
+            by,
+            agent: None,
+            account: None,
+            models: Vec::new(),
+            key: None,
+            top: fetch_top,
+        },
     };
-    let (used, shares) = breakdown(by, top)?;
+    let mut used = usage::usage(ask.db, &query)?;
+    let mut shares = limit
+        .filter(|_| since.is_none())
+        .and_then(|limit| usage::shares(&used, limit));
+    let own_line = if by == By::Session
+        && used.rows.len() > top
+        && let Some(yours) = yours
+        && let Some((at, row)) = used
+            .rows
+            .iter()
+            .enumerate()
+            .skip(top)
+            .find(|(_, row)| row.key == yours)
+    {
+        let points = limit
+            .zip(shares.as_ref())
+            .map_or(String::new(), |(limit, shares)| {
+                format!(", {} of {}", usage::share(shares.rows[at]), limit.named())
+            });
+        Some(format!(
+            "\nYour session: {}, over {}{points}.\n",
+            usage::cost(row.cost_usd, row.unpriced),
+            usage::counted(row.responses, "response"),
+        ))
+    } else {
+        None
+    };
+    usage::fold(&mut used, shares.as_mut(), top);
     // Times are told as of the status's minute, as `check_limits` tells
     // them: at 12:00:40, a reset at 14:00 is in 2h, not 1h 59m.
     let minute = status.at;
-    let responses = match used.total.responses {
-        1 => "1 response".to_owned(),
-        n => format!("{} responses", usage::count(n)),
-    };
     let to = match until {
         Some(until) => format!(" to {}", time::ago(until, minute)),
         None => String::new(),
     };
     let mut out = format!(
-        "{lead}Usage of {} since {}{to}: {} at list prices over {responses}{}.\n",
+        "{lead}Usage of {} since {}{to}: {} at list prices over {}{}.\n",
         account.map_or("every account".to_owned(), |account| account.full_title()),
         time::ago(used.since, minute),
         usage::dollars(used.total.cost_usd),
+        usage::counted(used.total.responses, "response"),
         if used.total.unpriced > 0 {
             format!(
                 ", {} of them with no known price",
@@ -652,39 +733,12 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     if let Some(limit) = limit {
         out += &format!("{}\n", status::limit_text(limit, minute));
     }
-    let yours = ask.caller.session.as_deref();
     if !used.rows.is_empty() {
         let shares = limit.zip(shares.as_ref());
         out += &format!("\n{}", usage::markdown(&used, shares, yours));
     }
-    // The caller's own session, when it isn't among the rows: what an
-    // agent most often asks of its own work.
-    if by == By::Session
-        && used.rest.is_some()
-        && let Some(yours) = yours
-        && !used.rows.iter().any(|row| row.key == yours)
-    {
-        let (all, shares) = breakdown(By::Session, usize::MAX)?;
-        if let Some((at, row)) = all
-            .rows
-            .iter()
-            .enumerate()
-            .find(|(_, row)| row.key == yours)
-        {
-            let points = limit
-                .zip(shares.as_ref())
-                .map_or(String::new(), |(limit, shares)| {
-                    format!(", {} of {}", usage::share(shares.rows[at]), limit.named())
-                });
-            out += &format!(
-                "\nYour session: {}, over {}{points}.\n",
-                usage::cost(row.cost_usd, row.unpriced),
-                match row.responses {
-                    1 => "1 response".to_owned(),
-                    n => format!("{} responses", usage::count(n)),
-                },
-            );
-        }
+    if let Some(line) = own_line {
+        out += &line;
     }
     if let Some(why) = limit
         .filter(|_| since.is_none())
@@ -704,30 +758,40 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
             time::ago(start, minute),
         );
     }
-    // The same usage by model and project, and by account when it's every
-    // account's, so one call says what used it.
-    let others = [
+    out += &by_others(ask.db, &query)?;
+    Ok(out.trim_end().to_owned())
+}
+
+/// What `query` asked by model and project, and by account when it's every
+/// account's, the top three of each, so one call says what used it.
+fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
+    let mut out = String::new();
+    for (by, what) in [
         (By::Model, "model"),
         (By::Project, "project"),
         (By::Account, "account"),
-    ];
-    for (other, what) in others {
-        if other != by && (other != By::Account || account.is_none()) {
-            let (them, _) = breakdown(other, 3)?;
-            let listed: Vec<String> = them
-                .rows
-                .iter()
-                .map(|row| {
-                    let cost = usage::cost(row.cost_usd, row.unpriced);
-                    format!("{}: {cost}", row.label(other))
-                })
-                .collect();
-            if !listed.is_empty() {
-                out += &format!("\nBy {what}: {}.", listed.join("; "));
-            }
+    ] {
+        if by == query.by || (by == By::Account && query.account.is_some()) {
+            continue;
+        }
+        let other = usage::Query {
+            by,
+            top: 3,
+            ..query.clone()
+        };
+        let listed: Vec<String> = usage::usage(db, &other)?
+            .rows
+            .iter()
+            .map(|row| {
+                let cost = usage::cost(row.cost_usd, row.unpriced);
+                format!("{}: {cost}", row.label(by))
+            })
+            .collect();
+        if !listed.is_empty() {
+            out += &format!("\nBy {what}: {}.", listed.join("; "));
         }
     }
-    Ok(out.trim_end().to_owned())
+    Ok(out)
 }
 
 #[cfg(test)]

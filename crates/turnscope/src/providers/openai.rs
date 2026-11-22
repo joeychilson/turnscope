@@ -99,13 +99,15 @@ fn windows(rate: &Value, scope: Option<&str>, now: i64) -> Option<Vec<Reading>> 
         let seconds = window["limit_window_seconds"]
             .as_i64()
             .filter(|seconds| *seconds > 0)?;
-        let length = seconds * 1000;
+        let length = seconds.checked_mul(1000)?;
         // An unknown reset comes as zero; the countdown beside it still says when.
         let resets = match window["reset_at"].as_i64() {
-            Some(at) if at > 0 => Some(at * 1000),
+            Some(at) if at > 0 => Some(at.checked_mul(1000)?),
             _ => window["reset_after_seconds"]
                 .as_i64()
-                .map(|after| now + after * 1000),
+                .filter(|&after| after >= 0)
+                .and_then(|after| after.checked_mul(1000))
+                .and_then(|ms| now.checked_add(ms)),
         };
         let used = window["used_percent"].as_f64()?;
         readings.push(super::window(key, scope, used, length, resets));

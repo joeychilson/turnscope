@@ -1,10 +1,11 @@
 //! Reading what's new in the agents' history into the database, with each
 //! response's cost and account. How history is kept: docs/architecture.md#data.
 
-use std::collections::{HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
@@ -16,24 +17,17 @@ use crate::{Error, Result};
 
 /// Raised when a reader would read a file it read before differently. A
 /// file last read with an older one is read again from the start when it's
-/// next found: where it was, moved, or back after it was gone. Chosen over
-/// reading again only the files still at their paths, which kept what the
-/// older reader made of a file moved since, as Codex moves a thread it
-/// archives. A file never found again, as one its agent deleted, keeps what
-/// it made.
-const READERS: i64 = 8;
+/// next found, moved too: read again only at its path, a thread Codex
+/// archives kept what the older reader made of it. A file never found
+/// again, as one its agent deleted, keeps what it made.
+const READERS: i64 = 9;
 
 /// How long a transaction writes history before it lets the write lock go,
-/// and for how long. A first read of 10,785 real files, 11 GB, took 18 to
-/// 30 s, longer than another process's write waits (`db::open`'s 10 s).
-/// SQLite retries a waiting write at most every 100 ms, so a longer pause
-/// lets it in.
-///
-/// Measured November 2026 on a made-up 616 MB history of 256 files, with a
-/// setting saved every half second: one transaction for all held the lock 6
-/// to 23 s, and the write failed in 4 runs of 8; one a file let a write in
-/// only by chance between commits, after up to 4.3 s; a second, then 110 ms,
-/// had no write fail or wait over 1.1 s in 6 runs, and read no slower.
+/// and for how long: another process's write waits 10 s (`db::open`), and
+/// SQLite retries it at most every 100 ms. On a made-up 616 MB history with
+/// a setting saved every half second (November 2026): one transaction held
+/// the lock 6 to 23 s and the write failed in 4 runs of 8; one a file let it
+/// in after up to 4.3 s; a second, then 110 ms, had none wait over 1.1 s.
 const HOLD: Duration = Duration::from_secs(1);
 const PAUSE: Duration = Duration::from_millis(110);
 
@@ -46,12 +40,43 @@ ON CONFLICT (id) DO UPDATE SET
     title_rank = max(title_rank, excluded.title_rank),
     parent = coalesce(parent, excluded.parent)";
 
-const RESPONSE_COLUMNS: &str = "session, copy, at, provider, model, input, cache_read,
-    cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches, priority, recorded, id";
+macro_rules! response_columns {
+    () => {
+        "session, copy, at, provider, model, input, cache_read,
+    cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches, priority, recorded, id"
+    };
+}
+
+const SELECT_RESPONSE: &str = concat!(
+    "SELECT ",
+    response_columns!(),
+    " FROM response WHERE agent = ?1 AND id = ?2"
+);
+const INSERT_RESPONSE_NEW: &str = concat!(
+    "INSERT INTO response (agent, folder, file, cost, account, ",
+    response_columns!(),
+    ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+     ON CONFLICT (agent, id) DO NOTHING"
+);
+const REPLACE_RESPONSE: &str = concat!(
+    "INSERT OR REPLACE INTO response (agent, folder, file, cost, account, ",
+    response_columns!(),
+    ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"
+);
+const SELECT_REPRICED: &str = concat!(
+    "SELECT ",
+    response_columns!(),
+    ", agent FROM response
+     WHERE cost IS NULL OR EXISTS (
+         SELECT 1 FROM repriced
+         WHERE repriced.provider = response.provider
+           AND repriced.model = response.model
+     )"
+);
 
 struct Due {
     agent: &'static dyn Agent,
-    folder: PathBuf,
+    folder: Arc<str>,
     path: PathBuf,
     cursor: String,
     stat: Stat,
@@ -89,14 +114,45 @@ impl Stat {
     }
 }
 
-/// A file as its last read left it.
+/// A file as its last read left it (cursor and agent are fetched by `id`
+/// only for changed or moved files).
 struct Known {
     id: i64,
-    agent: String,
     stat: Stat,
-    cursor: String,
     /// The `READERS` it was last read with.
     readers: i64,
+}
+
+/// How a file read before is read now.
+enum Resume {
+    Unchanged,
+    /// From its cursor: it only grew.
+    On,
+    /// It was replaced or cut short.
+    FromStart,
+}
+
+impl Known {
+    /// How the file, read before as this and now `stat`, is read. One an
+    /// older reader read is added to `older`, to take out what it made.
+    ///
+    /// Its reader is recorded when the read ends, over when what it made is
+    /// taken out, so a file taken out and then not read, as when the process
+    /// ends between the two, never looks read. The cost: one that can't be
+    /// read yet is taken out again at each catch-up, 23 to 25 ms among
+    /// 120,000 responses (2026-11-14).
+    fn resume(&self, stat: &Stat, older: &mut Vec<i64>) -> Resume {
+        if self.readers < READERS {
+            older.push(self.id);
+            Resume::FromStart
+        } else if self.stat == *stat {
+            Resume::Unchanged
+        } else if self.stat.inode == stat.inode && stat.size >= self.stat.size {
+            Resume::On
+        } else {
+            Resume::FromStart
+        }
+    }
 }
 
 /// Hold `ingest.lock` beside the database: one process reads history at a
@@ -109,21 +165,14 @@ fn lock_path(db: &Connection) -> PathBuf {
     Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock")
 }
 
-/// How long a command waits for `ingest.lock` before it says so, over
-/// saying so at once: the app's engine catches up as often as every 5 s
-/// while agents work, holding the lock even when it reads nothing, which over a made-up
-/// history of 5,000 files took 135 to 153 ms. Said at once, a command run
-/// beside the app would now and then say it waits, for a wait no one notices.
+/// How long a command waits for `ingest.lock` before it says so: the app
+/// holds it as often as every 5 s while agents work, 135 to 153 ms over a
+/// made-up 5,000 files, a wait no one notices.
 const QUIET: Duration = Duration::from_secs(1);
 
-/// What a catch-up is about to wait for, which can take minutes, in words
-/// for the command line to say first: another Turnscope reading history,
-/// once it has waited `QUIET`, or this one reading all of it, the first time
-/// and after `READERS` was raised. Asked before the catch-up, over from
-/// inside `ingest`, so only the command line says it: no one reads what
-/// the MCP server writes to standard error. The cost: a command
-/// that finds the lock held reads the limits and prices due up to `QUIET`
-/// later.
+/// What a catch-up is about to wait for, which can take minutes, for the
+/// command line to say first: another Turnscope reading history, once it has
+/// waited `QUIET`, or this one reading all of it.
 pub fn waits(db: &Connection) -> Option<&'static str> {
     match crate::db::lock_within(&lock_path(db), QUIET) {
         Ok(Some(_)) => {}
@@ -152,77 +201,85 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     // By the path's bytes: a `PathBuf` hashes component by component. With
     // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
     let mut known: HashMap<OsString, Known> = db
-        .prepare("SELECT path, agent, size, modified, inode, cursor, id, readers FROM file")?
+        .prepare_cached("SELECT path, size, modified, inode, id, readers FROM file")?
         .query_map([], |row| {
             let known = Known {
-                id: row.get(6)?,
-                agent: row.get(1)?,
+                id: row.get(4)?,
                 stat: Stat {
-                    size: row.get(2)?,
-                    modified: row.get(3)?,
-                    inode: row.get(4)?,
+                    size: row.get(1)?,
+                    modified: row.get(2)?,
+                    inode: row.get(3)?,
                 },
-                cursor: row.get(5)?,
-                readers: row.get(7)?,
+                readers: row.get(5)?,
             };
             Ok((OsString::from(row.get::<_, String>(0)?), known))
         })?
         .collect::<rusqlite::Result<_>>()?;
 
-    let mut found = Vec::new();
+    let mut due = Vec::new();
+    let mut unmatched = Vec::new();
+    let mut renames: Vec<(i64, String)> = Vec::new();
+    let mut older = Vec::new();
+    let load_cursor = |id: i64| -> Result<String> {
+        Ok(db
+            .prepare_cached("SELECT cursor FROM file WHERE id = ?1")?
+            .query_row([id], |row| row.get(0))?)
+    };
+
     for &agent in agents::ALL {
         for folder in agent.folders(home) {
+            let folder_key: Arc<str> = Arc::from(folder.to_string_lossy().as_ref());
             for path in agent.files(&folder) {
-                if let Some(stat) = Stat::of(&path) {
-                    found.push((agent, folder.clone(), path, stat));
+                let Some(stat) = Stat::of(&path) else {
+                    continue;
+                };
+                if let Some(was) = known.remove(path.as_os_str()) {
+                    let cursor = match was.resume(&stat, &mut older) {
+                        Resume::Unchanged => continue,
+                        Resume::On => load_cursor(was.id)?,
+                        Resume::FromStart => String::new(),
+                    };
+                    due.push(Due {
+                        agent,
+                        folder: Arc::clone(&folder_key),
+                        path,
+                        cursor,
+                        stat,
+                    });
+                } else {
+                    unmatched.push((agent, Arc::clone(&folder_key), path, stat));
                 }
             }
         }
     }
+
     // A file at a path that's gone is found again by its inode, so it's read
     // on, not twice: an agent moves a file it archives on the same volume,
     // where it keeps its inode, and APFS numbers new files in order rather
-    // than reusing a number.
-    let listed: HashSet<&OsStr> = found.iter().map(|(.., path, _)| path.as_os_str()).collect();
-    let mut moved: HashMap<i64, (OsString, Known)> = known
-        .extract_if(|path, _| !listed.contains(path.as_os_str()))
-        .map(|(path, was)| (was.stat.inode, (path, was)))
-        .collect();
-
-    let mut due = Vec::new();
-    let mut renames = Vec::new();
-    let mut older = Vec::new();
-    for (agent, folder, path, stat) in found {
-        let was = match known.remove(path.as_os_str()) {
-            Some(was) => Some(was),
-            None => match moved.remove(&stat.inode) {
-                Some((from, was)) if was.agent == agent.info().id => {
-                    renames.push((
-                        from.to_string_lossy().into_owned(),
-                        path.to_string_lossy().into_owned(),
-                    ));
-                    Some(was)
+    // than reusing a number. Anything still in `known` is a gone path.
+    let mut moved: HashMap<i64, Known> = if !unmatched.is_empty() && !known.is_empty() {
+        known
+            .into_values()
+            .map(|was| (was.stat.inode, was))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    for (agent, folder, path, stat) in unmatched {
+        let mut cursor = String::new();
+        if let Some(was) = moved.remove(&stat.inode) {
+            let (was_agent, was_cursor): (String, String) = db
+                .prepare_cached("SELECT agent, cursor FROM file WHERE id = ?1")?
+                .query_row([was.id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            if was_agent == agent.info().id {
+                renames.push((was.id, path.to_string_lossy().into_owned()));
+                match was.resume(&stat, &mut older) {
+                    Resume::Unchanged => continue,
+                    Resume::On => cursor = was_cursor,
+                    Resume::FromStart => {}
                 }
-                _ => None,
-            },
-        };
-        let cursor = match &was {
-            // Its reader is recorded when the read ends, over when what it
-            // made is taken out, so a file taken out and then not read, as
-            // when the process ends between the two, never looks read. The
-            // cost: one that can't be read yet is taken out again at each
-            // catch-up, 23 to 25 ms among 120,000 responses (2026-11-14).
-            Some(was) if was.readers < READERS => {
-                older.push(was.id);
-                String::new()
             }
-            Some(was) if was.stat == stat => continue,
-            Some(was) if was.stat.inode == stat.inode && stat.size >= was.stat.size => {
-                was.cursor.clone()
-            }
-            // A file replaced or cut short is read from the start.
-            Some(_) | None => String::new(),
-        };
+        }
         due.push(Due {
             agent,
             folder,
@@ -231,12 +288,13 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
             stat,
         });
     }
+
     if !renames.is_empty() || !older.is_empty() {
         let tx = crate::db::write(db)?;
         if !renames.is_empty() {
-            let mut rename = tx.prepare("UPDATE file SET path = ?1 WHERE path = ?2")?;
-            for (from, to) in &renames {
-                rename.execute(params![to, from])?;
+            let mut rename = tx.prepare_cached("UPDATE file SET path = ?1 WHERE id = ?2")?;
+            for (id, to) in &renames {
+                rename.execute(params![to, id])?;
             }
         }
         if !older.is_empty() {
@@ -273,48 +331,56 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     }
 
     let mut wrote = false;
-    // Files are read in parallel a share at a time, so memory stays bounded,
-    // while the share before is written.
-    std::thread::scope(|scope| -> Result<()> {
-        let (send, reads) = std::sync::mpsc::sync_channel(1);
-        let shares = due.chunks(256);
-        // Moved in, so the channel closes when reading ends.
-        scope.spawn(move || {
-            for share in shares {
-                let read: Vec<Result<Read>> = share
-                    .par_iter()
-                    .map(|due| due.agent.read(&due.path, &due.cursor))
-                    .collect();
-                if send.send((share, read)).is_err() {
-                    return;
-                }
-            }
-        });
-        for (share, read) in reads {
-            let mut files = share.iter().zip(read).peekable();
-            while files.peek().is_some() {
-                let tx = crate::db::write(db)?;
-                let derived = Derived::load(&tx)?;
-                let began = Instant::now();
-                while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
-                    match read {
-                        Ok(read) => {
-                            write(&tx, due, read, home, &derived)?;
-                            wrote = true;
-                        }
-                        Err(error) => failed(&tx, due, &error)?,
+    let mut projects = HashMap::new();
+    if !due.is_empty() {
+        // Files are read in parallel a share at a time, so memory stays bounded,
+        // while the share before is written.
+        std::thread::scope(|scope| -> Result<()> {
+            let (send, reads) = std::sync::mpsc::sync_channel(1);
+            let shares = due.chunks(256);
+            // Moved in, so the channel closes when reading ends.
+            scope.spawn(move || {
+                for share in shares {
+                    let read: Vec<Result<Read>> = share
+                        .par_iter()
+                        .map(|due| due.agent.read(&due.path, &due.cursor))
+                        .collect();
+                    if send.send((share, read)).is_err() {
+                        return;
                     }
                 }
-                tx.commit()?;
-                if files.peek().is_some() {
-                    std::thread::sleep(PAUSE);
+            });
+            for (share, read) in reads {
+                let mut files = share.iter().zip(read).peekable();
+                while files.peek().is_some() {
+                    let tx = crate::db::write(db)?;
+                    let derived = Derived::load(&tx)?;
+                    // Each folder's logins, read once a write: Codex writes
+                    // limits in every rollout.
+                    let mut held = HashMap::new();
+                    let began = Instant::now();
+                    while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
+                        match read {
+                            Ok(read) => {
+                                write(&tx, due, read, home, &derived, &mut projects, &mut held)?;
+                                wrote = true;
+                            }
+                            Err(error) => failed(&tx, due, &error)?,
+                        }
+                    }
+                    tx.commit()?;
+                    if files.peek().is_some() {
+                        std::thread::sleep(PAUSE);
+                    }
                 }
             }
-        }
-        Ok(())
-    })?;
-    // Statistics for the query planner, where tables changed enough.
-    db.execute_batch("PRAGMA optimize")?;
+            Ok(())
+        })?;
+    }
+    if wrote {
+        // Statistics for the query planner, where tables changed enough.
+        db.execute_batch("PRAGMA optimize")?;
+    }
     // `history_at` is when the first read finished. Only whether it has is
     // shown, so it's written once: a catch-up after it writes nothing to say
     // it ran. `readers` says, after `READERS` was raised, that all was read
@@ -322,12 +388,10 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     // no word that it reads all (`waits`).
     if first || readers != READERS {
         let tx = crate::db::write(db)?;
-        if first {
-            tx.execute("UPDATE state SET history_at = ?1", [crate::now()])?;
-        }
-        if readers != READERS {
-            tx.execute("UPDATE state SET readers = ?1", [READERS])?;
-        }
+        tx.execute(
+            "UPDATE state SET history_at = coalesce(history_at, ?1), readers = ?2",
+            params![crate::now(), READERS],
+        )?;
         tx.commit()?;
     }
     Ok(wrote)
@@ -336,54 +400,71 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
 /// A file that can't be read now is tried again next time, from where it
 /// was: its row keeps its cursor and what it was, and says why for doctor.
 fn failed(tx: &Transaction, due: &Due, error: &Error) -> Result<()> {
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO file (path, agent, size, modified, inode, cursor, failed, readers)
          VALUES (?1, ?2, -1, 0, ?3, '', ?4, ?5)
          ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
-        params![
-            due.path.to_string_lossy(),
-            due.agent.info().id,
-            due.stat.inode,
-            error.to_string(),
-            READERS,
-        ],
-    )?;
+    )?
+    .execute(params![
+        due.path.to_string_lossy(),
+        due.agent.info().id,
+        due.stat.inode,
+        error.to_string(),
+        READERS,
+    ])?;
     Ok(())
 }
 
-fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived) -> Result<()> {
+fn write(
+    tx: &Transaction,
+    due: &Due,
+    read: Read,
+    home: &Path,
+    derived: &Derived,
+    projects: &mut HashMap<String, String>,
+    held: &mut HashMap<Arc<str>, Vec<(String, String)>>,
+) -> Result<()> {
     let agent = due.agent.info().id;
-    let folder = due.folder.to_string_lossy();
-    let file: i64 = tx.query_row(
-        "INSERT INTO file (path, agent, size, modified, inode, cursor, skipped, readers)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9)
-         ON CONFLICT (path) DO UPDATE SET size = excluded.size, modified = excluded.modified,
-             inode = excluded.inode, cursor = excluded.cursor, failed = NULL,
-             skipped = iif(?8, excluded.skipped, skipped + excluded.skipped),
-             readers = excluded.readers
-         RETURNING id",
-        params![
-            due.path.to_string_lossy(),
-            agent,
-            due.stat.size,
-            due.stat.modified,
-            due.stat.inode,
-            read.cursor,
-            read.skipped as i64,
-            due.cursor.is_empty(),
-            READERS,
-        ],
-        |row| row.get(0),
-    )?;
+    let folder = due.folder.as_ref();
+    let file: i64 = tx
+        .prepare_cached(
+            "INSERT INTO file (path, agent, size, modified, inode, cursor, skipped, readers)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9)
+             ON CONFLICT (path) DO UPDATE SET size = excluded.size, modified = excluded.modified,
+                 inode = excluded.inode, cursor = excluded.cursor, failed = NULL,
+                 skipped = iif(?8, excluded.skipped, skipped + excluded.skipped),
+                 readers = excluded.readers
+             RETURNING id",
+        )?
+        .query_row(
+            params![
+                due.path.to_string_lossy(),
+                agent,
+                due.stat.size,
+                due.stat.modified,
+                due.stat.inode,
+                read.cursor,
+                read.skipped as i64,
+                due.cursor.is_empty(),
+                READERS,
+            ],
+            |row| row.get(0),
+        )?;
 
     let mut session = tx.prepare_cached(SESSION)?;
     let mut holds =
         tx.prepare_cached("INSERT OR IGNORE INTO session_file (session, file) VALUES (?1, ?2)")?;
     for (id, facts) in &read.sessions {
+        let project_name = facts.cwd.as_deref().map(|cwd| {
+            if !projects.contains_key(cwd) {
+                projects.insert(cwd.to_owned(), project(cwd, home));
+            }
+            projects[cwd].as_str()
+        });
         session.execute(params![
             id,
             agent,
-            facts.cwd.as_deref().map(|cwd| project(cwd, home)),
+            project_name,
             facts.title.as_ref().map(|(_, title)| title),
             facts.title.as_ref().map_or(-1, |(rank, _)| *rank as i64),
             facts.parent,
@@ -391,67 +472,87 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
         holds.execute(params![id, file])?;
     }
 
-    let mut known = tx.prepare_cached(&format!(
-        "SELECT {RESPONSE_COLUMNS} FROM response WHERE agent = ?1 AND id = ?2"
-    ))?;
-    let mut store = tx.prepare_cached(&format!(
-        "INSERT OR REPLACE INTO response (agent, folder, file, cost, account, {RESPONSE_COLUMNS})
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"
-    ))?;
+    let mut insert_new = tx.prepare_cached(INSERT_RESPONSE_NEW)?;
+    let mut known = tx.prepare_cached(SELECT_RESPONSE)?;
+    let mut replace = tx.prepare_cached(REPLACE_RESPONSE)?;
     for (_, mut response) in read.responses {
-        if let Some(stored) = known
-            .query_row(params![agent, response.id], stored)
-            .optional()?
-        {
-            response.merge(stored);
-        }
-        let (cost, account) = derived.of(agent, &folder, &response);
-        let tokens = &response.tokens;
-        store.execute(params![
+        let (cost, account) = derived.of(agent, folder, &response);
+        let inserted = execute_response(
+            &mut insert_new,
             agent,
             folder,
             file,
             cost,
             account,
-            response.session,
-            response.copy,
-            response.at,
-            response.provider,
-            response.model,
-            tokens.input as i64,
-            tokens.cache_read as i64,
-            tokens.cache_write_5m as i64,
-            tokens.cache_write_1h as i64,
-            tokens.output as i64,
-            tokens.reasoning as i64,
-            response.prompt as i64,
-            response.web_searches as i64,
-            response.priority,
-            response.cost,
-            response.id,
-        ])?;
+            &response,
+        )?;
+        if inserted == 0 {
+            if let Some(stored) = known
+                .query_row(params![agent, response.id], stored)
+                .optional()?
+            {
+                response.merge(stored);
+            }
+            let (cost, account) = derived.of(agent, folder, &response);
+            execute_response(&mut replace, agent, folder, file, cost, account, &response)?;
+        }
     }
     if read.limits.is_empty() {
         return Ok(());
     }
     // On the account the folder was signed in to when the agent wrote them,
-    // as its responses are, and only while the folder still holds a login
-    // to it: a sign-in to another is in `sign_in` once the logins are
-    // gathered again, up to `limits::DUE` later, and meanwhile the other's
-    // limits would go to this one, to stand for it once it's signed out.
-    let held = crate::limits::held_in(due.agent, &due.folder, home).unwrap_or_default();
+    // and only while it still holds a login to it: a sign-in to another is
+    // in `sign_in` up to `limits::DUE` later, and its limits would go to this.
+    let held = held.entry(Arc::clone(&due.folder)).or_insert_with(|| {
+        crate::limits::held_in(due.agent, Path::new(folder), home).unwrap_or_default()
+    });
     let now = crate::now();
     for limits in &read.limits {
-        if let Some(account) = derived.account(&folder, &limits.provider, limits.at)
-            && held.contains(&(limits.provider.clone(), account.clone()))
+        if let Some(account) = derived.account(folder, &limits.provider, limits.at)
+            && held.contains(&(limits.provider.clone(), account.to_owned()))
         {
-            crate::limits::record_in_band(tx, &account, limits, now)?;
+            crate::limits::record_in_band(tx, account, limits, now)?;
         }
     }
     Ok(())
 }
 
-/// A response as stored, its columns in `RESPONSE_COLUMNS`' order.
+fn execute_response(
+    stmt: &mut rusqlite::CachedStatement<'_>,
+    agent: &str,
+    folder: &str,
+    file: i64,
+    cost: Option<f64>,
+    account: Option<&str>,
+    response: &Response,
+) -> rusqlite::Result<usize> {
+    let tokens = &response.tokens;
+    stmt.execute(params![
+        agent,
+        folder,
+        file,
+        cost,
+        account,
+        response.session,
+        response.copy,
+        response.at,
+        response.provider,
+        response.model,
+        tokens.input as i64,
+        tokens.cache_read as i64,
+        tokens.cache_write_5m as i64,
+        tokens.cache_write_1h as i64,
+        tokens.output as i64,
+        tokens.reasoning as i64,
+        response.prompt as i64,
+        response.web_searches as i64,
+        response.priority,
+        response.cost,
+        response.id,
+    ])
+}
+
+/// A response as stored, its columns in `response_columns!`'s order.
 fn stored(row: &Row) -> rusqlite::Result<Response> {
     let count = |at: usize| row.get::<_, i64>(at).map(|count| count as u64);
     Ok(Response {
@@ -473,30 +574,28 @@ fn stored(row: &Row) -> rusqlite::Result<Response> {
 /// what each agent folder held for each provider from when, oldest first.
 ///
 /// Loaded in each write, so a price or sign-in another process wrote since
-/// the read began is used: `prices::take` and `limits::record` work out
-/// again, in their own writes, only what was written before them, and wait
-/// for no read of history. Chosen over loading once a read and taking prices
-/// in under `ingest.lock`, which made an agent's tool call wait out the
-/// app's read of all of history. The cost: 3.3 ms to load 4,000 prices
-/// (November 2026), once a write, and a catch-up that reads for under a
-/// second writes once.
+/// is used: loaded once and taking prices in under `ingest.lock`, an agent's
+/// tool call waited out the app's read of all of history. The cost: 3.3 ms
+/// for 4,000 prices (November 2026), once a write.
 struct Derived {
     prices: Prices,
-    /// The accounts each agent folder held, by folder and provider: one row
+    /// The accounts each agent folder held, by folder then provider: one row
     /// a sign-in, for each folder, of which there are tens.
-    signed: HashMap<(String, String), History<Option<String>>>,
+    signed: HashMap<String, HashMap<String, History<Option<String>>>>,
 }
 
 impl Derived {
     fn load(db: &Connection) -> Result<Derived> {
-        let mut signed = HashMap::<_, History<_>>::new();
+        let mut signed: HashMap<String, HashMap<String, History<Option<String>>>> = HashMap::new();
         let mut rows = db.prepare_cached(
             "SELECT folder, provider, since, account FROM sign_in ORDER BY since",
         )?;
         let mut rows = rows.query([])?;
         while let Some(row) = rows.next()? {
             signed
-                .entry((row.get(0)?, row.get(1)?))
+                .entry(row.get(0)?)
+                .or_default()
+                .entry(row.get(1)?)
                 .or_default()
                 .push((row.get(2)?, row.get(3)?));
         }
@@ -507,15 +606,16 @@ impl Derived {
     }
 
     /// The account `folder` held for `provider` at `at`, if any.
-    fn account(&self, folder: &str, provider: &str, at: i64) -> Option<String> {
+    fn account(&self, folder: &str, provider: &str, at: i64) -> Option<&str> {
         self.signed
-            .get(&(folder.to_owned(), provider.to_owned()))
+            .get(folder)?
+            .get(provider)
             .and_then(|held| in_force(held, at))
-            .and_then(|account| account.clone())
+            .and_then(|account| account.as_deref())
     }
 
     /// The cost of `response`, and the account it drew on.
-    fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<String>) {
+    fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<&str>) {
         let account = self.account(folder, &response.provider, response.at);
         (self.prices.cost(agent, response), account)
     }
@@ -523,23 +623,14 @@ impl Derived {
 
 /// Price again, in `tx`, every response of `models` (by provider and
 /// model), priced for the first time in it, and every response with no
-/// known cost. No list price was in force before a model's first, so its
-/// usage from before takes that first price, as a read of it now would.
-/// Chosen over keeping an agent's own estimate, which left an OpenCode
-/// response of 1M input tokens at the $0.001 it put on it, where a fresh
-/// read gave $2.00.
-///
-/// One with no known cost may have one by a model listed long before: a
-/// model another provider serves takes its maker's list price
-/// (`prices::Prices::cost`), as Claude served to Antigravity takes
-/// Anthropic's. Chosen over raising `READERS`, which reads every file again
-/// from the start, for prices alone.
+/// known cost, which may take a model's maker's price (`prices::Prices::cost`).
+/// A model's usage from before its first price takes it: kept, an agent's
+/// own estimate left an OpenCode response of 1M input tokens at $0.001,
+/// where a fresh read gave $2.00.
 pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> {
-    // One scan of `response`, over a query per model: `response` has no
-    // index on `(provider, model)`, so querying per model scanned the whole
-    // table for each. On 50,000 responses and 20 newly priced models, this
-    // took 12 ms (11–17 ms) against 72 ms (71–74 ms) with a query per model
-    // (2026-11-20).
+    // One scan, over a query per model, as `response` has no index on
+    // `(provider, model)`: 12 ms against 72 ms on 50,000 responses and 20
+    // models (2026-11-20).
     tx.execute(
         "CREATE TEMP TABLE repriced (
              provider TEXT NOT NULL,
@@ -554,14 +645,7 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     }
     drop(add);
     let rows: Vec<(String, Response)> = tx
-        .prepare(&format!(
-            "SELECT {RESPONSE_COLUMNS}, agent FROM response
-             WHERE cost IS NULL OR EXISTS (
-                 SELECT 1 FROM repriced
-                 WHERE repriced.provider = response.provider
-                   AND repriced.model = response.model
-             )"
-        ))?
+        .prepare(SELECT_REPRICED)?
         .query_map([], |row| Ok((row.get(16)?, stored(row)?)))?
         .collect::<rusqlite::Result<_>>()?;
     tx.execute("DROP TABLE repriced", [])?;
@@ -581,18 +665,11 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
 
 /// Forget what an older reader made of `files`, so each is read from the
 /// start. The sessions only such files hold lose their title and parent, as
-/// `SESSION` would keep the older reader's, and keep their project.
-///
-/// The project is kept as it was worked out when the session was first
-/// seen, from the folders then: worked out again, a worktree removed since,
-/// as one `git worktree add` made beside its repository, is a project of its
-/// own, and the repository's usage splits in two. The cost: a project worked
-/// out from a working directory an older reader got wrong stays wrong.
+/// `SESSION` would keep the older reader's, and keep their project: worked
+/// out again, a worktree removed since is a project of its own.
 fn read_again(tx: &Transaction, files: &[i64]) -> Result<()> {
-    // One transaction, not split as reading is: it held the lock 0.62 to
-    // 0.80 s on the history `HOLD` was measured on, 123,140 responses, and
-    // 0.75 to 1.24 s on 3,000 files and 120,000 responses (2026-11-14), far
-    // under the 10 s another write waits.
+    // One transaction, not split as reading is: it held the lock at most
+    // 1.24 s on 3,000 files and 120,000 responses (2026-11-14).
     tx.execute("CREATE TEMP TABLE again (file INTEGER PRIMARY KEY)", [])?;
     let mut again = tx.prepare("INSERT INTO again (file) VALUES (?1)")?;
     for file in files {
@@ -661,6 +738,7 @@ fn project(cwd: &str, home: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test::{one, response, rows};
 
     /// A temp data folder and home, with a folder of Claude Code's projects
     /// in the home.
@@ -688,10 +766,6 @@ mod tests {
         format!("{}{reply}\n", line())
     }
 
-    fn count(db: &Connection, sql: &str) -> i64 {
-        db.query_row(sql, [], |row| row.get(0)).unwrap()
-    }
-
     /// As if the history had been read with the reader before this one,
     /// which made something else of each file: more output, and another
     /// title for its session, of the highest rank.
@@ -711,8 +785,8 @@ mod tests {
     /// made them.
     fn made(db: &Connection) -> [i64; 2] {
         [
-            count(db, "SELECT coalesce(sum(output), 0) FROM response"),
-            count(db, "SELECT count(*) FROM session WHERE title = 'Misread'"),
+            one::<i64>(db, "SELECT coalesce(sum(output), 0) FROM response"),
+            one::<i64>(db, "SELECT count(*) FROM session WHERE title = 'Misread'"),
         ]
     }
 
@@ -725,7 +799,7 @@ mod tests {
         let log = turn("b").replace(r#""s1""#, r#""s2""#);
         std::fs::write(&file, log).unwrap();
         ingest(&mut db, home.path(), None).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM session"), 2);
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM session"), 2);
         read_with_an_older_reader(&db);
         // Gone when history is read again: what the older reader made of it
         // stays.
@@ -770,7 +844,7 @@ mod tests {
                 "SELECT min(readers) FROM file",
                 "SELECT readers FROM state",
             ]
-            .map(|sql| count(db, sql))
+            .map(|sql| one::<i64>(db, sql))
         };
         let other = tempfile::tempdir().unwrap();
         let mut fresh = crate::db::open(other.path()).unwrap();
@@ -805,10 +879,7 @@ mod tests {
         let file = first.join("s1.jsonl");
         std::fs::write(&file, turn("a") + "not a line\n").unwrap();
         ingest(&mut db, home.path(), None).unwrap();
-        let cursor = |db: &Connection| -> String {
-            db.query_row("SELECT cursor FROM file", [], |row| row.get(0))
-                .unwrap()
-        };
+        let cursor = |db: &Connection| one::<String>(db, "SELECT cursor FROM file");
         let read_to = cursor(&db);
 
         // Moved, as an agent moves a file it archives: its row moves with
@@ -817,9 +888,7 @@ mod tests {
         std::fs::rename(&file, &moved).unwrap();
         assert!(!ingest(&mut db, home.path(), None).unwrap());
         assert_eq!(cursor(&db), read_to);
-        let path: String = db
-            .query_row("SELECT path FROM file", [], |row| row.get(0))
-            .unwrap();
+        let path = one::<String>(&db, "SELECT path FROM file");
         assert_eq!(Path::new(&path), moved);
 
         // Replaced, and replaced again: read from the start each time, its
@@ -830,8 +899,8 @@ mod tests {
             std::fs::rename(&new, &moved).unwrap();
             ingest(&mut db, home.path(), None).unwrap();
             assert_eq!(made(&db), [40, 0]);
-            assert_eq!(count(&db, "SELECT count(*) FROM response"), 2);
-            assert_eq!(count(&db, "SELECT skipped FROM file"), 1);
+            assert_eq!(one::<i64>(&db, "SELECT count(*) FROM response"), 2);
+            assert_eq!(one::<i64>(&db, "SELECT skipped FROM file"), 1);
         }
 
         // Its inode, now listed by Codex, isn't Claude Code's file moved.
@@ -842,7 +911,7 @@ mod tests {
         ingest(&mut db, home.path(), None).unwrap();
         for agent in ["claude-code", "codex"] {
             let files = format!("SELECT count(*) FROM file WHERE agent = '{agent}'");
-            assert_eq!(count(&db, &files), 1, "{agent}");
+            assert_eq!(one::<i64>(&db, &files), 1, "{agent}");
         }
     }
 
@@ -855,13 +924,10 @@ mod tests {
         std::fs::create_dir_all(&subagents).unwrap();
         std::fs::write(subagents.join("agent-x.jsonl"), line()).unwrap();
         ingest(&mut db, home.path(), None).unwrap();
-        let why: String = db
-            .query_row(
-                "SELECT failed FROM file WHERE path LIKE '%agent-x.jsonl'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let why: String = one(
+            &db,
+            "SELECT failed FROM file WHERE path LIKE '%agent-x.jsonl'",
+        );
         assert!(why.contains("waits for its description"), "{why}");
         std::fs::write(
             subagents.join("agent-x.meta.json"),
@@ -870,7 +936,7 @@ mod tests {
         .unwrap();
         ingest(&mut db, home.path(), None).unwrap();
         assert_eq!(
-            count(&db, "SELECT count(*) FROM file WHERE failed IS NOT NULL"),
+            one::<i64>(&db, "SELECT count(*) FROM file WHERE failed IS NOT NULL"),
             0
         );
     }
@@ -906,19 +972,9 @@ mod tests {
         ingest(&mut db, home.path(), None).unwrap();
         write(&lines[1..]);
         ingest(&mut db, home.path(), None).unwrap();
-        let responses: Vec<(String, i64)> = db
-            .prepare("SELECT id, output FROM response ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
         assert_eq!(
-            responses,
-            [
-                ("msg_1:req_1".to_owned(), 900),
-                ("msg_2:req_2".to_owned(), 40)
-            ]
+            rows(&db, "SELECT id, output FROM response ORDER BY id"),
+            ["msg_1:req_1|900", "msg_2:req_2|40"]
         );
     }
 
@@ -991,10 +1047,7 @@ mod tests {
         let cwd = format!(r#""cwd":"{}","sessionId""#, worktree.join("src").display());
         let log = turn("a").replace(r#""sessionId""#, &cwd);
         std::fs::write(folder.join("s1.jsonl"), log).unwrap();
-        let project = |db: &Connection| -> String {
-            db.query_row("SELECT project FROM session", [], |row| row.get(0))
-                .unwrap()
-        };
+        let project = |db: &Connection| one::<String>(db, "SELECT project FROM session");
         ingest(&mut db, home.path(), None).unwrap();
         assert_eq!(project(&db), repository.to_string_lossy());
 
@@ -1013,17 +1066,17 @@ mod tests {
         let log = folder.join("s1.jsonl");
         std::fs::write(&log, line()).unwrap();
         let unread = "SELECT history_at IS NULL FROM state";
-        assert_eq!(count(&db, unread), 1);
+        assert!(one::<bool>(&db, unread));
         assert!(ingest(&mut db, home.path(), None).unwrap());
-        assert_eq!(count(&db, unread), 0);
+        assert!(!one::<bool>(&db, unread));
         // Another connection would see any write. Anything but history
         // written in the agent's folder is nothing new.
         let other = crate::db::open(dir.path()).unwrap();
-        let before = count(&other, "PRAGMA data_version");
+        let before = one::<i64>(&other, "PRAGMA data_version");
         assert!(!ingest(&mut db, home.path(), None).unwrap());
         std::fs::write(home.path().join(".claude/debug.txt"), "").unwrap();
         assert!(!ingest(&mut db, home.path(), None).unwrap());
-        assert_eq!(count(&other, "PRAGMA data_version"), before);
+        assert_eq!(one::<i64>(&other, "PRAGMA data_version"), before);
         std::fs::write(&log, line().repeat(2)).unwrap();
         assert!(ingest(&mut db, home.path(), None).unwrap());
         // One that can't be read is tried again each time, and reads nothing.
@@ -1068,7 +1121,7 @@ mod tests {
         );
         assert!(ingest(&mut db, home.path(), None).unwrap());
         assert_eq!(
-            count(&db, "SELECT count(*) FROM session WHERE id LIKE '%ses_new'"),
+            one::<i64>(&db, "SELECT count(*) FROM session WHERE id LIKE '%ses_new'"),
             1
         );
     }
@@ -1094,10 +1147,7 @@ mod tests {
             reading.join().unwrap().unwrap();
         });
         // 100 input tokens at $5 a million, and 20 output at $25.
-        let cost: Option<f64> = db
-            .query_row("SELECT cost FROM response", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(cost, Some(0.001));
+        assert_eq!(one::<f64>(&db, "SELECT cost FROM response"), 0.001);
     }
 
     #[test]
@@ -1119,7 +1169,7 @@ mod tests {
         drop(held);
         let error = reading.join().unwrap().unwrap_err();
         assert_eq!(error, crate::db::newer().to_string());
-        assert_eq!(count(&db, "SELECT count(*) FROM file"), 0);
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM file"), 0);
     }
 
     #[test]
@@ -1135,9 +1185,7 @@ mod tests {
             .unwrap();
         let error = due(&mut db, home.path()).err().unwrap();
         assert_eq!(error.to_string(), crate::db::newer().to_string());
-        let stored: String = db
-            .query_row("SELECT path FROM file", [], |row| row.get(0))
-            .unwrap();
+        let stored = one::<String>(&db, "SELECT path FROM file");
         assert_eq!(Path::new(&stored), first);
     }
 
@@ -1149,17 +1197,20 @@ mod tests {
             "INSERT INTO price VALUES
                  ('anthropic', 'm1', 0, '{\"input\":2,\"output\":10}', NULL),
                  ('anthropic', 'm2', 0, '{\"input\":4,\"output\":20}', NULL),
-                 ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL);
-             INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                 web_searches, priority, cost) VALUES
-                 ('claude-code', 'r1', 's', 0, 1, '/w', 0, 'anthropic', 'm1', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
-                 ('claude-code', 'r2', 's', 0, 1, '/w', 0, 'anthropic', 'm2', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
-                 ('claude-code', 'r3', 's', 0, 1, '/w', 0, 'anthropic', 'm3', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, 9.0),
-                 ('antigravity', 'r4', 's', 0, 1, '/g', 0, 'google', 'claude-opus-5-5', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
-                 ('antigravity', 'r5', 's', 0, 1, '/g', 0, 'google', 'gemini-unlisted', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL);",
+                 ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL);",
         )
         .unwrap();
+        let claude = ("claude-code", "/w", "anthropic", None);
+        let antigravity = ("antigravity", "/g", "google", None);
+        for (from, id, model, cost) in [
+            (claude, "r1", "m1", None),
+            (claude, "r2", "m2", None),
+            (claude, "r3", "m3", Some(9.0)),
+            (antigravity, "r4", "claude-opus-5-5", None),
+            (antigravity, "r5", "gemini-unlisted", None),
+        ] {
+            response(&db, from, id, 0, model, cost);
+        }
         let tx = crate::db::write(&mut db).unwrap();
         price_again(
             &tx,
@@ -1170,23 +1221,13 @@ mod tests {
         )
         .unwrap();
         tx.commit().unwrap();
-        let costs: Vec<(String, Option<f64>)> = db
-            .prepare("SELECT id, cost FROM response ORDER BY id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
         assert_eq!(
-            costs,
+            rows(&db, "SELECT id, cost FROM response ORDER BY id"),
             [
-                ("r1".to_owned(), Some(2.0)),
-                ("r2".to_owned(), Some(4.0)),
-                ("r3".to_owned(), Some(9.0)),
+                "r1|2", "r2|4", "r3|9",
                 // Claude served by Google, unpriced since before the maker's
                 // price applied to it, at Anthropic's list price.
-                ("r4".to_owned(), Some(5.0)),
-                ("r5".to_owned(), None),
+                "r4|5", "r5|NULL",
             ]
         );
     }

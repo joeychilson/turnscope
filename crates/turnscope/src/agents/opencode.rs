@@ -20,6 +20,7 @@
 //! **Logins** are rows of `credential`, `integration_id` naming the provider.
 //! Of several to one provider, the latest `active` one is in use.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -41,6 +42,7 @@ static INFO: Info = Info {
     folder_var: None,
     charges: false,
     session_var: None,
+    login_file: None,
 };
 
 /// Whether the message `m` of the session `s` is the session's own: a fork's
@@ -51,24 +53,18 @@ const OWN: &str = "(s.fork_session_id IS NULL OR m.time_created >= s.time_create
 
 #[derive(Default, Serialize, Deserialize)]
 struct Cursor {
-    /// The latest `time_updated` seen in each table, and no later than the
-    /// clock was at that read. Chosen over the latest seen alone, under which
-    /// a row stamped while the clock was ahead, as one set by hand and put
-    /// right, hid every row stamped at the true time until the clock passed
-    /// it, and `doctor` said nothing. On a made-up database with a session
-    /// stamped a day ahead, one saved a minute before now was still unread
-    /// two days on. Such a row is read again at each read until the clock
-    /// passes it, which changes nothing. (No real history was looked at for
-    /// such a row.)
+    /// The latest `time_updated` seen in each table, but no later than the
+    /// clock at that read. By the latest alone, a row stamped while the clock
+    /// was ahead hid every later row until the clock passed it: on a made-up
+    /// database with a session stamped a day ahead, one saved a minute before
+    /// now was unread two days on.
     sessions: i64,
     messages: i64,
 }
 
-/// How long before the latest `time_updated` seen a read starts. A row can
-/// be committed after one stamped later: OpenCode stamps a row as it makes
-/// the write, then waits up to 5 s (`busy_timeout`) for another process's
-/// write to end. Rows read again change nothing. (From OpenCode's code,
-/// `packages/core/src/database/`, read 2026-10-12.)
+/// How long before the latest `time_updated` seen a read starts: OpenCode
+/// stamps a row, then waits up to 5 s (`busy_timeout`) to write it, so a row
+/// can be committed after one stamped later (its code, read 2026-10-12).
 const LATE: i64 = 10_000;
 
 impl Agent for OpenCode {
@@ -121,7 +117,62 @@ impl Agent for OpenCode {
     }
 }
 
-/// What `file` holds past `cursor`, read with the clock at `now`.
+#[derive(Deserialize)]
+struct UserText<'a> {
+    #[serde(borrow)]
+    text: Option<Cow<'a, str>>,
+}
+
+#[derive(Deserialize)]
+struct MessageData<'a> {
+    #[serde(borrow)]
+    model: Option<ModelRef<'a>>,
+    tokens: Option<MessageTokens>,
+    #[serde(default, deserialize_with = "super::lenient")]
+    time: Option<MessageTime>,
+    #[serde(rename = "providerState", default, deserialize_with = "super::lenient")]
+    provider_state: Option<ProviderState>,
+    #[serde(default, deserialize_with = "super::lenient")]
+    cost: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct ModelRef<'a> {
+    #[serde(rename = "providerID", borrow)]
+    provider_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    id: Option<Cow<'a, str>>,
+}
+
+#[derive(Deserialize)]
+struct MessageTokens {
+    input: Option<u64>,
+    output: Option<u64>,
+    reasoning: Option<u64>,
+    cache: Option<CacheTokens>,
+}
+
+#[derive(Deserialize)]
+struct CacheTokens {
+    read: Option<u64>,
+    write: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct MessageTime {
+    #[serde(default, deserialize_with = "super::lenient")]
+    completed: Option<i64>,
+    #[serde(default, deserialize_with = "super::lenient")]
+    created: Option<i64>,
+}
+
+/// Each provider's own: what's in it isn't OpenCode's to say.
+#[derive(Deserialize)]
+struct ProviderState {
+    #[serde(rename = "serviceTier", default, deserialize_with = "super::lenient")]
+    service_tier: Option<String>,
+}
+
 fn read_at(file: &Path, cursor: &str, now: i64) -> Result<Read> {
     let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
     super::opened(file, |db| {
@@ -143,26 +194,30 @@ fn sessions(
 ) -> rusqlite::Result<()> {
     let mut sessions = db.prepare(&format!(
         "SELECT s.id, nullif(s.parent_id, ''), nullif(s.directory, ''), s.title, s.time_updated,
-             (SELECT m.data FROM session_message m WHERE m.session_id = s.id
-                 AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
+             CASE WHEN s.title IS NULL OR trim(s.title, ' ' || char(9, 10, 13)) = '' THEN
+                 (SELECT m.data FROM session_message m WHERE m.session_id = s.id
+                     AND m.type = 'user' AND {OWN} ORDER BY m.seq LIMIT 1)
+             END
          FROM session_v2 s WHERE s.time_updated >= ?1"
     ))?;
     let mut rows = sessions.query([cursor.sessions - LATE])?;
     while let Some(row) = rows.next()? {
-        let (native, parent): (String, Option<String>) = (row.get(0)?, row.get(1)?);
+        let native = row.get_ref(0)?.as_str()?;
+        let parent = row.get_ref(1)?.as_str_or_null()?;
         let updated: i64 = row.get(4)?;
         cursor.sessions = cursor.sessions.max(updated.min(now));
-        let session = read.session(&INFO.session(&native));
+        let session = read.session(&INFO.session(native));
         // A subagent's parent. A fork is a session of its own.
-        session.parent = parent.map(|parent| INFO.session(&parent));
+        session.parent = parent.map(|parent| INFO.session(parent));
         session.cwd = row.get(2)?;
-        let first: Option<String> = row.get(5)?;
-        if let Some(text) = first.and_then(|data| serde_json::from_str::<Value>(&data).ok()) {
-            session.title(Title::Prompt, text["text"].as_str().unwrap_or_default());
+        if let Some(data) = row.get_ref(5)?.as_str_or_null()?
+            && let Ok(user) = serde_json::from_str::<UserText<'_>>(data)
+            && let Some(text) = user.text
+        {
+            session.title(Title::Prompt, &text);
         }
-        let title: Option<String> = row.get(3)?;
-        if let Some(title) = title {
-            session.title(Title::Generated, &title);
+        if let Some(title) = row.get_ref(3)?.as_str_or_null()? {
+            session.title(Title::Generated, title);
         }
     }
     Ok(())
@@ -179,39 +234,37 @@ fn messages(
          FROM session_message m LEFT JOIN session_v2 s ON s.id = m.session_id
          WHERE m.time_updated >= ?1 AND m.type = 'assistant' AND {OWN}"
     ))?;
-    // A message is read again each time it changes, and while it's
-    // within `LATE` of the latest change.
     let mark = cursor.messages;
     let mut rows = messages.query([mark - LATE])?;
     while let Some(row) = rows.next()? {
-        let (message, native): (String, String) = (row.get(0)?, row.get(1)?);
+        let message: String = row.get(0)?;
+        let native = row.get_ref(1)?.as_str()?;
         let (created, updated): (i64, i64) = (row.get(2)?, row.get(3)?);
         cursor.messages = cursor.messages.max(updated.min(now));
-        // A row read again only for being within `LATE` was counted, and
-        // one stamped ahead of the clock is counted by the read that takes
-        // the cursor past it. One committed late, stamped at or before the
-        // last read, isn't: knowing it wasn't seen would take every bad
-        // row's id in the cursor, for a count only doctor shows.
+        // A row that doesn't read is counted by the read whose cursor first
+        // passes it. One committed late, stamped at or before the last read,
+        // isn't: that would take each such row's id in the cursor, for a
+        // count only `doctor` shows.
         let unseen = u64::from(updated > mark && updated <= now);
-        let Ok(data) = serde_json::from_str::<Value>(&row.get::<_, String>(4)?) else {
+        let Ok(data) = serde_json::from_str::<MessageData<'_>>(row.get_ref(4)?.as_str()?) else {
             read.skipped += unseen;
             continue;
         };
         // A message has no tokens until its response ends.
-        let tokens = &data["tokens"];
-        let (Some(input), Some(output), Some(reasoning), Some(cache_read), Some(cache_write)) = (
-            tokens["input"].as_u64(),
-            tokens["output"].as_u64(),
-            tokens["reasoning"].as_u64(),
-            tokens["cache"]["read"].as_u64(),
-            tokens["cache"]["write"].as_u64(),
-        ) else {
+        let Some(MessageTokens {
+            input: Some(input),
+            output: Some(output),
+            reasoning: Some(reasoning),
+            cache:
+                Some(CacheTokens {
+                    read: Some(cache_read),
+                    write: Some(cache_write),
+                }),
+        }) = data.tokens
+        else {
             continue;
         };
-        let (Some(provider), Some(model)) = (
-            data["model"]["providerID"].as_str(),
-            data["model"]["id"].as_str(),
-        ) else {
+        let Some((Some(provider), Some(model))) = data.model.map(|m| (m.provider_id, m.id)) else {
             read.skipped += unseen;
             continue;
         };
@@ -225,19 +278,23 @@ fn messages(
         };
         read.respond(Response {
             id: message,
-            session: INFO.session(&native),
+            session: INFO.session(native),
             copy: false,
-            at: data["time"]["completed"]
-                .as_i64()
-                .or(data["time"]["created"].as_i64())
+            at: data
+                .time
+                .and_then(|time| time.completed.or(time.created))
                 .unwrap_or(created),
-            provider: provider.to_owned(),
-            model: model.to_owned(),
+            provider: provider.into_owned(),
+            model: model.into_owned(),
             prompt: input + cache_read + cache_write,
             tokens,
             web_searches: 0,
-            priority: data["providerState"]["serviceTier"] == "priority",
-            cost: data["cost"].as_f64(),
+            priority: data
+                .provider_state
+                .and_then(|state| state.service_tier)
+                .as_deref()
+                == Some("priority"),
+            cost: data.cost,
         });
     }
     Ok(())

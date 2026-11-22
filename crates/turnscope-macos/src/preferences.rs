@@ -1,7 +1,7 @@
 //! The app's own preferences, kept in its defaults under the keys 0.2 used, so they
 //! carry over. Which notifications are sent is the engine's setting instead.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use objc2_foundation::{NSString, NSUserDefaults};
 
@@ -21,14 +21,13 @@ pub enum MenuShows {
 #[derive(Clone, Debug, Default)]
 pub struct Preferences {
     pub menu_shows: MenuShows,
-    pub dismissed_connect: HashSet<String>,
+    pub dismissed_connect: BTreeSet<String>,
     /// Whether they're read from and written to the app's defaults: not for a fixed status,
     /// whose changes go nowhere.
     kept: bool,
 }
 
 impl Preferences {
-    /// The preferences in the app's defaults.
     pub fn read() -> Preferences {
         let defaults = NSUserDefaults::standardUserDefaults();
         let string = |key: &str| {
@@ -54,6 +53,9 @@ impl Preferences {
     }
 
     pub fn set_menu_shows(&mut self, shows: MenuShows) {
+        if self.menu_shows == shows {
+            return;
+        }
         self.menu_shows = shows;
         self.write(
             MENU_SHOWS,
@@ -65,13 +67,12 @@ impl Preferences {
         );
     }
 
-    /// Stop offering to connect the agent `id`.
     pub fn dismiss_connect(&mut self, id: &str) {
-        self.dismissed_connect.insert(id.to_owned());
-        let mut ids: Vec<&str> = self.dismissed_connect.iter().map(String::as_str).collect();
-        ids.sort();
-        let joined = ids.join(",");
-        self.write(DISMISSED_CONNECT, &joined);
+        if !self.dismissed_connect.insert(id.to_owned()) {
+            return;
+        }
+        let joined: Vec<&str> = self.dismissed_connect.iter().map(String::as_str).collect();
+        self.write(DISMISSED_CONNECT, &joined.join(","));
     }
 
     fn write(&self, key: &str, value: &str) {

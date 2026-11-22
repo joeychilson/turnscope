@@ -1,39 +1,34 @@
 //! Pi.
 //!
-//! Each session is a JSON Lines file,
+//! A session is a JSON Lines file,
 //! `~/.pi/agent/sessions/<directory>/<time>_<session>.jsonl`, opening with a
-//! `session` header that names it, its working directory, and the session it
-//! was forked from (`parentSession`, that session's file). Every later line
-//! is an entry following another (`parentId`), so a session is a tree: going
-//! back and trying again starts a branch, and the abandoned one stays in the
-//! file. Its responses were still charged, so every branch is counted.
+//! `session` header naming it, its working directory and the session it was
+//! forked from (`parentSession`). Every later line is an entry following
+//! another (`parentId`), so a session is a tree whose abandoned branches stay
+//! in the file; they were charged, so every branch is counted.
 //!
-//! What follows was measured on this Mac's history, September and October
-//! 2026, and read in Pi 1.0.1's session manager where none was written yet.
+//! Measured on this Mac's history, September and October 2026, and read in
+//! Pi 1.0.1's session manager where none was written yet:
 //!
-//! **Usage.** An assistant message carries `usage`: `input` excludes cached
-//! input, `output` includes `reasoning`, `cacheWrite1h` is the part of
-//! `cacheWrite` kept for an hour, and `cost.total` is what Pi worked out it
-//! cost. A response is its `responseId`. Calls that are no message carry
-//! usage too: a `usage` entry (keeping the cache warm), and the model call
-//! that wrote a `compaction` or `branch_summary`.
-//!
-//! **Forks.** A fork's file copies every entry of its parent's, times and
-//! response ids as they were, after a header of its own. The copy is the
-//! parent's: its responses are marked copies of the parent's, and nothing
-//! else in it is the fork's.
-//!
-//! **Providers.** A response names its provider as Pi's registry does, kept
-//! as it is: its ChatGPT sign-in is `openai-codex`, beside `openai` for a key,
-//! so its use of a plan is told from its use of the API.
-//!
-//! **Logins** are `auth.json`, an entry per provider under the name its
-//! responses give it.
+//! - **Usage.** An assistant message's `usage`: `input` leaves out the cache,
+//!   `output` includes `reasoning`, `cacheWrite1h` is the part of
+//!   `cacheWrite` kept an hour, and `cost.total` is Pi's estimate. A response
+//!   is its `responseId`. A `usage` entry, keeping the cache warm, and the
+//!   call that wrote a `compaction` or `branch_summary` carry usage too.
+//! - **Forks.** A fork's file copies every entry of its parent's, times and
+//!   response ids as they were, after a header of its own. The copy's
+//!   responses are the parent's, and nothing else in it is the fork's.
+//! - **Providers** are named as Pi's registry names them: its ChatGPT sign-in
+//!   is `openai-codex`, beside `openai` for a key, which tells a plan's use
+//!   from the API's.
+//! - **Logins** are `auth.json`, an entry per provider under the name its
+//!   responses give it.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::value::RawValue;
 
 use super::{Agent, Info, Login, Read, Response, Title, Tokens};
 use crate::Result;
@@ -50,6 +45,7 @@ static INFO: Info = Info {
     folder_var: None,
     charges: false,
     session_var: None,
+    login_file: Some("auth.json"),
 };
 
 #[derive(Default, Serialize, Deserialize)]
@@ -61,6 +57,80 @@ struct Cursor {
     /// The provider and model of the latest response, which a summary is
     /// written with.
     model: Option<(String, String)>,
+}
+
+#[derive(Deserialize)]
+struct Line<'a> {
+    #[serde(rename = "type", borrow, default)]
+    kind: Cow<'a, str>,
+    #[serde(borrow)]
+    id: Option<Cow<'a, str>>,
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
+    timestamp: Option<Cow<'a, str>>,
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
+    cwd: Option<Cow<'a, str>>,
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
+    name: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    provider: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    model: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    usage: Option<&'a RawValue>,
+    #[serde(borrow)]
+    message: Option<Message<'a>>,
+}
+
+#[derive(Deserialize)]
+struct Message<'a> {
+    #[serde(borrow)]
+    role: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    content: Option<&'a RawValue>,
+    #[serde(borrow)]
+    provider: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    model: Option<Cow<'a, str>>,
+    #[serde(
+        rename = "responseModel",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
+    response_model: Option<Cow<'a, str>>,
+    #[serde(
+        rename = "responseId",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
+    response_id: Option<Cow<'a, str>>,
+    /// In Unix milliseconds, where it reads as one; else the line's time.
+    #[serde(borrow)]
+    timestamp: Option<&'a RawValue>,
+    #[serde(borrow)]
+    usage: Option<&'a RawValue>,
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    input: u64,
+    #[serde(rename = "cacheRead")]
+    cache_read: u64,
+    #[serde(rename = "cacheWrite")]
+    cache_write: u64,
+    #[serde(rename = "cacheWrite1h", default, deserialize_with = "super::lenient")]
+    cache_write_1h: Option<u64>,
+    output: u64,
+    #[serde(default, deserialize_with = "super::lenient")]
+    reasoning: Option<u64>,
+    #[serde(default, deserialize_with = "super::lenient")]
+    cost: Option<Cost>,
+}
+
+#[derive(Deserialize)]
+struct Cost {
+    total: Option<f64>,
 }
 
 impl Agent for Pi {
@@ -86,7 +156,7 @@ impl Agent for Pi {
         let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
         let mut read = Read::default();
         cursor.offset = super::lines(file, cursor.offset, |bytes| {
-            let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
+            let Ok(line) = serde_json::from_slice::<Line<'_>>(bytes) else {
                 read.skipped += 1;
                 return;
             };
@@ -111,28 +181,24 @@ impl Agent for Pi {
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
         super::json_mcp_command(&folder.join("mcp.json"), "/mcpServers/turnscope/command")
     }
-
-    fn login_file(&self, path: &Path) -> bool {
-        path.file_name().and_then(|name| name.to_str()) == Some("auth.json")
-    }
 }
 
-fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
-    let at = line["timestamp"].as_str().and_then(crate::time::millis);
-    if line["type"] == "session" {
-        let Some(native) = line["id"].as_str() else {
+fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
+    let at = line.timestamp.as_deref().and_then(crate::time::millis);
+    if line.kind == "session" {
+        let Some(native) = line.id.as_deref() else {
             return;
         };
         let session = INFO.session(native);
-        let facts = read.session(&session);
-        facts.cwd = line["cwd"]
-            .as_str()
+        read.session(&session).cwd = line
+            .cwd
+            .as_deref()
             .filter(|cwd| !cwd.is_empty())
             .map(str::to_owned);
         (cursor.session, cursor.began) = (Some(session), at);
         return;
     }
-    let Some(session) = cursor.session.clone() else {
+    let Some(session) = cursor.session.as_deref() else {
         return;
     };
     // An entry from before the session began is a fork's copy of its
@@ -140,118 +206,129 @@ fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {
     let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
     // A copy's entry id is its parent's, under the parent's own
     // session, so it can't name a response of this one.
-    let entry = line["id"]
-        .as_str()
-        .filter(|_| !copy)
-        .map(|entry| format!("{session}:{entry}"));
-    let (usage, provider, model, id, at) = match line["type"].as_str() {
-        Some("session_info") if !copy => {
-            if let Some(name) = line["name"].as_str() {
-                read.session(&session).title(Title::Named, name);
+    let entry = || {
+        (!copy)
+            .then(|| line.id.as_deref().map(|id| format!("{session}:{id}")))
+            .flatten()
+    };
+    let (usage, provider, model, id, at) = match &*line.kind {
+        "session_info" if !copy => {
+            if let Some(name) = line.name.as_deref() {
+                read.session(session).title(Title::Named, name);
             }
             return;
         }
-        Some("usage") => {
+        "usage" => {
             let (Some(provider), Some(model), Some(id)) =
-                (line["provider"].as_str(), line["model"].as_str(), entry)
+                (line.provider.as_deref(), line.model.as_deref(), entry())
             else {
                 return;
             };
-            (
-                &line["usage"],
-                provider.to_owned(),
-                model.to_owned(),
-                id,
-                at,
-            )
+            (line.usage, provider.to_owned(), model.to_owned(), id, at)
         }
-        Some("compaction" | "branch_summary") => {
-            let (Some((provider, model)), Some(id), true) =
-                (cursor.model.clone(), entry, line["usage"].is_object())
-            else {
+        "compaction" | "branch_summary" => {
+            let Some(usage) = line.usage.filter(|raw| raw.get().starts_with('{')) else {
                 return;
             };
-            (&line["usage"], provider, model, id, at)
+            let (Some((provider, model)), Some(id)) = (cursor.model.as_ref(), entry()) else {
+                return;
+            };
+            (Some(usage), provider.clone(), model.clone(), id, at)
         }
-        Some("message") => {
-            let message = &line["message"];
-            match message["role"].as_str() {
+        "message" => {
+            let Some(message) = &line.message else {
+                return;
+            };
+            match message.role.as_deref() {
                 // The first thing the person asked titles the session: its
-                // first text.
+                // first non-blank text part.
                 Some("user") if !copy && !cursor.titled => {
-                    let asked = super::texts(&message["content"]).into_iter().next();
+                    let asked = message
+                        .content
+                        .map(super::texts)
+                        .into_iter()
+                        .flatten()
+                        .find(|text| !text.trim().is_empty());
                     if let Some(asked) = asked {
-                        read.session(&session).title(Title::Prompt, &asked);
+                        read.session(session).title(Title::Prompt, &asked);
                         cursor.titled = true;
                     }
                     return;
                 }
                 Some("assistant") => {
                     // The model the provider answered with, where it said.
-                    let model = message["responseModel"]
-                        .as_str()
-                        .or(message["model"].as_str());
-                    let (Some(provider), Some(model)) = (message["provider"].as_str(), model)
+                    let model = message
+                        .response_model
+                        .as_deref()
+                        .filter(|model| !model.is_empty())
+                        .or(message.model.as_deref())
+                        .filter(|model| !model.is_empty());
+                    let (Some(provider), Some(model)) = (message.provider.as_deref(), model) else {
+                        return;
+                    };
+                    if cursor
+                        .model
+                        .as_ref()
+                        .is_none_or(|(p, m)| p != provider || m != model)
+                    {
+                        cursor.model = Some((provider.to_owned(), model.to_owned()));
+                    }
+                    // A copy without a response id couldn't be told
+                    // from its parent's.
+                    let Some(id) = message
+                        .response_id
+                        .as_deref()
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned)
+                        .or_else(entry)
                     else {
                         return;
                     };
-                    cursor.model = Some((provider.to_owned(), model.to_owned()));
-                    // A copy without a response id couldn't be told
-                    // from its parent's.
-                    let id = message["responseId"].as_str().map(str::to_owned).or(entry);
-                    let Some(id) = id else { return };
-                    let at = message["timestamp"].as_i64().or(at);
-                    (
-                        &message["usage"],
-                        provider.to_owned(),
-                        model.to_owned(),
-                        id,
-                        at,
-                    )
+                    let at = message
+                        .timestamp
+                        .and_then(|raw| raw.get().parse().ok())
+                        .or(at);
+                    (message.usage, provider.to_owned(), model.to_owned(), id, at)
                 }
                 _ => return,
             }
         }
         _ => return,
     };
-    let count = |name: &str| usage[name].as_u64();
-    let (Some(input), Some(cache_read), Some(cache_write), Some(output), Some(at)) = (
-        count("input"),
-        count("cacheRead"),
-        count("cacheWrite"),
-        count("output"),
+    let (Some(usage), Some(at)) = (
+        usage.and_then(|raw| serde_json::from_str::<Usage>(raw.get()).ok()),
         at,
     ) else {
         read.skipped += 1;
         return;
     };
-    let cache_write_1h = count("cacheWrite1h").unwrap_or_default();
+    let cache_write_1h = usage.cache_write_1h.unwrap_or_default();
     let tokens = Tokens {
-        input,
-        cache_read,
-        cache_write_5m: cache_write.saturating_sub(cache_write_1h),
+        input: usage.input,
+        cache_read: usage.cache_read,
+        cache_write_5m: usage.cache_write.saturating_sub(cache_write_1h),
         cache_write_1h,
-        output,
-        reasoning: count("reasoning").unwrap_or_default(),
+        output: usage.output,
+        reasoning: usage.reasoning.unwrap_or_default(),
     };
     read.respond(Response {
         id,
-        session,
+        session: session.to_owned(),
         copy,
         at,
         provider,
         model,
-        prompt: input + cache_read + cache_write,
+        prompt: usage.input + usage.cache_read + usage.cache_write,
         tokens,
         web_searches: 0,
         priority: false,
-        cost: usage["cost"]["total"].as_f64(),
+        cost: usage.cost.and_then(|cost| cost.total),
     });
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -356,13 +433,14 @@ mod tests {
         };
         let lines = [
             json!({"type": "session", "id": "s1", "cwd": "/work/cli", "timestamp": "2026-09-30T09:00:00Z"}),
+            json!({"type": "message", "id": "e0", "timestamp": "2026-09-30T09:00:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "  \n "}]}}),
             json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:01Z", "message": {"role": "user", "content": "Add a --verbose flag."}}),
             reply("e2", "2026-09-30T09:00:05Z", "resp_1"),
             json!({"type": "message", "id": "e3", "timestamp": "2026-09-30T09:05:00Z", "message": {"role": "user", "content": "Now document it."}}),
             reply("e4", "2026-09-30T09:05:09Z", "resp_2"),
         ];
         let name = "2026-09-30T09-00-00-000Z_s1.jsonl";
-        let file = session(dir.path(), name, &lines[..3]);
+        let file = session(dir.path(), name, &lines[..4]);
         let first = Pi.read(&file, "").unwrap();
         session(dir.path(), name, &lines);
         let later = Pi.read(&file, &first.cursor).unwrap();
@@ -407,5 +485,25 @@ mod tests {
         assert_eq!((copy.session.as_str(), copy.copy), ("pi:s2", true));
         // A fork is a session of its own.
         assert!(read.sessions["pi:s2"].parent.is_none());
+    }
+
+    #[test]
+    fn an_odd_field_beside_the_usage_doesnt_lose_the_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut odd = usage(50, 0.0);
+        odd["cost"] = json!("n/a");
+        odd["reasoning"] = json!("5");
+        let file = session(
+            dir.path(),
+            "2026-09-30T09-00-00-000Z_s1.jsonl",
+            &[
+                json!({"type": "session", "id": "s1", "timestamp": "2026-09-30T09:00:00Z"}),
+                json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant",
+                    "provider": "xai", "model": "grok-4.6", "responseModel": 4.6, "responseId": "resp_1", "timestamp": "soon", "usage": odd}}),
+            ],
+        );
+        let response = &Pi.read(&file, "").unwrap().responses["resp_1"];
+        let at = crate::time::millis("2026-09-30T09:00:05Z").unwrap();
+        assert_eq!((response.at, response.cost), (at, None));
     }
 }

@@ -30,10 +30,14 @@ formats correctly, and the forecast.
 | Agent folder | Where an agent keeps its history and logins, such as `~/.claude`. A second account's folder is another, such as `~/.claude-work`. |
 | Provider | A company that sells model usage and reports limits: Anthropic, OpenAI, xAI, Google, OpenCode Go, OpenRouter. Its id is the one models.dev uses. |
 | Account | What usage draws on at a provider: a subscription, or API keys. Its id is `<provider>:<the provider's id for it>`. |
+| Login | What an agent keeps to reach a provider: an OAuth token or an API key, in its files or the Keychain. Turnscope reads it when needed and never stores it. |
 | Limit | One cap on an account, in percent used, as the provider reports it: a 5-hour or weekly limit, credits, a key's spending limit. |
+| Pool | A group of models whose limits an account has in place of limits on all its usage, as a Google AI plan has a pool for Gemini and one for Claude and GPT. |
+| Deciding limit | The limit that says how an account stands: of its limits on all its usage, or of the pool it last drew on, the most urgent. [Status](#status) says how it's chosen. |
 | Window | The time a limit counts, from its start to its reset. A rolling window has no start. |
 | Reset | When a window ends and its limit is full again. |
 | Outlook | Where a limit is headed by its reset: `lasts`, `runsOut`, `usedUp` or `unknown`. |
+| Standing | How the app shows an outlook: lasts (gray), running out (amber) or used up (red). An `unknown` outlook stands as lasts. An account's standing is its deciding limit's. |
 | Pace | Percentage points of a limit used per hour of clock time in the current window. |
 | Work rate | Percentage points of a limit used per hour that agents worked, as `40.9% an hour of work`. Pace counts hours of the clock instead. |
 | Work left | Hours of agent work a limit has left, at its work rate. |
@@ -41,6 +45,8 @@ formats correctly, and the forecast.
 | Response | The usage of a model call as the agent records it: tokens, cost, and the account it drew on. Some cover several calls: Grok Build records one per model per turn, Claude Code one with its calls listed in `iterations`, and Codex one for each growth of its running total beyond its records. |
 | Reading | A limit as its provider reported it at one time. |
 | Sign-in | What an agent folder held for a provider from a given time. It says which account a response drew on. |
+| In use | An account a response drew on in the last 30 minutes, or whose limit rose between its last two readings in that time, as use elsewhere makes it. |
+| Catch-up | Bringing the database up to date: prices and limits as they come due, and what's new in the agents' history ([Catching up](#catching-up)). |
 | Data directory | Where Turnscope keeps its database, its locks and `app.log`: `~/Library/Application Support/com.joeychilson.turnscope`, or `--data`. |
 | Engine | The `turnscope` crate: it reads history, logins, limits and prices, and works out what every front end shows. The command line, the MCP server and each app run it. |
 
@@ -137,39 +143,12 @@ for another platform would be a crate beside it. Each module holds its own
 data, SQL and text. There's no central object, store layer or view types.
 
 ```
-crates/turnscope/src/
-  lib.rs              the engine's root: catch_up, places, errors
-  main.rs             the command line: commands, guard, statusline, doctor, exit codes
-  mcp.rs              the MCP server: who is asking, the tools, the stdio loop
-  engine.rs           what an app runs: keeping the data current, and telling the app what to show
-  db.rs               the schema, opening and migrating, taking in 0.2's database
-  ingest.rs           agents' files → responses and sessions; each response's cost and account
-  limits.rs           logins → accounts, sign-ins and readings
-  prices.rs           models.dev's prices over time, and what a response cost
-  forecast.rs         pace, outlook, ranges and work left: pure functions over readings
-  status.rs           every account and limit, as every front end shows them
-  status/text.rs      the status in words, for the command line and MCP
-  alerts.rs           which alerts a status raises, which wait to be shown, and the settings for them
-  usage.rs            usage grouped by time, model, project, agent, account or session; what used a limit; a session's account
-  connect.rs          adding and removing the MCP server with the agent's own command, and whether it's there
-  time.rs             local time as people read and write it
-  process.rs          running another program with a time limit
-  agents/
-    mod.rs            the Agent trait, agents::ALL, what readers return, shared helpers
-    claude_code.rs    Claude Code
-    codex.rs          Codex
-    opencode.rs       OpenCode
-    pi.rs             Pi
-    grok_build.rs     Grok Build
-    antigravity.rs    Antigravity
-  providers/
-    mod.rs            the Provider trait, providers::ALL, what providers return, curl, shared helpers
-    anthropic.rs      Anthropic: Claude plans, and API keys
-    openai.rs         OpenAI: ChatGPT plans, and API keys
-    xai.rs            xAI: SuperGrok plans, and API keys
-    google.rs         Google: Google AI plans, and Gemini API keys
-    opencode_go.rs    OpenCode Go plans
-    openrouter.rs     OpenRouter: a key's spending limit, and credits
+crates/turnscope/src/            the engine, a module per job (ingest, limits, prices,
+                                 forecast, status, usage, alerts, engine); the command
+                                 line (main.rs) and the MCP server (mcp.rs)
+crates/turnscope/src/agents/     one file per agent, and agents::ALL
+crates/turnscope/src/providers/  one file per provider, and providers::ALL
+crates/turnscope-macos/src/      the menu bar app
 ```
 
 ## Extension points
@@ -185,30 +164,8 @@ Each kind of extension lives in one place.
 | Something an app shows or asks | An `engine::Event`, or a method of `engine::Engine` | Its handling in each app's `engine.rs` |
 | A database change | A new script at the end of `db::REVISIONS` | |
 
-The two traits, from `agents/mod.rs` and `providers/mod.rs`:
-
-```rust
-pub trait Agent: Sync {
-    fn info(&self) -> &'static Info;
-    fn folders(&self, home: &Path) -> Vec<PathBuf>;
-    fn installed(&self, folder: &Path) -> bool { folder.exists() }
-    fn files(&self, folder: &Path) -> Vec<PathBuf>;
-    fn read(&self, file: &Path, cursor: &str) -> Result<Read>;
-    fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>>;
-    fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
-    fn login_file(&self, _path: &Path) -> bool { false }
-}
-
-pub trait Provider: Sync {
-    fn info(&self) -> &'static Info;
-    fn account(&self, credential: &Credential) -> Option<Account>;
-    fn limits(&self, credential: &Credential, now: i64, by: Instant) -> std::result::Result<Limits, Problem>;
-    fn account_limits(&self, _credential: &Credential, _now: i64, _by: Instant) -> std::result::Result<Vec<Reading>, Problem> { Ok(Vec::new()) }
-    fn rolls(&self, _key: &str) -> Option<i64> { None }
-    fn plan_mark(&self, _limits: &Limits) -> Option<i64> { None }
-    fn makes(&self, _model: &str) -> bool { false }
-}
-```
+Each trait's methods, `Agent` in `agents/mod.rs` and `Provider` in
+`providers/mod.rs`, have doc comments.
 
 ## Processes
 
@@ -243,7 +200,7 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due, and not while an app runs. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, history only while an app runs. |
-| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Agent::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads first the limits more than 5 minutes old and those whose read failed, at most every 30 s (`limits::refresh_asked`). |
+| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits more than 5 minutes old, and those whose read failed, right away, at most every 30 s (`limits::refresh`). |
 
 While an app runs, the other processes rarely find anything new to read.
 
@@ -308,11 +265,10 @@ It's in the engine crate, so an app for another platform only draws.
   every agent. If one fails, it tells the app why and tries again: at the
   next change in the agents' folders, or the next minute. If keeping the
   data current can't start, it tries again every 5 s.
-- Once a newer Turnscope has written to the data, it stops for good, and
-  the app says to update. It then writes nothing and raises no alert: a
-  hide or a save of the settings changes nothing and the last status is
-  told again, an acknowledgment is dropped, and a connect runs no command
-  and says why.
+- Once a newer Turnscope has written to the data ([Data](#data)), it
+  stops for good: it writes nothing and raises no alert, a hide or a save
+  of the settings tells the last status again, and a connect runs no
+  command and says why.
 - What goes wrong is added to `app.log` in the data directory, which
   `turnscope doctor` shows: an app is started from its icon, where no one
   reads its standard error.
@@ -332,10 +288,8 @@ megabytes.
   window reset since it was read counts as full.
 - Each time to come is rounded to the minute and carries how soon it is, a
   `Moment`.
-- An account is **in use** when a response drew on it in the last 30
-  minutes, or a limit rose between its last two readings in the last 30
-  minutes, as use elsewhere makes it. It's **recent** when in use or drawn
-  on in the last 7 days.
+- An account is **recent** when it's [in use](#glossary) or was drawn on
+  in the last 7 days.
 - An account's **state** says whether its limits were read at the last
   try, and if not, why (`status::State`).
 - A limit's outlook is `unknown` (`stale`) once its latest reading is over
@@ -391,62 +345,23 @@ so each response keeps the price in force when it ran. Usage from before a
 model was first priced takes that first price, and usage with no known
 price is priced again each time the catalog is taken in.
 
-A list price is in dollars per million tokens (`prices::Prices::cost`):
-
-- A prompt larger than a tier's size takes that tier's rates (`tiers`, or
-  `context_over_200k` for a model that lists no tiers).
-- A response at priority takes the rates of the model's fast mode, where
-  models.dev lists one.
-- Cache reads and writes take their own rates, or the input rate where none
-  is listed. A cache write kept an hour costs twice the input rate.
-- Reasoning takes its own rate, or the output rate.
-- A web search costs $0.01.
+`prices::Prices::cost` says how tiers, fast mode, cache and reasoning
+are priced.
 
 ## Forecast
 
-`forecast.rs` holds the method, and records what was chosen, over what,
-and what the backtest measured on this Mac's real limit history
-([development.md](development.md#forecast-backtest) says how to run it).
-`status.rs` applies it.
+`forecast.rs` holds the method, what was chosen over what, and what the
+backtest measured ([development.md](development.md#forecast-backtest)
+says how to run it). `status.rs` applies it.
 
-- **Pace.** Points used so far divided by hours so far in the window,
-  counted from the window's start, or from when use was last given back (a
-  drop of more than a point, as at an early reset). Time with no new
-  reading counts as time nothing more was used.
-- **Not enough data.** The outlook is `unknown` (`notEnoughData`) when the
-  window has no reading, less than a twentieth of it has passed (15 minutes
-  at least), or more than 0 but fewer than 2 points were used. It's also
-  `unknown` when the pace runs out more than a quarter of the window from
-  now (`forecast::told`).
-- **Outlook.** The pace is run forward to the reset.
-  - `usedUp`: 100% used, with when it's back.
-  - `runsOut`: it reaches 100% at least a fiftieth of the window (and at
-    least 15 minutes) before the reset, and within a quarter of the window
-    from now. The time is shown to 10 minutes within a day and to the hour
-    beyond, and never before now.
-  - `lasts`: with what will be left at the reset, as a range, or nothing
-    when none of it has been used. After use was given back, with none
-    since, that's what it has now.
-  - `unknown`: not enough data, `stale` (read over 30 minutes ago and not
-    used up, or the window reset since), `rolling` (no start to pace from) or `noReset`
-    (credits).
-- **Range.** The pace is scaled by the 80% range of how the pace that
-  followed compared with it in the backtest, by window length and the
-  share of the window left (`forecast::BANDS`). The fast end gives the
-  soonest run-out and the least left; the slow end, the latest and the
-  most.
-- **Work left.** The rate is the points a limit rose per hour of work. An
-  hour of work is twelve 5-minute slots that each hold a response on the
-  account, of the limit's models for a limit on some, and made with the
-  key for a key's own limit. The rate walks back over the limit's readings, across windows
-  and up to 14 days, until it has 3 hours of work (5 for windows longer
-  than a day), and needs at least an hour of work and 2 points. Work counts
-  only from when the account's first sign-in was read, so work on another
-  account before Turnscope ran isn't taken for this one's. Hours of work
-  left are what's left divided by the rate, with the rate's 80% range
-  (`forecast::work_band`). When the likely hours reach the reset, the limit
-  lasts even with work all the time, and no hours are given. Work left
-  isn't given for a rolling window.
+- **Pace** is the points used so far divided by the hours so far in the
+  window, run forward to the reset to give the outlook.
+- **Not enough data** gives `unknown` early in a window, after little use,
+  or when the run-out is too far off to tell.
+- **Ranges** are 80% ranges, scaled by how the pace that followed compared
+  with it in the backtest.
+- **Work left** divides what's left by the work rate, measured over recent
+  hours of work on the account.
 
 ## Alerts
 
@@ -482,7 +397,7 @@ and what the backtest measured on this Mac's real limit history
   printed, serialized or cloned. An API key is known by its fingerprint,
   the first 16 hex digits of its SHA-256.
 - **One way to the network.** Every request goes through `/usr/bin/curl`
-  (`providers::request`), HTTPS only, ignoring `~/.curlrc`. Headers, with
+  (`providers::curl`), HTTPS only, ignoring `~/.curlrc`. Headers, with
   any credential, go to curl on standard input, never in its arguments or
   environment. A header with a line break isn't sent. A request is a GET,
   but for Google's limits, which answer only a POST: its body is an

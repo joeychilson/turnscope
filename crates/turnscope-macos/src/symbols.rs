@@ -36,15 +36,18 @@ thread_local! {
 /// element's opacity makes it a gray: a palette color with alpha came out with the alpha twice.
 pub fn symbol(name: &'static str, points: f32, weight: Weight, white: bool) -> Symbol {
     let key = (name, points.to_bits(), weight, white);
-    if let Some(s) = DRAWN.with(|d| d.borrow().get(&key).cloned()) {
-        return s;
-    }
-    let s = draw(name, points, weight, white).unwrap_or_else(|| Symbol {
-        pixels: rune::Pixels::new(),
-        size: (0.0, 0.0),
-    });
-    DRAWN.with(|d| d.borrow_mut().insert(key, s.clone()));
-    s
+    DRAWN.with(|drawn| {
+        drawn
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| {
+                draw(name, points, weight, white).unwrap_or_else(|| Symbol {
+                    pixels: rune::Pixels::new(),
+                    size: (0.0, 0.0),
+                })
+            })
+            .clone()
+    })
 }
 
 fn draw(name: &str, points: f32, weight: Weight, white: bool) -> Option<Symbol> {
