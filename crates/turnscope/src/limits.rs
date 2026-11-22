@@ -513,6 +513,12 @@ fn record(
             read.problem.as_ref().map(problem_name),
         ])?;
         if let Some(limits) = &read.limits {
+            // Readings stamped after this one were stamped while the clock
+            // was ahead. Kept, they'd stand for the limits, and keep out what
+            // Codex writes, until the clock caught up with them; left out of
+            // the status alone, they'd stand again once it had.
+            tx.prepare_cached("DELETE FROM reading WHERE account = ?1 AND at > ?2")?
+                .execute(params![id, now])?;
             write_readings(&tx, &id, now, &limits.readings)?;
         }
     }
@@ -1485,6 +1491,36 @@ mod tests {
             status.accounts[0].state,
             crate::status::State::AsOf { .. }
         ));
+    }
+
+    #[test]
+    fn a_read_once_the_clock_is_set_back_stands() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let minute = crate::time::MINUTE;
+        let at = 1_000 * crate::time::DAY;
+        let read = |db: &mut Connection, at: i64, used: f64| {
+            let (_, held) = fake(Kind::Subscription, &[]);
+            let limits = Limits {
+                plan: None,
+                readings: in_band(at, used).readings,
+            };
+            let read = Read {
+                limits: Some(limits),
+                problem: None,
+            };
+            record(db, signed_in(), vec![(read, held)], at).unwrap();
+        };
+        // Read with the clock an hour ahead, then set right.
+        read(&mut db, at + 60 * minute, 10.0);
+        read(&mut db, at + 6 * minute, 50.0);
+        assert_eq!(left(&db, at + 7 * minute), [("five".to_owned(), 50)]);
+        assert!(take(
+            &mut db,
+            &in_band(at + 8 * minute, 70.0),
+            at + 9 * minute
+        ));
+        assert_eq!(left(&db, at + 9 * minute), [("five".to_owned(), 30)]);
     }
 
     #[test]

@@ -9,8 +9,9 @@
 - **Codex's limits update as Codex works**, offline too: Turnscope takes in
   the limits Codex writes with each response. A limit Codex doesn't write,
   such as one on some models, stays as last read.
-- **An account not in use is read every 20 minutes**, not every 5. One in
-  use is still read every 5, and any account right after a limit resets.
+- **An account not in use is read every 20 minutes**, not every 5, and so
+  is one whose limits Codex writes as it works. Any other in use is still
+  read every 5, and any account right after a limit resets.
 - **Opening the panel reads limits more than 5 minutes old right away**,
   and those whose read failed. So does an agent writing a new login file. If that
   read finds no network, as right after the Mac wakes, the account stays
@@ -32,9 +33,12 @@
   `check_limits` go by the Claude and GPT limits, and say when they're used
   up. Before, they went by Gemini's and said there was room. Gemini's
   limits are now named `(Gemini)`, and their work rate and what used them
-  count Gemini usage alone.
-- **Claude used through Antigravity has a cost**, at Anthropic's list
-  price, earlier usage included.
+  count Gemini usage alone. A row in the panel names a limit on some
+  models by them alone, as "Claude and GPT reset Sat 12 PM" or "Opus
+  resets Sun 12 AM", so it isn't cut short.
+- **A model used through a provider that lists no price for it has a
+  cost**, at its maker's list price, earlier usage included: Claude
+  through Antigravity, or through a gateway set up in OpenCode.
 - **The app shows an amount that rounds to no cents as `$0`**, not
   `$0.00`.
 - **A session's title and project are read better**, in history read
