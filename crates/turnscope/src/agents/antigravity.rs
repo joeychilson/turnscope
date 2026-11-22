@@ -362,9 +362,12 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
             session: session.clone(),
             copy: false,
             at,
-            // Antigravity signs in to Google only. The Claude and GPT models
-            // it serves from the same plan weren't measured: they're
-            // `google`'s too, where they have no price.
+            // Antigravity signs in to Google only, so the Claude and GPT
+            // models it serves from the same plan are `google`'s too. Its
+            // 2.34.0 program names Claude's as Anthropic does, as
+            // `claude-opus-5-5`, which then take Anthropic's list price
+            // (`prices`), and GPT's as `openai/gpt-oss-120b-maas`, which
+            // no one lists. Neither was seen in a conversation's history.
             provider: "google".to_owned(),
             model: model.to_owned(),
             prompt: tokens.input + tokens.cache_read + tokens.cache_write_5m,

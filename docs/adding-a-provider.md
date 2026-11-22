@@ -148,10 +148,9 @@ account, and the folders and usage of the rest move to it. OpenCode Go's is
 the instant its monthly window resets, which keys to one plan report to the
 second. The default, `None`, never merges.
 
-If the provider makes models that other providers may also serve (such as
-Claude or GPT served through Google), implement `owns_model`: `prices`
-uses it to fall back to the maker's models.dev list price when the serving
-provider's catalog omits that model.
+If another provider serves the provider's models under its own id, as
+Google serves Claude to Antigravity, implement `makes`: a model a provider
+serves but models.dev doesn't list under it takes its maker's list price.
 
 A failure is a `Problem`:
 

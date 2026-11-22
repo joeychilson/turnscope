@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use jiff::tz::TimeZone;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::forecast::{self, Window};
@@ -142,6 +142,20 @@ impl Account {
             .find(|limit| Some(&limit.key) == self.deciding.as_ref())
     }
 
+    /// Whether it stands by `limit`, for whether it can be used and how
+    /// long: a limit on all its usage, or where it has none, one of the
+    /// pool its deciding limit is in (`pool`).
+    pub fn stands_by(&self, limit: &Limit) -> bool {
+        if self.limits.iter().any(Limit::whole) {
+            return limit.whole();
+        }
+        limit.scope.is_some()
+            && !limit.key.starts_with("key-")
+            && self
+                .deciding_limit()
+                .is_some_and(|deciding| deciding.scope == limit.scope)
+    }
+
     /// Its login was refused, at its last read or every one.
     pub fn refused(&self) -> bool {
         self.state.why() == Some(Stale::SignIn)
@@ -207,11 +221,6 @@ pub struct Limit {
     /// Percent left, 0 to 100, rounded down; 100 once its window reset
     /// since it was read.
     pub left_percent: u8,
-    /// True when `left_percent` was derived from local usage after `read_at`
-    /// while the account is temporarily unreadable (`State::AsOf`). Never
-    /// written to `reading` and never triggers `UsedUp` or `RunsOut` alerts.
-    #[serde(default)]
-    pub estimated: bool,
     /// For a limit of money, its size and what's left.
     pub money: Option<Money>,
     /// When its window reset, if it has since it was read.
@@ -543,19 +552,11 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
                 why: why.unwrap_or(Stale::ReadFailed),
             },
         };
-        let used_by = used.remove(&id).unwrap_or_default();
-        let can_estimate = !used_by.is_empty()
-            && matches!(
-                state,
-                State::AsOf {
-                    why: Stale::Expired | Stale::ReadFailed,
-                    ..
-                }
-            );
         let (limits, rose) = match read_at {
-            Some(read_at) => limits(db, &id, read_at, full_read_at, &keys, can_estimate, now)?,
+            Some(read_at) => limits(db, &id, read_at, full_read_at, &keys, now)?,
             None => (Vec::new(), false),
         };
+        let used_by = used.remove(&id).unwrap_or_default();
         let kind = if row.get::<_, String>(2)? == "apiKey" {
             Kind::ApiKey
         } else {
@@ -565,7 +566,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             spend: (kind == Kind::ApiKey)
                 .then(|| spend(db, &id, now))
                 .transpose()?,
-            deciding: deciding(&limits).map(|limit| limit.key.clone()),
+            deciding: deciding(&limits, pool(db, &id, &limits)?).map(|limit| limit.key.clone()),
             in_use: !used_by.is_empty() || rose,
             recent: !used_by.is_empty() || rose || row.get(8)?,
             provider: row.get(1)?,
@@ -673,7 +674,6 @@ fn limits(
     read_at: i64,
     full_read_at: Option<i64>,
     keys: &BTreeMap<String, Vec<String>>,
-    can_estimate: bool,
     now: i64,
 ) -> Result<(Vec<Limit>, bool)> {
     struct Latest {
@@ -774,37 +774,12 @@ fn limits(
             rose |= last.1 > before.1 && now - last.0 <= IN_USE;
         }
         let reset_since = resets.filter(|resets| *resets <= now);
-        // Work is known only for the last two weeks: a rise before then
-        // would count with no hours of work beside it.
-        let walked = &history[history.partition_point(|reading| reading.at < now - WORKED)..];
-        // A limit on some models, or one key's, by the work that used it:
-        // by all the account's, 1h of Opus that rose Weekly (Opus) 8 points
-        // after 3h of Sonnet read as 2% an hour.
-        let models = crate::usage::models(scope.as_deref());
-        let held = crate::usage::key(&key);
-        let mut estimated = false;
-        let mut display_used = used;
-        let filter = Filter {
-            account,
-            models: &models,
-            key: held.as_ref(),
-        };
-        if can_estimate
-            && reset_since.is_none()
-            && size.is_none()
-            && used < 100.0
-            && let Some(projected) =
-                estimate_used(db, filter, walked, known, (limit_read_at, used), now)?
-        {
-            display_used = projected;
-            estimated = true;
-        }
         let left = if reset_since.is_some() {
             100.0
         } else {
-            (100.0 - display_used).clamp(0.0, 100.0)
+            (100.0 - used).clamp(0.0, 100.0)
         };
-        let stale = reset_since.is_some() || now - limit_read_at > STALE || estimated;
+        let stale = reset_since.is_some() || now - limit_read_at > STALE;
         let outlook = match (starts, resets) {
             _ if reset_since.is_none() && used >= 100.0 => Outlook::UsedUp {
                 back: resets.map(|resets| Moment::of(resets, now)),
@@ -829,6 +804,14 @@ fn limits(
         };
         let length = starts.zip(resets).map(|(starts, resets)| resets - starts);
         let rolling = starts.is_none() && resets.is_some();
+        // Work is known only for the last two weeks: a rise before then
+        // would count with no hours of work beside it.
+        let walked = &history[history.partition_point(|reading| reading.at < now - WORKED)..];
+        // A limit on some models, or one key's, by the work that used it:
+        // by all the account's, 1h of Opus that rose Weekly (Opus) 8 points
+        // after 3h of Sonnet read as 2% an hour.
+        let models = crate::usage::models(scope.as_deref());
+        let held = crate::usage::key(&key);
         let own;
         let worked = if rolling {
             &[][..]
@@ -871,7 +854,6 @@ fn limits(
             }),
             read_at: limit_read_at,
             left_percent: left.floor() as u8,
-            estimated,
             // What's left of money, from what was used rather than the
             // percent shown; a millionth of a cent over, as 66.6% of $50 is
             // 3329.99… cents in floating point.
@@ -885,111 +867,6 @@ fn limits(
         });
     }
     Ok((limits, rose))
-}
-
-/// Which responses belong to a limit when summing local spend for an estimate.
-#[derive(Clone, Copy)]
-struct Filter<'a> {
-    account: &'a str,
-    models: &'a [String],
-    key: Option<&'a String>,
-}
-
-/// Pure derived burn estimate while an active account is temporarily unreadable:
-/// calibrates percentage points per dollar from prior observed rises on the
-/// same limit (`>= 5` points and `>= $0.50` priced cost) and projects forward
-/// using local priced responses since `last.0`. Capped at 99% so an estimate
-/// never fabricates a `UsedUp` state or alert, and returns `None` if under 1
-/// percentage point moved.
-fn estimate_used(
-    db: &rusqlite::Connection,
-    filter: Filter<'_>,
-    walked: &[forecast::Reading],
-    known: Option<i64>,
-    last: (i64, f64),
-    now: i64,
-) -> Result<Option<f64>> {
-    let (read_at, used) = last;
-    let cost_since = cost_between(db, filter, read_at, now + MINUTE)?;
-    if cost_since <= 0.0 {
-        return Ok(None);
-    }
-    // Group readings by reset window and accumulate observed `(delta_used, cost)`
-    // spans where responses were attributed to this account.
-    let mut total_delta = 0.0;
-    let mut total_cost = 0.0;
-    let mut start = 0;
-    while start < walked.len() {
-        let mut end = start + 1;
-        while end < walked.len() && forecast::same_reset(walked[start].resets, walked[end].resets) {
-            end += 1;
-        }
-        let run = &walked[start..end];
-        let tail = &run[run.len() - 1];
-        // Start after any mid-window reset (drop > 1 point) so spend from
-        // before the drop isn't paired with post-drop usage.
-        let drop = (1..run.len()).rfind(|&i| run[i].used + 1.0 < run[i - 1].used);
-        let span = match drop {
-            Some(at)
-                if tail.at > run[at].at
-                    && tail.used > run[at].used
-                    && known.is_some_and(|since| run[at].at >= since) =>
-            {
-                Some((run[at].at, tail.at, tail.used - run[at].used))
-            }
-            Some(_) => None,
-            None => {
-                if let Some(win_start) = run[0].starts
-                    && known.is_some_and(|since| since <= win_start)
-                    && tail.at > win_start
-                    && tail.used > 0.0
-                {
-                    Some((win_start, tail.at, tail.used))
-                } else if run.len() >= 2
-                    && known.is_some_and(|since| run[0].at >= since)
-                    && tail.at > run[0].at
-                    && tail.used > run[0].used
-                {
-                    Some((run[0].at, tail.at, tail.used - run[0].used))
-                } else {
-                    None
-                }
-            }
-        };
-        if let Some((from, to, delta)) = span {
-            let cost = cost_between(db, filter, from, to)?;
-            if cost > 0.0 {
-                total_delta += delta;
-                total_cost += cost;
-            }
-        }
-        start = end;
-    }
-    if total_delta < 5.0 || total_cost < 0.50 {
-        return Ok(None);
-    }
-    let pts_per_dollar = total_delta / total_cost;
-    let projected = (used + cost_since * pts_per_dollar).clamp(used, 99.0);
-    Ok((projected - used >= 1.0).then_some(projected))
-}
-
-/// Priced cost of responses matching `filter` in `(from, to]`.
-fn cost_between(db: &rusqlite::Connection, filter: Filter<'_>, from: i64, to: i64) -> Result<f64> {
-    let (filters, extra) = crate::usage::limited(filter.models, filter.key);
-    let and: String = filters
-        .iter()
-        .map(|filter| format!(" AND {filter}"))
-        .collect();
-    let sql = format!(
-        "SELECT total(r.cost) FROM response r
-         WHERE r.account = ? AND r.at > ? AND r.at <= ? AND r.cost IS NOT NULL{and}"
-    );
-    let mut values: Vec<rusqlite::types::Value> =
-        vec![filter.account.to_owned().into(), from.into(), to.into()];
-    values.extend(extra);
-    Ok(db
-        .prepare_cached(&sql)?
-        .query_row(rusqlite::params_from_iter(values), |row| row.get(0))?)
 }
 
 /// The start of each slot of work on `account` in the last two weeks, by
@@ -1093,13 +970,19 @@ fn outlook(window: &Window, now: i64) -> Outlook {
     }
 }
 
-/// The limit that decides how an account stands. Of several used up, the
-/// last back decides, over the first listed: the account can't be used
-/// until every one is back. With 5 hours back in an hour and Weekly in
-/// three days, the first listed said the account was back in an hour.
-fn deciding(limits: &[Limit]) -> Option<&Limit> {
-    limits
+/// The limit that decides how an account stands, of those in `pool` where
+/// it draws on one. Of several used up, the last back decides, over the
+/// first listed: the account can't be used until every one is back. With 5
+/// hours back in an hour and Weekly in three days, the first listed said
+/// the account was back in an hour.
+fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
+    let standing: Vec<&Limit> = limits
         .iter()
+        .filter(|limit| pool.is_none_or(|pool| limit.scope.as_deref() == Some(pool)))
+        .collect();
+    standing
+        .iter()
+        .copied()
         .filter(|limit| limit.reset_since.is_none())
         .min_by_key(|limit| {
             let least = match &limit.outlook {
@@ -1116,7 +999,48 @@ fn deciding(limits: &[Limit]) -> Option<&Limit> {
                 least,
             )
         })
-        .or_else(|| limits.iter().max_by_key(|limit| limit.reset_since))
+        .or_else(|| standing.into_iter().max_by_key(|limit| limit.reset_since))
+}
+
+/// The pool an account stands by when each of its limits is on some
+/// models alone, as Google AI's Gemini and Claude and GPT pools: the one its
+/// latest response drew on, or with none that did, the first listed, which
+/// its provider lists first as the plan's own. None when it has a limit on
+/// all its usage. Chosen over standing by the most urgent pool, which said
+/// an account working on Gemini was used up when only Claude and GPT were.
+fn pool<'a>(
+    db: &rusqlite::Connection,
+    account: &str,
+    limits: &'a [Limit],
+) -> Result<Option<&'a str>> {
+    if limits.iter().any(Limit::whole) {
+        return Ok(None);
+    }
+    let mut pools: Vec<&str> = Vec::new();
+    for limit in limits.iter().filter(|limit| !limit.key.starts_with("key-")) {
+        if let Some(scope) = limit.scope.as_deref()
+            && !pools.contains(&scope)
+        {
+            pools.push(scope);
+        }
+    }
+    // The latest response is of a pool's models as `usage` counts one
+    // toward a limit: one seek in `response_account` for each pool.
+    for &pool in &pools {
+        let (filters, mut values) = crate::usage::limited(&crate::usage::models(Some(pool)), None);
+        values.push(account.to_owned().into());
+        let drew: Option<bool> = db
+            .prepare_cached(&format!(
+                "SELECT {} FROM response r WHERE r.account = ? ORDER BY r.at DESC LIMIT 1",
+                filters.join(" AND ")
+            ))?
+            .query_row(rusqlite::params_from_iter(values), |row| row.get(0))
+            .optional()?;
+        if drew == Some(true) {
+            return Ok(Some(pool));
+        }
+    }
+    Ok(pools.first().copied())
 }
 
 /// The order every front end lists accounts in.
@@ -1283,7 +1207,7 @@ mod tests {
             back: Some(Moment::of(now + hours * HOUR, now)),
         };
         let never = Outlook::UsedUp { back: None };
-        let decides = |account: &Account| deciding(&account.limits).unwrap().key.clone();
+        let decides = |account: &Account| deciding(&account.limits, None).unwrap().key.clone();
         // 5 hours is back in an hour and Weekly in three days: the account
         // can't be used until Weekly is.
         (account.limits[0].outlook, account.limits[1].outlook) = (back(1), back(72));
@@ -1305,6 +1229,62 @@ mod tests {
         assert_eq!(decides(&account), "seven_day");
         (account.limits[0].outlook, account.limits[1].outlook) = (never, back(72));
         assert_eq!(decides(&account), "five_hour");
+    }
+
+    #[test]
+    fn an_account_of_pools_stands_by_the_one_it_last_drew_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let now = 2 * HOUR;
+        db.execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at)
+                 VALUES ('google:g', 'google', 'subscription', 'Google AI Ultra', {now}, {now});
+             INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('antigravity', '/g', 'google', 0, 'google:g');
+             INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets) VALUES
+                 ('google:g', '5h', {now}, '5 hours', 'Gemini', 5.0, 0, {five}),
+                 ('google:g', 'weekly:3p-weekly', {now}, 'Weekly', 'Claude and GPT', 100.0, 0, {week});",
+            five = 5 * HOUR,
+            week = 7 * DAY,
+        ))
+        .unwrap();
+        let drew = |id: &str, at: i64, model: &str| {
+            db.execute(
+                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+                     input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+                     web_searches, priority, cost, account)
+                 VALUES ('antigravity', ?1, 's', 0, 1, '/g', ?2, 'google', ?3,
+                     1, 0, 0, 0, 1, 0, 1, 0, 0, NULL, 'google:g')",
+                params![id, at, model],
+            )
+            .unwrap();
+        };
+        let shown = |db: &rusqlite::Connection| status(db, now).unwrap().accounts.remove(0);
+        // Drawn on by no response: by Gemini's, listed first, though Claude
+        // and GPT are used up.
+        let account = shown(&db);
+        assert_eq!(account.deciding.as_deref(), Some("5h"));
+        assert!(!verdict(&account, now).contains("used up"));
+        assert!(
+            line(&account, now).starts_with(
+                "Google AI Ultra · Gemini 5h 95% · Claude and GPT weekly used up, back"
+            )
+        );
+        // Working on Claude, its pool is used up: so is the account for it.
+        drew("r1", now - MINUTE, "claude-opus-5-5");
+        let account = shown(&db);
+        assert_eq!(account.deciding.as_deref(), Some("weekly:3p-weekly"));
+        assert!(
+            verdict(&account, now)
+                .starts_with("Google AI Ultra: Weekly (Claude and GPT) is used up, back"),
+        );
+        assert_eq!(
+            fit(&account, 1.0, now).unwrap(),
+            "1 more hour of work doesn't fit: Weekly (Claude and GPT) is used up."
+        );
+        // Back on Gemini.
+        drew("r2", now, "gemini-3.8-flash");
+        assert_eq!(shown(&db).deciding.as_deref(), Some("5h"));
     }
 
     /// An account and its sign-in, read at `now`, with `readings` of its
@@ -1611,102 +1591,5 @@ mod tests {
         assert_eq!(limits[1].key, "seven_day_opus");
         assert_eq!(limits[1].left_percent, 85);
         assert_eq!(limits[1].read_at, full_at);
-    }
-
-    #[test]
-    fn active_stale_account_derives_local_burn_estimate_without_writing_readings() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::open(dir.path()).unwrap();
-        let start = 0_i64;
-        let read_at = 2 * HOUR;
-        let now = 2 * HOUR + 40 * MINUTE;
-        db.execute(
-            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, problem)
-             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', ?1, ?1, 'expired')",
-            [read_at],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO sign_in (agent, folder, provider, since, account)
-             VALUES ('claude-code', '/a', 'anthropic', 0, 'anthropic:a')",
-            [],
-        )
-        .unwrap();
-        // Observed rise of 40 points over $20 spent -> 2.0 pts/$.
-        db.execute(
-            "INSERT INTO reading (account, limit_key, at, name, used, starts, resets) VALUES
-                 ('anthropic:a', 'five_hour', ?1, '5 hours', 40.0, ?2, ?3)",
-            params![read_at, start, 5 * HOUR],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                 web_searches, priority, cost, account) VALUES
-                 ('claude-code', 'r1', 's', 0, 1, '/a', ?1, 'anthropic', 'claude-opus-5', 1, 0, 0, 0, 1, 0, 1, 0, 0, 20.0, 'anthropic:a'),
-                 ('claude-code', 'r2', 's', 0, 1, '/a', ?2, 'anthropic', 'claude-opus-5', 1, 0, 0, 0, 1, 0, 1, 0, 0, 6.0, 'anthropic:a')",
-            params![HOUR, now - 5 * MINUTE],
-        )
-        .unwrap();
-
-        // $6 spent since `read_at` -> +12 points -> 52% used -> ~48% left.
-        let shown = status(&db, now).unwrap();
-        let limit = &shown.accounts[0].limits[0];
-        assert!(limit.estimated);
-        assert_eq!(limit.left_percent, 48);
-        assert_eq!(
-            limit.outlook,
-            Outlook::Unknown {
-                reason: Unknown::Stale
-            }
-        );
-        // Never wrote synthetic rows to `reading`.
-        let readings: i64 = db
-            .query_row("SELECT count(*) FROM reading", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(readings, 1);
-
-        // Even massive local spend caps at 1% left (99% used) so an estimate
-        // never fabricates `UsedUp`.
-        db.execute("UPDATE response SET cost = 200.0 WHERE id = 'r2'", [])
-            .unwrap();
-        let capped = status(&db, now).unwrap();
-        let limit = &capped.accounts[0].limits[0];
-        assert!(limit.estimated);
-        assert_eq!(limit.left_percent, 1);
-        assert!(!matches!(limit.outlook, Outlook::UsedUp { .. }));
-    }
-
-    #[test]
-    fn peer_model_pools_without_a_whole_limit_pick_the_most_urgent_pool() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::open(dir.path()).unwrap();
-        let now = 2 * HOUR;
-        db.execute(
-            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at)
-             VALUES ('google:me@example.com', 'google', 'subscription', 'Google AI Ultra', ?1, ?1)",
-            [now],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO sign_in (agent, folder, provider, since, account)
-             VALUES ('antigravity', '/g', 'google', 0, 'google:me@example.com')",
-            [],
-        )
-        .unwrap();
-        // Gemini has 95% left, while Claude and GPT is used up (0% left):
-        // Claude and GPT must decide the account.
-        db.execute(
-            "INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets) VALUES
-                 ('google:me@example.com', '5h', ?1, '5 hours', 'Gemini', 5.0, 0, ?2),
-                 ('google:me@example.com', 'weekly:3p-weekly', ?1, 'Weekly', 'Claude and GPT', 100.0, 0, ?3)",
-            params![now, 5 * HOUR, 7 * DAY],
-        )
-        .unwrap();
-        let shown = status(&db, now).unwrap();
-        assert_eq!(
-            shown.accounts[0].deciding.as_deref(),
-            Some("weekly:3p-weekly")
-        );
     }
 }

@@ -685,10 +685,9 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
             );
         }
     }
-    if shares.is_none()
-        && let Some(why) = limit
-            .filter(|_| since.is_none())
-            .and_then(|limit| usage::unshared(&used, limit))
+    if let Some(why) = limit
+        .filter(|_| since.is_none())
+        .and_then(|limit| usage::unshared(&used, limit))
     {
         out += &format!("\n{why}\n");
     }

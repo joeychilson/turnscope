@@ -34,15 +34,6 @@ impl Provider for OpenAi {
         super::account(INFO.id, credential, || workspace(credential))
     }
 
-    fn owns_model(&self, model: &str) -> bool {
-        model.starts_with("gpt-")
-            || model.starts_with("codex-")
-            || matches!(model, "o1" | "o3" | "o4")
-            || model.starts_with("o1-")
-            || model.starts_with("o3-")
-            || model.starts_with("o4-")
-    }
-
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
         // `account` passed over a sign-in naming no workspace, so this is
         // only to name it.

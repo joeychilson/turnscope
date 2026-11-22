@@ -533,15 +533,19 @@ impl Derived {
 }
 
 /// Price again, in `tx`, every response of `models` (by provider and
-/// model), priced for the first time in it. No list price was in force
-/// before a model's first, so its usage from before takes that first price,
-/// as a read of it now would. Chosen over keeping an agent's own estimate,
-/// which left an OpenCode response of 1M input tokens at the $0.001 it
-/// put on it, where a fresh read gave $2.00.
+/// model), priced for the first time in it, and every response with no
+/// known cost. No list price was in force before a model's first, so its
+/// usage from before takes that first price, as a read of it now would.
+/// Chosen over keeping an agent's own estimate, which left an OpenCode
+/// response of 1M input tokens at the $0.001 it put on it, where a fresh
+/// read gave $2.00.
+///
+/// One with no known cost may have one by a model listed long before: a
+/// model another provider serves takes its maker's list price
+/// (`prices::Prices::cost`), as Claude served to Antigravity takes
+/// Anthropic's. Chosen over raising `READERS`, which reads every file again
+/// from the start, for prices alone.
 pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> {
-    if models.is_empty() {
-        return Ok(());
-    }
     // One scan of `response`, over a query per model: `response` has no
     // index on `(provider, model)`, so querying per model scanned the whole
     // table for each. On 50,000 responses and 20 newly priced models, this
@@ -563,13 +567,10 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     let rows: Vec<(String, Response)> = tx
         .prepare(&format!(
             "SELECT {RESPONSE_COLUMNS}, agent FROM response
-             WHERE EXISTS (
+             WHERE cost IS NULL OR EXISTS (
                  SELECT 1 FROM repriced
-                 WHERE (repriced.provider = response.provider AND repriced.model = response.model)
-                    OR (response.cost IS NULL AND (
-                        repriced.model = response.model
-                        OR response.model LIKE '%/' || repriced.model
-                    ))
+                 WHERE repriced.provider = response.provider
+                   AND repriced.model = response.model
              )"
         ))?
         .query_map([], |row| Ok((row.get(16)?, stored(row)?)))?
@@ -581,7 +582,10 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     let prices = Prices::load(tx)?;
     let mut update = tx.prepare("UPDATE response SET cost = ?3 WHERE agent = ?1 AND id = ?2")?;
     for (agent, response) in &rows {
-        update.execute(params![agent, response.id, prices.cost(agent, response)])?;
+        let cost = prices.cost(agent, response);
+        if cost != response.cost {
+            update.execute(params![agent, response.id, cost])?;
+        }
     }
     Ok(())
 }
@@ -1149,19 +1153,22 @@ mod tests {
     }
 
     #[test]
-    fn price_again_updates_only_matching_models() {
+    fn price_again_prices_the_models_listed_and_what_had_no_price() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();
         db.execute_batch(
             "INSERT INTO price VALUES
                  ('anthropic', 'm1', 0, '{\"input\":2,\"output\":10}', NULL),
-                 ('anthropic', 'm2', 0, '{\"input\":4,\"output\":20}', NULL);
+                 ('anthropic', 'm2', 0, '{\"input\":4,\"output\":20}', NULL),
+                 ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL);
              INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
                  input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
                  web_searches, priority, cost) VALUES
                  ('claude-code', 'r1', 's', 0, 1, '/w', 0, 'anthropic', 'm1', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
                  ('claude-code', 'r2', 's', 0, 1, '/w', 0, 'anthropic', 'm2', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
-                 ('claude-code', 'r3', 's', 0, 1, '/w', 0, 'anthropic', 'm3', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, 9.0);",
+                 ('claude-code', 'r3', 's', 0, 1, '/w', 0, 'anthropic', 'm3', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, 9.0),
+                 ('antigravity', 'r4', 's', 0, 1, '/g', 0, 'google', 'claude-opus-5-5', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
+                 ('antigravity', 'r5', 's', 0, 1, '/g', 0, 'google', 'gemini-unlisted', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL);",
         )
         .unwrap();
         let tx = crate::db::write(&mut db).unwrap();
@@ -1187,6 +1194,10 @@ mod tests {
                 ("r1".to_owned(), Some(2.0)),
                 ("r2".to_owned(), Some(4.0)),
                 ("r3".to_owned(), Some(9.0)),
+                // Claude served by Google, unpriced since before the maker's
+                // price applied to it, at Anthropic's list price.
+                ("r4".to_owned(), Some(5.0)),
+                ("r5".to_owned(), None),
             ]
         );
     }

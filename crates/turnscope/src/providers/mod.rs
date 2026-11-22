@@ -35,15 +35,9 @@ pub fn by_id(id: &str) -> Option<&'static dyn Provider> {
         .find(|provider| provider.info().id == id)
 }
 
-/// The canonical provider that makes `model`, if one of Turnscope's providers
-/// does (such as `"anthropic"` for `"claude-opus-4-6"`). Used to price
-/// cross-provider usage (such as Claude or GPT models run through Antigravity).
-pub fn maker(model: &str) -> Option<&'static str> {
-    let bare = model.rsplit('/').next().unwrap_or(model);
-    let lower = bare.to_lowercase();
-    ALL.iter()
-        .find(|provider| provider.owns_model(&lower))
-        .map(|provider| provider.info().id)
+/// The provider that makes `model`, as Anthropic makes `claude-opus-5-5`.
+pub fn maker(model: &str) -> Option<&'static dyn Provider> {
+    ALL.iter().copied().find(|provider| provider.makes(model))
 }
 
 /// A provider of models and the accounts that pay for them.
@@ -84,9 +78,9 @@ pub trait Provider: Sync {
     fn refreshes(&self) -> bool {
         false
     }
-    /// Whether `model` (lowercase, without any `provider/` prefix) is made by
-    /// this provider, for cross-provider list-price fallback.
-    fn owns_model(&self, _model: &str) -> bool {
+    /// Whether it makes `model`: another provider serving one it doesn't
+    /// list prices it at this one's list price (`prices`).
+    fn makes(&self, _model: &str) -> bool {
         false
     }
 }

@@ -33,16 +33,19 @@
 //! 5-hour window reset 10 hours after the week began: 5-hour windows follow
 //! one another from the week's first use.
 //!
-//! **Model pools.** A plan has peer pools — one for Gemini models and one
-//! for Claude and GPT models — each with a 5-hour and a weekly bucket, and
-//! no combined cap across all models. Every bucket carries its group's scope
-//! (`Gemini`, `Claude and GPT`) so each pool's work rate and "Used most"
-//! breakdown count only its own models, and `status::deciding` compares all
-//! peer pools equally when an account has no whole-account limit.
+//! **Pools.** A plan has a pool for Gemini models and one for Claude and
+//! GPT models, each with a 5-hour and a weekly bucket, and none on all
+//! usage. Each bucket is scoped by its pool, as `Weekly (Gemini)` and
+//! `Weekly (Claude and GPT)`, over leaving the Gemini pool's unscoped as the
+//! plan's own: unscoped, its work rate and shares counted Claude's usage,
+//! which never draws on it. An account stands by the pool its latest
+//! response drew on (`status::pool`), and with none, by Gemini's, which
+//! Antigravity's own models draw on.
 //!
-//! **Keys.** Gemini buckets keep keys `5h` and `weekly`, and other pools key
-//! by window and bucket id (`weekly:3p-weekly`), preserving existing reading
-//! history and listing Gemini before third-party pools.
+//! **Keys.** A limit is keyed by its window, and one not Gemini's by its
+//! bucket too, as `weekly:3p-weekly`, over the bucket's id alone: the
+//! status lists limits by key, so Gemini's come first, and by id the Claude
+//! and GPT pool's came before them.
 //!
 //! **Refreshing.** From Antigravity 2.33.1 on (verified in 2.34.0,
 //! 2026-11-21), each `language_server` process generates a random
@@ -135,10 +138,6 @@ impl Provider for Google {
 
     fn refreshes(&self) -> bool {
         true
-    }
-
-    fn owns_model(&self, model: &str) -> bool {
-        model.starts_with("gemini-")
     }
 
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
@@ -842,9 +841,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
                 continue;
             };
             let resets = super::reset(&bucket["resetTime"])?;
-            // The Gemini pool's: `gemini-5h`, `gemini-weekly`. Keep short keys
-            // so reading history stays continuous and Gemini sorts first, while
-            // scoping every pool to its own models.
+            // The Gemini pool's: `gemini-5h`, `gemini-weekly`.
             let own = id.strip_prefix("gemini-") == Some(window);
             readings.push(Reading {
                 key: match own {
@@ -908,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn each_model_pool_keeps_its_group_scope() {
+    fn each_pool_is_scoped_by_its_group() {
         let answer = json!({
             "groups": [
                 {

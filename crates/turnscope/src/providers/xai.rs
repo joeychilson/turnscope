@@ -31,10 +31,6 @@ impl Provider for Xai {
         &INFO
     }
 
-    fn owns_model(&self, model: &str) -> bool {
-        model.starts_with("grok-")
-    }
-
     fn account(&self, credential: &Credential) -> Option<Account> {
         super::account(INFO.id, credential, || {
             if let Some(identity) = &credential.identity {

@@ -122,19 +122,14 @@ impl Prices {
         Some(dollars / 1e6 + response.web_searches as f64 * 0.01)
     }
 
+    /// The price of `model` from `provider` in force `at`, or where
+    /// `provider` serves a model it doesn't list, its maker's: Antigravity
+    /// records the Claude models Google serves it as `google`'s, and
+    /// models.dev lists them under Anthropic alone.
     fn at(&self, provider: &str, model: &str, at: i64) -> Option<&Model> {
-        if let Some(history) = self.0.get(&(provider.to_owned(), model.to_owned())) {
-            return in_force(history, at);
-        }
-        // Cross-provider fallback: an agent such as Antigravity records Claude
-        // or GPT models under its own provider id (`google`), while models.dev
-        // lists them under their canonical maker.
-        let bare = model.rsplit('/').next().unwrap_or(model);
-        let maker = providers::maker(bare)?;
-        if maker == provider && bare == model {
-            return None;
-        }
-        in_force(self.0.get(&(maker.to_owned(), bare.to_owned()))?, at)
+        let listed = |provider: &str| self.0.get(&(provider.to_owned(), model.to_owned()));
+        let history = listed(provider).or_else(|| listed(providers::maker(model)?.info().id))?;
+        in_force(history, at)
     }
 }
 
@@ -159,9 +154,9 @@ pub const SIGN_IN_AT: &str =
     ORDER BY held.since > r.at, iif(held.since > r.at, held.since, -held.since) LIMIT 1";
 
 /// Take in models.dev's catalog when it's six hours since any process last
-/// did: a price that changed is kept from now, beside the one before it, and
-/// a model listed for the first time prices what was used of it before.
-/// Whether it was taken in.
+/// did: a price that changed is kept from now, beside the one before it, a
+/// model listed for the first time prices what was used of it before, and
+/// what had no price is priced again. Whether it was taken in.
 pub fn refresh(db: &mut Connection) -> Result<bool> {
     refresh_from(db, catalog)
 }
@@ -281,8 +276,9 @@ fn parse_catalog(json: &[u8]) -> Result<Catalog> {
 }
 
 /// Write what `catalog` prices, as of `now`, and price what was used of a
-/// model it lists for the first time, in one write: priced after, a process
-/// that ended between the two left that usage unpriced for good.
+/// model it lists for the first time and what had no price, in one write:
+/// priced after, a process that ended between the two left that usage
+/// unpriced for good.
 ///
 /// Without `ingest.lock`: a read of history takes in the prices at each of
 /// its writes, so what it wrote before this write is priced here, and what
@@ -636,64 +632,46 @@ mod tests {
     }
 
     #[test]
-    fn cross_provider_models_fall_back_to_their_makers_list_price() {
-        let prices = priced(&[
-            (
-                "anthropic",
-                "claude-opus-5",
-                0,
-                r#"{"input":5,"output":25}"#,
-                None,
-            ),
-            ("openai", "gpt-5.5", 0, r#"{"input":2,"output":10}"#, None),
-            (
-                "google",
-                "gemini-3.8-pro",
-                0,
-                r#"{"input":1,"output":4}"#,
-                None,
-            ),
-        ]);
+    fn a_model_served_by_another_provider_takes_its_makers_price() {
+        let prices = priced(&[(
+            "anthropic",
+            "claude-opus-5-5",
+            0,
+            r#"{"input":5,"output":25}"#,
+            None,
+        )]);
         let tokens = Tokens {
             input: 1_000_000,
             ..Tokens::default()
         };
-        // Claude and GPT run through Antigravity (`provider = "google"`).
-        assert_eq!(
-            prices.cost("antigravity", &response("google", "claude-opus-5", tokens)),
-            Some(5.0)
-        );
-        assert_eq!(
-            prices.cost("antigravity", &response("google", "gpt-5.5", tokens)),
-            Some(2.0)
-        );
-        // Prefixed gateway model falls back to its maker's bare id.
-        assert_eq!(
-            prices.cost(
-                "opencode",
-                &response("openrouter", "google/gemini-3.8-pro", tokens)
-            ),
-            Some(1.0)
-        );
-        // Provider's own listing still takes precedence over canonical fallback.
-        let custom = priced(&[
+        let cost = |provider: &str, model: &str| {
+            prices.cost("antigravity", &response(provider, model, tokens))
+        };
+        assert_eq!(cost("google", "claude-opus-5-5"), Some(5.0));
+        // As Antigravity 2.34.0 names its GPT model: no provider makes it.
+        assert_eq!(cost("google", "openai/gpt-oss-120b-maas"), None);
+        // Where the provider serving it lists it, its own price.
+        let listed = priced(&[
             (
                 "anthropic",
-                "claude-opus-5",
+                "claude-opus-5-5",
                 0,
                 r#"{"input":5,"output":25}"#,
                 None,
             ),
             (
                 "google",
-                "claude-opus-5",
+                "claude-opus-5-5",
                 0,
                 r#"{"input":9,"output":30}"#,
                 None,
             ),
         ]);
         assert_eq!(
-            custom.cost("antigravity", &response("google", "claude-opus-5", tokens)),
+            listed.cost(
+                "antigravity",
+                &response("google", "claude-opus-5-5", tokens)
+            ),
             Some(9.0)
         );
     }
