@@ -137,6 +137,10 @@ pub fn connect(agent: String, connecting: bool) {
     ask(|engine| engine.connect(agent, connecting));
 }
 
+pub fn poke() {
+    ask(|engine| engine.poke());
+}
+
 /// Add `line` to the log beside the data, once the engine runs.
 pub fn log(line: &str) {
     if let Some(data) = DATA.get() {

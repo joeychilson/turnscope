@@ -367,15 +367,15 @@ in the tests:
 Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at this pace it runs out 13:00 (in 1h).
 ```
 
-A hook waits for the guard, so it reads no history and no prices. It reads
-the limits only when five minutes have passed since any process did, and
-not once a newer Turnscope has written to the data: then it guards by the
-limits read before. While
-the app runs, it always has. Nor does it make the database or take in
-0.2's: before Turnscope has, or after an update until the new version has
-opened it, the standing isn't known. Each read of a login's limits gives
-up after 15 seconds, whether its provider takes one request or two, or
-after 5 if it can't connect.
+A hook waits for the guard, so it reads no history and no prices. While
+the menu bar app runs (holding `app.lock`), the app keeps limits current
+outside any agent sandbox and `guard` reads the database alone. Otherwise
+it reads due limits itself, and not once a newer Turnscope has written to
+the data: then it guards by the limits read before. Nor does it make the
+database or take in 0.2's: before Turnscope has, or after an update until
+the new version has opened it, the standing isn't known. Each read of a
+login's limits gives up after 15 seconds, whether its provider takes one
+request or two, or after 5 if it can't connect.
 
 ## Status line
 
@@ -415,8 +415,10 @@ In Claude Code's `settings.json`:
 Without `--account`, it takes the account of the session Claude Code names
 on standard input (`session_id`), then the calling agent's, then the first
 account in use. A new session isn't read yet, so the calling agent's
-account shows for it. It answers from the database alone, so it never
-waits on the network, and never writes it: before Turnscope has made the
-database, or after an update until the new version has opened it, it
-prints nothing. It always exits 0: when nothing is known, it prints
-nothing.
+account shows for it. When Claude Code includes `rate_limits` on standard
+input, `statusline` records those live readings on a best-effort 50 ms
+write (preserving scoped limits from the last full poll) before printing
+the line. It never waits on the network and never creates or migrates the
+database: before Turnscope has made the database, or after an update until
+the new version has opened it, it prints nothing. It always exits 0: when
+nothing is known, it prints nothing.

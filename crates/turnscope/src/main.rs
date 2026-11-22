@@ -615,8 +615,9 @@ fn guard(
     let mut db = db::open(data)?;
     // The limits read before still guard when this one can't read them
     // again, as once a newer Turnscope has written here, or does while they
-    // are read: a hook that fails guards nothing.
-    if online() {
+    // are read: a hook that fails guards nothing. While the menu bar app
+    // holds `app.lock`, it keeps limits current outside any agent sandbox.
+    if online() && !turnscope::engine::running(data) {
         let _ = limits::refresh(&mut db, home);
     }
     let now = now();
@@ -662,14 +663,20 @@ fn guard(
     }))
 }
 
-/// From the database alone, so it's quick.
+/// From the database alone, so it's quick. When a harness pipes live
+/// `rate_limits` on standard input (as Claude Code does), records them on a
+/// best-effort 50 ms write before rendering.
 fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String> {
     let db = db::read(data)?;
-    let status = status::status(&db, now()).ok()?;
+    let given = stdin_json();
+    let now = now();
+    let status = status::status(&db, now).ok()?;
     let account = match account {
         // A line is better than none: of several named, the first.
         Some(name) => *status::named(&status, name).ok()?.first()?,
-        None => harness(&db)
+        None => given
+            .as_ref()
+            .and_then(|given| harness_account(&db, given))
             .and_then(|id| status.accounts.iter().find(|account| account.id == id))
             .or_else(|| mcp::Caller::detect().account(&db, home, &status).ok()?)
             .or_else(|| {
@@ -679,18 +686,24 @@ fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String>
                     .find(|account| account.in_use && !account.hidden)
             })?,
     };
+    if let Some(snapshot) = given.as_ref().and_then(|given| {
+        agents::ALL
+            .iter()
+            .find_map(|agent| agent.statusline_limits(given, now))
+    }) && account.provider == snapshot.provider
+        && account.kind == turnscope::providers::Kind::Subscription
+        && limits::record_statusline_limits(data, &account.id, &snapshot, now)
+        && let Ok(fresh) = status::status(&db, now)
+        && let Some(updated) = fresh.accounts.iter().find(|found| found.id == account.id)
+    {
+        return Some(status::line(updated, fresh.at));
+    }
     Some(status::line(account, status.at))
 }
 
-/// The account of the session a harness names by `session_id` in the JSON
-/// it writes to a status line's standard input, as Claude Code does. None
-/// for a session not read yet, as a status line never catches up.
-///
-/// The calling agent's account answers then, over the account of the latest
-/// response in the session's folder, which can be another agent's: after
-/// Codex ran last in a folder, a new Claude Code session showed the Codex
-/// account's limits.
-fn harness(db: &rusqlite::Connection) -> Option<String> {
+/// JSON piped by a harness to `turnscope statusline` on standard input, or
+/// None when stdin is a terminal, empty, or not JSON within 300 ms.
+fn stdin_json() -> Option<serde_json::Value> {
     use std::io::IsTerminal as _;
     if std::io::stdin().is_terminal() {
         return None;
@@ -703,7 +716,18 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
         let _ = send.send(text);
     });
     let text = receive.recv_timeout(Duration::from_millis(300)).ok()?;
-    let given: serde_json::Value = serde_json::from_str(&text).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// The account of the session a harness names by `session_id` in the JSON
+/// it writes to a status line's standard input, as Claude Code does. None
+/// for a session not read yet, as a status line never catches up.
+///
+/// The calling agent's account answers then, over the account of the latest
+/// response in the session's folder, which can be another agent's: after
+/// Codex ran last in a folder, a new Claude Code session showed the Codex
+/// account's limits.
+fn harness_account(db: &rusqlite::Connection, given: &serde_json::Value) -> Option<String> {
     // The agent names its session by its own id, whichever agent's it is.
     let native = given["session_id"].as_str()?;
     agents::ALL.iter().find_map(|agent| {

@@ -117,6 +117,21 @@ pub struct Engine {
 /// A request, as a queue runs it (`queue`).
 type Work = Box<dyn FnOnce(&Inner) + Send>;
 
+/// Minimum time between explicit `Engine::poke` refreshes (panel open or Mac
+/// wake), so repeated clicks don't hammer providers.
+const POKE_GAP: Duration = Duration::from_secs(30);
+
+/// Why `keep` woke from waiting on agent folder changes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wake {
+    /// Files changed in an agent folder.
+    Files,
+    /// A login file changed in an agent folder.
+    Auth,
+    /// The app asked for a fresh check (panel opened or Mac woke).
+    Poke,
+}
+
 struct Inner {
     data: PathBuf,
     home: PathBuf,
@@ -127,6 +142,10 @@ struct Inner {
     showing: Mutex<Option<Showing>>,
     /// What `Event::Kept` last said, so it's told only when it changes.
     kept: Mutex<Option<Option<Stopped>>>,
+    /// Sender to wake `keep` while this process holds `app.lock`.
+    wake: Mutex<Option<Sender<Wake>>>,
+    /// When `Engine::poke` last woke `keep`.
+    last_poke: Mutex<Option<Instant>>,
     /// Set once the `Engine` is dropped: its threads end at their next turn.
     ended: AtomicBool,
 }
@@ -152,6 +171,8 @@ impl Engine {
             tell: Box::new(tell),
             showing: Mutex::new(None),
             kept: Mutex::new(None),
+            wake: Mutex::new(None),
+            last_poke: Mutex::new(None),
             ended: AtomicBool::new(false),
         });
         let running = Arc::clone(&inner);
@@ -238,6 +259,32 @@ impl Engine {
         });
     }
 
+    /// Wake the engine to check logins and refresh any stale, failing, or
+    /// reset accounts right away, as when the panel opens or the Mac wakes.
+    /// Debounced so repeated clicks don't hammer providers.
+    pub fn poke(&self) {
+        let sender = self
+            .inner
+            .wake
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(sender) = sender else {
+            return;
+        };
+        let mut last = self
+            .inner
+            .last_poke
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if last.is_some_and(|at| at.elapsed() < POKE_GAP) {
+            return;
+        }
+        if sender.send(Wake::Poke).is_ok() {
+            *last = Some(Instant::now());
+        }
+    }
+
     /// Run `change` on the open data, then tell the status again, changed
     /// or not.
     fn change(
@@ -321,8 +368,14 @@ impl Inner {
             match lock(&self.data) {
                 Ok(Some(lock)) => {
                     let kept = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        keep(&self.home, &self.data, |caught| self.caught(caught))
+                        keep(&self.home, &self.data, &self.wake, |caught| {
+                            self.caught(caught)
+                        })
                     }));
+                    *self
+                        .wake
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                     drop(lock);
                     let why = match kept {
                         Ok(Ok(())) => continue,
@@ -507,6 +560,19 @@ pub fn log(data: &Path, line: &str) {
     }
 }
 
+/// Whether a Turnscope app process currently holds `app.lock` in `data` and
+/// keeps the data current. Never creates `app.lock`.
+///
+/// Used by `turnscope mcp` and `turnscope guard` so a process running inside
+/// an agent's network sandbox doesn't attempt provider API calls while the
+/// unsandboxed app is already keeping limits and prices current.
+pub fn running(data: &Path) -> bool {
+    let Ok(file) = File::open(data.join("app.lock")) else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+}
+
 /// `app.lock` in `data`, held while one app keeps the data current, or None
 /// while another does: two would only read the same history twice. Two at
 /// once would still be safe, as the command line catching up beside the app
@@ -537,12 +603,19 @@ enum Caught {
     Failed(Error),
 }
 
-/// Catch up when the agents' folders change, and each minute, as horizons
-/// and outlooks move with the clock. Tells `told` what each catch-up came
-/// to, and returns once it says to stop.
-fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Result<()> {
+/// Catch up when the agents' folders change, on explicit pokes (panel open
+/// or Mac wake), and each minute, as horizons and outlooks move with the
+/// clock. Tells `told` what each catch-up came to, and returns once it says
+/// to stop.
+fn keep(
+    home: &Path,
+    data: &Path,
+    wake: &Mutex<Option<Sender<Wake>>>,
+    mut told: impl FnMut(Caught) -> bool,
+) -> Result<()> {
     let mut db = crate::db::open(data)?;
-    let (changed, changes) = mpsc::channel();
+    let (changed, changes) = mpsc::channel::<Wake>();
+    *wake.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(changed.clone());
     // Any write, not only to history: macOS reports a write when its file
     // is closed, and Codex keeps a session's file open, and OpenCode its
     // database, while they work. Their other writes are what show it.
@@ -552,16 +625,23 @@ fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Resul
     // 100 s, measured 2026-11-11). An agent's writes to its database are in
     // the `-wal` file.
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let ours = event.is_ok_and(|event| {
-            !event.paths.is_empty()
-                && event
-                    .paths
-                    .iter()
-                    .all(|path| path.to_string_lossy().ends_with("-shm"))
-        });
-        if !ours {
-            let _ = changed.send(());
+        let Ok(event) = event else {
+            let _ = changed.send(Wake::Files);
+            return;
+        };
+        let ours = !event.paths.is_empty()
+            && event
+                .paths
+                .iter()
+                .all(|path| path.to_string_lossy().ends_with("-shm"));
+        if ours {
+            return;
         }
+        let auth = event
+            .paths
+            .iter()
+            .any(|path| agents::ALL.iter().any(|agent| agent.login_file(path)));
+        let _ = changed.send(if auth { Wake::Auth } else { Wake::Files });
     })
     .map_err(|error| Error::Failed(error.to_string()))?;
     let mut watched: Vec<PathBuf> = Vec::new();
@@ -611,8 +691,23 @@ fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Resul
             return Ok(());
         }
     }
+    let mut refresh_stale = false;
     loop {
         watch(&mut watcher);
+        if refresh_stale && crate::online() {
+            refresh_stale = false;
+            let read = match crate::limits::refresh_stale(&mut db, home) {
+                Ok(read) => read,
+                Err(error @ Error::Newer(_)) => return Err(error),
+                Err(error) => {
+                    log(data, &error.to_string());
+                    true
+                }
+            };
+            if read && !told(Caught::Limits) {
+                return Ok(());
+            }
+        }
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
                 let now = (
@@ -635,16 +730,51 @@ fn keep(home: &Path, data: &Path, mut told: impl FnMut(Caught) -> bool) -> Resul
             return Ok(());
         }
         let waited = Instant::now();
+        let merge = |kind: &mut Wake, next: Wake| {
+            if next == Wake::Auth || (next == Wake::Poke && *kind == Wake::Files) {
+                *kind = next;
+            }
+        };
         match changes.recv_timeout(Duration::from_secs(60)) {
-            Ok(()) => {
-                // Let a burst of writes settle, a second at most.
-                let start = Instant::now();
-                while changes.recv_timeout(Duration::from_millis(250)).is_ok()
-                    && start.elapsed() < Duration::from_secs(1)
-                {}
-                // The next catch-up reads what's written meanwhile.
-                std::thread::sleep(GAP.saturating_sub(waited.elapsed()));
-                while changes.try_recv().is_ok() {}
+            Ok(mut kind) => {
+                if kind == Wake::Poke {
+                    while let Ok(next) = changes.try_recv() {
+                        merge(&mut kind, next);
+                    }
+                    refresh_stale = true;
+                } else {
+                    // Let a burst of writes settle, a second at most.
+                    let start = Instant::now();
+                    while let Ok(next) = changes.recv_timeout(Duration::from_millis(250)) {
+                        merge(&mut kind, next);
+                        if kind == Wake::Poke || start.elapsed() >= Duration::from_secs(1) {
+                            break;
+                        }
+                    }
+                    // Wait out `GAP` for regular history writes, but break
+                    // immediately if an auth change or explicit poke arrives.
+                    while kind == Wake::Files {
+                        let left = GAP.saturating_sub(waited.elapsed());
+                        if left.is_zero() {
+                            break;
+                        }
+                        match changes.recv_timeout(left) {
+                            Ok(next) => merge(&mut kind, next),
+                            Err(RecvTimeoutError::Timeout) => break,
+                            Err(RecvTimeoutError::Disconnected) => {
+                                return Err(Error::Failed(
+                                    "the agents' folders can't be watched".into(),
+                                ));
+                            }
+                        }
+                    }
+                    while let Ok(next) = changes.try_recv() {
+                        merge(&mut kind, next);
+                    }
+                    if matches!(kind, Wake::Auth | Wake::Poke) {
+                        refresh_stale = true;
+                    }
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
@@ -1090,14 +1220,18 @@ mod tests {
     }
 
     /// One app keeps a data directory current at a time, and the next can
-    /// once it's gone.
+    /// once it's gone. `running` reports that state without creating a lock.
     #[test]
     fn one_app_holds_the_lock_at_a_time() {
         let data = tempfile::tempdir().unwrap();
+        assert!(!running(data.path()));
+        assert!(!data.path().join("app.lock").exists());
         let first = lock(data.path()).unwrap();
         assert!(first.is_some());
+        assert!(running(data.path()));
         assert!(lock(data.path()).unwrap().is_none());
         drop(first);
+        assert!(!running(data.path()));
         assert!(lock(data.path()).unwrap().is_some());
     }
 
@@ -1119,7 +1253,10 @@ mod tests {
         let reading = crate::db::lock(&data.path().join("ingest.lock")).unwrap();
         let (sender, messages) = mpsc::channel();
         let (home_kept, data_kept) = (home.path().to_path_buf(), data.path().to_path_buf());
-        std::thread::spawn(move || keep(&home_kept, &data_kept, |_| sender.send(()).is_ok()));
+        std::thread::spawn(move || {
+            let wake = Mutex::new(None);
+            keep(&home_kept, &data_kept, &wake, |_| sender.send(()).is_ok())
+        });
         // Wait to be told, and say when the limits were read, and whether
         // the history was, by then.
         let told = || -> (Option<i64>, bool) {

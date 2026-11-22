@@ -11,6 +11,22 @@
   future quota window shapes beside known ones.
 - **Unreadable agent login folders are logged and marked unavailable**
   instead of leaving an older `expired` state frozen in place.
+- **In-band limits from Codex and Claude Code.** Codex's rollout
+  `rate_limits` and Claude Code's `statusline` stdin `rate_limits` now
+  update subscription limits directly without extra provider API calls,
+  preserving scoped limits from the last full poll. Claude Code also falls
+  back to `~/.claude/.credentials.json` and Codex falls back to `account_id`
+  and `id_token` metadata when JWT claims are absent.
+- **Activity-driven and event-driven limit scheduling.** Idle accounts poll
+  every 25 minutes instead of every 5 minutes (5× less background traffic
+  while staying live), active accounts poll every 5 minutes (skipping API
+  calls while fresh in-band readings arrive), resets trigger an immediate
+  re-read right after rollover, and opening the panel, waking the Mac, or
+  updating a login file refreshes stale or failing accounts right away.
+- **Sandbox-safe `mcp` and `guard`.** While the menu bar app holds
+  `app.lock`, `turnscope mcp` and `turnscope guard` let the unsandboxed app
+  handle provider network requests so agent sandboxes never poison account
+  status.
 
 ## 0.3.1
 

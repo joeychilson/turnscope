@@ -299,6 +299,7 @@ fn show_panel(s: &mut State) {
     }
     notifier::check();
     login::check();
+    engine::poke();
     s.checks_automatically = updater::automatic();
     if let Some(place) = menu_bar::panel_place(PANEL_WIDTH as f64, GUTTER as f64) {
         handle.place(DisplayTarget::Primary, place);
@@ -360,6 +361,7 @@ fn tick() {
 /// minute after it woke, the item showed the countdowns of when it went to sleep.
 fn tick_on_wake() {
     let woke = RcBlock::new(|_: NonNull<NSNotification>| {
+        engine::poke();
         if let Some(handle) = HANDLE.get() {
             handle.update_if(|s, _| ticked(s));
         }

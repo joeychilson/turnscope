@@ -1180,3 +1180,99 @@ fn an_mcp_session_answers_as_its_snapshot_says() {
         "mcp.json differs; run with TURNSCOPE_BLESS=1 and review the diff"
     );
 }
+
+#[test]
+fn statusline_records_live_rate_limits_from_stdin_and_preserves_scoped_limits() {
+    let data = store();
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    let full_at = NOW - HOUR / 6;
+    db.execute(
+        "UPDATE account SET full_read_at = ?1 WHERE id = 'anthropic:acct-1:org-1'",
+        [full_at],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets)
+         VALUES ('anthropic:acct-1:org-1', 'seven_day_opus', ?1, 'Weekly', 'Opus', 15.0, ?2, ?3)",
+        params![full_at, NOW - 84 * HOUR, NOW + 84 * HOUR],
+    )
+    .unwrap();
+    let input = json!({
+        "session_id": "0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60",
+        "rate_limits": {
+            "five_hour": {"used_percentage": 80.0, "resets_at": (NOW + 2 * HOUR) / 1000},
+            "seven_day": {"used_percentage": 50.0, "resets_at": (NOW + 84 * HOUR) / 1000}
+        }
+    })
+    .to_string();
+    let output = turnscope(data.path(), &["statusline"], Some(&input));
+    assert!(output.status.success());
+    let line = String::from_utf8_lossy(&output.stdout);
+    // Live stdin readings show immediately: 20% left on 5h, 50% left on weekly.
+    assert!(
+        line.contains("5h 20%") && line.contains("weekly 50%"),
+        "{line}"
+    );
+    // Scoped limit from `full_read_at` is preserved alongside updated core limits.
+    let status = turnscope(
+        data.path(),
+        &["status", "--account", "claude", "--json"],
+        None,
+    );
+    let shown: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let limits = shown["accounts"][0]["limits"].as_array().unwrap();
+    let keys: Vec<(&str, u64)> = limits
+        .iter()
+        .map(|limit| {
+            (
+                limit["key"].as_str().unwrap(),
+                limit["leftPercent"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        [("five_hour", 20), ("seven_day", 50), ("seven_day_opus", 85)]
+    );
+}
+
+#[test]
+fn guard_and_mcp_skip_limit_refresh_while_app_holds_lock() {
+    let data = store();
+    let app_lock = std::fs::File::create(data.path().join("app.lock")).unwrap();
+    app_lock.lock().unwrap();
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    db.execute("UPDATE state SET limits_at = NULL", []).unwrap();
+
+    // Run with TURNSCOPE_OFFLINE=0: if `guard` or `mcp` attempted `limits::refresh`,
+    // `state.limits_at` would be claimed and set to NOW.
+    let guard = command(
+        data.path(),
+        &[
+            "guard",
+            "--account",
+            "claude",
+            "--limit",
+            "5 hours",
+            "--below",
+            "20",
+        ],
+    )
+    .env("TURNSCOPE_OFFLINE", "0")
+    .output()
+    .unwrap();
+    assert_eq!(guard.status.code(), Some(0));
+
+    let mut mcp = command(data.path(), &["mcp"]);
+    mcp.env("TURNSCOPE_OFFLINE", "0");
+    let answers = tools(&mut mcp, &[("check_limits", r#"{"account":"claude"}"#)]);
+    assert!(answers[0].contains("Claude Max"), "{}", answers[0]);
+
+    let limits_at: Option<i64> = db
+        .query_row("SELECT limits_at FROM state", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        limits_at, None,
+        "must not claim limits_at while app.lock is held"
+    );
+}

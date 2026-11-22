@@ -57,8 +57,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
+use super::{Agent, Credential, InBand, Info, Login, Read, Response, Secret, Title, Tokens};
 use crate::Result;
+use crate::providers::Reading;
+use crate::time::MINUTE;
 
 pub struct Codex;
 
@@ -268,6 +270,8 @@ struct Payload<'a> {
     // token_count
     #[serde(borrow)]
     info: Option<&'a RawValue>,
+    #[serde(borrow)]
+    rate_limits: Option<&'a RawValue>,
     // token_usage_record, and thread_settings_applied's `thread_id`
     response_id: Option<String>,
     thread_id: Option<String>,
@@ -306,6 +310,22 @@ struct Settings {
 struct Totals {
     total_token_usage: Usage,
     last_token_usage: Option<Usage>,
+}
+
+#[derive(Deserialize)]
+struct RateLimits {
+    limit_id: Option<String>,
+    limit_name: Option<String>,
+    plan_type: Option<String>,
+    primary: Option<RateWindow>,
+    secondary: Option<RateWindow>,
+}
+
+#[derive(Deserialize)]
+struct RateWindow {
+    used_percent: f64,
+    window_minutes: Option<i64>,
+    resets_at: Option<i64>,
 }
 
 fn parsed<'a, T: Deserialize<'a>>(raw: Option<&'a RawValue>) -> Option<T> {
@@ -406,6 +426,14 @@ impl Agent for Codex {
             Some("apikey") => (text("/OPENAI_API_KEY"), true),
             _ => (None, false),
         };
+        let identity = (!key).then(|| {
+            let id = text("/tokens/account_id")?;
+            let email = text("/tokens/id_token")
+                .and_then(|token| super::claims(token)["email"].as_str().map(str::to_owned))
+                .filter(|email| !email.is_empty());
+            Some((id.to_owned(), email))
+        });
+        let identity = identity.flatten();
         Ok(vec![Login {
             provider: "openai".to_owned(),
             credential: secret.map(|secret| Credential {
@@ -413,7 +441,7 @@ impl Agent for Codex {
                 expires: super::claims(secret)["exp"].as_i64().map(|exp| exp * 1000),
                 secret: Secret::new(secret),
                 key,
-                identity: None,
+                identity,
                 plan: None,
                 refresh: None,
             }),
@@ -422,6 +450,10 @@ impl Agent for Codex {
 
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
         super::toml_mcp_command(&folder.join("config.toml"))
+    }
+
+    fn login_file(&self, path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str()) == Some("auth.json")
     }
 }
 
@@ -454,6 +486,13 @@ fn read_line(line: &Line, cursor: &mut Cursor, read: &mut Read) {
                     Ok(totals) => total(totals, line, &thread, copied, cursor, read),
                     Err(_) => read.skipped += 1,
                 }
+            }
+            if !copied
+                && let Some(limits) = parsed::<RateLimits>(payload.rate_limits)
+                && let Some(at) = line.at()
+                && let Some(snapshot) = in_band(limits, cursor.provider.as_deref(), at)
+            {
+                read.in_band(snapshot);
             }
         }
         ("event_msg", Some("thread_settings_applied")) => {
@@ -619,6 +658,66 @@ fn report(
         web_searches: 0,
         priority: false,
         cost: None,
+    })
+}
+
+/// Convert a Codex `token_count` event's `rate_limits` object into an in-band
+/// snapshot matching `providers::openai`'s keys (`primary_window`,
+/// `secondary_window`).
+fn in_band(limits: RateLimits, provider: Option<&str>, at: i64) -> Option<InBand> {
+    let scope = match limits.limit_name.as_deref().filter(|name| !name.is_empty()) {
+        Some(name) => Some(name.to_owned()),
+        None => match limits.limit_id.as_deref() {
+            None | Some("") | Some("codex") => None,
+            // Ignore unknown non-codex limit ids that lack a display name so
+            // they don't overwrite the plan's own windows.
+            Some(_) => return None,
+        },
+    };
+    let mut readings = Vec::new();
+    for (base_key, window) in [
+        ("primary_window", limits.primary),
+        ("secondary_window", limits.secondary),
+    ] {
+        let Some(window) = window else {
+            continue;
+        };
+        let Some(minutes) = window.window_minutes.filter(|&minutes| minutes > 0) else {
+            continue;
+        };
+        if !window.used_percent.is_finite() {
+            continue;
+        }
+        let length = minutes.saturating_mul(MINUTE);
+        let resets = window.resets_at.filter(|&ts| ts > 0).map(|ts| {
+            // Codex writes Unix seconds; accept milliseconds defensively.
+            if ts > 100_000_000_000 {
+                ts
+            } else {
+                ts.saturating_mul(1000)
+            }
+        });
+        readings.push(Reading {
+            key: match &scope {
+                Some(scope) => format!("{base_key}:{scope}"),
+                None => base_key.to_owned(),
+            },
+            name: crate::providers::window_name(length),
+            scope: scope.clone(),
+            used: window.used_percent.clamp(0.0, 100.0),
+            size: None,
+            starts: resets.map(|resets| resets - length),
+            resets,
+        });
+    }
+    (!readings.is_empty()).then(|| InBand {
+        provider: provider.unwrap_or("openai").to_owned(),
+        at,
+        plan: limits
+            .plan_type
+            .filter(|plan| !plan.is_empty())
+            .map(|plan| plan.replace("prolite", "pro lite")),
+        readings,
     })
 }
 
@@ -1077,5 +1176,73 @@ mod tests {
         // Signed out, or signed in some other way.
         assert_eq!(login(json!({"auth_mode": "chatgpt"})), None);
         assert_eq!(login(json!({"OPENAI_API_KEY": "sk-made-up"})), None);
+    }
+
+    #[test]
+    fn token_count_rate_limits_become_latest_in_band_readings() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = rollout(
+            dir.path(),
+            "t-limits",
+            &[
+                line(
+                    0,
+                    "session_meta",
+                    json!({"id": "t-limits", "model_provider": "openai"}),
+                ),
+                line(1, "turn_context", json!({"model": "gpt-5.5"})),
+                json!({
+                    "timestamp": "2026-10-01T10:00:00Z",
+                    "ordinal": 2,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": null,
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "plan_type": "plus",
+                            "primary": {"used_percent": 15.0, "window_minutes": 300, "resets_at": 1_790_870_000},
+                            "secondary": {"used_percent": 4.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
+                        }
+                    }
+                }),
+                json!({
+                    "timestamp": "2026-10-01T10:05:00Z",
+                    "ordinal": 3,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": null,
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "plan_type": "plus",
+                            "primary": {"used_percent": 22.5, "window_minutes": 300, "resets_at": 1_790_870_000},
+                            "secondary": {"used_percent": 6.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
+                        }
+                    }
+                }),
+            ],
+        );
+        let read = Codex.read(&file, "").unwrap();
+        assert_eq!(read.limits.len(), 1);
+        let snap = &read.limits[0];
+        assert_eq!(snap.provider, "openai");
+        assert_eq!(snap.plan.as_deref(), Some("plus"));
+        assert_eq!(
+            snap.at,
+            crate::time::millis("2026-10-01T10:05:00Z").unwrap()
+        );
+        let pairs: Vec<_> = snap
+            .readings
+            .iter()
+            .map(|r| (r.key.as_str(), r.name.as_str(), r.scope.as_deref(), r.used))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("primary_window", "5 hours", None, 22.5),
+                ("secondary_window", "Weekly", None, 6.0),
+            ]
+        );
     }
 }

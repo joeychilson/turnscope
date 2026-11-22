@@ -496,7 +496,7 @@ pub fn words(key: &str) -> String {
 }
 
 /// What a window `length` ms long is called: `5 hours`, `Weekly`.
-fn window_name(length: i64) -> String {
+pub(crate) fn window_name(length: i64) -> String {
     let hours = (length + HOUR / 2) / HOUR;
     // Whole days, as a window across a clock change is an hour off.
     let days = (length + DAY / 2) / DAY;

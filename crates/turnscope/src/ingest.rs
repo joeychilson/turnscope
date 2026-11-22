@@ -1,7 +1,7 @@
 //! Reading what's new in the agents' history into the database, with each
 //! response's cost and account. How history is kept: docs/architecture.md#data.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -296,13 +296,41 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
                 let tx = crate::db::write(db)?;
                 let derived = Derived::load(&tx)?;
                 let began = Instant::now();
+                let mut in_band: BTreeMap<(String, String, Option<String>), agents::InBand> =
+                    BTreeMap::new();
                 while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
                     match read {
-                        Ok(read) => {
+                        Ok(mut read) => {
+                            let folder = due.folder.to_string_lossy().into_owned();
+                            for snapshot in std::mem::take(&mut read.limits) {
+                                let scope = snapshot
+                                    .readings
+                                    .first()
+                                    .and_then(|reading| reading.scope.clone());
+                                let key = (folder.clone(), snapshot.provider.clone(), scope);
+                                match in_band.entry(key) {
+                                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                                        if snapshot.at >= entry.get().at {
+                                            entry.insert(snapshot);
+                                        }
+                                    }
+                                    std::collections::btree_map::Entry::Vacant(entry) => {
+                                        entry.insert(snapshot);
+                                    }
+                                }
+                            }
                             write(&tx, due, read, home, &derived)?;
                             wrote = true;
                         }
                         Err(error) => failed(&tx, due, &error)?,
+                    }
+                }
+                if !in_band.is_empty() {
+                    let now = crate::now();
+                    for ((folder, provider, _), snapshot) in in_band {
+                        if let Some(account) = derived.account(&folder, &provider, snapshot.at) {
+                            crate::limits::record_in_band(&tx, &account, &snapshot, now)?;
+                        }
                     }
                 }
                 tx.commit()?;
@@ -489,13 +517,17 @@ impl Derived {
         })
     }
 
+    /// The account `folder` held for `provider` at `at`, if any.
+    fn account(&self, folder: &str, provider: &str, at: i64) -> Option<String> {
+        self.signed
+            .get(&(folder.to_owned(), provider.to_owned()))
+            .and_then(|held| in_force(held, at))
+            .and_then(|account| account.clone())
+    }
+
     /// The cost of `response`, and the account it drew on.
     fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<String>) {
-        let account = self
-            .signed
-            .get(&(folder.to_owned(), response.provider.clone()))
-            .and_then(|held| in_force(held, response.at))
-            .and_then(|account| account.clone());
+        let account = self.account(folder, &response.provider, response.at);
         (self.prices.cost(agent, response), account)
     }
 }
@@ -1154,5 +1186,60 @@ mod tests {
                 ("r3".to_owned(), Some(9.0)),
             ]
         );
+    }
+
+    #[test]
+    fn codex_rollout_rate_limits_update_account_offline_and_clear_expired() {
+        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let codex = home.path().join(".codex");
+        let sessions = codex.join("sessions/2026/10/01");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let now = crate::now();
+        let at_ts = jiff::Timestamp::from_millisecond(now - 30_000)
+            .unwrap()
+            .to_string();
+        let resets_sec = (now + 3 * crate::time::HOUR) / 1000;
+        let older = now - crate::time::HOUR;
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, problem)
+             VALUES ('openai:acct-1', 'openai', 'subscription', 'ChatGPT', ?1, ?1, 'expired')",
+            [older],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account)
+             VALUES ('codex', ?1, 'openai', ?2, 'openai:acct-1')",
+            params![codex.to_string_lossy(), older],
+        )
+        .unwrap();
+
+        let lines = [
+            serde_json::json!({"timestamp": at_ts, "type": "session_meta", "payload": {"id": "t1"}}),
+            serde_json::json!({
+                "timestamp": at_ts,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "plan_type": "plus",
+                        "primary": {"used_percent": 30.0, "window_minutes": 300, "resets_at": resets_sec},
+                        "secondary": {"used_percent": 15.0, "window_minutes": 10080, "resets_at": resets_sec + 86400}
+                    }
+                }
+            }),
+        ];
+        let body: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        std::fs::write(sessions.join("rollout-2026-10-01-t1.jsonl"), body).unwrap();
+
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        let status = crate::status::status(&db, now).unwrap();
+        let account = &status.accounts[0];
+        assert_eq!(account.title, "ChatGPT Plus");
+        assert!(matches!(account.state, crate::status::State::Live { .. }));
+        assert_eq!(account.limits.len(), 2);
+        assert_eq!(account.limits[0].left_percent, 70);
+        assert_eq!(account.limits[1].left_percent, 85);
     }
 }

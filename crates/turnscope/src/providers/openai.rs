@@ -49,14 +49,28 @@ impl Provider for OpenAi {
     }
 }
 
-/// The workspace a sign-in is to and its owner's email, as the token says.
+/// The workspace a sign-in is to and its owner's email, as the token or
+/// agent's stored account metadata says.
 fn workspace(credential: &Credential) -> Option<(String, Option<String>)> {
     let claims = claims(credential.secret.expose());
     let workspace = claims["https://api.openai.com/auth"]["chatgpt_account_id"]
         .as_str()
-        .filter(|workspace| !workspace.is_empty())?;
-    let email = claims["https://api.openai.com/profile"]["email"].as_str();
-    Some((workspace.to_owned(), email.map(str::to_owned)))
+        .filter(|workspace| !workspace.is_empty());
+    let email = claims["https://api.openai.com/profile"]["email"]
+        .as_str()
+        .filter(|email| !email.is_empty());
+    match workspace {
+        Some(workspace) => Some((
+            workspace.to_owned(),
+            email.map(str::to_owned).or_else(|| {
+                credential
+                    .identity
+                    .as_ref()
+                    .and_then(|(_, mail)| mail.clone())
+            }),
+        )),
+        None => credential.identity.clone(),
+    }
 }
 
 /// `None` for an answer with no `rate_limit` at all, such as an error sent

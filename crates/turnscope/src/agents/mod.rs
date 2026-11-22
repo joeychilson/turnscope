@@ -96,6 +96,18 @@ pub trait Agent: Sync {
     /// The command that `folder`'s configuration runs for Turnscope's MCP
     /// server, if any. Each of its folders keeps its own.
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
+
+    /// Whether `path` is a login file for this agent: changes to it wake the
+    /// engine to refresh stale or failing accounts right away.
+    fn login_file(&self, _path: &Path) -> bool {
+        false
+    }
+
+    /// In-band limit readings from JSON a harness pipes to `turnscope statusline`
+    /// on standard input, such as Claude Code's `rate_limits` field.
+    fn statusline_limits(&self, _input: &Value, _now: i64) -> Option<InBand> {
+        None
+    }
 }
 
 /// What Turnscope knows of an agent as a program.
@@ -138,13 +150,52 @@ pub struct Read {
     pub sessions: BTreeMap<String, Session>,
     /// By id, each response's reports merged.
     pub responses: HashMap<String, Response>,
+    /// Live limit snapshots emitted in-band by the agent (such as Codex's
+    /// `token_count` events), newest kept per `(provider, scope)`.
+    pub limits: Vec<InBand>,
     /// Lines or rows it couldn't read.
     pub skipped: u64,
+}
+
+/// Live limit readings emitted directly by an agent, avoiding a separate
+/// provider API poll.
+pub struct InBand {
+    /// The provider as the agent's responses name it (matching `sign_in.provider`).
+    pub provider: String,
+    /// When the agent recorded this snapshot, in Unix milliseconds.
+    pub at: i64,
+    /// Optional plan name reported alongside the limits (such as `"plus"`).
+    pub plan: Option<String>,
+    pub readings: Vec<crate::providers::Reading>,
 }
 
 impl Read {
     pub fn session(&mut self, id: &str) -> &mut Session {
         self.sessions.entry(id.to_owned()).or_default()
+    }
+
+    /// Record an in-band limit snapshot, keeping the newest timestamp for each
+    /// `(provider, scope)` bucket group so re-reading a long file keeps only
+    /// its latest snapshot.
+    pub fn in_band(&mut self, snapshot: InBand) {
+        if snapshot.readings.is_empty() {
+            return;
+        }
+        let scope = snapshot.readings[0].scope.as_deref();
+        if let Some(existing) = self.limits.iter_mut().find(|known| {
+            known.provider == snapshot.provider
+                && known
+                    .readings
+                    .first()
+                    .and_then(|reading| reading.scope.as_deref())
+                    == scope
+        }) {
+            if snapshot.at >= existing.at {
+                *existing = snapshot;
+            }
+        } else {
+            self.limits.push(snapshot);
+        }
     }
 
     /// Take in a response, and its session as one this file tells of. One

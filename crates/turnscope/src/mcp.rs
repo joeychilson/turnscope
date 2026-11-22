@@ -418,8 +418,15 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
             }
         },
     };
-    // Each answer is as of now: what changed since is read first.
-    let caught = turnscope::catch_up(db, &server.home, Some(PATIENCE));
+    // Each answer is as of now: what changed since is read first. While the
+    // menu bar app holds `app.lock`, it keeps limits and prices current
+    // outside any agent sandbox, so a sandboxed MCP server only ingests local
+    // history and never poisons `account.problem` with blocked network calls.
+    let caught = if turnscope::engine::running(&server.data) {
+        turnscope::ingest::ingest(db, &server.home, Some(PATIENCE))
+    } else {
+        turnscope::catch_up(db, &server.home, Some(PATIENCE))
+    };
     // While all of history is read, the first time or after an update, what
     // was read before is only part of it: 450,000 responses read again
     // after an update gave 153,450 at one call, then 383,724 (2026-11-18).

@@ -167,6 +167,10 @@ impl Agent for Antigravity {
         }
         Some(server["command"].as_str()?.to_owned())
     }
+
+    fn login_file(&self, path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str()) == Some(FALLBACK)
+    }
 }
 
 /// The sign-in the Keychain item's value `kept` holds, when it's one to a

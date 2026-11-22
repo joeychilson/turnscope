@@ -111,6 +111,10 @@ impl Agent for Pi {
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
         super::json_mcp_command(&folder.join("mcp.json"), "/mcpServers/turnscope/command")
     }
+
+    fn login_file(&self, path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str()) == Some("auth.json")
+    }
 }
 
 fn read_line(line: &Value, cursor: &mut Cursor, read: &mut Read) {

@@ -18,7 +18,8 @@ const FILE: &str = "turnscope.db";
 
 /// The schema, one script per revision. A shipped script is never edited: a
 /// change is a new one.
-const REVISIONS: &[&str] = &[r#"
+const REVISIONS: &[&str] = &[
+    r#"
 -- Each history file an agent keeps, as its last read left it.
 CREATE TABLE file (
     id INTEGER PRIMARY KEY,
@@ -162,7 +163,15 @@ CREATE TABLE failing (
     why TEXT,                      -- what the last one met, as the log says it
     retry_at INTEGER               -- not read again before then
 ) STRICT, WITHOUT ROWID;
-"#];
+"#,
+    r#"
+-- Per-account scheduling and full-poll watermarks for in-band readings.
+ALTER TABLE account ADD COLUMN full_read_at INTEGER;
+ALTER TABLE account ADD COLUMN checked_at INTEGER;
+ALTER TABLE account ADD COLUMN next_check_at INTEGER;
+UPDATE account SET full_read_at = read_at WHERE read_at IS NOT NULL;
+"#,
+];
 
 /// "TRNS", in the header, so a file that isn't Turnscope's is never written.
 const APPLICATION_ID: i32 = 0x5452_4E53;
@@ -243,6 +252,18 @@ pub fn read(dir: &Path) -> Option<Connection> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let db = Connection::open_with_flags(dir.join(FILE), flags).ok()?;
     db.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
+    (revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
+}
+
+/// An existing database at this binary's revision for a quick best-effort
+/// write (such as `statusline` recording live `rate_limits` from stdin),
+/// never creating or migrating one and waiting at most `timeout`.
+pub fn open_existing_rw(dir: &Path, timeout: std::time::Duration) -> Option<Connection> {
+    let flags =
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let db = Connection::open_with_flags(dir.join(FILE), flags).ok()?;
+    db.busy_timeout(timeout).ok()?;
+    db.pragma_update(None, "synchronous", "NORMAL").ok()?;
     (revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
 }
 
@@ -335,7 +356,8 @@ fn import(tx: &Transaction) -> rusqlite::Result<()> {
          INSERT INTO response SELECT agent, id, session, copy, file, folder, at, provider, model,
              input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
              web_searches, priority, recorded, cost, account FROM old.response;
-         INSERT INTO account SELECT id, provider, kind, title, label, hidden, read_at, problem
+         INSERT INTO account (id, provider, kind, title, label, hidden, read_at, problem, full_read_at)
+             SELECT id, provider, kind, title, label, hidden, read_at, problem, read_at
              FROM old.account;
          INSERT INTO failing (account, reads)
              SELECT id, 2 FROM old.account WHERE problem = 'signIn';
@@ -713,7 +735,7 @@ mod tests {
             ),
             (
                 "account",
-                "xai:user-1|xai|subscription|SuperGrok|NULL|1|900|NULL",
+                "xai:user-1|xai|subscription|SuperGrok|NULL|1|900|NULL|900|NULL|NULL",
             ),
             (
                 "reading",
@@ -817,5 +839,32 @@ mod tests {
         assert_eq!(rows(&db, "SELECT readers, version FROM state"), ["7|2001"]);
         // A refused login 0.2 said to sign in again for still says it.
         assert_eq!(rows(&db, "SELECT account, reads FROM failing"), ["xai:a|2"]);
+    }
+
+    #[test]
+    fn revision_1_migrates_cleanly_to_current_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Connection::open(dir.path().join(FILE)).unwrap();
+        db.pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        db.execute_batch(REVISIONS[0]).unwrap();
+        db.pragma_update(None, "user_version", 1).unwrap();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', 1234)",
+            [],
+        )
+        .unwrap();
+        drop(db);
+
+        let migrated = open(dir.path()).unwrap();
+        assert_eq!(revision(&migrated).unwrap(), REVISIONS.len() as i64);
+        assert_eq!(
+            rows(
+                &migrated,
+                "SELECT id, read_at, full_read_at, checked_at, next_check_at FROM account"
+            ),
+            ["anthropic:a|1234|1234|NULL|NULL"]
+        );
     }
 }
