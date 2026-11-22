@@ -345,8 +345,9 @@ fn import(tx: &Transaction) -> rusqlite::Result<()> {
          INSERT INTO response SELECT agent, id, session, copy, file, folder, at, provider, model,
              input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
              web_searches, priority, recorded, cost, account FROM old.response;
-         INSERT INTO account (id, provider, kind, title, label, hidden, read_at, problem, full_read_at)
-             SELECT id, provider, kind, title, label, hidden, read_at, problem, read_at
+         INSERT INTO account (id, provider, kind, title, label, hidden, read_at, problem,
+                 full_read_at, checked_at)
+             SELECT id, provider, kind, title, label, hidden, read_at, problem, read_at, read_at
              FROM old.account;
          INSERT INTO failing (account, reads)
              SELECT id, 2 FROM old.account WHERE problem = 'signIn';
@@ -724,7 +725,7 @@ mod tests {
             ),
             (
                 "account",
-                "xai:user-1|xai|subscription|SuperGrok|NULL|1|900|NULL|NULL|900",
+                "xai:user-1|xai|subscription|SuperGrok|NULL|1|900|NULL|900|900",
             ),
             (
                 "reading",

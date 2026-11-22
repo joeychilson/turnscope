@@ -142,7 +142,13 @@ impl Provider for Google {
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
         match &credential.refresh {
             Some(refresh) if !credential.fresh(now) => renewed(refresh, now, by),
-            _ => read(&credential.secret, by),
+            // A token refused before it expires, or with no expiry read, is
+            // renewed: one without would be refused until signing in again.
+            Some(refresh) => match read(&credential.secret, by) {
+                Err(Problem::SignIn) => renewed(refresh, now, by),
+                limits => limits,
+            },
+            None => read(&credential.secret, by),
         }
     }
 }
@@ -191,18 +197,27 @@ fn locked<T>(kept: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// The plan's limits, asked with a token renewed from `refresh`: the one
-/// renewed before, while it's good, or else a new one. A token that's
-/// refused isn't kept.
+/// renewed before, while it's good and taken, or else a new one. A token
+/// that's refused isn't kept.
 fn renewed(refresh: &Refresh, now: i64, by: Instant) -> Result<Limits, Problem> {
     let key = refresh.token.fingerprint();
-    let kept = locked(&RENEWED)
-        .remove(&key)
-        .filter(|(_, expires)| *expires > now + MINUTE);
-    let (token, expires) = match kept {
+    // Its own statement, so the lock goes before the request.
+    let kept = locked(&RENEWED).remove(&key);
+    let kept = kept
+        .filter(|(_, expires)| *expires > now + MINUTE)
+        .map(|(token, expires)| {
+            let limits = read(&token, by);
+            (token, expires, limits)
+        })
+        .filter(|(_, _, limits)| !matches!(limits, Err(Problem::SignIn)));
+    let (token, expires, limits) = match kept {
         Some(kept) => kept,
-        None => renew(refresh, now, by)?,
+        None => {
+            let (token, expires) = renew(refresh, now, by)?;
+            let limits = read(&token, by);
+            (token, expires, limits)
+        }
     };
-    let limits = read(&token, by);
     if !matches!(limits, Err(Problem::SignIn)) {
         let mut renewed = locked(&RENEWED);
         renewed.retain(|_, (_, expires)| *expires > now);
