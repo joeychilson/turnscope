@@ -34,7 +34,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use super::{Account, Info, Limits, Problem, Provider, Reading};
+use super::{Info, Limits, Problem, Provider, Reading};
 use crate::agents::Credential;
 
 pub struct Acme;
@@ -62,10 +62,6 @@ const USAGE: &str = "https://api.acme.example/v1/usage";
 impl Provider for Acme {
     fn info(&self) -> &'static Info {
         &INFO
-    }
-
-    fn account(&self, credential: &Credential) -> Option<Account> {
-        super::account(INFO.id, credential, || credential.identity.clone())
     }
 
     fn limits(&self, credential: &Credential, _now: i64, by: Instant) -> Result<Limits, Problem> {
@@ -103,9 +99,10 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
 ```
 
 `account` says which account a credential is to, from the credential alone,
-or `None` when it can't tell: that login's usage is then no account's. It
-reads `credential.identity`, which the agent's files gave, or the token's
-claims (`crate::agents::claims`). An `Account`:
+or `None` when it can't tell: that login's usage is then no account's. By
+default a key's is the provider's API account and a sign-in's is
+`credential.identity`, which the agent's files gave. Implement it where
+the token's claims tell more (`crate::agents::claims`). An `Account`:
 
 | Field | What it is |
 |---|---|

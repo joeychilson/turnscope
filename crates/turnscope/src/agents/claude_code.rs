@@ -1,43 +1,36 @@
 //! Claude Code.
 //!
-//! Each session is a JSON Lines log, `~/.claude/projects/<project>/<session>.jsonl`,
-//! and each subagent another, `<project>/<session>/subagents/agent-<id>.jsonl`,
-//! described in `agent-<id>.meta.json` beside it. A subagent's lines carry
-//! its session's `sessionId` and its own `agentId`. A second account's
-//! folder is `~/.claude-<name>`, used through `CLAUDE_CONFIG_DIR`, once
-//! Claude Code has written `.claude.json` there.
+//! A session is a JSON Lines log, `~/.claude/projects/<project>/<session>.jsonl`,
+//! and each of its subagents another,
+//! `<project>/<session>/subagents/agent-<id>.jsonl`, described in
+//! `agent-<id>.meta.json` beside it; a subagent's lines carry its session's
+//! `sessionId` and its own `agentId`. A second account's folder is
+//! `~/.claude-<name>`, used through `CLAUDE_CONFIG_DIR`, once it holds
+//! `.claude.json`.
 //!
-//! What follows was measured on this Mac's history, September and October 2026.
+//! Measured on this Mac's history, September and October 2026:
 //!
-//! **Usage.** A response is written one line per content block, its usage as
-//! it stood then, so its output count grows from line to line: 119,715 lines
-//! held 53,928 responses. A response is `message.id` with `requestId`, and its
-//! reports merge to the largest. `input_tokens` excludes what was read from
-//! and written to the cache. A response made of several model calls lists
-//! them in `usage.iterations`, and its own counts are their sum or zero; for
-//! some responses the calls are the only record.
-//!
-//! **Forks.** A fork's log opens with a copy of its parent's history, through
-//! the line making the call that started it (`toolUseId` in its description),
-//! under the fork's `agentId`. A fork of the session itself opens with
-//! `fork-context-ref`, naming the parent in `parentSessionId`, and a copy of
-//! the parent's last response, ended by the fork's first prompt. The copy is
-//! the parent's: its responses are marked copies of the parent's, and
-//! nothing else in it is the fork's.
-//!
-//! **Continuations and `/clear`.** A line can name, in `session_id`, another
-//! session than its `sessionId`. A session carried on in a new log (the old
-//! log ends with `continued-in`) opens with what the old one held since it
-//! last compacted, under the old session's name; but after `/clear`, every
-//! line goes on naming the session the process began as: 120 of the 123 logs
-//! naming another session held only responses of their own. So such a line's
-//! response is its log's, as a copy: where the session it names holds it
-//! too, that session's own report wins.
-//!
-//! **Not read.** `cost-state` records count calls the log doesn't hold,
-//! about 1–2% of cost; usage is counted from the log alone.
-//! Claude Code deletes logs older than `cleanupPeriodDays`; what was read of
-//! them stays.
+//! - **Usage.** A response is written a line per content block, each with its
+//!   usage as it stood then (119,715 lines held 53,928 responses), so its
+//!   reports, `message.id` with `requestId`, merge to the largest.
+//!   `input_tokens` leaves out the cache. A response of several model calls
+//!   lists them in `usage.iterations`, and its own counts are their sum or
+//!   zero.
+//! - **Forks.** A fork's log opens with a copy of its parent's history, under
+//!   the fork's `agentId`, through the call that started it (`toolUseId` in
+//!   its description). A fork of the session itself opens with
+//!   `fork-context-ref`, naming the parent in `parentSessionId`, and a copy of
+//!   the parent's last response, ended by the fork's first prompt. A copy's
+//!   responses are the parent's, and nothing else in it is the fork's.
+//! - **Continuations.** A line can name another session in `session_id` than
+//!   in `sessionId`. A session carried on in a new log opens with what the old
+//!   one held since it last compacted, under the old one's name; but after
+//!   `/clear`, every line names the session the process began as (120 of 123
+//!   such logs held only responses of their own). So such a line's response
+//!   is its log's, as a copy: the named session's own report wins.
+//! - **Not read.** `cost-state` counts calls the log doesn't hold, about 1–2%
+//!   of cost. Logs older than `cleanupPeriodDays` are deleted; what was read
+//!   of them stays.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -127,27 +120,12 @@ fn typed(text: &str) -> String {
         };
     }
     let mut text = super::without_tags(text, INJECTED);
-    if !text.contains("pasted_content") {
-        return text;
-    }
-    for mark in ["<pasted_content", "</pasted_content"] {
-        let mut from = 0;
-        while let Some(rel) = text[from..].find(mark) {
-            let start = from + rel;
-            let after = start + mark.len();
-            let boundary = text[after..]
-                .chars()
-                .next()
-                .is_some_and(|ch| ch == '>' || ch.is_whitespace());
-            if !boundary {
-                from = after;
-                continue;
-            }
-            let Some(end) = text[after..].find('>') else {
-                break;
-            };
-            text.replace_range(start..after + end + 1, "");
-        }
+    let paste = |text: &str| {
+        super::mark(text, "<", "pasted_content")
+            .or_else(|| super::mark(text, "</", "pasted_content"))
+    };
+    while let Some((start, end)) = paste(&text) {
+        text.replace_range(start..end, "");
     }
     text.trim().to_owned()
 }
@@ -255,10 +233,9 @@ impl Message<'_> {
     }
 }
 
-/// A backend other than Anthropic's, as a gateway, can leave out the cache
-/// counts or their `cache_creation` split (not measured), so a cache count
-/// left out is 0. The input and output counts stay required: a line without
-/// them is skipped, and `doctor` says so, which is how a new format shows.
+/// The input and output counts are required, so a new format shows in
+/// `doctor` as lines skipped. A gateway may leave out the cache counts or
+/// their split (not measured), which are then 0.
 #[derive(Clone, Copy, Deserialize)]
 struct Counts {
     input_tokens: u64,
@@ -300,8 +277,8 @@ impl Counts {
     }
 }
 
-/// Top-level fields are listed directly rather than via `#[serde(flatten)]`
-/// so serde streams each line without buffering the whole usage object.
+/// `Counts`' fields again, over `#[serde(flatten)]`, which would buffer the
+/// whole object.
 #[derive(Deserialize)]
 struct Usage<'a> {
     input_tokens: u64,
@@ -366,10 +343,10 @@ impl Meta {
 
     /// A fork's copy of `parent`'s history, through the call that started it.
     fn copy(&self, parent: &str) -> Option<Copy> {
-        self.is_fork.then_some(())?;
+        let through = self.tool_use_id.clone().filter(|_| self.is_fork)?;
         Some(Copy {
             parent: parent.to_owned(),
-            through: Some(self.tool_use_id.clone()?),
+            through: Some(through),
         })
     }
 }
@@ -447,10 +424,8 @@ impl Agent for ClaudeCode {
         if start && let Some(agent) = &agent {
             let meta = meta(file, agent);
             // Only the description tells a fork from another subagent, and
-            // Claude Code may write it up to 1.5 s after the log. So a new
-            // log waits for it, and for one read while it was still being
-            // written, which won't parse. An error, so it's tried again at
-            // the next read.
+            // Claude Code may write it up to 1.5 s after the log: a new log
+            // fails its read until it's there whole, to be read again.
             if meta.is_none() && begun_lately(file) {
                 return Err(Error::Failed(format!(
                     "{} waits for its description",
@@ -460,8 +435,7 @@ impl Agent for ClaudeCode {
             let meta = meta.unwrap_or_default();
             let parent = meta.parent(&session);
             cursor.copy = meta.copy(&parent);
-            // A fork here is a subagent begun with a copy of its parent's
-            // context: it's still the parent's subagent.
+            // A subagent forked with its parent's context is still a subagent.
             let described = read.session(&own);
             described.parent = Some(parent);
             if let Some(task) = meta.description {
@@ -481,9 +455,8 @@ impl Agent for ClaudeCode {
     }
 
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
-        // Without an account and organization in settings, Anthropic's account
-        // isn't known anyway; check it first so a signed-out folder doesn't
-        // spawn `/usr/bin/security`.
+        // With no account in its settings, there's nothing to read the
+        // login for, so a signed-out folder asks the Keychain nothing.
         let Some(identity) = identity(&settings(folder, home))? else {
             return Ok(vec![Login {
                 provider: "anthropic".to_owned(),
@@ -688,7 +661,8 @@ fn identity(settings: &Path) -> Result<Option<(String, Option<String>)>> {
     )
 }
 
-/// The sign-in that the Keychain item's value `kept` holds, with its `identity`.
+/// The sign-in `kept` holds, the Keychain item's JSON or `.credentials.json`'s,
+/// with its `identity`.
 fn credential(kept: &Value, identity: (String, Option<String>)) -> Option<Credential> {
     let token = super::str_at(kept, "/claudeAiOauth/accessToken")?;
     Some(Credential {

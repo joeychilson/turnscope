@@ -1,34 +1,28 @@
 //! Pi.
 //!
-//! Each session is a JSON Lines file,
+//! A session is a JSON Lines file,
 //! `~/.pi/agent/sessions/<directory>/<time>_<session>.jsonl`, opening with a
-//! `session` header that names it, its working directory, and the session it
-//! was forked from (`parentSession`, that session's file). Every later line
-//! is an entry following another (`parentId`), so a session is a tree: going
-//! back and trying again starts a branch, and the abandoned one stays in the
-//! file. Its responses were still charged, so every branch is counted.
+//! `session` header naming it, its working directory and the session it was
+//! forked from (`parentSession`). Every later line is an entry following
+//! another (`parentId`), so a session is a tree whose abandoned branches stay
+//! in the file; they were charged, so every branch is counted.
 //!
-//! What follows was measured on this Mac's history, September and October
-//! 2026, and read in Pi 1.0.1's session manager where none was written yet.
+//! Measured on this Mac's history, September and October 2026, and read in
+//! Pi 1.0.1's session manager where none was written yet:
 //!
-//! **Usage.** An assistant message carries `usage`: `input` excludes cached
-//! input, `output` includes `reasoning`, `cacheWrite1h` is the part of
-//! `cacheWrite` kept for an hour, and `cost.total` is what Pi worked out it
-//! cost. A response is its `responseId`. Calls that are no message carry
-//! usage too: a `usage` entry (keeping the cache warm), and the model call
-//! that wrote a `compaction` or `branch_summary`.
-//!
-//! **Forks.** A fork's file copies every entry of its parent's, times and
-//! response ids as they were, after a header of its own. The copy is the
-//! parent's: its responses are marked copies of the parent's, and nothing
-//! else in it is the fork's.
-//!
-//! **Providers.** A response names its provider as Pi's registry does, kept
-//! as it is: its ChatGPT sign-in is `openai-codex`, beside `openai` for a key,
-//! so its use of a plan is told from its use of the API.
-//!
-//! **Logins** are `auth.json`, an entry per provider under the name its
-//! responses give it.
+//! - **Usage.** An assistant message's `usage`: `input` leaves out the cache,
+//!   `output` includes `reasoning`, `cacheWrite1h` is the part of
+//!   `cacheWrite` kept an hour, and `cost.total` is Pi's estimate. A response
+//!   is its `responseId`. A `usage` entry, keeping the cache warm, and the
+//!   call that wrote a `compaction` or `branch_summary` carry usage too.
+//! - **Forks.** A fork's file copies every entry of its parent's, times and
+//!   response ids as they were, after a header of its own. The copy's
+//!   responses are the parent's, and nothing else in it is the fork's.
+//! - **Providers** are named as Pi's registry names them: its ChatGPT sign-in
+//!   is `openai-codex`, beside `openai` for a key, which tells a plan's use
+//!   from the API's.
+//! - **Logins** are `auth.json`, an entry per provider under the name its
+//!   responses give it.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -100,7 +94,9 @@ struct Message<'a> {
     response_model: Option<Cow<'a, str>>,
     #[serde(rename = "responseId", borrow)]
     response_id: Option<Cow<'a, str>>,
-    timestamp: Option<i64>,
+    /// In Unix milliseconds, where it reads as one; else the line's time.
+    #[serde(borrow)]
+    timestamp: Option<&'a RawValue>,
     #[serde(borrow)]
     usage: Option<&'a RawValue>,
 }
@@ -116,6 +112,7 @@ struct Usage {
     cache_write_1h: Option<u64>,
     output: u64,
     reasoning: Option<u64>,
+    #[serde(default, deserialize_with = "super::lenient")]
     cost: Option<Cost>,
 }
 
@@ -279,7 +276,10 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
                     else {
                         return;
                     };
-                    let at = message.timestamp.or(at);
+                    let at = message
+                        .timestamp
+                        .and_then(|raw| raw.get().parse().ok())
+                        .or(at);
                     (message.usage, provider.to_owned(), model.to_owned(), id, at)
                 }
                 _ => return,
@@ -477,5 +477,24 @@ mod tests {
         assert_eq!((copy.session.as_str(), copy.copy), ("pi:s2", true));
         // A fork is a session of its own.
         assert!(read.sessions["pi:s2"].parent.is_none());
+    }
+
+    #[test]
+    fn an_odd_field_beside_the_usage_doesnt_lose_the_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut odd = usage(50, 0.0);
+        odd["cost"] = json!("n/a");
+        let file = session(
+            dir.path(),
+            "2026-09-30T09-00-00-000Z_s1.jsonl",
+            &[
+                json!({"type": "session", "id": "s1", "timestamp": "2026-09-30T09:00:00Z"}),
+                json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant",
+                    "provider": "xai", "model": "grok-4.6", "responseId": "resp_1", "timestamp": "soon", "usage": odd}}),
+            ],
+        );
+        let response = &Pi.read(&file, "").unwrap().responses["resp_1"];
+        let at = crate::time::millis("2026-09-30T09:00:05Z").unwrap();
+        assert_eq!((response.at, response.cost), (at, None));
     }
 }

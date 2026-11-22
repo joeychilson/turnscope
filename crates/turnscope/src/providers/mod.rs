@@ -43,8 +43,12 @@ pub fn maker(model: &str) -> Option<&'static dyn Provider> {
 /// A provider of models and the accounts that pay for them.
 pub trait Provider: Sync {
     fn info(&self) -> &'static Info;
-    /// The account `credential` is to, from the credential alone.
-    fn account(&self, credential: &Credential) -> Option<Account>;
+    /// The account `credential` is to, from the credential alone: by
+    /// default, a key's is the API account, and a sign-in's the one the
+    /// agent's files name.
+    fn account(&self, credential: &Credential) -> Option<Account> {
+        account(self.info().id, credential, || credential.identity.clone())
+    }
     /// The limits `credential` reads, asked by `by`: a sign-in's are its
     /// account's, and a key's its own. Never given a key where
     /// `Info::key_limits` is false.
@@ -311,11 +315,8 @@ impl Answered {
     }
 }
 
-/// Headers go on curl's stdin so credentials stay out of process listings; `-q`
-/// ignores `~/.curlrc`, and headers with line breaks are rejected to prevent
-/// injection. `--connect-timeout 5` avoids waiting out all of `seconds` on a
-/// blackholed host (measured 2026-10-12: 5.0 s vs full `--max-time`).
-/// A body goes in curl's arguments, so it shows in a process listing.
+/// Ask `url` with `headers`, giving up after `seconds`. A body goes in
+/// curl's arguments, so it shows in a process listing.
 pub fn request(
     url: &str,
     headers: &[&str],
@@ -333,6 +334,7 @@ fn requested(
     body: Option<&str>,
     time: Duration,
 ) -> std::result::Result<Answered, String> {
+    // A line break would add a header of its own.
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err("a header holds a line break, so nothing was sent".to_owned());
     }
@@ -345,7 +347,9 @@ fn requested(
 }
 
 /// Run curl for `url` with `args`, writing `input` to its standard input,
-/// giving up after `time`.
+/// giving up after `time`. Headers go on standard input, out of process
+/// listings; `-q` ignores `~/.curlrc`. `--connect-timeout 5` gives up on a
+/// host that never answers in 5 s, over all of `time` (measured 2026-10-12).
 fn curl(
     url: &str,
     args: &[&str],
@@ -370,8 +374,8 @@ fn curl(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
-    // Write before waiting (headers/forms fit in the pipe buffer), and still
-    // reap curl so its own error wins if it exited before reading stdin.
+    // Headers and forms fit in the pipe's buffer, so this doesn't block. A
+    // curl that exited before reading them says why, over the failed write.
     let write = curl
         .stdin
         .take()
@@ -394,8 +398,8 @@ fn curl(
     })
 }
 
-/// Stable wording per exit code for log deduplication (curl's own message
-/// includes the elapsed milliseconds).
+/// Why curl failed, the same each time for the log: its own message holds the
+/// milliseconds it took.
 fn unanswered(code: Option<i32>, said: &str) -> String {
     match code {
         Some(6) => "host not found",

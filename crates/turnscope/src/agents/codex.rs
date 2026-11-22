@@ -1,61 +1,40 @@
 //! Codex.
 //!
-//! Each thread is written to JSON Lines rollouts,
-//! `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<thread>.jsonl`, moved to
-//! `archived_sessions/` when archived. Every line is `{timestamp, ordinal,
-//! type, payload}`, and a rollout opens with its thread's `session_meta`.
+//! A thread is written to rollouts,
+//! `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<thread>.jsonl`, moved
+//! to `archived_sessions/` when archived: JSON Lines of `{timestamp, ordinal,
+//! type, payload}`, opening with the thread's `session_meta`.
 //! `session_index.jsonl` names threads. A second account's folder is
-//! `~/.codex-<name>`, used through `CODEX_HOME`, once signed in there.
+//! `~/.codex-<name>`, used through `CODEX_HOME`.
 //!
-//! What follows was measured on this Mac's history, September and October 2026.
+//! Measured on this Mac's history, September and October 2026:
 //!
-//! **Usage.** Codex writes a `token_usage_record` per response, with a unique
-//! `response_id`, just before the `token_count` event that brings the
-//! thread's running total up to date. Each record is counted, and a running
-//! total's growth only beyond the records written since the total before it:
-//! in a rollout with records that is nothing (48,823 of 49,260 totals), but a
-//! rollout written before records existed is counted from its totals alone.
-//! A compaction's request is recorded and left out of the total, which then
-//! grows by less than its records.
+//! - **Usage.** A `token_usage_record` per response, unique by
+//!   `response_id`, comes just before the `token_count` that brings the
+//!   thread's running total up to date. Records are counted, and a total's
+//!   growth only beyond the records since the total before: none, in 48,823
+//!   of 49,260 totals, so a rollout written before records existed is
+//!   counted from its totals. A compaction's request is recorded and left
+//!   out of the total.
+//! - **Subagents.** A spawned subagent's rollout opens with a copy of its
+//!   parent's history, up to `subagent_history_start_ordinal`. A record
+//!   counts for the thread its `thread_id` names, or else the rollout's.
+//! - **Reviews** (`thread_source` `guardian_review`) ask a model whether to
+//!   approve an action, and are read as nothing.
 //!
-//! **Subagents.** A spawned subagent's rollout opens with a copy of its
-//! parent's history, up to `subagent_history_start_ordinal`: its totals,
-//! prompts and times are the parent's, so they're passed over. A record,
-//! copied or not, counts for the thread its `thread_id` names, or else for
-//! the rollout's.
+//! From Codex's code (openai/codex at `a9b0815`, read 2026-10-12):
 //!
-//! **Reviews** (`thread_source` `guardian_review`) are Codex asking a model
-//! whether to approve an action, handing it the whole transcript. They do none
-//! of the work and are read as nothing.
-//!
-//! What follows is from Codex's code (openai/codex at `a9b0815`, read
-//! 2026-10-12), not measured.
-//!
-//! **A thread's rollouts.** A resumed thread goes on in its rollout. One
-//! rewound to an earlier turn goes on in a new rollout,
-//! `rollout-<time>-<thread>_<rollout id>.jsonl`, whose `session_meta` has a
-//! `history_base`: an earlier rollout, kept below `end_ordinal_exclusive`
-//! (`thread-store/src/local/revert_thread.rs`). The new rollout's ordinals
-//! go on from there (`rollout_lineage.rs`). The responses a rewind went back
-//! past were made, and stay counted.
-//!
-//! **Forks.** A fork of a paginated thread points at its parent's history
-//! with `history_base` and copies none of it. Its own history starts at
-//! `forked_from_ordinal_exclusive`, which a rewind of the fork keeps
-//! (`rollout/src/metadata.rs`). A fork of a legacy thread
-//! (`history_mode` `legacy`) copies it, and the copy is the parent's: its
-//! records name the parent's thread, its settings the models they were made
-//! with, and nothing else in it is the fork's. A subagent given its parent's
-//! history has a `forked_from_id` too, from the parent's `session_meta` in
-//! its copy (`core/src/session/session.rs`), but its copy ends at
-//! `subagent_history_start_ordinal`.
-//!
-//! **Limits.** A `token_count` also gives the account's limits as of that
-//! response, `rate_limits`, which are taken in between reads of the
-//! provider (`limits::record_in_band`). Not measured: the fields are as
-//! Codex's `RateLimitSnapshot` names them, `resets_at` in Unix seconds.
-//! Files read before aren't read again for them, so `ingest::READERS`
-//! stays: what they hold is older than the account's last read.
+//! - **Rewinds.** A thread rewound to an earlier turn goes on in a new
+//!   rollout, `rollout-<time>-<thread>_<rollout id>.jsonl`, whose
+//!   `session_meta` has a `history_base` kept below `end_ordinal_exclusive`.
+//!   What was rewound past was used, and stays counted.
+//! - **Forks.** A fork of a paginated thread points at its parent's history
+//!   with `history_base`; its own starts at `forked_from_ordinal_exclusive`.
+//!   A fork of a legacy thread (`history_mode` `legacy`) copies it: the
+//!   copy's records name the parent's thread, and nothing else in it is the
+//!   fork's.
+//! - **Limits.** A `token_count`'s `rate_limits` are the account's as of that
+//!   response, as `RateLimitSnapshot` names them, `resets_at` in Unix seconds.
 
 use std::borrow::Cow;
 use std::ops::ControlFlow;
@@ -150,12 +129,10 @@ impl Copy {
     }
 
     /// Whether `line`, with `payload`, in a rollout of `thread`, is of the
-    /// copy, keeping `copying` up to date. A legacy fork's copy runs from the
-    /// parent's `session_meta` to the `thread_settings_applied` that names
-    /// `thread`, written with the copy; a copied one names its owner
-    /// (`core/src/session/mod.rs`). A Codex before 2026-08-29
-    /// (openai/codex#41567) named no thread there, so the rest of such a
-    /// fork reads as the copy until a current Codex resumes it.
+    /// copy. A legacy fork's copy runs from the parent's `session_meta` to
+    /// the `thread_settings_applied` naming `thread`. A Codex before
+    /// 2026-08-29 (openai/codex#41567) named no thread there, so the rest of
+    /// such a fork reads as the copy until a current Codex resumes it.
     fn holds(&mut self, line: &Line<'_>, payload: &Payload<'_>, thread: &str) -> bool {
         if self.legacy_fork {
             let names = |native: &Option<Cow<'_, str>>| {
@@ -182,12 +159,9 @@ impl Copy {
     }
 }
 
-/// The input, output and total counts are required: usage without one is
-/// skipped, and `doctor` says so, which is how a renamed count shows. A
-/// record holds its total too: totals grew by no more than their records in
-/// 48,823 of 49,260 cases. The cache and reasoning counts are 0 when left
-/// out, as counts Codex added later are in older rollouts (which ones lack
-/// them wasn't measured).
+/// The input, output and total counts are required, so a renamed one shows
+/// in `doctor` as usage skipped. The others, which Codex added later, are 0
+/// when left out.
 #[derive(Deserialize, Serialize, Default, Clone, Copy, PartialEq, Eq)]
 struct Usage {
     input_tokens: u64,
@@ -467,12 +441,10 @@ impl Agent for Codex {
             credential: secret.map(|secret| Credential {
                 provider: "openai",
                 expires: (!key)
-                    .then(|| {
-                        super::claims(secret)["exp"]
-                            .as_i64()
-                            .and_then(super::unix_millis)
-                    })
-                    .flatten(),
+                    .then(|| super::claims(secret)["exp"].as_i64())
+                    .flatten()
+                    .filter(|exp| *exp > 0)
+                    .and_then(|exp| exp.checked_mul(1000)),
                 secret: Secret::new(secret),
                 key,
                 identity,
@@ -509,11 +481,12 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
                     session.cwd = Some(cwd.to_owned());
                 }
             }
-            let settings = Settings {
-                model: payload.model.as_deref().map(Cow::Borrowed),
-                service_tier: payload.service_tier.as_deref().map(Cow::Borrowed),
-            };
-            apply(settings, cursor, read);
+            apply(
+                payload.model.as_deref(),
+                payload.service_tier.as_deref(),
+                cursor,
+                read,
+            );
         }
         // Before any usage, a count has no `info`.
         ("event_msg", Some("token_count")) => {
@@ -532,8 +505,9 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
             }
         }
         ("event_msg", Some("thread_settings_applied")) => {
-            if let Some(settings) = parsed(payload.thread_settings) {
-                apply(settings, cursor, read);
+            if let Some(settings) = parsed::<Settings>(payload.thread_settings) {
+                let (model, tier) = (settings.model.as_deref(), settings.service_tier.as_deref());
+                apply(model, tier, cursor, read);
             }
         }
         ("token_usage_record", _) => {
@@ -615,11 +589,11 @@ fn open(meta: &Payload<'_>, cursor: &mut Cursor, read: &mut Read) {
     cursor.thread = Some(thread);
 }
 
-fn apply(settings: Settings<'_>, cursor: &mut Cursor, read: &mut Read) {
-    if let Some(tier) = settings.service_tier.as_deref() {
+fn apply(model: Option<&str>, tier: Option<&str>, cursor: &mut Cursor, read: &mut Read) {
+    if let Some(tier) = tier {
         cursor.priority = tier == "priority";
     }
-    if let Some(model) = settings.model.as_deref().filter(|model| !model.is_empty()) {
+    if let Some(model) = model.filter(|model| !model.is_empty()) {
         for mut waiting in cursor.waiting.drain(..) {
             waiting.model = model.to_owned();
             waiting.priority = cursor.priority;
@@ -739,10 +713,9 @@ fn in_band(limits: RateLimits, cursor: &Cursor, at: i64) -> Option<InBand> {
     })
 }
 
-/// How many responses wait for a model at most. The cursor holds them, and
-/// is saved after each read, so it's kept small. Past that, a response is
-/// counted under no model, which has no price. (Not measured: no rollout was
-/// read for how many responses come before its first model.)
+/// How many responses wait for a model at most, as the cursor holds them.
+/// Past that, a response stays under no model, which has no price. (Not
+/// measured: how many come before a rollout's first model.)
 const WAITING: usize = 64;
 
 /// Take in `response`. Records name no model, so it's under the model,
@@ -1199,71 +1172,54 @@ mod tests {
     #[test]
     fn a_rollout_gives_the_last_limits_codex_wrote() {
         let dir = tempfile::tempdir().unwrap();
+        let limits = |ordinal: i64, primary: f64, secondary: f64| {
+            let window = |used: f64, minutes: i64| json!({"used_percent": used, "window_minutes": minutes, "resets_at": 1_790_870_000});
+            let limits = json!({"limit_id": "codex", "plan_type": "plus",
+                "primary": window(primary, 300), "secondary": window(secondary, 10080)});
+            line(
+                ordinal,
+                "event_msg",
+                json!({"type": "token_count", "info": null, "rate_limits": limits}),
+            )
+        };
         let file = rollout(
             dir.path(),
-            "t-limits",
+            "t1",
             &[
                 line(
                     0,
                     "session_meta",
-                    json!({"id": "t-limits", "model_provider": "openai"}),
+                    json!({"id": "t1", "model_provider": "openai"}),
                 ),
-                line(1, "turn_context", json!({"model": "gpt-5.5"})),
-                json!({
-                    "timestamp": "2026-10-01T10:00:00Z",
-                    "ordinal": 2,
-                    "type": "event_msg",
-                    "payload": {
-                        "type": "token_count",
-                        "info": null,
-                        "rate_limits": {
-                            "limit_id": "codex",
-                            "plan_type": "plus",
-                            "primary": {"used_percent": 15.0, "window_minutes": 300, "resets_at": 1_790_870_000},
-                            "secondary": {"used_percent": 4.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
-                        }
-                    }
-                }),
-                json!({
-                    "timestamp": "2026-10-01T10:05:00Z",
-                    "ordinal": 3,
-                    "type": "event_msg",
-                    "payload": {
-                        "type": "token_count",
-                        "info": null,
-                        "rate_limits": {
-                            "limit_id": "codex",
-                            "plan_type": "plus",
-                            "primary": {"used_percent": 22.5, "window_minutes": 300, "resets_at": 1_790_870_000},
-                            "secondary": {"used_percent": 6.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
-                        }
-                    }
-                }),
+                limits(1, 15.0, 4.0),
+                limits(2, 22.5, 6.0),
             ],
         );
         let read = Codex.read(&file, "").unwrap();
-        assert_eq!(read.limits.len(), 1);
-        let limits = &read.limits[0];
-        assert_eq!(limits.provider, "openai");
+        let [limits] = read.limits.as_slice() else {
+            panic!("one snapshot");
+        };
         assert_eq!(
-            limits.at,
-            crate::time::millis("2026-10-01T10:05:00Z").unwrap()
+            (limits.provider.as_str(), limits.at),
+            (
+                "openai",
+                crate::time::millis("2026-09-30T09:00:02Z").unwrap()
+            )
         );
-        let pairs: Vec<_> = limits
+        let readings: Vec<_> = limits
             .readings
             .iter()
             .map(|reading| {
-                let name = reading.name.as_str();
                 (
                     reading.key.as_str(),
-                    name,
+                    reading.name.as_str(),
                     reading.scope.as_deref(),
                     reading.used,
                 )
             })
             .collect();
         assert_eq!(
-            pairs,
+            readings,
             [
                 ("primary_window", "5 hours", None, 22.5),
                 ("secondary_window", "Weekly", None, 6.0),

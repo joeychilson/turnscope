@@ -1,46 +1,32 @@
 //! Grok Build.
 //!
-//! Each session is a directory, `~/.grok/sessions/<encoded directory>/<session>/`:
-//! `summary.json`, rewritten as the session goes on, with its directory,
-//! times and title; and
-//! `updates.jsonl`, its stream of updates, one JSON-RPC notification a line,
-//! and the only record of usage: a `turn_completed` per prompt with the
-//! turn's usage per model and what xAI charged. `chat_history.jsonl`, the
-//! conversation, isn't read.
+//! A session is a directory, `~/.grok/sessions/<encoded directory>/<session>/`,
+//! of `summary.json`, rewritten as it goes on, with its directory and title,
+//! and `updates.jsonl`, a JSON-RPC notification a line: the only record of
+//! usage, a `turn_completed` per prompt with the turn's usage per model and
+//! what xAI charged. `chat_history.jsonl` isn't read.
 //!
-//! What follows was measured on this Mac's history, September and October 2026.
+//! Measured on this Mac's history, September and October 2026:
 //!
-//! **Usage.** A turn's `inputTokens` includes what was read from and written
-//! to the cache, and `outputTokens` reasoning. `costUsdTicks` is the charge,
-//! ten billion ticks to the dollar: the bill, not an estimate; a turn without
-//! one is marked `usageIsIncomplete`, its cost unknown. A turn is many model
-//! calls counted together, so the prompt that sets its price tier is their
-//! average. A `prompt_id` is unique across sessions.
-//!
-//! **Subagents** are sessions of their own, spawned by a parent's
-//! `subagent_spawned` update, each with turns of its own. A parent's turn also
-//! counts its subagents' turns that ended in it, under the same models: in
-//! every one of 13 cases, the parent's own model calls and its finished
-//! subagents' added up to its turn's. So a parent's turn is counted less its
-//! subagents' turns that ended after its last turn did, and no later than it.
-//! Chosen over taking off every turn its updates held of each subagent that
-//! finished in it (`subagent_finished`): a subagent at work in two of its
-//! parent's turns was taken off each of them whole, and one stopped before
-//! it finished was taken off none. (Whether a stopped subagent's turns are
-//! in its parent's wasn't measured.)
-//!
-//! The cost: a parent read again from its start, as after `READERS` is
-//! raised, once a subagent's folder is gone, counts that subagent twice, as
-//! its turns stay and its parent's turn comes out whole. Chosen over
-//! counting a parent's turn whole and its subagents' turns never, which is
-//! right in total but shows no subagent's usage of its own. It needs a
-//! subagent's folder deleted before its parent's.
-//!
-//! **Parsing.** A line is parsed into a struct that borrows its text, with
-//! what a reply streams held unparsed: 190 ms for a made-up 225 MiB of
-//! streamed reply, against 420 ms parsed as a `Value` (November 2026).
-//! Passing over a line that names none of the updates read, before parsing
-//! it, took 57 ms, but would leave a line that can't be read uncounted.
+//! - **Usage.** `inputTokens` includes the cache, and `outputTokens`
+//!   reasoning. `costUsdTicks` is the bill, ten billion ticks to the dollar;
+//!   a turn without one is marked `usageIsIncomplete`. A turn is many model
+//!   calls, so the prompt that sets its tier is their average. A `prompt_id`
+//!   is unique across sessions.
+//! - **Subagents** are sessions of their own, spawned by a parent's
+//!   `subagent_spawned`. A parent's turn counts its subagents' turns that
+//!   ended in it: in all 13 cases, its own calls and its finished subagents'
+//!   added up to its turn's. So it's counted less its subagents' turns that
+//!   ended after its last turn did, and no later than it. Taking off each
+//!   subagent that finished in it (`subagent_finished`) was dropped: one at
+//!   work over two of its turns came off both whole, and one stopped before
+//!   it finished came off neither. A parent read again from its start once a
+//!   subagent's folder is gone counts that subagent twice.
+//! - **Parsing.** A line is parsed into a struct borrowing its text, a
+//!   streamed reply held unparsed: 190 ms for a made-up 225 MiB of reply,
+//!   against 420 ms as a `Value` (November 2026). Passing over a line naming
+//!   no update read, before parsing it, took 57 ms, but would leave a line
+//!   that doesn't read uncounted.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -308,7 +294,7 @@ struct Used {
     reasoning: u64,
     #[serde(rename = "modelCalls")]
     calls: u64,
-    #[serde(rename = "costUsdTicks")]
+    #[serde(rename = "costUsdTicks", default, deserialize_with = "super::lenient")]
     ticks: Option<u64>,
 }
 
