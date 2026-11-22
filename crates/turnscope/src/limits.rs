@@ -1892,6 +1892,31 @@ mod tests {
     }
 
     #[test]
+    fn a_key_swapped_for_another_to_the_same_plan_keeps_its_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let (a, b) = ("fake:key-a", "fake:key-b");
+        record(
+            &mut db,
+            vec![signed("/f1", a)],
+            vec![(monthly(1), held(a))],
+            1_000,
+        )
+        .unwrap();
+        record(
+            &mut db,
+            vec![signed("/f1", b)],
+            vec![(monthly(1), held(b))],
+            2_000,
+        )
+        .unwrap();
+        let accounts = rows(&db, "SELECT id, read_at, label FROM account");
+        assert_eq!(accounts, ["fake:key-a|2000|key fake:key-b"]);
+        let signed_in = "SELECT account FROM sign_in ORDER BY since DESC LIMIT 1";
+        assert_eq!(one::<String>(&db, signed_in), a);
+    }
+
+    #[test]
     fn a_working_key_for_the_same_plan_replaces_a_failing_ones_read() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();

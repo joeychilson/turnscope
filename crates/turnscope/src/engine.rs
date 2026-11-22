@@ -1202,7 +1202,7 @@ mod tests {
             settings.notify.used_up = used_up;
             settings
         };
-        for round in 0..20 {
+        for round in 0..100 {
             let (first, second) = (settings(round % 2 == 1), settings(round % 2 == 0));
             engine.save_settings(first);
             engine.save_settings(second);
