@@ -44,22 +44,26 @@
 //! status lists limits by key, and by id the Claude and GPT pool's came
 //! before the plan's own.
 //!
-//! **Antigravity's app.** While the app runs, Antigravity's login is the
-//! app's own (`agents::antigravity`), and the app is asked in Google's
-//! place, on 127.0.0.1: it renews its sign-in itself, and the Keychain
-//! item's token has expired. Measured 2026-11-21 with the app 2.33.1, each
-//! a POST of `{}` answered in under 5 ms:
+//! **Renewing.** From the app 2.33.1 on, Antigravity doesn't write the
+//! token it renews back to its Keychain item (`agents::antigravity`), so
+//! the item's token expires within an hour of signing in. Turnscope renews
+//! it as the app does, in memory alone: it sends the item's refresh token
+//! to Google with the app's OAuth client, and keeps the token Google gives
+//! in this process until it expires, written nowhere. A Google refresh
+//! token isn't replaced when used, so renewing takes nothing from the app
+//! or `agy`. Chosen over asking the running app for its limits, as 0.3.1
+//! did: that read nothing while the app was closed, and nothing from 2.34.0
+//! on, which stopped passing the token it's asked with on its command line;
+//! and over waiting for Antigravity to write the item, which it doesn't.
 //!
-//! - `GetUserStatus` gives the account's address, `email`, and the tier
-//!   paid for, `userTier`, named as `paidTier` is.
-//! - `RetrieveUserQuotaSummary` gives Google's answer, in `response`: the
-//!   same groups, with as much of the Gemini week left as the app showed.
-//! - The app's token goes in `X-Codeium-Csrf-Token`. A wrong one was
-//!   answered 401, `invalid CSRF token`, which signing in again wouldn't
-//!   fix, so no status is a refused login.
-//! - Its `language_server` listened on three ports: the service over HTTP
-//!   on one, HTTPS on another (400 over HTTP), and 401 on the third. So
-//!   each is asked until one answers (`from_app`).
+//! **The app's client.** Its id is below. Its secret is read from the
+//! app's program, where Go keeps its strings, in `__TEXT,__rodata`: that
+//! held 3 client ids, this one among them, and 3 secrets, each `GOCSPX-`
+//! and 28 characters, in the app 2.34.0's `language_server` and in `agy`
+//! (read 2026-11-22). Nothing there says which secret is this client's, so
+//! each is tried until Google takes one, and the one taken is tried first
+//! after. Google answers a wrong secret `invalid_client`, and a refresh
+//! token it no longer takes `invalid_grant`: a login to sign in to again.
 //!
 //! **Not measured.** A refused sign-in: only a 401 is taken for one, since a
 //! 403 from this service can mean a client or an account it doesn't serve.
@@ -71,15 +75,23 @@
 //! `remainingFraction: 0`, as CodexBar reads `agy`'s form of the answer,
 //! where a fraction that's set is written even at zero. So a bucket without
 //! it says nothing of what's left and is passed over, as OpenUsage does,
-//! over reading it as used up.
+//! over reading it as used up. A renewal with a real sign-in: that the
+//! client id is the one consumer sign-ins are made with, and how Google
+//! answers a wrong secret, are as the app's program and Google's OAuth
+//! documentation say.
 
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{Read as _, Seek as _, SeekFrom};
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use super::{Account, Info, Limits, Problem, Provider, Reading};
-use crate::agents::Credential;
-use crate::time::{DAY, HOUR};
+use super::{Account, Answered, Info, Limits, Problem, Provider, Reading};
+use crate::agents::{Credential, Refresh, Secret};
+use crate::time::{DAY, HOUR, MINUTE};
 
 pub struct Google;
 
@@ -96,12 +108,26 @@ static INFO: Info = Info {
 
 const PLAN: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 const QUOTA: &str = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+const TOKEN: &str = "https://oauth2.googleapis.com/token";
 
 /// How Antigravity's app names itself.
 #[cfg(target_arch = "aarch64")]
 const CLIENT: &str = "User-Agent: antigravity/2.31.0 (aidev_client; os_type=darwin; arch=arm64)";
 #[cfg(not(target_arch = "aarch64"))]
 const CLIENT: &str = "User-Agent: antigravity/2.31.0 (aidev_client; os_type=darwin; arch=amd64)";
+
+/// The OAuth client Antigravity's sign-in is renewed with: its id. Its
+/// secret is in the app's program.
+const CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+
+/// How a client secret begins, and how long one is.
+const SECRET: (&[u8], usize) = (b"GOCSPX-", 35);
+
+/// The most of a program read for its client, so a program that isn't
+/// what it should be can't ask for more: its `__TEXT,__rodata` was 12 MiB
+/// and its load commands 4 KiB in 2.34.0, and reading it for the secrets
+/// took 34 ms (measured 2026-11-22, a release build).
+const MOST: usize = 64 * 1024 * 1024;
 
 impl Provider for Google {
     fn info(&self) -> &'static Info {
@@ -112,106 +138,218 @@ impl Provider for Google {
         super::account(INFO.id, credential, || credential.identity.clone())
     }
 
-    fn limits(&self, credential: &Credential, _now: i64, by: Instant) -> Result<Limits, Problem> {
-        if !credential.app_ports.is_empty() {
-            return from_app(credential, by);
+    fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
+        match &credential.refresh {
+            Some(refresh) if !credential.fresh(now) => renewed(refresh, now, by),
+            // A token refused before it expires, or with no expiry read, is
+            // renewed: one without would be refused until signing in again.
+            Some(refresh) => match read(&credential.secret, by) {
+                Err(Problem::SignIn) => renewed(refresh, now, by),
+                limits => limits,
+            },
+            None => read(&credential.secret, by),
         }
-        let client = json!({"metadata": {
-            "ideType": "ANTIGRAVITY",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI",
-        }});
-        let signed_in = super::asked(PLAN, credential, &[CLIENT], Some(&client), &[401], by)?;
-        let project = signed_in["cloudaicompanionProject"]
-            .as_str()
-            .filter(|project| !project.is_empty())
-            .ok_or_else(|| {
-                Problem::unavailable("no project to ask: Antigravity makes one when first used")
-            })?;
-        let answer = super::asked(
-            QUOTA,
-            credential,
-            &[CLIENT],
-            Some(&json!({"project": project})),
-            &[401],
-            by,
-        )?;
-        let readings = parse(&answer)
-            .filter(|readings| !readings.is_empty())
-            .ok_or_else(|| Problem::not_understood(QUOTA))?;
-        Ok(Limits {
-            plan: plan(&signed_in),
-            readings,
-        })
     }
 }
 
-/// The service in Antigravity's app.
-const APP: &str = "exa.language_server_pb.LanguageServerService";
-
-/// The limits Antigravity's app reads, asked of it on each port it listens
-/// on until one answers for its sign-in.
-///
-/// A port gets 2 s to answer, over the read's whole time: each answered in
-/// under 5 ms, and one that held the request would otherwise spend it all
-/// before the service's port was asked. When none answers, that's said the
-/// same way however each failed: the ports change each time the app
-/// starts, and a lasting failure is then logged once.
-fn from_app(credential: &Credential, by: Instant) -> Result<Limits, Problem> {
-    let token = format!("X-Codeium-Csrf-Token: {}", credential.secret.expose());
-    let mut answered = false;
-    for port in &credential.app_ports {
-        let ask = |method: &str, by: Instant| {
-            let url = format!("http://127.0.0.1:{port}/{APP}/{method}");
-            super::sent(&url, &[&token], Some(&json!({})), &[], by)
-        };
-        match ask(
-            "GetUserStatus",
-            by.min(Instant::now() + Duration::from_secs(2)),
-        ) {
-            Ok(status) => {
-                let quota = ask("RetrieveUserQuotaSummary", by)?;
-                return app_limits(credential, &status, &quota);
-            }
-            Err(problem) => {
-                answered |= matches!(problem, Problem::Unavailable { answered: true, .. })
-            }
-        }
-    }
-    Err(Problem::Unavailable {
-        why: "no port of Antigravity's app answered for its sign-in".to_owned(),
-        retry_after: None,
-        answered,
-    })
-}
-
-/// The limits in the app's answers, `GetUserStatus`'s and
-/// `RetrieveUserQuotaSummary`'s, when it's signed in to `credential`'s
-/// account.
-fn app_limits(credential: &Credential, status: &Value, quota: &Value) -> Result<Limits, Problem> {
-    let status = &status["userStatus"];
-    let signed_in = status["email"]
+/// The plan's limits, asked with `token`.
+fn read(token: &Secret, by: Instant) -> Result<Limits, Problem> {
+    let client = json!({"metadata": {
+        "ideType": "ANTIGRAVITY",
+        "platform": "PLATFORM_UNSPECIFIED",
+        "pluginType": "GEMINI",
+    }});
+    let signed_in = super::asked(PLAN, token, &[CLIENT], Some(&client), &[401], by)?;
+    let project = signed_in["cloudaicompanionProject"]
         .as_str()
-        .filter(|email| !email.is_empty())
-        .ok_or_else(|| Problem::not_understood("Antigravity's app"))?;
-    if credential.identity.as_ref().map(|(id, _)| id.as_str()) != Some(signed_in) {
-        return Err(Problem::unavailable(
-            "Antigravity's app is signed in to another account than its Keychain item",
-        ));
-    }
-    let readings = parse(&quota["response"])
+        .filter(|project| !project.is_empty())
+        .ok_or_else(|| {
+            Problem::unavailable("no project to ask: Antigravity makes one when first used")
+        })?;
+    let answer = super::asked(
+        QUOTA,
+        token,
+        &[CLIENT],
+        Some(&json!({"project": project})),
+        &[401],
+        by,
+    )?;
+    let readings = parse(&answer)
         .filter(|readings| !readings.is_empty())
-        .ok_or_else(|| Problem::not_understood("Antigravity's app"))?;
-    let tier = &status["userTier"];
+        .ok_or_else(|| Problem::not_understood(QUOTA))?;
     Ok(Limits {
-        // Only a Google AI plan's name: a free account's tier isn't
-        // measured, and `loadCodeAssist` named the free tier `Antigravity`.
-        plan: named(
-            tier["name"].as_str().filter(|name| name.starts_with(PLANS)),
-            tier["id"].as_str(),
-        ),
+        plan: plan(&signed_in),
         readings,
     })
+}
+
+/// Tokens renewed in this process, by their refresh token's fingerprint,
+/// each with when it expires. A token is taken out while it's used, so no
+/// lock is held over a request.
+static RENEWED: Mutex<BTreeMap<String, (Secret, i64)>> = Mutex::new(BTreeMap::new());
+
+/// The fingerprint of the client secret Google last took.
+static TAKEN: Mutex<Option<String>> = Mutex::new(None);
+
+fn locked<T>(kept: &Mutex<T>) -> MutexGuard<'_, T> {
+    kept.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The plan's limits, asked with a token renewed from `refresh`: the one
+/// renewed before, while it's good and taken, or else a new one. A token
+/// that's refused isn't kept.
+fn renewed(refresh: &Refresh, now: i64, by: Instant) -> Result<Limits, Problem> {
+    let key = refresh.token.fingerprint();
+    // Its own statement, so the lock goes before the request.
+    let kept = locked(&RENEWED).remove(&key);
+    let kept = kept
+        .filter(|(_, expires)| *expires > now + MINUTE)
+        .map(|(token, expires)| {
+            let limits = read(&token, by);
+            (token, expires, limits)
+        })
+        .filter(|(_, _, limits)| !matches!(limits, Err(Problem::SignIn)));
+    let (token, expires, limits) = match kept {
+        Some(kept) => kept,
+        None => {
+            let (token, expires) = renew(refresh, now, by)?;
+            let limits = read(&token, by);
+            (token, expires, limits)
+        }
+    };
+    if !matches!(limits, Err(Problem::SignIn)) {
+        let mut renewed = locked(&RENEWED);
+        renewed.retain(|_, (_, expires)| *expires > now);
+        renewed.insert(key, (token, expires));
+    }
+    limits
+}
+
+/// A new token for `refresh`'s login, and when it expires, from Google.
+fn renew(refresh: &Refresh, now: i64, by: Instant) -> Result<(Secret, i64), Problem> {
+    let mut secrets = refresh
+        .programs
+        .iter()
+        .find_map(|program| secrets(program))
+        .ok_or_else(|| Problem::unanswered("no Antigravity program holds its client"))?;
+    let taken = locked(&TAKEN).clone();
+    secrets.sort_by_key(|secret| Some(secret.fingerprint()) != taken);
+    for secret in &secrets {
+        let answered = super::post_form(
+            TOKEN,
+            &[
+                ("client_id", CLIENT_ID),
+                ("client_secret", secret.expose()),
+                ("refresh_token", refresh.token.expose()),
+                ("grant_type", "refresh_token"),
+            ],
+            by,
+        )?;
+        if let Some(token) = token(&answered, now)? {
+            *locked(&TAKEN) = Some(secret.fingerprint());
+            return Ok(token);
+        }
+    }
+    Err(Problem::unavailable(format!(
+        "{TOKEN}: took none of Antigravity's {} client secrets",
+        secrets.len()
+    )))
+}
+
+/// The token in Google's answer to a renewal, and when it expires; `None`
+/// when Google didn't take the client.
+fn token(answered: &Answered, now: i64) -> Result<Option<(Secret, i64)>, Problem> {
+    let answer: Value = serde_json::from_slice(&answered.body).unwrap_or_default();
+    match (answered.status, answer["error"].as_str()) {
+        (200..=299, _) => {
+            let token = answer["access_token"]
+                .as_str()
+                .filter(|token| !token.is_empty());
+            let lasts = answer["expires_in"].as_i64().filter(|seconds| *seconds > 0);
+            match (token, lasts) {
+                (Some(token), Some(lasts)) => Ok(Some((
+                    Secret::new(token),
+                    now.saturating_add(lasts.saturating_mul(1000)),
+                ))),
+                _ => Err(Problem::not_understood(TOKEN)),
+            }
+        }
+        (400 | 401, Some("invalid_grant")) => Err(Problem::SignIn),
+        (400 | 401, Some("invalid_client" | "unauthorized_client")) => Ok(None),
+        (status, _) => Err(Problem::Unavailable {
+            why: format!("{TOKEN}: answered {status}"),
+            retry_after: answered.retry_after,
+            answered: true,
+        }),
+    }
+}
+
+/// The client secrets `program` holds, in the order it holds them, if it's
+/// Antigravity's: if it holds its client's id.
+fn secrets(program: &Path) -> Option<Vec<Secret>> {
+    let strings = rodata(program)?;
+    let id = CLIENT_ID.as_bytes();
+    strings.windows(id.len()).any(|at| at == id).then_some(())?;
+    let (begins, length) = SECRET;
+    let mut secrets: Vec<Secret> = Vec::new();
+    for at in 0..strings.len().saturating_sub(length - 1) {
+        let candidate = &strings[at..at + length];
+        let rest = &candidate[begins.len()..];
+        if candidate.starts_with(begins)
+            && rest
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(byte))
+            && let Ok(text) = std::str::from_utf8(candidate)
+            && !secrets.iter().any(|secret| secret.expose() == text)
+        {
+            secrets.push(Secret::new(text));
+        }
+    }
+    (!secrets.is_empty()).then_some(secrets)
+}
+
+/// The `__TEXT,__rodata` section of `program`, a 64-bit Mach-O, as
+/// Antigravity's programs are: built for one architecture, not universal
+/// (the app 2.34.0's and `agy`, read 2026-11-22).
+fn rodata(program: &Path) -> Option<Vec<u8>> {
+    fn word(bytes: &[u8], at: usize) -> Option<usize> {
+        let word = u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
+        usize::try_from(word).ok()
+    }
+    fn name(bytes: &[u8]) -> &[u8] {
+        bytes.split(|byte| *byte == 0).next().unwrap_or_default()
+    }
+    let mut file = File::open(program).ok()?;
+    let mut header = [0; 32];
+    file.read_exact(&mut header).ok()?;
+    // `MH_MAGIC_64`, and the size of the load commands that follow.
+    let size = word(&header, 20).filter(|size| *size <= MOST)?;
+    if word(&header, 0)? != 0xFEED_FACF {
+        return None;
+    }
+    let mut commands = vec![0; size];
+    file.read_exact(&mut commands).ok()?;
+    let mut at = 0;
+    while let (Some(kind), Some(size)) = (word(&commands, at), word(&commands, at + 4)) {
+        // `LC_SEGMENT_64`: 72 bytes, then 80 for each of its sections: its
+        // name, its segment's, its address, size and offset.
+        if kind == 0x19 {
+            for section in (0..word(&commands, at + 64)?).map(|index| at + 72 + 80 * index) {
+                let named = commands.get(section..section + 52)?;
+                if name(&named[..16]) == b"__rodata" && name(&named[16..32]) == b"__TEXT" {
+                    let size = u64::from_le_bytes(named[40..48].try_into().ok()?);
+                    let size = usize::try_from(size).ok().filter(|size| *size <= MOST)?;
+                    let offset = u64::try_from(word(named, 48)?).ok()?;
+                    file.seek(SeekFrom::Start(offset)).ok()?;
+                    let mut strings = vec![0; size];
+                    file.read_exact(&mut strings).ok()?;
+                    return Some(strings);
+                }
+            }
+        }
+        at = at.checked_add(size.max(8))?;
+    }
+    None
 }
 
 /// The plan in `loadCodeAssist`'s answer: the tier paid for, or for an
@@ -296,8 +434,8 @@ fn scope(group: &str) -> &str {
 mod tests {
     use serde_json::{Value, json};
 
-    use crate::agents::{Credential, Secret};
-    use crate::providers::Problem;
+    use crate::agents::{Credential, Refresh, Secret};
+    use crate::providers::{Answered, Problem, Provider};
     use crate::time::{DAY, HOUR, millis};
 
     /// A bucket as the service writes one.
@@ -411,59 +549,141 @@ mod tests {
     }
 
     #[test]
-    fn the_app_answers_for_its_own_account_as_google_does() {
+    fn a_renewed_token_is_asked_with_again_until_it_expires() {
+        let now = 1_790_000_000_000;
         let login = Credential {
             provider: "google",
-            secret: Secret::new("made-up-token"),
+            secret: Secret::new("made-up-expired-token"),
             key: false,
-            expires: None,
-            identity: Some((
-                "me@example.com".to_owned(),
-                Some("me@example.com".to_owned()),
-            )),
+            expires: Some(now - HOUR),
+            identity: None,
             plan: None,
-            app_ports: vec![52353],
+            refresh: Some(Refresh {
+                token: Secret::new("made-up-refresh-token"),
+                programs: Vec::new(),
+            }),
         };
-        let status = json!({"userStatus": {
-            "email": "me@example.com",
-            "userTier": {"id": "g1-ultra-lite-tier", "name": "Google AI Ultra"},
-        }});
-        let quota = json!({"response": {"groups": [{
-            "displayName": "Gemini Models",
-            "buckets": [bucket("gemini-weekly", "weekly", 0.75, "2026-11-25T02:10:47Z")],
-        }]}});
-        let limits = super::app_limits(&login, &status, &quota).unwrap();
-        assert_eq!(limits.plan.as_deref(), Some("Ultra"));
-        let read: Vec<_> = limits
-            .readings
-            .iter()
-            .map(|reading| (reading.key.as_str(), reading.used))
-            .collect();
-        assert_eq!(read, [("weekly", 25.0)]);
-
-        // A tier that isn't a Google AI plan is named by its id.
-        let mut free = status.clone();
-        free["userStatus"]["userTier"] = json!({"id": "free-tier", "name": "Antigravity"});
-        let limits = super::app_limits(&login, &free, &quota).unwrap();
-        assert_eq!(limits.plan.as_deref(), Some("free"));
-
-        // Another account's limits aren't taken for the login's.
-        let mut other = status.clone();
-        other["userStatus"]["email"] = json!("someone@example.com");
-        let error = super::app_limits(&login, &other, &quota).err();
-        assert!(
-            matches!(error, Some(Problem::Unavailable { .. })),
-            "{error:?}"
+        let key = login.refresh.as_ref().unwrap().token.fingerprint();
+        let renewed = |expires| {
+            super::locked(&super::RENEWED)
+                .insert(key.clone(), (Secret::new("made-up-renewed"), expires))
+        };
+        // With the read's time spent, nothing is sent: twice, the renewed
+        // token is taken, asked with, and kept.
+        renewed(now + HOUR);
+        let spent = std::time::Instant::now();
+        let (done, reads) = std::sync::mpsc::channel();
+        let twice = std::thread::spawn(move || {
+            let read = || super::Google.limits(&login, now, spent).err();
+            done.send([read(), read()]).unwrap();
+            login
+        });
+        let not_asked = Problem::unanswered(format!(
+            "{}: not asked, as the read's time was spent",
+            super::PLAN
+        ));
+        let read = reads.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(read, Ok([Some(not_asked.clone()), Some(not_asked)]));
+        assert!(super::locked(&super::RENEWED).contains_key(&key));
+        // One that has expired is renewed: with no program to renew it with,
+        // nothing is.
+        renewed(now);
+        let login = twice.join().unwrap();
+        assert_eq!(
+            super::Google.limits(&login, now, spent).err(),
+            Some(Problem::unanswered(
+                "no Antigravity program holds its client"
+            ))
         );
-        // An empty address isn't taken for another account.
-        let mut none = status.clone();
-        none["userStatus"]["email"] = json!("");
-        let error = super::app_limits(&login, &none, &quota).err();
-        assert_eq!(error, Some(Problem::not_understood("Antigravity's app")));
+    }
 
-        // Google's answer, without the app's `response` around it, isn't
-        // the app's.
-        let error = super::app_limits(&login, &status, &quota["response"]).err();
-        assert_eq!(error, Some(Problem::not_understood("Antigravity's app")));
+    #[test]
+    fn a_renewal_is_a_token_a_refused_login_or_a_client_google_doesnt_take() {
+        let now = 1_790_000_000_000;
+        let answered = |status: u16, body: &str| Answered {
+            status,
+            retry_after: None,
+            body: body.as_bytes().to_vec(),
+        };
+        let token = |status, body| {
+            super::token(&answered(status, body), now)
+                .map(|token| token.map(|(token, expires)| (token.expose().to_owned(), expires)))
+        };
+        assert_eq!(
+            token(200, r#"{"access_token": "made-up", "expires_in": 3599}"#),
+            Ok(Some(("made-up".to_owned(), now + 3_599_000)))
+        );
+        assert_eq!(
+            token(400, r#"{"error": "invalid_grant"}"#),
+            Err(Problem::SignIn)
+        );
+        assert_eq!(token(401, r#"{"error": "invalid_client"}"#), Ok(None));
+        assert_eq!(token(400, r#"{"error": "unauthorized_client"}"#), Ok(None));
+        assert_eq!(
+            token(200, r#"{"access_token": ""}"#),
+            Err(Problem::not_understood(super::TOKEN))
+        );
+        assert!(matches!(
+            token(503, "down"),
+            Err(Problem::Unavailable { answered: true, .. })
+        ));
+    }
+
+    /// A 64-bit Mach-O whose one section, `__TEXT,__rodata`, holds `strings`.
+    fn program(strings: &[u8]) -> Vec<u8> {
+        let name = |name: &str| {
+            let mut padded = [0; 16];
+            padded[..name.len()].copy_from_slice(name.as_bytes());
+            padded
+        };
+        let commands: u32 = 72 + 80;
+        let mut program = Vec::new();
+        for word in [0xFEED_FACF_u32, 0x0100_000C, 0, 2, 1, commands, 0, 0] {
+            program.extend(word.to_le_bytes());
+        }
+        program.extend(0x19_u32.to_le_bytes());
+        program.extend(commands.to_le_bytes());
+        program.extend(name("__TEXT"));
+        program.extend([0; 40]);
+        program.extend(1_u32.to_le_bytes());
+        program.extend(0_u32.to_le_bytes());
+        program.extend(name("__rodata"));
+        program.extend(name("__TEXT"));
+        program.extend(0_u64.to_le_bytes());
+        program.extend((strings.len() as u64).to_le_bytes());
+        program.extend((32 + commands).to_le_bytes());
+        program.extend([0; 28]);
+        program.extend(strings);
+        program
+    }
+
+    #[test]
+    fn the_secrets_are_read_from_the_program_that_holds_the_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let (one, two) = (
+            format!("GOCSPX-{}", "a".repeat(28)),
+            format!("GOCSPX-{}", "B_-9".repeat(7)),
+        );
+        // Go packs its strings one against the next, with nothing between.
+        let strings = format!("{one}gzip{}{two}{one}GOCSPX-short", super::CLIENT_ID);
+        let held = dir.path().join("language_server");
+        std::fs::write(&held, program(strings.as_bytes())).unwrap();
+        let secrets: Vec<String> = super::secrets(&held)
+            .unwrap()
+            .iter()
+            .map(|secret| secret.expose().to_owned())
+            .collect();
+        assert_eq!(secrets, [one.clone(), two]);
+
+        // Not Antigravity's: no client id, or not a Mach-O, or cut short.
+        let other = dir.path().join("other");
+        std::fs::write(&other, program(one.as_bytes())).unwrap();
+        assert!(super::secrets(&other).is_none());
+        std::fs::write(&other, strings.as_bytes()).unwrap();
+        assert!(super::secrets(&other).is_none());
+        let whole = program(strings.as_bytes());
+        std::fs::write(&other, &whole[..whole.len() - 10]).unwrap();
+        assert!(super::secrets(&other).is_none());
+        assert!(super::secrets(&dir.path().join("missing")).is_none());
     }
 }

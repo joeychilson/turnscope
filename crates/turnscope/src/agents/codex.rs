@@ -415,7 +415,7 @@ impl Agent for Codex {
                 key,
                 identity: None,
                 plan: None,
-                app_ports: Vec::new(),
+                refresh: None,
             }),
         }])
     }

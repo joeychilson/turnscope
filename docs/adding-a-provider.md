@@ -163,9 +163,9 @@ A failure is a `Problem`:
 
 The helpers in `src/providers/mod.rs` each have a doc comment:
 `account(provider, credential, identity)` and `api_account(provider)`;
-`ask(url, credential, headers, by)`, `asked(url, credential, headers,
-body, refused, by)`, `sent(url, headers, body, refused, by)` and
-`request(url, headers, body, seconds)`; and
+`ask(url, credential, headers, by)`, `asked(url, token, headers, body,
+refused, by)`, `post_form(url, fields, by)` and `request(url, headers,
+body, seconds)`; and
 `absent(window)`, `reset(value)`, `window_name(length)` and `words(key)`
 for reading an answer.
 
@@ -182,14 +182,16 @@ answers but is unavailable (`limits::backoff`):
   that can't be read is the account's problem, beside what the others
   read.
 - A login within a minute of its `expires` is never sent: it would expire
-  on the way.
+  on the way. One with a `refresh` is, for the provider to renew.
 
 Rules:
 
-- **Never refresh a token** or write a login. Turnscope waits for the agent
-  to refresh it.
-- **Requests** go only through `ask`, `asked`, `sent` or `request`: curl
-  with the credential on standard input, Turnscope's only way to the
+- **Never write a login.** Turnscope waits for the agent to renew one,
+  except where renewing takes nothing from the agent: a provider whose
+  refresh token isn't replaced when used, as Google's, renews a login
+  that carries a `refresh`, and keeps the new token in memory alone.
+- **Requests** go only through `ask`, `asked`, `post_form` or `request`:
+  curl with the credential on standard input, Turnscope's only way to the
   network. A request changes nothing at the provider.
 - **An answer that isn't understood** is `Problem::not_understood`, not an
   empty list of readings, which would read as a plan without limits. A

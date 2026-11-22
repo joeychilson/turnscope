@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2
+
+- **Antigravity's limits are read whether its app is open or not.**
+  Antigravity 2.33.1 and later don't save the login they renew, so
+  Turnscope renews it with Google itself, in memory, as the app does.
+  0.3.1 asked the open app instead, which found nothing from 2.34.0 on and
+  said to open Antigravity to renew its login.
+- **An account whose login can't be read says so.** When the Keychain is
+  locked, say, the account says its limits couldn't be read since, and
+  why goes in `app.log`. It went on saying what it said before, such as
+  to renew its login.
+
 ## 0.3.1
 
 - **Resets and run-outs a week or more off show the date instead of a

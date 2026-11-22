@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::Error;
-use crate::agents::Credential;
+use crate::agents::{Credential, Secret};
 use crate::time::{DAY, HOUR};
 
 /// Every provider, in the order they're listed.
@@ -156,9 +156,9 @@ impl Problem {
     }
 
     /// No answer from the provider.
-    fn unanswered(why: String) -> Problem {
+    pub fn unanswered(why: impl Into<String>) -> Problem {
         Problem::Unavailable {
-            why,
+            why: why.into(),
             retry_after: None,
             answered: false,
         }
@@ -205,43 +205,23 @@ fn ask(
     headers: &[&str],
     by: Instant,
 ) -> Result<Value, Problem> {
-    asked(url, credential, headers, None, &[401, 403], by)
+    asked(url, &credential.secret, headers, None, &[401, 403], by)
 }
 
-/// As [`ask`], with `refused` the statuses that are a refused login. With a
-/// `body`, a POST of it as JSON. A body goes in curl's arguments, so it must
-/// hold no secret. Past `by`, nothing is asked.
+/// As [`ask`], with `token` and `refused` the statuses that are a refused
+/// login. With a `body`, a POST of it as JSON. A body goes in curl's
+/// arguments, so it must hold no secret. Past `by`, nothing is asked.
 fn asked(
     url: &str,
-    credential: &Credential,
+    token: &Secret,
     headers: &[&str],
     body: Option<&Value>,
     refused: &[u16],
     by: Instant,
 ) -> Result<Value, Problem> {
-    let authorization = format!("Authorization: Bearer {}", credential.secret.expose());
+    let left = time_left(url, by)?;
+    let authorization = format!("Authorization: Bearer {}", token.expose());
     let mut lines = vec![authorization.as_str()];
-    lines.extend(headers);
-    sent(url, &lines, body, refused, by)
-}
-
-/// As [`asked`], with the login in `headers`, for a server that takes it in
-/// a header of its own.
-fn sent(
-    url: &str,
-    headers: &[&str],
-    body: Option<&Value>,
-    refused: &[u16],
-    by: Instant,
-) -> Result<Value, Problem> {
-    // Under a millisecond, curl's `--max-time` would be 0.000: no limit.
-    let left = by.saturating_duration_since(Instant::now());
-    if left < Duration::from_millis(1) {
-        return Err(Problem::unanswered(format!(
-            "{url}: not asked, as the read's time was spent"
-        )));
-    }
-    let mut lines = Vec::new();
     if body.is_some() {
         lines.push("Content-Type: application/json");
     }
@@ -250,6 +230,53 @@ fn sent(
     let answered = requested(url, &lines, body.as_deref(), left)
         .map_err(|why| Problem::unanswered(format!("{url}: {why}")))?;
     answer(url, &answered, refused)
+}
+
+/// The time left until `by` to ask `url` in, or why it isn't asked: under a
+/// millisecond, curl's `--max-time` would be 0.000, no limit.
+fn time_left(url: &str, by: Instant) -> Result<Duration, Problem> {
+    let left = by.saturating_duration_since(Instant::now());
+    if left < Duration::from_millis(1) {
+        return Err(Problem::unanswered(format!(
+            "{url}: not asked, as the read's time was spent"
+        )));
+    }
+    Ok(left)
+}
+
+/// POST `fields` to `url` as a form, by `by`. The form goes to curl on
+/// standard input, as headers do, so a secret among its fields is in no
+/// process listing.
+fn post_form(url: &str, fields: &[(&str, &str)], by: Instant) -> Result<Answered, Problem> {
+    let left = time_left(url, by)?;
+    let form = form_encode(fields);
+    let args = [
+        "--header",
+        "Content-Type: application/x-www-form-urlencoded",
+        "--data-binary",
+        "@-",
+    ];
+    curl(url, &args, form.as_bytes(), left)
+        .map_err(|why| Problem::unanswered(format!("{url}: {why}")))
+}
+
+/// `fields` as `application/x-www-form-urlencoded`.
+fn form_encode(fields: &[(&str, &str)]) -> String {
+    let encoded = |text: &str| -> String {
+        text.bytes()
+            .map(|byte| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    char::from(byte).to_string()
+                }
+                _ => format!("%{byte:02X}"),
+            })
+            .collect()
+    };
+    let fields: Vec<String> = fields
+        .iter()
+        .map(|(key, value)| format!("{}={}", encoded(key), encoded(value)))
+        .collect();
+    fields.join("&")
 }
 
 /// The JSON `url` answered, or why there's none. A refusal is a refused
@@ -282,14 +309,7 @@ struct Answered {
 }
 
 /// Ask `url` over HTTPS with `headers`, giving the status and body, or
-/// giving up after `seconds`: a GET, or a POST of `body`. Only an app on
-/// this Mac, at `http://127.0.0.1:`, is asked over HTTP, and never through
-/// a proxy, which would be sent its token and couldn't reach it: curl
-/// sent a request for 127.0.0.1 to the proxy in `http_proxy` (8.7.1,
-/// measured 2026-11-21). Only that request is told so: `--noproxy`
-/// replaces the environment's `NO_PROXY`, and given to every request, it
-/// sent one for a host `NO_PROXY` named to the proxy (measured the same
-/// day).
+/// giving up after `seconds`: a GET, or a POST of `body`.
 ///
 /// Headers go to curl on standard input, so a credential among them is in
 /// no process listing; `-q` keeps a `~/.curlrc` from adding a trace. A
@@ -321,33 +341,43 @@ fn requested(
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err("a header holds a line break, so nothing was sent".to_owned());
     }
-    let to: &[&str] = match url.starts_with("http://127.0.0.1:") {
-        true => &["--proto", "=http", "--noproxy", "127.0.0.1"],
-        false => &["--proto", "=https"],
-    };
+    let mut args = vec!["--header", "@-"];
+    if let Some(body) = body {
+        args.extend(["--data-raw", body]);
+    }
+    let request: String = headers.iter().map(|header| format!("{header}\n")).collect();
+    curl(url, &args, request.as_bytes(), time)
+}
+
+/// Run curl for `url` with `args`, writing `input` to its standard input,
+/// giving up after `time`.
+fn curl(
+    url: &str,
+    args: &[&str],
+    input: &[u8],
+    time: Duration,
+) -> std::result::Result<Answered, String> {
     let mut curl = Command::new("/usr/bin/curl")
         .args(["-q", "--silent", "--show-error", "--compressed"])
-        .args(to)
+        .args(["--proto", "=https"])
         .args(["--connect-timeout", "5"])
         .args(["--max-time", &format!("{:.3}", time.as_secs_f64())])
         .args(["--max-filesize", "67108864", "--user-agent", "Turnscope"])
-        .args(["--header", "@-"])
         .args(["--write-out", "%{stderr}%{http_code} %header{retry-after}"])
-        .args(body.into_iter().flat_map(|body| ["--data-raw", body]))
+        .args(args)
         .arg(url)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
-    let request: String = headers.iter().map(|header| format!("{header}\n")).collect();
-    // The headers are far smaller than a pipe holds, so writing them first
-    // can't wait on curl's output. Still reap curl and prefer its error when
-    // it exited before reading them.
+    // Headers and a form are far smaller than a pipe holds, so writing them
+    // first can't wait on curl's output. Still reap curl and prefer its
+    // error when it exited before reading them.
     let write = curl
         .stdin
         .take()
-        .map_or(Ok(()), |mut stdin| stdin.write_all(request.as_bytes()));
+        .map_or(Ok(()), |mut stdin| stdin.write_all(input));
     let output = curl.wait_with_output().map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -520,7 +550,7 @@ mod tests {
             expires: None,
             identity: None,
             plan: None,
-            app_ports: Vec::new(),
+            refresh: None,
         };
         let spent = std::time::Instant::now();
         // Not HTTPS, so curl, were it run, would send nothing either.
@@ -530,6 +560,17 @@ mod tests {
             Err(Problem::unanswered(
                 "http://example.invalid/: not asked, as the read's time was spent".to_owned()
             ))
+        );
+    }
+
+    #[test]
+    fn a_form_escapes_what_isnt_a_letter_digit_or_mark() {
+        assert_eq!(
+            super::form_encode(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", "1//a+b=c&d e~_.-"),
+            ]),
+            "grant_type=refresh_token&refresh_token=1%2F%2Fa%2Bb%3Dc%26d%20e~_.-"
         );
     }
 

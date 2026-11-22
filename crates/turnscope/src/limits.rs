@@ -114,6 +114,15 @@ struct SignedIn {
     key: Option<String>,
 }
 
+/// What every folder of `agents` holds: each folder's sign-in, each
+/// account to read with its logins, and the read of each account whose
+/// logins couldn't be read, failed with why.
+struct Gathered {
+    signed_in: Vec<SignedIn>,
+    accounts: BTreeMap<String, Held>,
+    unreadable: Vec<(Read, Held)>,
+}
+
 /// Read every account's limits, when it's five minutes since any process
 /// last did; whether it did.
 pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
@@ -121,12 +130,16 @@ pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
     if !claim(db, now)? {
         return Ok(false);
     }
-    let (signed_in, mut accounts) = gather(db, home, agents::ALL, providers::ALL)?;
+    let mut gathered = gather(db, home, agents::ALL, providers::ALL)?;
     let waiting = waiting(db, now)?;
-    accounts.retain(|id, _| !waiting.contains(id));
+    gathered.accounts.retain(|id, _| !waiting.contains(id));
+    gathered
+        .unreadable
+        .retain(|(_, held)| !waiting.contains(&held.account.id));
     // Every account at once, so the slowest provider sets how long it takes.
-    let answers: Vec<(Read, Held)> = std::thread::scope(|scope| {
-        let reading: Vec<_> = accounts
+    let mut answers: Vec<(Read, Held)> = std::thread::scope(|scope| {
+        let reading: Vec<_> = gathered
+            .accounts
             .into_values()
             .map(|mut held| scope.spawn(move || (read(&mut held, now), held)))
             .collect();
@@ -135,7 +148,8 @@ pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
             .filter_map(|thread| thread.join().ok())
             .collect()
     });
-    record(db, signed_in, answers, now)?;
+    answers.extend(gathered.unreadable);
+    record(db, gathered.signed_in, answers, now)?;
     Ok(true)
 }
 
@@ -168,16 +182,18 @@ fn claim(db: &mut Connection, now: i64) -> Result<bool> {
     Ok(claimed > 0)
 }
 
-/// What every folder of `agents` signs in to, and the accounts those logins
-/// are to, each with its logins, read by one of `providers`.
+/// What every folder of `agents` signs in to, the accounts those logins are
+/// to, each with its logins, read by one of `providers`, and the accounts
+/// whose logins couldn't be read.
 fn gather(
     db: &Connection,
     home: &Path,
     agents: &[&dyn Agent],
     providers: &[&'static dyn Provider],
-) -> Result<(Vec<SignedIn>, BTreeMap<String, Held>)> {
+) -> Result<Gathered> {
     let mut accounts: BTreeMap<String, Held> = BTreeMap::new();
     let mut signed_in = Vec::new();
+    let mut unreadable: BTreeMap<String, String> = BTreeMap::new();
     // A key is to one account for good: the one it was last signed in to,
     // which may be another key's it was made one with. Only at the same
     // provider: the same key kept under another is that provider's.
@@ -187,17 +203,24 @@ fn gather(
     )?;
     let listable = std::fs::read_dir(home).is_ok();
     let mut latest = db.prepare(
-        "SELECT folder, provider FROM sign_in s WHERE agent = ?1 AND account IS NOT NULL
+        "SELECT folder, provider, account FROM sign_in s WHERE agent = ?1 AND account IS NOT NULL
          AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
     )?;
     for &agent in agents {
         let folders = agent.installed_folders(home);
         // Each folder whose logins were read, with the providers they name.
         let mut read: Vec<(String, Vec<String>)> = Vec::new();
+        // Each folder whose logins couldn't be read, with why.
+        let mut failed: BTreeMap<String, String> = BTreeMap::new();
         for folder in &folders {
-            // A folder whose logins can't be read keeps what it held.
-            let Ok(logins) = agent.logins(folder, home) else {
-                continue;
+            // A folder whose logins can't be read keeps what it held, and
+            // its account says why (`record`).
+            let logins = match agent.logins(folder, home) {
+                Ok(logins) => logins,
+                Err(error) => {
+                    failed.insert(folder.to_string_lossy().into_owned(), error.to_string());
+                    continue;
+                }
             };
             let folder = folder.to_string_lossy().into_owned();
             let mut named = Vec::new();
@@ -251,8 +274,14 @@ fn gather(
         // the list while its agent is signed in there. A home that can't be
         // listed, as one on a volume that's away, lists no second account's
         // folder: each then keeps what it held.
-        for row in latest.query_map([agent.info().id], |row| Ok((row.get(0)?, row.get(1)?)))? {
-            let (folder, provider): (String, String) = row?;
+        for row in latest.query_map([agent.info().id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })? {
+            let (folder, provider, account): (String, String, String) = row?;
+            if let Some(why) = failed.get(&folder) {
+                unreadable.entry(account).or_insert_with(|| why.clone());
+                continue;
+            }
             let gone = match read.iter().find(|(read, _)| *read == folder) {
                 Some((_, named)) => !named.contains(&provider),
                 None => {
@@ -273,7 +302,40 @@ fn gather(
             }
         }
     }
-    Ok((signed_in, accounts))
+    // An account whose logins couldn't be read isn't signed out: its read
+    // fails, with why, over its standing as it last did, as a login to
+    // renew. Unless another folder's login to it is read.
+    let mut stored = db.prepare("SELECT provider, kind, label FROM account WHERE id = ?1")?;
+    let mut failed = Vec::new();
+    for (id, why) in unreadable {
+        if accounts.contains_key(&id) {
+            continue;
+        }
+        let row: Option<(String, String, Option<String>)> = stored
+            .query_row([&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .optional()?;
+        let Some((provider, kind, label)) = row else {
+            continue;
+        };
+        let Some(&provider) = providers.iter().find(|read| read.info().id == provider) else {
+            continue;
+        };
+        let kind = match kind.as_str() {
+            "apiKey" => Kind::ApiKey,
+            _ => Kind::Subscription,
+        };
+        let held = Held {
+            provider,
+            account: providers::Account { id, kind, label },
+            credentials: Vec::new(),
+        };
+        failed.push((Read::failed(Problem::unanswered(why)), held));
+    }
+    Ok(Gathered {
+        signed_in,
+        accounts,
+        unreadable: failed,
+    })
 }
 
 /// Write what was read, in one write: accounts read as one plan made one,
@@ -650,8 +712,9 @@ fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
 }
 
 /// An account's limits with its logins, in [`WAIT`] all told. A login
-/// within a minute of expiring is never sent: agents renew their own
-/// logins, and Turnscope never does.
+/// within a minute of expiring is sent only with what renews it
+/// (`Credential::refresh`): agents renew their own logins, and Turnscope
+/// renews one only where that takes nothing from the agent.
 fn read(held: &mut Held, now: i64) -> Read {
     let by = Instant::now() + WAIT;
     held.credentials
@@ -659,13 +722,7 @@ fn read(held: &mut Held, now: i64) -> Read {
     let fresh: Vec<&Credential> = held
         .credentials
         .iter()
-        // One about to expire would be refused on the way, which reads as
-        // a login to sign in to again, where it only needs renewing.
-        .filter(|credential| {
-            credential
-                .expires
-                .is_none_or(|at| at > now + crate::time::MINUTE)
-        })
+        .filter(|credential| credential.fresh(now) || credential.refresh.is_some())
         .collect();
     let provider = held.provider;
     if fresh.is_empty() {
@@ -908,7 +965,7 @@ mod tests {
                 expires: Some(now() + crate::time::DAY - at as i64),
                 identity: None,
                 plan: None,
-                app_ports: Vec::new(),
+                refresh: None,
             })
             .collect();
         let held = Held {
@@ -1230,7 +1287,7 @@ mod tests {
                 expires: None,
                 identity: None,
                 plan: None,
-                app_ports: Vec::new(),
+                refresh: None,
             });
         }
         assert_eq!(held.credentials.len(), 2);
@@ -1246,8 +1303,41 @@ mod tests {
             expires: Some(1_000_000 + 30_000),
             identity: None,
             plan: None,
-            app_ports: Vec::new(),
+            refresh: None,
         });
+        assert_eq!(read(&mut held, 1_000_000).problem, Some(Problem::Expired));
+    }
+
+    #[test]
+    fn an_expired_login_is_sent_with_what_renews_it() {
+        let provider: &'static Fake = Box::leak(Box::default());
+        let mut held = Held {
+            provider,
+            account: providers::Account {
+                id: "fake:account".to_owned(),
+                kind: Kind::Subscription,
+                label: None,
+            },
+            credentials: vec![Credential {
+                provider: "fake",
+                secret: agents::Secret::new("expired-token"),
+                key: false,
+                expires: Some(1_000_000 - 60_000),
+                identity: None,
+                plan: None,
+                refresh: Some(agents::Refresh {
+                    token: agents::Secret::new("refresh-token"),
+                    programs: Vec::new(),
+                }),
+            }],
+        };
+        let limits = read(&mut held, 1_000_000);
+        assert_eq!(
+            (keys(&limits), &limits.problem),
+            (vec!["key-expired-token"], &None)
+        );
+        // Without a refresh token it still isn't sent.
+        held.credentials[0].refresh = None;
         assert_eq!(read(&mut held, 1_000_000).problem, Some(Problem::Expired));
     }
 
@@ -1303,7 +1393,7 @@ mod tests {
                             expires: None,
                             identity: None,
                             plan: None,
-                            app_ports: Vec::new(),
+                            refresh: None,
                         }),
                 })
                 .collect())
@@ -1316,7 +1406,7 @@ mod tests {
 
     /// The fake agent's folders under `home`, read by the two fake
     /// providers.
-    fn gathered(db: &Connection, home: &Path) -> (Vec<SignedIn>, BTreeMap<String, Held>) {
+    fn gathered(db: &Connection, home: &Path) -> Gathered {
         let fake: &'static Fake = Box::leak(Box::default());
         let too: &'static Fake = Box::leak(Box::new(Fake {
             info: &FAKE_TOO,
@@ -1346,7 +1436,7 @@ mod tests {
         // What each is now recorded as signed in to.
         let signed = |home: &Path| -> Vec<(String, Option<String>)> {
             let mut signed: Vec<_> = gathered(&db, home)
-                .0
+                .signed_in
                 .into_iter()
                 .map(|signed| (signed.folder, signed.account))
                 .collect();
@@ -1392,7 +1482,11 @@ mod tests {
             )
             .unwrap();
         }
-        let (signed_in, accounts) = gathered(&db, home.path());
+        let Gathered {
+            signed_in,
+            accounts,
+            ..
+        } = gathered(&db, home.path());
         let signed: Vec<_> = signed_in
             .iter()
             .map(|signed| (signed.provider.as_str(), signed.account.as_deref()))
@@ -1724,13 +1818,13 @@ mod tests {
         let agent = Counting(AtomicBool::new(false));
         // Neither missing nor a folder made by another tool (as Gemini CLI's
         // `~/.gemini` for Antigravity) counts as installed.
-        let (signed_in, _) = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
+        let gathered = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
         assert!(!agent.0.load(Ordering::Relaxed), "logins was called");
-        assert!(signed_in.is_empty());
+        assert!(gathered.signed_in.is_empty());
         std::fs::create_dir(home.path().join(".fake")).unwrap();
-        let (signed_in, _) = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
+        let gathered = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
         assert!(!agent.0.load(Ordering::Relaxed), "logins was called");
-        assert!(signed_in.is_empty());
+        assert!(gathered.signed_in.is_empty());
 
         // Once it was signed in and its folder was deleted, it's still signed
         // out without asking `logins`.
@@ -1741,15 +1835,62 @@ mod tests {
             [&folder],
         )
         .unwrap();
-        let (signed_in, _) = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
+        let gathered = gather(&db, home.path(), &[&agent], &[fake]).unwrap();
         assert!(!agent.0.load(Ordering::Relaxed), "logins was called");
-        assert_eq!(signed_in.len(), 1);
+        assert_eq!(gathered.signed_in.len(), 1);
         assert_eq!(
             (
-                signed_in[0].folder.as_str(),
-                signed_in[0].account.as_deref()
+                gathered.signed_in[0].folder.as_str(),
+                gathered.signed_in[0].account.as_deref()
             ),
             (folder.as_str(), None)
         );
+    }
+
+    #[test]
+    fn a_login_that_cant_be_read_fails_its_accounts_read_without_signing_it_out() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut db = crate::db::open(data.path()).unwrap();
+        let folder = home.path().join(".fake");
+        std::fs::create_dir(&folder).unwrap();
+        // A login half written, to an account whose login had expired.
+        std::fs::write(folder.join("login"), "{").unwrap();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at, problem)
+             VALUES ('fake:api', 'fake', 'subscription', 'Fake Plan', 1000, 'expired')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account)
+             VALUES ('fake', ?1, 'fake', 1000, 'fake:api')",
+            [folder.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        let first = gathered(&db, home.path());
+        assert!(first.signed_in.is_empty(), "signed out");
+        assert!(first.accounts.is_empty());
+        record(&mut db, first.signed_in, first.unreadable, 2_000).unwrap();
+
+        // It couldn't be read, which isn't backed off, and the log says why.
+        let problem: Option<String> = db
+            .query_row(
+                "SELECT problem FROM account WHERE id = 'fake:api'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(problem.as_deref(), Some("unavailable"));
+        assert_eq!(retry_at(&db), None);
+        let log = std::fs::read_to_string(data.path().join("app.log")).unwrap();
+        assert!(log.contains(": limits not read: reading"), "{log}");
+
+        // Another folder's login to it is read instead.
+        let second = home.path().join(".fake-work");
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(second.join("login"), r#"{"fake":"good-key"}"#).unwrap();
+        let covered = gathered(&db, home.path());
+        assert!(covered.accounts.contains_key("fake:api"));
+        assert!(covered.unreadable.is_empty());
     }
 }

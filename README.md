@@ -86,8 +86,9 @@ shows your limits under the prompt.
 - Turnscope only reads your agents' history and logins. The one change
   it makes is adding or removing its MCP server when you ask, with the
   agent's own command.
-- Each login is sent only to its own provider, to read your limits. While
-  Antigravity's app is open, Turnscope asks the app on your Mac instead.
+- Each login is sent only to its own provider, to read your limits.
+  Antigravity's login expires within the hour, so Turnscope renews it with
+  Google, as Antigravity does, and keeps the new one in memory alone.
   Turnscope stores no logins.
 - Of what's said in a session, it keeps only the title: the one you or the
   agent gave it, or else the first thing you asked.

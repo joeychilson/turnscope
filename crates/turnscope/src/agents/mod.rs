@@ -317,11 +317,26 @@ pub struct Credential {
     pub identity: Option<(String, Option<String>)>,
     /// The plan, where the agent's files say, such as `max`.
     pub plan: Option<String>,
-    /// Where the agent's app, while it runs, is asked in the provider's
-    /// place: the ports it listens on at 127.0.0.1, with `secret` the app's
-    /// own token. Such a login has no `expires`, as the app renews its
-    /// sign-in itself. Empty for a login sent to the provider.
-    pub app_ports: Vec<u16>,
+    /// What renews the login in memory once its token expires, where its
+    /// provider renews logins at all: only one whose refresh token isn't
+    /// replaced when used, so renewing takes nothing from the agent.
+    pub refresh: Option<Refresh>,
+}
+
+impl Credential {
+    /// Whether it's good for a minute more: one about to expire would be
+    /// refused on the way, which reads as a login to sign in to again,
+    /// where it only needs renewing.
+    pub fn fresh(&self, now: i64) -> bool {
+        self.expires.is_none_or(|at| at > now + crate::time::MINUTE)
+    }
+}
+
+/// What renews a login: its refresh token, and the agent's programs, which
+/// hold the OAuth client to renew it with.
+pub struct Refresh {
+    pub token: Secret,
+    pub programs: Vec<PathBuf>,
 }
 
 /// A token or key. It can't be printed, serialized or cloned, so it can't
@@ -482,7 +497,7 @@ pub fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> 
             expires: kept["expires"].as_i64(),
             identity: None,
             plan: None,
-            app_ports: Vec::new(),
+            refresh: None,
         }),
         provider: provider.to_owned(),
     }
