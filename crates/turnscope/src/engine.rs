@@ -605,9 +605,12 @@ fn keep(
     loop {
         watch(&mut watcher);
         let mut read_asked = false;
-        if asked && crate::online() && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+        if asked && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
             (asked, asked_at) = (false, Some(Instant::now()));
-            read_asked = read_limits(&mut db, home, data, true)?;
+            // Offline, the catch-up still takes in limits agents wrote.
+            if crate::online() {
+                read_asked = read_limits(&mut db, home, data, true)?;
+            }
         }
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
@@ -654,7 +657,7 @@ fn keep(
                     return Err(Error::Failed("the agents' folders can't be watched".into()));
                 }
             }
-            if asked && crate::online() && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+            if asked && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
                 break;
             }
         }
