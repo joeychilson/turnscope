@@ -282,6 +282,7 @@ fn take(db: &mut Connection, catalog: &Catalog, now: i64) -> Result<()> {
 mod tests {
     use super::*;
     use crate::agents::Tokens;
+    use crate::db::test::one;
 
     /// Prices of `rows`, each in force from `since`.
     fn priced(rows: &[(&str, &str, i64, &str, Option<&str>)]) -> Prices {
@@ -422,6 +423,7 @@ mod tests {
 
     /// One process asks models.dev at a time: claimed for two minutes, then
     /// six hours once its catalog is taken in, or again by a clock set back.
+    /// One that isn't to ask doesn't wait on another's write to be told so.
     #[test]
     fn models_dev_is_asked_by_one_process_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -429,7 +431,13 @@ mod tests {
         let now = crate::now();
         assert!(claim(&mut db, now).unwrap());
         // A process that read the time 20 ms earlier, and claims after.
+        let mut other = crate::db::open(dir.path()).unwrap();
+        let writing = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        db.busy_timeout(std::time::Duration::ZERO).unwrap();
         assert!(!claim(&mut db, now - 20).unwrap());
+        drop(writing);
         assert!(!claim(&mut db, now + CLAIMED - 1).unwrap());
         assert!(claim(&mut db, now + CLAIMED).unwrap());
         assert!(claim(&mut db, now - crate::time::DAY).unwrap(), "set back");
@@ -437,9 +445,7 @@ mod tests {
         db.execute("UPDATE state SET prices_at = NULL", []).unwrap();
         let began = crate::now();
         assert!(refresh_from(&mut db, || Ok(listing("zai", "glm-5.3", Value::Null))).unwrap());
-        let asked: i64 = db
-            .query_row("SELECT prices_at FROM state", [], |row| row.get(0))
-            .unwrap();
+        let asked = one::<i64>(&db, "SELECT prices_at FROM state");
         assert!((began..=crate::now()).contains(&asked));
     }
 
@@ -451,11 +457,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();
         let other = crate::db::open(dir.path()).unwrap();
-        let asked = || -> i64 {
-            other
-                .query_row("SELECT prices_at FROM state", [], |row| row.get(0))
-                .unwrap()
-        };
+        let asked = || one::<i64>(&other, "SELECT prices_at FROM state");
         let out_of_reach = || Err(Error::Failed("models.dev is out of reach".to_owned()));
         let began = crate::now();
         refresh_from(&mut db, out_of_reach).unwrap_err();
@@ -509,10 +511,7 @@ mod tests {
             serde_json::json!({"input": 2, "output": 8}),
         );
         take(&mut db, &listed, 0).unwrap();
-        let cost: Option<f64> = db
-            .query_row("SELECT cost FROM response", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(cost, Some(2.0));
+        assert_eq!(one::<f64>(&db, "SELECT cost FROM response"), 2.0);
     }
 
     /// The app reads all of history, minutes the first time, while an
@@ -540,22 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_does_not_take_a_write_lock_when_prices_are_not_due() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let now = crate::now();
-        db.execute("UPDATE state SET prices_at = ?1", [now])
-            .unwrap();
-        let mut other = crate::db::open(dir.path()).unwrap();
-        let _held = other
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        db.busy_timeout(std::time::Duration::ZERO).unwrap();
-        assert!(!claim(&mut db, now).unwrap());
-    }
-
-    #[test]
-    fn parse_catalog_skips_incomplete_cost_objects() {
+    fn a_price_without_its_input_or_output_isnt_taken() {
         let json = serde_json::json!({
             "anthropic": {
                 "models": {

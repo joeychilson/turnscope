@@ -635,15 +635,14 @@ mod tests {
     ) -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::open(dir.path()).unwrap();
+        let from = (
+            agent,
+            "f",
+            account.provider.as_str(),
+            Some(account.id.as_str()),
+        );
         for (id, model, cost, at) in responses {
-            db.execute(
-                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model, input,
-                     cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt, web_searches,
-                     priority, cost, account)
-                 VALUES (?1, ?2, ?2, 0, 1, 'f', ?3, ?4, ?5, 1, 0, 0, 0, 1, 0, 1, 0, 0, ?6, ?7)",
-                rusqlite::params![agent, id, at, account.provider, model, cost, account.id],
-            )
-            .unwrap();
+            crate::db::test::response(&db, from, id, *at, model, Some(*cost));
         }
         (dir, db)
     }
