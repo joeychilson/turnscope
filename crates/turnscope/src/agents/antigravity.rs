@@ -231,7 +231,7 @@ fn fresher(
     file: Result<Option<Credential>>,
 ) -> Result<Option<Credential>> {
     match (kept, file) {
-        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(if file.expires > kept.expires {
+        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(if expiry(&file) > expiry(&kept) {
             file
         } else {
             kept
@@ -240,6 +240,11 @@ fn fresher(
         (Err(error), _) | (_, Err(error)) => Err(error),
         (Ok(None), Ok(None)) => Ok(None),
     }
+}
+
+/// When a sign-in expires, one with no expiry last.
+fn expiry(credential: &Credential) -> i64 {
+    credential.expires.unwrap_or(i64::MAX)
 }
 
 /// Where Antigravity's programs may be, which hold the client its sign-in is
@@ -1074,6 +1079,13 @@ mod tests {
         );
         assert_eq!(read(failed(), signed("file", 1)).as_deref(), Some("file"));
         assert_eq!(read(signed("kept", 1), failed()).as_deref(), Some("kept"));
+        let lasting = signed("kept", 0).map(|one| {
+            one.map(|kept| Credential {
+                expires: None,
+                ..kept
+            })
+        });
+        assert_eq!(read(lasting, signed("file", 2)).as_deref(), Some("kept"));
         assert!(fresher(Ok(None), failed()).is_err());
     }
 }
