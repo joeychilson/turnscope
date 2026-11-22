@@ -105,20 +105,14 @@ pub struct Engine {
 
 type Work = Box<dyn FnOnce(&Inner) + Send>;
 
-const POKE_GAP: Duration = Duration::from_secs(30);
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// What woke `keep`.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Wake {
-    Files,
-    Auth,
-    Poke,
-    Stop,
-}
-
-#[derive(Default)]
-struct WakeState {
-    sender: Option<Sender<Wake>>,
-    last_poke: Option<Instant>,
+    /// Something was written in an agent's folder.
+    Written,
+    /// Limits were asked for: the panel opened (`Engine::ask_limits`), or
+    /// an agent wrote a login (`Agent::login_file`).
+    Asked,
 }
 
 #[derive(PartialEq, Eq)]
@@ -141,7 +135,7 @@ struct Inner {
     tell: Box<dyn Fn(Event) + Send + Sync>,
     showing: Mutex<Option<Showing>>,
     kept: Mutex<Kept>,
-    wake: Mutex<WakeState>,
+    wake: Mutex<Option<Sender<Wake>>>,
     ended: AtomicBool,
 }
 
@@ -166,7 +160,7 @@ impl Engine {
             tell: Box::new(tell),
             showing: Mutex::new(None),
             kept: Mutex::new(Kept::Unset),
-            wake: Mutex::new(WakeState::default()),
+            wake: Mutex::new(None),
             ended: AtomicBool::new(false),
         });
         let running = Arc::clone(&inner);
@@ -253,19 +247,13 @@ impl Engine {
         });
     }
 
-    /// Wake the engine to check logins and refresh any stale, failing, or
-    /// reset accounts right away, as when the panel opens or the Mac wakes.
-    /// Debounced so repeated clicks don't hammer providers.
-    pub fn poke(&self) {
-        let mut wake = locked(&self.inner.wake);
-        let Some(sender) = wake.sender.as_ref() else {
-            return;
-        };
-        if wake.last_poke.is_some_and(|at| at.elapsed() < POKE_GAP) {
-            return;
-        }
-        if sender.send(Wake::Poke).is_ok() {
-            wake.last_poke = Some(Instant::now());
+    /// Ask for limits read `limits::DUE` ago or more to be read again, and
+    /// any whose read failed, as when the panel opens
+    /// (`limits::refresh_asked`). Nothing, while another app keeps the data
+    /// current.
+    pub fn ask_limits(&self) {
+        if let Some(wake) = locked(&self.inner.wake).as_ref() {
+            let _ = wake.send(Wake::Asked);
         }
     }
 
@@ -316,9 +304,6 @@ fn queue(inner: &Arc<Inner>) -> Sender<Work> {
 impl Drop for Engine {
     fn drop(&mut self) {
         self.inner.ended.store(true, Ordering::Relaxed);
-        if let Some(sender) = locked(&self.inner.wake).sender.as_ref() {
-            let _ = sender.send(Wake::Stop);
-        }
     }
 }
 
@@ -357,7 +342,7 @@ impl Inner {
                             self.caught(caught)
                         })
                     }));
-                    locked(&self.wake).sender = None;
+                    *locked(&self.wake) = None;
                     drop(lock);
                     let why = match kept {
                         Ok(Ok(())) => continue,
@@ -525,25 +510,33 @@ fn lock(data: &Path) -> Result<Option<File>> {
 // settle (9.8G vs 3.2G instructions over 5,000 sessions with heavy writes).
 const GAP: Duration = Duration::from_secs(5);
 
+/// The least time between two reads of limits asked for
+/// (`limits::refresh_asked`): asked for again sooner, they're read once it's
+/// passed. Each read gathers every agent's logins, the Keychain's with
+/// `/usr/bin/security`, and asks again a provider that failed, so opening
+/// the panel again and again would ask that often. 30 s is a guess at how
+/// soon someone looks again, not measured.
+const ASKED: Duration = Duration::from_secs(30);
+
 enum Caught {
     Limits,
     Read { new: bool },
     Failed(Error),
 }
 
-/// Catch up when the agents' folders change, on explicit pokes (panel open
-/// or Mac wake), and each minute, as horizons and outlooks move with the
-/// clock. Tells `told` what each catch-up came to, and returns once it says
-/// to stop.
+/// Catch up when the agents' folders change, and each minute, as horizons
+/// and outlooks move with the clock, reading the limits asked for first
+/// (`Wake::Asked`). Tells `told` what each catch-up came to, and returns
+/// once it says to stop.
 fn keep(
     home: &Path,
     data: &Path,
-    wake: &Mutex<WakeState>,
+    wake: &Mutex<Option<Sender<Wake>>>,
     mut told: impl FnMut(Caught) -> bool,
 ) -> Result<()> {
     let mut db = crate::db::open(data)?;
     let (changed, changes) = mpsc::channel::<Wake>();
-    locked(wake).sender = Some(changed.clone());
+    *locked(wake) = Some(changed.clone());
     // Any write, not only to history: macOS reports a write when its file
     // is closed, and Codex keeps a session's file open, and OpenCode its
     // database, while they work. Their other writes are what show it.
@@ -553,23 +546,17 @@ fn keep(
     // 100 s, measured 2026-11-11). An agent's writes to its database are in
     // the `-wal` file.
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let Ok(event) = event else {
-            let _ = changed.send(Wake::Files);
-            return;
-        };
-        let ours = !event.paths.is_empty()
-            && event
-                .paths
+        let paths = event.as_ref().map_or(&[][..], |event| &event.paths[..]);
+        let ours = !paths.is_empty()
+            && paths
                 .iter()
                 .all(|path| path.to_string_lossy().ends_with("-shm"));
-        if ours {
-            return;
-        }
-        let auth = event
-            .paths
+        let login = paths
             .iter()
             .any(|path| agents::ALL.iter().any(|agent| agent.login_file(path)));
-        let _ = changed.send(if auth { Wake::Auth } else { Wake::Files });
+        if !ours {
+            let _ = changed.send(if login { Wake::Asked } else { Wake::Written });
+        }
     })
     .map_err(|error| Error::Failed(error.to_string()))?;
     let mut watched: Vec<PathBuf> = Vec::new();
@@ -592,26 +579,6 @@ fn keep(
             }
         }
     };
-    let refresh_limits =
-        |db: &mut Connection, stale: bool, told: &mut dyn FnMut(Caught) -> bool| -> Result<bool> {
-            if !crate::online() {
-                return Ok(true);
-            }
-            let result = if stale {
-                crate::limits::refresh_stale(db, home)
-            } else {
-                crate::limits::refresh(db, home)
-            };
-            let read = match result {
-                Ok(read) => read,
-                Err(error @ Error::Newer(_)) => return Err(error),
-                Err(error) => {
-                    log(data, &error.to_string());
-                    true
-                }
-            };
-            Ok(!read || told(Caught::Limits))
-        };
     // The minute and SQLite's `data_version` at the last catch-up that
     // worked. `data_version` moves when another connection writes, as an
     // agent's MCP server does. A catch-up that read nothing new, in the same
@@ -626,17 +593,34 @@ fn keep(
     // first catch-up is done: on a first launch that reads all of history
     // (12 s for a made-up one of 5,000 files, 176 MB), the app showed no
     // account until it ended. The catch-up then finds the limits read.
-    if !refresh_limits(&mut db, false, &mut told)? {
-        return Ok(());
+    if crate::online() {
+        let read = match crate::limits::refresh(&mut db, home) {
+            Ok(read) => read,
+            Err(error @ Error::Newer(_)) => return Err(error),
+            Err(error) => {
+                log(data, &error.to_string());
+                true
+            }
+        };
+        if read && !told(Caught::Limits) {
+            return Ok(());
+        }
     }
-    let mut refresh_stale = false;
+    // Limits asked for and not read yet, and when they last were.
+    let (mut asked, mut asked_at) = (false, None::<Instant>);
     loop {
         watch(&mut watcher);
-        if refresh_stale {
-            refresh_stale = false;
-            if !refresh_limits(&mut db, true, &mut told)? {
-                return Ok(());
-            }
+        let mut read_asked = false;
+        if asked && crate::online() && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+            (asked, asked_at) = (false, Some(Instant::now()));
+            read_asked = match crate::limits::refresh_asked(&mut db, home) {
+                Ok(read) => read,
+                Err(error @ Error::Newer(_)) => return Err(error),
+                Err(error) => {
+                    log(data, &error.to_string());
+                    true
+                }
+            };
         }
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
@@ -644,7 +628,7 @@ fn keep(
                     crate::time::minute(crate::now()),
                     db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
                 );
-                let new = read || pushed != Some(now);
+                let new = read || read_asked || pushed != Some(now);
                 pushed = Some(now);
                 Caught::Read { new }
             }
@@ -659,58 +643,30 @@ fn keep(
         if !told(caught) {
             return Ok(());
         }
-        match wait_for_wake(&changes)? {
-            Some(Wake::Stop) => return Ok(()),
-            Some(Wake::Auth | Wake::Poke) => refresh_stale = true,
-            Some(Wake::Files) | None => {}
-        }
-    }
-}
-
-/// Wait up to a minute for the next wake signal, settling bursts of folder
-/// writes and enforcing [`GAP`] on regular history writes while letting auth
-/// changes, pokes, and stop signals through right away.
-fn wait_for_wake(changes: &mpsc::Receiver<Wake>) -> Result<Option<Wake>> {
-    let disconnected = || Error::Failed("the agents' folders can't be watched".into());
-    let waited = Instant::now();
-    let mut kind = match changes.recv_timeout(Duration::from_secs(60)) {
-        Ok(kind) => kind,
-        Err(RecvTimeoutError::Timeout) => return Ok(None),
-        Err(RecvTimeoutError::Disconnected) => return Err(disconnected()),
-    };
-    if kind < Wake::Poke {
-        // Let a burst of writes settle, a second at most.
-        let start = Instant::now();
-        loop {
-            match changes.recv_timeout(Duration::from_millis(250)) {
-                Ok(next) => {
-                    kind = kind.max(next);
-                    if kind >= Wake::Poke || start.elapsed() >= Duration::from_secs(1) {
+        let waited = Instant::now();
+        match changes.recv_timeout(Duration::from_secs(60)) {
+            Ok(wake) => {
+                asked |= wake == Wake::Asked;
+                // Let a burst of writes settle, a second at most.
+                let start = Instant::now();
+                while let Ok(wake) = changes.recv_timeout(Duration::from_millis(250)) {
+                    asked |= wake == Wake::Asked;
+                    if start.elapsed() >= Duration::from_secs(1) {
                         break;
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => return Err(disconnected()),
+                // The next catch-up reads what's written meanwhile.
+                std::thread::sleep(GAP.saturating_sub(waited.elapsed()));
+                while let Ok(wake) = changes.try_recv() {
+                    asked |= wake == Wake::Asked;
+                }
             }
-        }
-        // Wait out `GAP` for regular history writes, but break immediately if
-        // an auth change, explicit poke, or stop arrives.
-        while kind == Wake::Files {
-            let left = GAP.saturating_sub(waited.elapsed());
-            if left.is_zero() {
-                break;
-            }
-            match changes.recv_timeout(left) {
-                Ok(next) => kind = kind.max(next),
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => return Err(disconnected()),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(Error::Failed("the agents' folders can't be watched".into()));
             }
         }
     }
-    while let Ok(next) = changes.try_recv() {
-        kind = kind.max(next);
-    }
-    Ok(Some(kind))
 }
 
 struct Showing {
@@ -968,7 +924,7 @@ mod tests {
             matches!(event, Event::Kept(None)).then_some(())
         });
         db.execute_batch(NEWER[1]).unwrap();
-        engine.poke();
+        std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
         let stopped = next(&told, 20, |event| match event {
             Event::Kept(Some(stopped)) => Some(stopped),
             _ => None,
@@ -1111,7 +1067,7 @@ mod tests {
     }
 
     /// One app keeps a data directory current at a time, and the next can
-    /// once it's gone. `running` reports that state without creating a lock.
+    /// once it's gone; `running` says so without making `app.lock`.
     #[test]
     fn one_app_holds_the_lock_at_a_time() {
         let data = tempfile::tempdir().unwrap();
@@ -1145,7 +1101,7 @@ mod tests {
         let (sender, messages) = mpsc::channel();
         let (home_kept, data_kept) = (home.path().to_path_buf(), data.path().to_path_buf());
         std::thread::spawn(move || {
-            let wake = Mutex::new(WakeState::default());
+            let wake = Mutex::new(None);
             keep(&home_kept, &data_kept, &wake, |_| sender.send(()).is_ok())
         });
         // Wait to be told, and say when the limits were read, and whether

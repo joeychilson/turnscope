@@ -35,15 +35,9 @@ pub fn by_id(id: &str) -> Option<&'static dyn Provider> {
         .find(|provider| provider.info().id == id)
 }
 
-/// The canonical provider that makes `model`, if one of Turnscope's providers
-/// does (such as `"anthropic"` for `"claude-opus-4-6"`). Used to price
-/// cross-provider usage (such as Claude or GPT models run through Antigravity).
-pub fn maker(model: &str) -> Option<&'static str> {
-    let bare = model.rsplit('/').next().unwrap_or(model);
-    let lower = bare.to_lowercase();
-    ALL.iter()
-        .find(|provider| provider.owns_model(&lower))
-        .map(|provider| provider.info().id)
+/// The provider that makes `model`, as Anthropic makes `claude-opus-5-5`.
+pub fn maker(model: &str) -> Option<&'static dyn Provider> {
+    ALL.iter().copied().find(|provider| provider.makes(model))
 }
 
 /// A provider of models and the accounts that pay for them.
@@ -78,15 +72,9 @@ pub trait Provider: Sync {
     fn plan_mark(&self, _limits: &Limits) -> Option<i64> {
         None
     }
-    /// Whether this provider renews expired non-rotating OAuth tokens in
-    /// memory (without writing to the agent's files or Keychain) when a login
-    /// carries a refresh token.
-    fn refreshes(&self) -> bool {
-        false
-    }
-    /// Whether `model` (lowercase, without any `provider/` prefix) is made by
-    /// this provider, for cross-provider list-price fallback.
-    fn owns_model(&self, _model: &str) -> bool {
+    /// Whether it makes `model`: another provider serving one it doesn't
+    /// list prices it at this one's list price (`prices`).
+    fn makes(&self, _model: &str) -> bool {
         false
     }
 }
@@ -231,17 +219,6 @@ fn asked(
     refused: &[u16],
     by: Instant,
 ) -> Result<Value, Problem> {
-    let answered = asked_raw(url, token, headers, body, by)?;
-    answer(url, &answered, refused)
-}
-
-fn asked_raw(
-    url: &str,
-    token: &Secret,
-    headers: &[&str],
-    body: Option<&Value>,
-    by: Instant,
-) -> Result<Answered, Problem> {
     let left = time_left(url, by)?;
     let authorization = format!("Authorization: Bearer {}", token.expose());
     let mut lines = vec![authorization.as_str()];
@@ -250,8 +227,9 @@ fn asked_raw(
     }
     lines.extend(headers);
     let body = body.map(Value::to_string);
-    requested(url, &lines, body.as_deref(), left)
-        .map_err(|why| Problem::unanswered(format!("{url}: {why}")))
+    let answered = requested(url, &lines, body.as_deref(), left)
+        .map_err(|why| Problem::unanswered(format!("{url}: {why}")))?;
+    answer(url, &answered, refused)
 }
 
 /// Under 1 ms, curl's `--max-time` formats as `0.000` (no limit).
@@ -265,51 +243,39 @@ fn time_left(url: &str, by: Instant) -> Result<Duration, Problem> {
     Ok(left)
 }
 
-/// Passes form fields on curl's stdin so secrets never appear in a process listing.
+/// POST `fields` to `url` as a form, by `by`. The form goes to curl on
+/// standard input, as headers do, so a secret among its fields is in no
+/// process listing.
 fn post_form(url: &str, fields: &[(&str, &str)], by: Instant) -> Result<Answered, Problem> {
     let left = time_left(url, by)?;
-    let body = form_encode(fields);
-    run_curl(
-        url,
-        &[
-            "--header",
-            "Content-Type: application/x-www-form-urlencoded",
-            "--data-binary",
-            "@-",
-        ],
-        body.as_bytes(),
-        left,
-    )
-    .map_err(|why| Problem::unanswered(format!("{url}: {why}")))
+    let form = form_encode(fields);
+    let args = [
+        "--header",
+        "Content-Type: application/x-www-form-urlencoded",
+        "--data-binary",
+        "@-",
+    ];
+    curl(url, &args, form.as_bytes(), left)
+        .map_err(|why| Problem::unanswered(format!("{url}: {why}")))
 }
 
+/// `fields` as `application/x-www-form-urlencoded`.
 fn form_encode(fields: &[(&str, &str)]) -> String {
-    let mut out = String::new();
-    for (index, (key, value)) in fields.iter().enumerate() {
-        if index > 0 {
-            out.push('&');
-        }
-        percent_encode(key, &mut out);
-        out.push('=');
-        percent_encode(value, &mut out);
-    }
-    out
-}
-
-fn percent_encode(text: &str, out: &mut String) {
-    for byte in text.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.push('%');
-                out.push(HEX[(byte >> 4) as usize] as char);
-                out.push(HEX[(byte & 0x0f) as usize] as char);
-            }
-        }
-    }
+    let encoded = |text: &str| -> String {
+        text.bytes()
+            .map(|byte| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    char::from(byte).to_string()
+                }
+                _ => format!("%{byte:02X}"),
+            })
+            .collect()
+    };
+    let fields: Vec<String> = fields
+        .iter()
+        .map(|(key, value)| format!("{}={}", encoded(key), encoded(value)))
+        .collect();
+    fields.join("&")
 }
 
 /// The JSON `url` answered, or why there's none. A refusal is a refused
@@ -370,22 +336,20 @@ fn requested(
     if headers.iter().any(|header| header.contains(['\r', '\n'])) {
         return Err("a header holds a line break, so nothing was sent".to_owned());
     }
-    let mut extra = vec!["--header", "@-"];
+    let mut args = vec!["--header", "@-"];
     if let Some(body) = body {
-        extra.extend(["--data-raw", body]);
+        args.extend(["--data-raw", body]);
     }
-    let mut request = String::new();
-    for header in headers {
-        request.push_str(header);
-        request.push('\n');
-    }
-    run_curl(url, &extra, request.as_bytes(), time)
+    let request: String = headers.iter().map(|header| format!("{header}\n")).collect();
+    curl(url, &args, request.as_bytes(), time)
 }
 
-fn run_curl(
+/// Run curl for `url` with `args`, writing `input` to its standard input,
+/// giving up after `time`.
+fn curl(
     url: &str,
-    extra: &[&str],
-    stdin_bytes: &[u8],
+    args: &[&str],
+    input: &[u8],
     time: Duration,
 ) -> std::result::Result<Answered, String> {
     let mut curl = Command::new("/usr/bin/curl")
@@ -398,7 +362,7 @@ fn run_curl(
             "--write-out",
             "%{stderr}\n%{http_code} %header{retry-after}",
         ])
-        .args(extra)
+        .args(args)
         .arg("--")
         .arg(url)
         .stdin(Stdio::piped())
@@ -411,7 +375,7 @@ fn run_curl(
     let write = curl
         .stdin
         .take()
-        .map_or(Ok(()), |mut stdin| stdin.write_all(stdin_bytes));
+        .map_or(Ok(()), |mut stdin| stdin.write_all(input));
     let output = curl.wait_with_output().map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -495,7 +459,30 @@ pub fn words(key: &str) -> String {
     out
 }
 
-pub(crate) fn window_name(length: i64) -> String {
+/// A limit `used` percent of a window `length` ms long that resets at
+/// `resets`, named for its length: keyed `key`, or `key:scope` for one on
+/// some models. Of one answer or an agent's history (`agents::InBand`), the
+/// key is the same.
+pub fn window(
+    key: &str,
+    scope: Option<&str>,
+    used: f64,
+    length: i64,
+    resets: Option<i64>,
+) -> Reading {
+    Reading {
+        key: scope.map_or(key.to_owned(), |scope| format!("{key}:{scope}")),
+        name: window_name(length),
+        scope: scope.map(str::to_owned),
+        used,
+        size: None,
+        starts: resets.and_then(|resets| resets.checked_sub(length)),
+        resets,
+    }
+}
+
+/// What a window `length` ms long is called: `5 hours`, `Weekly`.
+fn window_name(length: i64) -> String {
     let hours = (length + HOUR / 2) / HOUR;
     // Whole days, as a window across a clock change is an hour off.
     let days = (length + DAY / 2) / DAY;
@@ -588,17 +575,10 @@ mod tests {
                 "http://example.invalid/: not asked, as the read's time was spent".to_owned()
             ))
         );
-        let posted = super::post_form("http://example.invalid/", &[("k", "v")], spent);
-        assert_eq!(
-            posted.err(),
-            Some(Problem::unanswered(
-                "http://example.invalid/: not asked, as the read's time was spent".to_owned()
-            ))
-        );
     }
 
     #[test]
-    fn form_encoding_escapes_reserved_bytes() {
+    fn a_form_escapes_what_isnt_a_letter_digit_or_mark() {
         assert_eq!(
             super::form_encode(&[
                 ("grant_type", "refresh_token"),

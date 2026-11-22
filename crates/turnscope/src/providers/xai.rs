@@ -31,10 +31,6 @@ impl Provider for Xai {
         &INFO
     }
 
-    fn owns_model(&self, model: &str) -> bool {
-        model.starts_with("grok-")
-    }
-
     fn account(&self, credential: &Credential) -> Option<Account> {
         super::account(INFO.id, credential, || {
             credential.identity.clone().or_else(|| {
@@ -84,10 +80,7 @@ fn parse(answer: &Value) -> Option<Reading> {
             Some((starts, resets))
         }
     };
-    let used = match (
-        config.get("creditUsagePercent").filter(|v| !v.is_null()),
-        period,
-    ) {
+    let used = match (config.get("creditUsagePercent"), period) {
         (Some(used), _) => used.as_f64()?,
         (None, Some(_)) => 0.0,
         (None, None) => return None,

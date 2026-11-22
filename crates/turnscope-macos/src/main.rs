@@ -262,7 +262,7 @@ fn show_panel(s: &mut State) {
         }
         notifier::check();
         login::check();
-        engine::poke();
+        engine::ask_limits();
         s.checks_automatically = updater::automatic();
     }
     if let Some(place) = menu_bar::panel_place(PANEL_WIDTH as f64, GUTTER as f64) {
@@ -320,7 +320,6 @@ fn tick() {
 /// Sleep timers pause during macOS sleep, so refresh immediately on wake.
 fn tick_on_wake() {
     let woke = RcBlock::new(|_: NonNull<NSNotification>| {
-        engine::poke();
         if let Some(handle) = HANDLE.get() {
             handle.update_if(|s, _| ticked(s));
         }

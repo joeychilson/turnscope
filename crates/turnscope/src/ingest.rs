@@ -1,7 +1,7 @@
 //! Reading what's new in the agents' history into the database, with each
 //! response's cost and account. How history is kept: docs/architecture.md#data.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -74,13 +74,10 @@ const SELECT_REPRICED: &str = concat!(
     "SELECT ",
     response_columns!(),
     ", agent FROM response
-     WHERE EXISTS (
+     WHERE cost IS NULL OR EXISTS (
          SELECT 1 FROM repriced
-         WHERE (repriced.provider = response.provider AND repriced.model = response.model)
-            OR (response.cost IS NULL AND (
-                repriced.model = response.model
-                OR response.model LIKE '%/' || repriced.model
-            ))
+         WHERE repriced.provider = response.provider
+           AND repriced.model = response.model
      )"
 );
 
@@ -354,40 +351,13 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
                     let tx = crate::db::write(db)?;
                     let derived = Derived::load(&tx)?;
                     let began = Instant::now();
-                    let mut in_band: BTreeMap<(Arc<str>, String, Option<String>), agents::InBand> =
-                        BTreeMap::new();
-                    let mut took = false;
-                    while let Some((due, read)) = files.next_if(|_| !took || began.elapsed() < HOLD)
-                    {
-                        took = true;
+                    while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
                         match read {
-                            Ok(mut read) => {
-                                if !read.limits.is_empty() {
-                                    for snapshot in std::mem::take(&mut read.limits) {
-                                        let key = (
-                                            Arc::clone(&due.folder),
-                                            snapshot.provider.clone(),
-                                            snapshot.scope().map(str::to_owned),
-                                        );
-                                        if !matches!(in_band.get(&key), Some(cur) if cur.at > snapshot.at)
-                                        {
-                                            in_band.insert(key, snapshot);
-                                        }
-                                    }
-                                }
+                            Ok(read) => {
                                 write(&tx, due, read, home, &derived, &mut projects)?;
                                 wrote = true;
                             }
                             Err(error) => failed(&tx, due, &error)?,
-                        }
-                    }
-                    if !in_band.is_empty() {
-                        let now = crate::now();
-                        for ((folder, provider, _), snapshot) in in_band {
-                            if let Some(account) = derived.account(&folder, &provider, snapshot.at)
-                            {
-                                crate::limits::record_in_band(&tx, account, &snapshot, now)?;
-                            }
                         }
                     }
                     tx.commit()?;
@@ -518,6 +488,23 @@ fn write(
             execute_response(&mut replace, agent, folder, file, cost, account, &response)?;
         }
     }
+    if read.limits.is_empty() {
+        return Ok(());
+    }
+    // On the account the folder was signed in to when the agent wrote them,
+    // as its responses are, and only while the folder still holds a login
+    // to it: a sign-in to another is in `sign_in` once the logins are
+    // gathered again, up to `limits::DUE` later, and meanwhile the other's
+    // limits would go to this one, to stand for it once it's signed out.
+    let held = crate::limits::held_in(due.agent, Path::new(folder), home).unwrap_or_default();
+    let now = crate::now();
+    for limits in &read.limits {
+        if let Some(account) = derived.account(folder, &limits.provider, limits.at)
+            && held.contains(&(limits.provider.clone(), account.to_owned()))
+        {
+            crate::limits::record_in_band(tx, account, limits, now)?;
+        }
+    }
     Ok(())
 }
 
@@ -630,15 +617,19 @@ impl Derived {
 }
 
 /// Price again, in `tx`, every response of `models` (by provider and
-/// model), priced for the first time in it. No list price was in force
-/// before a model's first, so its usage from before takes that first price,
-/// as a read of it now would. Chosen over keeping an agent's own estimate,
-/// which left an OpenCode response of 1M input tokens at the $0.001 it
-/// put on it, where a fresh read gave $2.00.
+/// model), priced for the first time in it, and every response with no
+/// known cost. No list price was in force before a model's first, so its
+/// usage from before takes that first price, as a read of it now would.
+/// Chosen over keeping an agent's own estimate, which left an OpenCode
+/// response of 1M input tokens at the $0.001 it put on it, where a fresh
+/// read gave $2.00.
+///
+/// One with no known cost may have one by a model listed long before: a
+/// model another provider serves takes its maker's list price
+/// (`prices::Prices::cost`), as Claude served to Antigravity takes
+/// Anthropic's. Chosen over raising `READERS`, which reads every file again
+/// from the start, for prices alone.
 pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> {
-    if models.is_empty() {
-        return Ok(());
-    }
     // One scan of `response`, over a query per model: `response` has no
     // index on `(provider, model)`, so querying per model scanned the whole
     // table for each. On 50,000 responses and 20 newly priced models, this
@@ -668,7 +659,8 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     let prices = Prices::load(tx)?;
     let mut update = tx.prepare("UPDATE response SET cost = ?3 WHERE agent = ?1 AND id = ?2")?;
     for (agent, response) in &rows {
-        if let Some(cost) = prices.cost(agent, response) {
+        let cost = prices.cost(agent, response);
+        if cost != response.cost {
             update.execute(params![agent, response.id, cost])?;
         }
     }
@@ -1238,19 +1230,22 @@ mod tests {
     }
 
     #[test]
-    fn price_again_updates_only_matching_models() {
+    fn price_again_prices_the_models_listed_and_what_had_no_price() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();
         db.execute_batch(
             "INSERT INTO price VALUES
                  ('anthropic', 'm1', 0, '{\"input\":2,\"output\":10}', NULL),
-                 ('anthropic', 'm2', 0, '{\"input\":4,\"output\":20}', NULL);
+                 ('anthropic', 'm2', 0, '{\"input\":4,\"output\":20}', NULL),
+                 ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL);
              INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
                  input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
                  web_searches, priority, cost) VALUES
                  ('claude-code', 'r1', 's', 0, 1, '/w', 0, 'anthropic', 'm1', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
                  ('claude-code', 'r2', 's', 0, 1, '/w', 0, 'anthropic', 'm2', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
-                 ('claude-code', 'r3', 's', 0, 1, '/w', 0, 'anthropic', 'm3', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, 9.0);",
+                 ('claude-code', 'r3', 's', 0, 1, '/w', 0, 'anthropic', 'm3', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, 9.0),
+                 ('antigravity', 'r4', 's', 0, 1, '/g', 0, 'google', 'claude-opus-5-5', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL),
+                 ('antigravity', 'r5', 's', 0, 1, '/g', 0, 'google', 'gemini-unlisted', 1000000, 0, 0, 0, 0, 0, 1000000, 0, 0, NULL);",
         )
         .unwrap();
         let tx = crate::db::write(&mut db).unwrap();
@@ -1276,26 +1271,33 @@ mod tests {
                 ("r1".to_owned(), Some(2.0)),
                 ("r2".to_owned(), Some(4.0)),
                 ("r3".to_owned(), Some(9.0)),
+                // Claude served by Google, unpriced since before the maker's
+                // price applied to it, at Anthropic's list price.
+                ("r4".to_owned(), Some(5.0)),
+                ("r5".to_owned(), None),
             ]
         );
     }
 
     #[test]
-    fn codex_rollout_rate_limits_update_account_offline_and_clear_expired() {
+    fn limits_codex_writes_are_taken_in_offline() {
         let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let mut db = crate::db::open(dir.path()).unwrap();
         let codex = home.path().join(".codex");
         let sessions = codex.join("sessions/2026/10/01");
         std::fs::create_dir_all(&sessions).unwrap();
+        let sign_in = |account: &str| {
+            let kept = serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "token", "account_id": account}
+            });
+            std::fs::write(codex.join("auth.json"), kept.to_string()).unwrap();
+        };
         let now = crate::now();
-        let at_ts = jiff::Timestamp::from_millisecond(now - 30_000)
-            .unwrap()
-            .to_string();
-        let resets_sec = (now + 3 * crate::time::HOUR) / 1000;
         let older = now - crate::time::HOUR;
         db.execute(
-            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, problem)
-             VALUES ('openai:acct-1', 'openai', 'subscription', 'ChatGPT', ?1, ?1, 'expired')",
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at, problem)
+             VALUES ('openai:acct-1', 'openai', 'subscription', 'ChatGPT', ?1, ?1, ?1, 'expired')",
             [older],
         )
         .unwrap();
@@ -1305,33 +1307,60 @@ mod tests {
             params![codex.to_string_lossy(), older],
         )
         .unwrap();
-
-        let lines = [
-            serde_json::json!({"timestamp": at_ts, "type": "session_meta", "payload": {"id": "t1"}}),
-            serde_json::json!({
-                "timestamp": at_ts,
+        let rollout = sessions.join("rollout-2026-10-01-t1.jsonl");
+        let write = |at: i64, used: f64| {
+            let resets = (now + 3 * crate::time::HOUR) / 1000;
+            let at = jiff::Timestamp::from_millisecond(at).unwrap().to_string();
+            let mut lines = String::new();
+            if !rollout.exists() {
+                let meta = serde_json::json!({"timestamp": at, "type": "session_meta", "payload": {"id": "t1"}});
+                lines += &format!("{meta}\n");
+            }
+            let count = serde_json::json!({
+                "timestamp": at,
                 "type": "event_msg",
                 "payload": {
                     "type": "token_count",
                     "rate_limits": {
                         "limit_id": "codex",
                         "plan_type": "plus",
-                        "primary": {"used_percent": 30.0, "window_minutes": 300, "resets_at": resets_sec},
-                        "secondary": {"used_percent": 15.0, "window_minutes": 10080, "resets_at": resets_sec + 86400}
+                        "primary": {"used_percent": used, "window_minutes": 300, "resets_at": resets},
+                        "secondary": {"used_percent": 15.0, "window_minutes": 10080, "resets_at": resets + 86400}
                     }
                 }
-            }),
-        ];
-        let body: String = lines.iter().map(|line| format!("{line}\n")).collect();
-        std::fs::write(sessions.join("rollout-2026-10-01-t1.jsonl"), body).unwrap();
+            });
+            lines += &format!("{count}\n");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&rollout)
+                .unwrap();
+            std::io::Write::write_all(&mut file, lines.as_bytes()).unwrap();
+        };
+        let left = |db: &Connection| {
+            let status = crate::status::status(db, now).unwrap();
+            let account = &status.accounts[0];
+            let left: Vec<u8> = account
+                .limits
+                .iter()
+                .map(|limit| limit.left_percent)
+                .collect();
+            (
+                matches!(account.state, crate::status::State::Live { .. }),
+                left,
+            )
+        };
 
+        sign_in("acct-1");
+        write(now - 60_000, 30.0);
         assert!(ingest(&mut db, home.path(), None).unwrap());
-        let status = crate::status::status(&db, now).unwrap();
-        let account = &status.accounts[0];
-        assert_eq!(account.title, "ChatGPT Plus");
-        assert!(matches!(account.state, crate::status::State::Live { .. }));
-        assert_eq!(account.limits.len(), 2);
-        assert_eq!(account.limits[0].left_percent, 70);
-        assert_eq!(account.limits[1].left_percent, 85);
+        // Codex's login works where the one read before had expired.
+        assert_eq!(left(&db), (true, vec![70, 85]));
+        // Signed in to another account since the logins were gathered, the
+        // folder's limits are the other's.
+        sign_in("acct-2");
+        write(now - 30_000, 90.0);
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        assert_eq!(left(&db), (true, vec![70, 85]));
     }
 }

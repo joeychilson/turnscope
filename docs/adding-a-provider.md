@@ -148,10 +148,9 @@ account, and the folders and usage of the rest move to it. OpenCode Go's is
 the instant its monthly window resets, which keys to one plan report to the
 second. The default, `None`, never merges.
 
-If the provider makes models that other providers may also serve (such as
-Claude or GPT served through Google), implement `owns_model`: `prices`
-uses it to fall back to the maker's models.dev list price when the serving
-provider's catalog omits that model.
+If another provider serves the provider's models under its own id, as
+Google serves Claude to Antigravity, implement `makes`: a model a provider
+serves but models.dev doesn't list under it takes its maker's list price.
 
 A failure is a `Problem`:
 
@@ -168,14 +167,15 @@ A failure is a `Problem`:
 
 The helpers in `src/providers/mod.rs` each have a doc comment:
 `account(provider, credential, identity)` and `api_account(provider)`;
-`ask(url, credential, headers, by)`, `asked(url, token, headers,
-body, refused, by)`, `post_form(url, fields, by)` and
-`request(url, headers, body, seconds)`; and
-`absent(window)`, `reset(value)`, `window_name(length)` and `words(key)`
-for reading an answer.
+`ask(url, credential, headers, by)`, `asked(url, token, headers, body,
+refused, by)`, `post_form(url, fields, by)` and `request(url, headers,
+body, seconds)`; and
+`absent(window)`, `reset(value)`, `window(key, scope, used, length,
+resets)`, `window_name(length)` and `words(key)` for reading an answer.
 
-How Turnscope calls it, every five minutes, or less often while it
-answers but is unavailable (`limits::backoff`):
+How Turnscope calls it, as each account's limits come due
+(`limits::Schedule`), or less often while it answers but is unavailable
+(`limits::backoff`):
 
 - Every login the agents hold goes to `account`. Logins to one account are
   read together, in 15 s all told.
@@ -186,20 +186,18 @@ answers but is unavailable (`limits::backoff`):
   `account_limits` beside them. Their readings are put together. A key
   that can't be read is the account's problem, beside what the others
   read.
-- A login within a minute of its `expires` is never sent unless the
-  provider sets `refreshes()` and the login carries a `refresh` token.
+- A login within a minute of its `expires` is never sent: it would expire
+  on the way. One with a `refresh` is, for the provider to renew.
 
 Rules:
 
-- **Never rotate a refresh token or write a login.** Turnscope never
-  writes to an agent's files or Keychain. A provider whose refresh tokens
-  do not rotate (Google) may exchange one in memory (`refreshes()`),
-  caching the short-lived access token in memory only; every other
-  provider waits for the agent to refresh it.
-- **Requests** go only through `ask`, `asked`, `asked_raw`,
-  `post_form` or `request`: curl with credentials on standard input,
-  Turnscope's only way to the network. A request changes nothing at the
-  provider.
+- **Never write a login.** Turnscope waits for the agent to renew one,
+  except where renewing takes nothing from the agent: a provider whose
+  refresh token isn't replaced when used, as Google's, renews a login
+  that carries a `refresh`, and keeps the new token in memory alone.
+- **Requests** go only through `ask`, `asked`, `post_form` or `request`:
+  curl with the credential on standard input, Turnscope's only way to the
+  network. A request changes nothing at the provider.
 - **An answer that isn't understood** is `Problem::not_understood`, not an
   empty list of readings, which would read as a plan without limits. A
   window whose time won't parse fails the whole answer, as the rest would

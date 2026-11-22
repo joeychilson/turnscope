@@ -165,11 +165,12 @@ CREATE TABLE failing (
 ) STRICT, WITHOUT ROWID;
 "#,
     r#"
--- Per-account scheduling and full-poll watermarks for in-band readings.
-ALTER TABLE account ADD COLUMN full_read_at INTEGER;
+-- When each account's provider was last asked, and when all its limits were
+-- last read: limits an agent writes in its history move `read_at` alone
+-- (`limits::record_in_band`).
 ALTER TABLE account ADD COLUMN checked_at INTEGER;
-ALTER TABLE account ADD COLUMN next_check_at INTEGER;
-UPDATE account SET full_read_at = read_at WHERE read_at IS NOT NULL;
+ALTER TABLE account ADD COLUMN full_read_at INTEGER;
+UPDATE account SET full_read_at = read_at;
 "#,
 ];
 
@@ -252,18 +253,6 @@ pub fn read(dir: &Path) -> Option<Connection> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let db = Connection::open_with_flags(dir.join(FILE), flags).ok()?;
     db.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
-    (revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
-}
-
-/// An existing database at this binary's revision for a quick best-effort
-/// write (such as `statusline` recording live `rate_limits` from stdin),
-/// never creating or migrating one and waiting at most `timeout`.
-pub fn open_existing_rw(dir: &Path, timeout: std::time::Duration) -> Option<Connection> {
-    let flags =
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let db = Connection::open_with_flags(dir.join(FILE), flags).ok()?;
-    db.busy_timeout(timeout).ok()?;
-    db.pragma_update(None, "synchronous", "NORMAL").ok()?;
     (revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
 }
 
@@ -727,7 +716,7 @@ mod tests {
             ),
             (
                 "account",
-                "xai:user-1|xai|subscription|SuperGrok|NULL|1|900|NULL|900|NULL|NULL",
+                "xai:user-1|xai|subscription|SuperGrok|NULL|1|900|NULL|NULL|900",
             ),
             (
                 "reading",
@@ -834,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn revision_1_migrates_cleanly_to_current_revision() {
+    fn a_database_of_the_revision_before_takes_the_new_columns() {
         let dir = tempfile::tempdir().unwrap();
         let db = Connection::open(dir.path().join(FILE)).unwrap();
         db.pragma_update(None, "application_id", APPLICATION_ID)
@@ -854,9 +843,9 @@ mod tests {
         assert_eq!(
             rows(
                 &migrated,
-                "SELECT id, read_at, full_read_at, checked_at, next_check_at FROM account"
+                "SELECT id, read_at, full_read_at, checked_at FROM account"
             ),
-            ["anthropic:a|1234|1234|NULL|NULL"]
+            ["anthropic:a|1234|1234|NULL"]
         );
     }
 }

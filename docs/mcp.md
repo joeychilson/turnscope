@@ -119,7 +119,7 @@ way.
   ```
 
 - Each call first reads what's new: history, and limits and prices when
-  they're due. A provider that can't be reached leaves its account as it
+  they're due, unless the app runs, which reads those itself. A provider that can't be reached leaves its account as it
   was last read. If reading fails, as when a newer Turnscope has written
   to the data since the server started, or another Turnscope has been
   reading history for over a second, as the app does at its first launch,
@@ -165,12 +165,13 @@ The answer has three parts:
 
 1. With `hours`, whether they fit at the work rate: of several
    accounts, a line for each, named. Only an account's limits on all its
-   usage count, not a limit on one model or one key. Work past a limit's
-   reset counts in the windows after it. A limit with too little work
-   measured, or a window that rolls, as OpenCode Go's 5 hours does, which
-   has no start to measure work from, means it can't be told: the answer
-   names the limit and what's left of it, then what the others would
-   leave.
+   usage count, not a limit on one model or one key. A plan with none, as
+   Google AI's, counts those of the pool it last drew on: Gemini, or Claude
+   and GPT. Work past a limit's reset counts in the windows after it. A
+   limit with too little work measured, or a window that rolls, as
+   OpenCode Go's 5 hours does, which has no start to measure work from,
+   means it can't be told: the answer names the limit and what's left of
+   it, then what the others would leave.
 2. A one-sentence verdict on the first account: how much work is left
    before which limit runs out, and when that limit resets. When the
    limit that decides the account has no work rate measured, it says

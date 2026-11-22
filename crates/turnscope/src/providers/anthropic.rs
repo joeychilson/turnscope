@@ -46,7 +46,7 @@ impl Provider for Anthropic {
         super::account(INFO.id, credential, || credential.identity.clone())
     }
 
-    fn owns_model(&self, model: &str) -> bool {
+    fn makes(&self, model: &str) -> bool {
         model.starts_with("claude-")
     }
 

@@ -2,8 +2,8 @@
 //! to, and the account Gemini API keys draw on. An API key carries no limit
 //! an agent's key can read.
 //!
-//! A plan's limits are read as Antigravity reads them, with POSTs that change
-//! nothing to the service its app and `agy` talk to. None of it is
+//! A plan's limits are read as Antigravity reads them, with two POSTs, which
+//! change nothing, to the service its app and `agy` talk to. None of it is
 //! documented: what follows was measured with this Mac's sign-in on
 //! 2026-11-10, asking as OpenUsage and CodexBar do (their code, read that
 //! day).
@@ -12,16 +12,14 @@
 //!   `free-tier` beside it), and the project Google keeps the usage under,
 //!   `cloudaicompanionProject`. Google makes the project when Antigravity is
 //!   first used, and Turnscope never does: without one there's nothing to
-//!   ask. Both project and plan are cached in memory for an hour so routine
-//!   reads make one request instead of two.
+//!   ask.
 //! - `retrieveUserQuotaSummary`, asked with that project, gives `groups` of
 //!   `buckets`, each a `window` (`5h`, `weekly`) with the fraction left,
 //!   `remainingFraction`, and `resetTime`.
 //!
 //! **The client.** Asked as `Turnscope`, `loadCodeAssist` answered 200 with
 //! no tier, no project, and the reason `UNSUPPORTED_CLIENT`. So both
-//! requests name the client as Antigravity's app does, taking the installed
-//! app's version from `Info.plist` when present.
+//! requests name the client as Antigravity's app does.
 //!
 //! **The host.** Limits are asked of the `daily-` host, over the one that
 //! tells the plan: asked at the same moment, that one had every bucket full
@@ -33,28 +31,40 @@
 //! 5-hour window reset 10 hours after the week began: 5-hour windows follow
 //! one another from the week's first use.
 //!
-//! **Model pools.** A plan has peer pools — one for Gemini models and one
-//! for Claude and GPT models — each with a 5-hour and a weekly bucket, and
-//! no combined cap across all models. Every bucket carries its group's scope
-//! (`Gemini`, `Claude and GPT`) so each pool's work rate and "Used most"
-//! breakdown count only its own models, and `status::deciding` compares all
-//! peer pools equally when an account has no whole-account limit.
+//! **Pools.** A plan has a pool for Gemini models and one for Claude and
+//! GPT models, each with a 5-hour and a weekly bucket, and none on all
+//! usage. Each bucket is scoped by its pool, as `Weekly (Gemini)` and
+//! `Weekly (Claude and GPT)`, over leaving the Gemini pool's unscoped as the
+//! plan's own: unscoped, its work rate and shares counted Claude's usage,
+//! which never draws on it. An account stands by the pool its latest
+//! response drew on (`status::pool`), and with none, by Gemini's, which
+//! Antigravity's own models draw on.
 //!
-//! **Keys.** Gemini buckets keep keys `5h` and `weekly`, and other pools key
-//! by window and bucket id (`weekly:3p-weekly`), preserving existing reading
-//! history and listing Gemini before third-party pools.
+//! **Keys.** A limit is keyed by its window, and one not Gemini's by its
+//! bucket too, as `weekly:3p-weekly`, over the bucket's id alone: the
+//! status lists limits by key, so Gemini's come first, and by id the Claude
+//! and GPT pool's came before them.
 //!
-//! **Refreshing.** From Antigravity 2.33.1 on (verified in 2.34.0,
-//! 2026-11-21), each `language_server` process generates a random
-//! `writer_id`, saves it to Keychain only on interactive sign-in, and skips
-//! saving hourly refreshes whenever `writer_id` differs, leaving Keychain
-//! expired after a restart, update, or switch between the app and `agy`.
-//! Google's OAuth refresh tokens don't rotate on use, so when the stored
-//! access token has expired Turnscope exchanges the refresh token in memory
-//! via `https://oauth2.googleapis.com/token` using the OAuth client read
-//! from Antigravity's Mach-O `__TEXT.__rodata` section, caches the refreshed
-//! access token in memory only, and never writes Antigravity's files or
-//! Keychain or stores any token on disk.
+//! **Renewing.** From the app 2.33.1 on, Antigravity doesn't write the
+//! token it renews back to its Keychain item (`agents::antigravity`), so
+//! the item's token expires within an hour of signing in. Turnscope renews
+//! it as the app does, in memory alone: it sends the item's refresh token
+//! to Google with the app's OAuth client, and keeps the token Google gives
+//! in this process until it expires, written nowhere. A Google refresh
+//! token isn't replaced when used, so renewing takes nothing from the app
+//! or `agy`. Chosen over asking the running app for its limits, as 0.3.1
+//! did: that read nothing while the app was closed, and nothing from 2.34.0
+//! on, which stopped passing the token it's asked with on its command line;
+//! and over waiting for Antigravity to write the item, which it doesn't.
+//!
+//! **The app's client.** Its id is below. Its secret is read from the
+//! app's program, where Go keeps its strings, in `__TEXT,__rodata`: that
+//! held 3 client ids, this one among them, and 3 secrets, each `GOCSPX-`
+//! and 28 characters, in the app 2.34.0's `language_server` and in `agy`
+//! (read 2026-11-22). Nothing there says which secret is this client's, so
+//! each is tried until Google takes one, and the one taken is tried first
+//! after. Google answers a wrong secret `invalid_client`, and a refresh
+//! token it no longer takes `invalid_grant`: a login to sign in to again.
 //!
 //! **Not measured.** A refused sign-in: only a 401 is taken for one, since a
 //! 403 from this service can mean a client or an account it doesn't serve.
@@ -66,15 +76,17 @@
 //! `remainingFraction: 0`, as CodexBar reads `agy`'s form of the answer,
 //! where a fraction that's set is written even at zero. So a bucket without
 //! it says nothing of what's left and is passed over, as OpenUsage does,
-//! over reading it as used up.
+//! over reading it as used up. A renewal with a real sign-in: that the
+//! client id is the one consumer sign-ins are made with, and how Google
+//! answers a wrong secret, are as the app's program and Google's OAuth
+//! documentation say.
 
-use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Instant, SystemTime};
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use serde_json::{Value, json};
 
@@ -97,24 +109,24 @@ const PLAN: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssis
 const QUOTA: &str = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 const TOKEN: &str = "https://oauth2.googleapis.com/token";
 
-const CONSUMER_CLIENT_ID: &str =
-    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-const CLIENT_SUFFIX: &[u8] = b".apps.googleusercontent.com";
-const SECRET_PREFIX: &[u8] = b"GOCSPX-";
-const SECRET_LEN: usize = 35;
-
-/// Bounds on Mach-O reads so a corrupted header can't ask for gigabytes.
-const MAX_LOAD_COMMANDS: usize = 16 * 1024 * 1024;
-const MAX_SECTION: usize = 64 * 1024 * 1024;
-const MAX_PAIRS: usize = 16;
-
-const PROJECT_TTL: i64 = HOUR;
-const FALLBACK_VERSION: &str = "2.34.0";
-
+/// How Antigravity's app names itself.
 #[cfg(target_arch = "aarch64")]
-const ARCH: &str = "arm64";
+const CLIENT: &str = "User-Agent: antigravity/2.31.0 (aidev_client; os_type=darwin; arch=arm64)";
 #[cfg(not(target_arch = "aarch64"))]
-const ARCH: &str = "amd64";
+const CLIENT: &str = "User-Agent: antigravity/2.31.0 (aidev_client; os_type=darwin; arch=amd64)";
+
+/// The OAuth client Antigravity's sign-in is renewed with: its id. Its
+/// secret is in the app's program.
+const CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+
+/// How a client secret begins, and how long one is.
+const SECRET: (&[u8], usize) = (b"GOCSPX-", 35);
+
+/// The most of a program read for its client, so a program that isn't
+/// what it should be can't ask for more: its `__TEXT,__rodata` was 12 MiB
+/// and its load commands 4 KiB in 2.34.0, and reading it for the secrets
+/// took 34 ms (measured 2026-11-22, a release build).
+const MOST: usize = 64 * 1024 * 1024;
 
 impl Provider for Google {
     fn info(&self) -> &'static Info {
@@ -125,641 +137,231 @@ impl Provider for Google {
         super::account(INFO.id, credential, || credential.identity.clone())
     }
 
-    fn refreshes(&self) -> bool {
-        true
-    }
-
-    fn owns_model(&self, model: &str) -> bool {
-        model.starts_with("gemini-")
-    }
-
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
-        let binaries = credential
-            .refresh
-            .as_ref()
-            .map_or(&[][..], |refresh| refresh.binaries.as_slice());
-        let client_header = user_agent(binaries);
-        let account_key = account_key(credential);
-        let fresh = credential.expires.is_none_or(|at| at > now + MINUTE);
-        if fresh {
-            match fetch(&credential.secret, &account_key, &client_header, now, by) {
-                Err(Problem::SignIn) if credential.refresh.is_some() => {}
-                other => return other,
-            }
+        match &credential.refresh {
+            Some(refresh) if !credential.fresh(now) => renewed(refresh, now, by),
+            _ => read(&credential.secret, by),
         }
-        let Some(refresh) = &credential.refresh else {
-            return Err(Problem::Expired);
-        };
-        let fingerprint = refresh.token.fingerprint();
-        if let Some(token) = lock_cache().cached_token(&fingerprint, now) {
-            match fetch(&token, &account_key, &client_header, now, by) {
-                Err(Problem::SignIn) => {
-                    lock_cache().tokens.remove(&fingerprint);
-                }
-                other => return other,
-            }
-        }
-        let (token, expires_at) = refresh_access(refresh, now, by)?;
-        let result = fetch(&token, &account_key, &client_header, now, by);
-        if !matches!(result, Err(Problem::SignIn)) {
-            lock_cache().store_token(fingerprint, token, expires_at, now);
-        }
-        result
     }
 }
 
-fn account_key(credential: &Credential) -> Cow<'_, str> {
-    if let Some((id, _)) = &credential.identity {
-        return Cow::Borrowed(id);
-    }
-    Cow::Owned(credential.refresh.as_ref().map_or_else(
-        || credential.secret.fingerprint(),
-        |r| r.token.fingerprint(),
-    ))
-}
-
-enum QuotaError {
-    /// Cached project was rejected (HTTP 400/403/404); re-fetch via `loadCodeAssist`.
-    ProjectRejected(Problem),
-    Other(Problem),
-}
-
-fn fetch(
-    token: &Secret,
-    account_key: &str,
-    client_header: &str,
-    now: i64,
-    by: Instant,
-) -> Result<Limits, Problem> {
-    if let Some((project, plan)) = lock_cache().cached_project(account_key, now) {
-        match fetch_quota(token, &project, plan, client_header, by) {
-            Ok(limits) => return Ok(limits),
-            Err(QuotaError::ProjectRejected(_)) => {
-                lock_cache().projects.remove(account_key);
-            }
-            Err(QuotaError::Other(problem)) => return Err(problem),
-        }
-    }
+/// The plan's limits, asked with `token`.
+fn read(token: &Secret, by: Instant) -> Result<Limits, Problem> {
     let client = json!({"metadata": {
         "ideType": "ANTIGRAVITY",
         "platform": "PLATFORM_UNSPECIFIED",
         "pluginType": "GEMINI",
     }});
-    let signed_in = super::asked(PLAN, token, &[client_header], Some(&client), &[401], by)?;
+    let signed_in = super::asked(PLAN, token, &[CLIENT], Some(&client), &[401], by)?;
     let project = signed_in["cloudaicompanionProject"]
         .as_str()
         .filter(|project| !project.is_empty())
         .ok_or_else(|| {
             Problem::unavailable("no project to ask: Antigravity makes one when first used")
         })?;
-    let tier = plan(&signed_in);
-    lock_cache().store_project(
-        account_key.to_owned(),
-        project.to_owned(),
-        tier.clone(),
-        now,
-    );
-    fetch_quota(token, project, tier, client_header, by).map_err(|err| match err {
-        QuotaError::ProjectRejected(problem) | QuotaError::Other(problem) => problem,
+    let answer = super::asked(
+        QUOTA,
+        token,
+        &[CLIENT],
+        Some(&json!({"project": project})),
+        &[401],
+        by,
+    )?;
+    let readings = parse(&answer)
+        .filter(|readings| !readings.is_empty())
+        .ok_or_else(|| Problem::not_understood(QUOTA))?;
+    Ok(Limits {
+        plan: plan(&signed_in),
+        readings,
     })
 }
 
-fn fetch_quota(
-    token: &Secret,
-    project: &str,
-    plan: Option<String>,
-    client_header: &str,
-    by: Instant,
-) -> Result<Limits, QuotaError> {
-    let answered = super::asked_raw(
-        QUOTA,
-        token,
-        &[client_header],
-        Some(&json!({"project": project})),
-        by,
-    )
-    .map_err(QuotaError::Other)?;
-    if matches!(answered.status, 400 | 403 | 404) {
-        return Err(QuotaError::ProjectRejected(answered.unavailable(QUOTA)));
-    }
-    let answer = super::answer(QUOTA, &answered, &[401]).map_err(QuotaError::Other)?;
-    let readings = parse(&answer)
-        .filter(|readings| !readings.is_empty())
-        .ok_or_else(|| QuotaError::Other(Problem::not_understood(QUOTA)))?;
-    Ok(Limits { plan, readings })
+/// Tokens renewed in this process, by their refresh token's fingerprint,
+/// each with when it expires. A token is taken out while it's used, so no
+/// lock is held over a request.
+static RENEWED: Mutex<BTreeMap<String, (Secret, i64)>> = Mutex::new(BTreeMap::new());
+
+/// The fingerprint of the client secret Google last took.
+static TAKEN: Mutex<Option<String>> = Mutex::new(None);
+
+fn locked<T>(kept: &Mutex<T>) -> MutexGuard<'_, T> {
+    kept.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct FileStamp {
-    len: u64,
-    modified: Option<SystemTime>,
-}
-
-impl FileStamp {
-    fn of(path: &Path) -> Option<FileStamp> {
-        let meta = std::fs::metadata(path).ok()?;
-        Some(FileStamp {
-            len: meta.len(),
-            modified: meta.modified().ok(),
-        })
-    }
-}
-
-#[derive(Default)]
-struct Cache {
-    binaries: HashMap<PathBuf, (FileStamp, Vec<(String, Secret)>)>,
-    versions: HashMap<PathBuf, (FileStamp, Option<String>)>,
-    client: Option<(String, Secret)>,
-    tokens: HashMap<String, (Secret, i64)>,
-    projects: HashMap<String, (String, Option<String>, i64)>,
-}
-
-impl Cache {
-    fn cached_token(&self, fingerprint: &str, now: i64) -> Option<Secret> {
-        let (token, expires_at) = self.tokens.get(fingerprint)?;
-        (*expires_at > now + MINUTE).then(|| Secret::new(token.expose()))
-    }
-
-    fn store_token(&mut self, fingerprint: String, token: Secret, expires_at: i64, now: i64) {
-        if self.tokens.len() >= 16 {
-            self.tokens.retain(|_, (_, exp)| *exp > now + MINUTE);
-        }
-        self.tokens.insert(fingerprint, (token, expires_at));
-    }
-
-    fn cached_project(&self, account: &str, now: i64) -> Option<(String, Option<String>)> {
-        let (project, plan, at) = self.projects.get(account)?;
-        (now - *at < PROJECT_TTL && *at <= now + MINUTE).then(|| (project.clone(), plan.clone()))
-    }
-
-    fn store_project(&mut self, account: String, project: String, plan: Option<String>, now: i64) {
-        if self.projects.len() >= 16 {
-            self.projects
-                .retain(|_, (_, _, at)| now - *at < PROJECT_TTL && *at <= now + MINUTE);
-        }
-        self.projects.insert(account, (project, plan, now));
-    }
-
-    fn collect_pairs(&self, stamped: &[(&PathBuf, FileStamp)]) -> Vec<(String, Secret)> {
-        let mut pairs = Vec::new();
-        if let Some((id, secret)) = &self.client {
-            push_unique_pair(&mut pairs, id, secret, usize::MAX);
-        }
-        for (path, stamp) in stamped {
-            if let Some((kept, found)) = self.binaries.get(*path)
-                && kept == stamp
-            {
-                for (id, secret) in found {
-                    push_unique_pair(&mut pairs, id, secret, usize::MAX);
-                }
-            }
-        }
-        pairs
-    }
-}
-
-fn push_unique_pair(pairs: &mut Vec<(String, Secret)>, id: &str, secret: &Secret, max: usize) {
-    if pairs.len() < max
-        && !pairs
-            .iter()
-            .any(|(seen_id, seen_secret)| seen_id == id && seen_secret.expose() == secret.expose())
-    {
-        pairs.push((id.to_owned(), Secret::new(secret.expose())));
-    }
-}
-
-fn lock_cache() -> std::sync::MutexGuard<'static, Cache> {
-    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| Mutex::new(Cache::default()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn user_agent(binaries: &[PathBuf]) -> String {
-    let version = binaries
-        .iter()
-        .find_map(|binary| app_version(binary))
-        .unwrap_or_else(|| FALLBACK_VERSION.to_owned());
-    format!("User-Agent: antigravity/{version} (aidev_client; os_type=darwin; arch={ARCH})")
-}
-
-fn app_version(binary: &Path) -> Option<String> {
-    // .../Contents/Resources/bin/language_server -> .../Contents/Info.plist
-    let contents = binary.parent()?.parent()?.parent()?;
-    if contents.file_name().and_then(|name| name.to_str()) != Some("Contents") {
-        return None;
-    }
-    let plist = contents.join("Info.plist");
-    let stamp = FileStamp::of(&plist)?;
-    if let Some((kept, version)) = lock_cache().versions.get(&plist)
-        && *kept == stamp
-    {
-        return version.clone();
-    }
-    let version = std::fs::read_to_string(&plist)
-        .ok()
-        .and_then(|text| plist_version(&text));
-    lock_cache()
-        .versions
-        .insert(plist, (stamp, version.clone()));
-    version
-}
-
-/// Validates version characters so the `Info.plist` value can't inject headers.
-fn plist_version(xml: &str) -> Option<String> {
-    let after_key = xml.split_once("<key>CFBundleShortVersionString</key>")?.1;
-    let after_open = after_key.split_once("<string>")?.1;
-    let value = after_open.split_once("</string>")?.0.trim();
-    let valid = !value.is_empty()
-        && value.len() <= 32
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'));
-    valid.then(|| value.to_owned())
-}
-
-fn client_pairs(binaries: &[PathBuf]) -> Vec<(String, Secret)> {
-    let stamped: Vec<(&PathBuf, Option<FileStamp>)> = binaries
-        .iter()
-        .map(|path| (path, FileStamp::of(path)))
-        .collect();
-    let existing: Vec<(&PathBuf, FileStamp)> = stamped
-        .iter()
-        .filter_map(|(path, stamp)| Some((*path, (*stamp)?)))
-        .collect();
-    let missing: Vec<(&PathBuf, FileStamp)> = {
-        let mut cache = lock_cache();
-        for (path, stamp) in &stamped {
-            if stamp.is_none() {
-                cache.binaries.remove(*path);
-            }
-        }
-        let missing: Vec<_> = existing
-            .iter()
-            .copied()
-            .filter(|(path, stamp)| {
-                !cache
-                    .binaries
-                    .get(*path)
-                    .is_some_and(|(kept, _)| *kept == *stamp)
-            })
-            .collect();
-        if missing.is_empty() {
-            return cache.collect_pairs(&existing);
-        }
-        missing
+/// The plan's limits, asked with a token renewed from `refresh`: the one
+/// renewed before, while it's good, or else a new one. A token that's
+/// refused isn't kept.
+fn renewed(refresh: &Refresh, now: i64, by: Instant) -> Result<Limits, Problem> {
+    let key = refresh.token.fingerprint();
+    let kept = locked(&RENEWED)
+        .remove(&key)
+        .filter(|(_, expires)| *expires > now + MINUTE);
+    let (token, expires) = match kept {
+        Some(kept) => kept,
+        None => renew(refresh, now, by)?,
     };
-    let read: Vec<_> = missing
-        .into_iter()
-        .map(|(path, stamp)| (path.clone(), stamp, read_clients(path)))
-        .collect();
-    let mut cache = lock_cache();
-    for (path, stamp, found) in read {
-        cache.binaries.insert(path, (stamp, found));
+    let limits = read(&token, by);
+    if !matches!(limits, Err(Problem::SignIn)) {
+        let mut renewed = locked(&RENEWED);
+        renewed.retain(|_, (_, expires)| *expires > now);
+        renewed.insert(key, (token, expires));
     }
-    cache.collect_pairs(&existing)
+    limits
 }
 
-enum Exchange {
-    Token(Secret, i64),
-    WrongClient,
-    Failed(Problem),
-}
-
-fn refresh_access(refresh: &Refresh, now: i64, by: Instant) -> Result<(Secret, i64), Problem> {
-    if refresh.binaries.is_empty() {
-        return Err(Problem::unanswered(
-            "Antigravity wasn't found to refresh its Google login",
-        ));
-    }
-    let pairs = client_pairs(&refresh.binaries);
-    if pairs.is_empty() {
-        return Err(Problem::unanswered(
-            "no Google OAuth client was found in Antigravity",
-        ));
-    }
-    for (id, secret) in pairs {
+/// A new token for `refresh`'s login, and when it expires, from Google.
+fn renew(refresh: &Refresh, now: i64, by: Instant) -> Result<(Secret, i64), Problem> {
+    let mut secrets = refresh
+        .programs
+        .iter()
+        .find_map(|program| secrets(program))
+        .ok_or_else(|| Problem::unanswered("no Antigravity program holds its client"))?;
+    let taken = locked(&TAKEN).clone();
+    secrets.sort_by_key(|secret| Some(secret.fingerprint()) != taken);
+    for secret in &secrets {
         let answered = super::post_form(
             TOKEN,
             &[
-                ("client_id", id.as_str()),
+                ("client_id", CLIENT_ID),
                 ("client_secret", secret.expose()),
                 ("refresh_token", refresh.token.expose()),
                 ("grant_type", "refresh_token"),
             ],
             by,
         )?;
-        match parse_refresh(&answered, now) {
-            Exchange::Token(token, expires_at) => {
-                lock_cache().client = Some((id, secret));
-                return Ok((token, expires_at));
-            }
-            Exchange::WrongClient => {
-                let mut cache = lock_cache();
-                if cache.client.as_ref().is_some_and(|(kept_id, kept_secret)| {
-                    *kept_id == id && kept_secret.expose() == secret.expose()
-                }) {
-                    cache.client = None;
-                }
-            }
-            Exchange::Failed(problem) => return Err(problem),
+        if let Some(token) = token(&answered, now)? {
+            *locked(&TAKEN) = Some(secret.fingerprint());
+            return Ok(token);
         }
     }
     Err(Problem::unavailable(format!(
-        "{TOKEN}: OAuth client refused"
+        "{TOKEN}: took none of Antigravity's {} client secrets",
+        secrets.len()
     )))
 }
 
-fn parse_refresh(answered: &Answered, now: i64) -> Exchange {
-    match answered.status {
-        200..=299 => {
-            let Ok(body) = serde_json::from_slice::<Value>(&answered.body) else {
-                return Exchange::Failed(Problem::not_understood(TOKEN));
-            };
-            let token = body["access_token"]
+/// The token in Google's answer to a renewal, and when it expires; `None`
+/// when Google didn't take the client.
+fn token(answered: &Answered, now: i64) -> Result<Option<(Secret, i64)>, Problem> {
+    let answer: Value = serde_json::from_slice(&answered.body).unwrap_or_default();
+    match (answered.status, answer["error"].as_str()) {
+        (200..=299, _) => {
+            let token = answer["access_token"]
                 .as_str()
                 .filter(|token| !token.is_empty());
-            let expires_in = body["expires_in"].as_i64().filter(|seconds| *seconds > 0);
-            match (token, expires_in) {
-                (Some(token), Some(seconds)) => Exchange::Token(
+            let lasts = answer["expires_in"].as_i64().filter(|seconds| *seconds > 0);
+            match (token, lasts) {
+                (Some(token), Some(lasts)) => Ok(Some((
                     Secret::new(token),
-                    now.saturating_add(seconds.saturating_mul(1000)),
-                ),
-                _ => Exchange::Failed(Problem::not_understood(TOKEN)),
+                    now.saturating_add(lasts.saturating_mul(1000)),
+                ))),
+                _ => Err(Problem::not_understood(TOKEN)),
             }
         }
-        400 | 401 => {
-            let body = serde_json::from_slice::<Value>(&answered.body).ok();
-            match body.as_ref().and_then(|body| body["error"].as_str()) {
-                Some("invalid_grant") => Exchange::Failed(Problem::SignIn),
-                Some("invalid_client" | "unauthorized_client") => Exchange::WrongClient,
-                _ => Exchange::Failed(answered.unavailable(TOKEN)),
-            }
-        }
-        _ => Exchange::Failed(answered.unavailable(TOKEN)),
+        (400 | 401, Some("invalid_grant")) => Err(Problem::SignIn),
+        (400 | 401, Some("invalid_client" | "unauthorized_client")) => Ok(None),
+        (status, _) => Err(Problem::Unavailable {
+            why: format!("{TOKEN}: answered {status}"),
+            retry_after: answered.retry_after,
+            answered: true,
+        }),
     }
 }
 
-fn read_clients(path: &Path) -> Vec<(String, Secret)> {
-    let Ok(mut file) = File::open(path) else {
-        return Vec::new();
-    };
-    let Some((slice_offset, sections)) = macho_text_sections(&mut file) else {
-        return Vec::new();
-    };
-    for (offset, size) in sections {
-        let Ok(size) = usize::try_from(size) else {
-            continue;
-        };
-        if size == 0 || size > MAX_SECTION {
-            continue;
-        }
-        let Some(at) = slice_offset.checked_add(offset) else {
-            continue;
-        };
-        if file.seek(SeekFrom::Start(at)).is_err() {
-            continue;
-        }
-        let mut bytes = vec![0u8; size];
-        if file.read_exact(&mut bytes).is_err() {
-            continue;
-        }
-        let found = extract_clients(&bytes);
-        if !found.is_empty() {
-            return found;
-        }
-    }
-    Vec::new()
-}
-
-fn macho_text_sections(file: &mut File) -> Option<(u64, Vec<(u64, u64)>)> {
-    let mut magic_bytes = [0u8; 4];
-    file.read_exact(&mut magic_bytes).ok()?;
-    let magic_be = u32::from_be_bytes(magic_bytes);
-    let slice_offset = match magic_be {
-        // FAT_MAGIC / FAT_MAGIC_64 (big-endian universal binary headers).
-        0xCAFE_BABE | 0xCAFE_BABF => fat_slice_offset(file, magic_be == 0xCAFE_BABF)?,
-        _ => 0,
-    };
-    file.seek(SeekFrom::Start(slice_offset)).ok()?;
-    let mut header = [0u8; 32];
-    file.read_exact(&mut header).ok()?;
-    // MH_MAGIC_64 (little-endian 64-bit Mach-O).
-    if le_u32(&header, 0)? != 0xFEED_FACF {
-        return None;
-    }
-    let ncmds = le_u32(&header, 16)? as usize;
-    let sizeofcmds = le_u32(&header, 20)? as usize;
-    if sizeofcmds > MAX_LOAD_COMMANDS {
-        return None;
-    }
-    let mut commands = vec![0u8; sizeofcmds];
-    file.read_exact(&mut commands).ok()?;
-    let mut rodata = Vec::new();
-    let mut cstring = Vec::new();
-    let mut pos = 0usize;
-    for _ in 0..ncmds {
-        let (Some(cmd), Some(cmdsize)) = (le_u32(&commands, pos), le_u32(&commands, pos + 4))
-        else {
-            break;
-        };
-        let cmdsize = cmdsize as usize;
-        let Some(end) = pos.checked_add(cmdsize) else {
-            break;
-        };
-        if cmdsize < 8 || end > commands.len() {
-            break;
-        }
-        // LC_SEGMENT_64 = 0x19; header is 72 bytes, each section_64 is 80 bytes.
-        if cmd == 0x19 && cmdsize >= 72 {
-            let seg = &commands[pos..end];
-            if cstr(&seg[8..24]) == b"__TEXT"
-                && let Some(nsects) = le_u32(seg, 64)
-            {
-                for sect in seg[72..].as_chunks::<80>().0.iter().take(nsects as usize) {
-                    let (Some(size), Some(offset)) = (le_u64(sect, 40), le_u32(sect, 48)) else {
-                        break;
-                    };
-                    match cstr(&sect[0..16]) {
-                        b"__rodata" => rodata.push((u64::from(offset), size)),
-                        b"__cstring" => cstring.push((u64::from(offset), size)),
-                        _ => {}
-                    }
-                }
-            }
-        }
-        pos = end;
-    }
-    rodata.extend(cstring);
-    Some((slice_offset, rodata))
-}
-
-fn fat_slice_offset(file: &mut File, is_64: bool) -> Option<u64> {
-    #[cfg(target_arch = "aarch64")]
-    const TARGET_CPU: u32 = 0x0100_000C; // CPU_TYPE_ARM64
-    #[cfg(not(target_arch = "aarch64"))]
-    const TARGET_CPU: u32 = 0x0100_0007; // CPU_TYPE_X86_64
-
-    let mut count = [0u8; 4];
-    file.read_exact(&mut count).ok()?;
-    let nfat = u32::from_be_bytes(count).min(32) as usize;
-    let entry_len = if is_64 { 32 } else { 20 };
-    let mut table = vec![0u8; nfat * entry_len];
-    file.read_exact(&mut table).ok()?;
-    let mut first = None;
-    for entry in table.chunks_exact(entry_len) {
-        let cputype = u32::from_be_bytes(entry[0..4].try_into().ok()?);
-        let offset = if is_64 {
-            u64::from_be_bytes(entry[8..16].try_into().ok()?)
-        } else {
-            u64::from(u32::from_be_bytes(entry[8..12].try_into().ok()?))
-        };
-        if first.is_none() {
-            first = Some(offset);
-        }
-        if cputype == TARGET_CPU {
-            return Some(offset);
-        }
-    }
-    first
-}
-
-fn le_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
-}
-
-fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
-}
-
-fn cstr(bytes: &[u8]) -> &[u8] {
-    match bytes.iter().position(|&byte| byte == 0) {
-        Some(end) => &bytes[..end],
-        None => bytes,
-    }
-}
-
-fn extract_clients(bytes: &[u8]) -> Vec<(String, Secret)> {
-    let mut ids: Vec<String> = Vec::new();
-    let mut pos = 0;
-    while let Some(found) = find_bytes(&bytes[pos..], CLIENT_SUFFIX) {
-        let suffix_at = pos + found;
-        let end = suffix_at + CLIENT_SUFFIX.len();
-        pos = end;
-        // Go packs string literals without NUL terminators, so check the known
-        // consumer client id directly before scanning back through digits.
-        let id = if bytes[..end].ends_with(CONSUMER_CLIENT_ID.as_bytes()) {
-            Some(CONSUMER_CLIENT_ID.to_owned())
-        } else {
-            client_id_before(bytes, suffix_at)
-        };
-        if let Some(id) = id
-            && !ids.contains(&id)
-        {
-            ids.push(id);
-        }
-    }
-
+/// The client secrets `program` holds, in the order it holds them, if it's
+/// Antigravity's: if it holds its client's id.
+fn secrets(program: &Path) -> Option<Vec<Secret>> {
+    let strings = rodata(program)?;
+    let id = CLIENT_ID.as_bytes();
+    strings.windows(id.len()).any(|at| at == id).then_some(())?;
+    let (begins, length) = SECRET;
     let mut secrets: Vec<Secret> = Vec::new();
-    let mut pos = 0;
-    while let Some(found) = find_bytes(&bytes[pos..], SECRET_PREFIX) {
-        let start = pos + found;
-        pos = start + SECRET_PREFIX.len();
-        let Some(slice) = bytes.get(start..start + SECRET_LEN) else {
-            break;
-        };
-        let valid = slice[SECRET_PREFIX.len()..]
-            .iter()
-            .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-        if valid
-            && let Ok(text) = std::str::from_utf8(slice)
-            && !secrets.iter().any(|seen| seen.expose() == text)
+    for at in 0..strings.len().saturating_sub(length - 1) {
+        let candidate = &strings[at..at + length];
+        let rest = &candidate[begins.len()..];
+        if candidate.starts_with(begins)
+            && rest
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(byte))
+            && let Ok(text) = std::str::from_utf8(candidate)
+            && !secrets.iter().any(|secret| secret.expose() == text)
         {
             secrets.push(Secret::new(text));
         }
     }
-
-    let mut pairs: Vec<(String, Secret)> = Vec::new();
-    if let Some(consumer_index) = ids.iter().position(|id| id == CONSUMER_CLIENT_ID) {
-        if let Some(secret) = secrets.get(consumer_index) {
-            push_unique_pair(&mut pairs, CONSUMER_CLIENT_ID, secret, MAX_PAIRS);
-        }
-        for secret in &secrets {
-            push_unique_pair(&mut pairs, CONSUMER_CLIENT_ID, secret, MAX_PAIRS);
-        }
-    }
-    for (id, secret) in ids.iter().zip(&secrets) {
-        push_unique_pair(&mut pairs, id, secret, MAX_PAIRS);
-    }
-    for id in &ids {
-        for secret in &secrets {
-            push_unique_pair(&mut pairs, id, secret, MAX_PAIRS);
-        }
-    }
-    pairs
+    (!secrets.is_empty()).then_some(secrets)
 }
 
-fn client_id_before(bytes: &[u8], suffix_at: usize) -> Option<String> {
-    let mut hash_start = suffix_at;
-    while hash_start > 0
-        && matches!(
-            bytes[hash_start - 1],
-            b'a'..=b'z' | b'0'..=b'9' | b'_'
-        )
-    {
-        hash_start -= 1;
+/// The `__TEXT,__rodata` section of `program`, a 64-bit Mach-O, as
+/// Antigravity's programs are: built for one architecture, not universal
+/// (the app 2.34.0's and `agy`, read 2026-11-22).
+fn rodata(program: &Path) -> Option<Vec<u8>> {
+    fn word(bytes: &[u8], at: usize) -> Option<usize> {
+        let word = u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
+        usize::try_from(word).ok()
     }
-    if suffix_at - hash_start < 8 || hash_start == 0 || bytes[hash_start - 1] != b'-' {
+    fn name(bytes: &[u8]) -> &[u8] {
+        bytes.split(|byte| *byte == 0).next().unwrap_or_default()
+    }
+    let mut file = File::open(program).ok()?;
+    let mut header = [0; 32];
+    file.read_exact(&mut header).ok()?;
+    // `MH_MAGIC_64`, and the size of the load commands that follow.
+    let size = word(&header, 20).filter(|size| *size <= MOST)?;
+    if word(&header, 0)? != 0xFEED_FACF {
         return None;
     }
-    let dash = hash_start - 1;
-    let mut digits_start = dash;
-    while digits_start > 0 && bytes[digits_start - 1].is_ascii_digit() {
-        digits_start -= 1;
-    }
-    if dash - digits_start < 6 {
-        return None;
-    }
-    std::str::from_utf8(&bytes[digits_start..suffix_at + CLIENT_SUFFIX.len()])
-        .ok()
-        .map(str::to_owned)
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    let (&first, rest) = needle.split_first()?;
-    if haystack.len() < needle.len() {
-        return None;
-    }
-    let last_start = haystack.len() - needle.len();
+    let mut commands = vec![0; size];
+    file.read_exact(&mut commands).ok()?;
     let mut at = 0;
-    while at <= last_start {
-        let found = haystack[at..=last_start]
-            .iter()
-            .position(|&byte| byte == first)?;
-        let pos = at + found;
-        if haystack[pos + 1..pos + needle.len()] == *rest {
-            return Some(pos);
+    while let (Some(kind), Some(size)) = (word(&commands, at), word(&commands, at + 4)) {
+        // `LC_SEGMENT_64`: 72 bytes, then 80 for each of its sections: its
+        // name, its segment's, its address, size and offset.
+        if kind == 0x19 {
+            for section in (0..word(&commands, at + 64)?).map(|index| at + 72 + 80 * index) {
+                let named = commands.get(section..section + 52)?;
+                if name(&named[..16]) == b"__rodata" && name(&named[16..32]) == b"__TEXT" {
+                    let size = u64::from_le_bytes(named[40..48].try_into().ok()?);
+                    let size = usize::try_from(size).ok().filter(|size| *size <= MOST)?;
+                    let offset = u64::try_from(word(named, 48)?).ok()?;
+                    file.seek(SeekFrom::Start(offset)).ok()?;
+                    let mut strings = vec![0; size];
+                    file.read_exact(&mut strings).ok()?;
+                    return Some(strings);
+                }
+            }
         }
-        at = pos + 1;
+        at = at.checked_add(size.max(8))?;
     }
     None
 }
 
+/// The plan in `loadCodeAssist`'s answer: the tier paid for, or for an
+/// account that pays for none, the tier it's on.
 fn plan(signed_in: &Value) -> Option<String> {
-    let paid = signed_in["paidTier"]["name"]
-        .as_str()
-        .map(|name| name.strip_prefix(PLANS).unwrap_or(name).trim())
-        .filter(|name| !name.is_empty());
-    let plan = paid.or_else(|| {
-        signed_in["currentTier"]["id"]
-            .as_str()
-            .map(|tier| tier.strip_suffix("-tier").unwrap_or(tier))
-            .filter(|tier| !tier.is_empty())
-    })?;
-    Some(plan.to_owned())
+    named(
+        signed_in["paidTier"]["name"].as_str(),
+        signed_in["currentTier"]["id"].as_str(),
+    )
 }
 
+/// A plan by the name of the tier paid for, `paid`, without the `Google AI`
+/// it begins with, over a name from its id: `Google AI Ultra`'s was
+/// `g1-ultra-lite-tier`. Without one, by the id of the `tier` it's on,
+/// `free-tier` as `free`.
+fn named(paid: Option<&str>, tier: Option<&str>) -> Option<String> {
+    let plan = match paid {
+        Some(name) => name.strip_prefix(PLANS).unwrap_or(name).trim(),
+        None => {
+            let tier = tier?;
+            tier.strip_suffix("-tier").unwrap_or(tier)
+        }
+    };
+    Some(plan.to_owned()).filter(|plan| !plan.is_empty())
+}
+
+/// `None` for an answer with no groups, such as an error sent with 200, or
+/// one with a bucket that doesn't read.
 fn parse(answer: &Value) -> Option<Vec<Reading>> {
     let mut readings = Vec::new();
     for group in answer.get("groups")?.as_array()? {
@@ -768,22 +370,21 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
             .map(scope)
             .filter(|group| !group.is_empty());
         for bucket in group["buckets"].as_array().into_iter().flatten() {
+            // One the plan doesn't have, or with nothing said of what's left.
             let (Some(left), false) = (
                 bucket["remainingFraction"].as_f64(),
                 bucket["disabled"] == true,
             ) else {
                 continue;
             };
-            let Some(id) = bucket["bucketId"].as_str().filter(|id| !id.is_empty()) else {
-                continue;
-            };
-            let Some(window) = bucket["window"].as_str() else {
-                continue;
-            };
-            let Some(length) = window_length(window) else {
-                continue;
+            let id = bucket["bucketId"].as_str().filter(|id| !id.is_empty())?;
+            let window = bucket["window"].as_str()?;
+            let length = match window {
+                "weekly" => 7 * DAY,
+                hours => hours.strip_suffix('h')?.parse::<i64>().ok()? * HOUR,
             };
             let resets = super::reset(&bucket["resetTime"])?;
+            // The Gemini pool's: `gemini-5h`, `gemini-weekly`.
             let own = id.strip_prefix("gemini-") == Some(window);
             readings.push(Reading {
                 key: match own {
@@ -803,19 +404,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
             });
         }
     }
-    (!readings.is_empty()).then_some(readings)
-}
-
-fn window_length(window: &str) -> Option<i64> {
-    match window {
-        "weekly" => Some(7 * DAY),
-        hours => hours
-            .strip_suffix('h')?
-            .parse::<i64>()
-            .ok()
-            .filter(|&n| n > 0)
-            .and_then(|n| n.checked_mul(HOUR)),
-    }
+    Some(readings)
 }
 
 /// Drops a trailing `models` so the panel's reset line fits without clipping.
@@ -831,6 +420,8 @@ fn scope(group: &str) -> &str {
 mod tests {
     use serde_json::{Value, json};
 
+    use crate::agents::{Credential, Refresh, Secret};
+    use crate::providers::{Answered, Problem, Provider};
     use crate::time::{DAY, HOUR, millis};
 
     /// A bucket as the service writes one.
@@ -845,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn each_model_pool_keeps_its_group_scope() {
+    fn each_pool_is_scoped_by_its_group() {
         let answer = json!({
             "groups": [
                 {
@@ -921,18 +512,11 @@ mod tests {
         assert!(super::parse(&one("monthly", "2026-10-05T00:00:00Z")).is_none());
         assert!(super::parse(&one("weekly", "next Monday")).is_none());
         assert!(super::parse(&json!({"error": {"code": 403}})).is_none());
-        // A bucket that says nothing of what's left, or carries an unknown
-        // future window shape, is passed over alone when known buckets exist.
-        let mut mixed = one("weekly", "2026-10-05T00:00:00Z");
-        let buckets = mixed["groups"][0]["buckets"].as_array_mut().unwrap();
+        // A bucket that says nothing of what's left is passed over alone.
+        let mut unsaid = one("weekly", "2026-10-05T00:00:00Z");
+        let buckets = unsaid["groups"][0]["buckets"].as_array_mut().unwrap();
         buckets.push(json!({"bucketId": "gemini-5h", "window": "5h", "remainingFraction": null}));
-        buckets.push(bucket(
-            "gemini-monthly",
-            "monthly",
-            0.9,
-            "2026-11-01T00:00:00Z",
-        ));
-        assert_eq!(super::parse(&mixed).map(|read| read.len()), Some(1));
+        assert_eq!(super::parse(&unsaid).map(|read| read.len()), Some(1));
     }
 
     #[test]
@@ -945,175 +529,147 @@ mod tests {
         assert_eq!(super::plan(&paid).as_deref(), Some("Ultra"));
         let free = json!({"currentTier": {"id": "free-tier", "name": "Antigravity"}});
         assert_eq!(super::plan(&free).as_deref(), Some("free"));
-        // Empty paid tier name falls back to `currentTier.id`.
-        let empty_paid = json!({
-            "currentTier": {"id": "free-tier"},
-            "paidTier": {"name": "Google AI"},
-        });
-        assert_eq!(super::plan(&empty_paid).as_deref(), Some("free"));
         // What a client the service doesn't know gets.
         let unknown = json!({"allowedTiers": [{"id": "standard-tier"}], "ineligibleTiers": [{"reasonCode": "UNSUPPORTED_CLIENT"}]});
         assert_eq!(super::plan(&unknown), None);
     }
 
-    fn macho64(rodata: &[u8]) -> Vec<u8> {
-        let cmdsize: u32 = 72 + 80;
-        let sect_offset: u32 = 32 + cmdsize;
-        let mut segname = [0u8; 16];
-        segname[..6].copy_from_slice(b"__TEXT");
-        let mut sectname = [0u8; 16];
-        sectname[..8].copy_from_slice(b"__rodata");
-        let mut out = Vec::with_capacity(sect_offset as usize + rodata.len());
-        for word in [
-            0xFEED_FACF,
-            0x0100_000C,
-            0,
-            2,
-            1,
-            cmdsize,
-            0,
-            0,
-            0x19,
-            cmdsize,
-        ] {
-            out.extend_from_slice(&word.to_le_bytes());
-        }
-        out.extend_from_slice(&segname);
-        out.extend_from_slice(&[0u8; 40]);
-        for word in [1u32, 0] {
-            out.extend_from_slice(&word.to_le_bytes());
-        }
-        out.extend_from_slice(&sectname);
-        out.extend_from_slice(&segname);
-        out.extend_from_slice(&0u64.to_le_bytes());
-        out.extend_from_slice(&(rodata.len() as u64).to_le_bytes());
-        out.extend_from_slice(&sect_offset.to_le_bytes());
-        out.extend_from_slice(&[0u8; 28]);
-        out.extend_from_slice(rodata);
-        out
-    }
-
     #[test]
-    fn oauth_clients_are_read_from_macho_rodata_and_prioritize_the_consumer_client() {
-        let dir = tempfile::tempdir().unwrap();
-        let secret_a = format!("GOCSPX-{}", "A".repeat(28));
-        let secret_b = format!("GOCSPX-{}", "B".repeat(28));
-        let other_id = "222222222222-otherclient000000000000000000000.apps.googleusercontent.com";
-        // Packed without NUL terminators, as Go writes `__TEXT.__rodata`.
-        let packed = format!(
-            "prefix{other_id}mid{}tail{secret_a}decoding{secret_b}more",
-            super::CONSUMER_CLIENT_ID
-        );
-
-        let thin = dir.path().join("thin");
-        std::fs::write(&thin, macho64(packed.as_bytes())).unwrap();
-        let pairs: Vec<(String, String)> = super::read_clients(&thin)
-            .into_iter()
-            .map(|(id, secret)| (id, secret.expose().to_owned()))
-            .collect();
-        // Consumer id is index 1, paired first with index 1 secret (`secret_b`).
+    fn a_renewed_token_is_asked_with_again_until_it_expires() {
+        let now = 1_790_000_000_000;
+        let login = Credential {
+            provider: "google",
+            secret: Secret::new("made-up-expired-token"),
+            key: false,
+            expires: Some(now - HOUR),
+            identity: None,
+            plan: None,
+            refresh: Some(Refresh {
+                token: Secret::new("made-up-refresh-token"),
+                programs: Vec::new(),
+            }),
+        };
+        let key = login.refresh.as_ref().unwrap().token.fingerprint();
+        let renewed = |expires| {
+            super::locked(&super::RENEWED)
+                .insert(key.clone(), (Secret::new("made-up-renewed"), expires))
+        };
+        // With the read's time spent, nothing is sent: twice, the renewed
+        // token is taken, asked with, and kept.
+        renewed(now + HOUR);
+        let spent = std::time::Instant::now();
+        let (done, reads) = std::sync::mpsc::channel();
+        let twice = std::thread::spawn(move || {
+            let read = || super::Google.limits(&login, now, spent).err();
+            done.send([read(), read()]).unwrap();
+            login
+        });
+        let not_asked = Problem::unanswered(format!(
+            "{}: not asked, as the read's time was spent",
+            super::PLAN
+        ));
+        let read = reads.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(read, Ok([Some(not_asked.clone()), Some(not_asked)]));
+        assert!(super::locked(&super::RENEWED).contains_key(&key));
+        // One that has expired is renewed: with no program to renew it with,
+        // nothing is.
+        renewed(now);
+        let login = twice.join().unwrap();
         assert_eq!(
-            pairs.first(),
-            Some(&(super::CONSUMER_CLIENT_ID.to_owned(), secret_b.clone()))
-        );
-        assert!(pairs.contains(&(other_id.to_owned(), secret_a.clone())));
-
-        // Universal (fat) binary wrapping the thin slice at offset 64.
-        let slice = macho64(packed.as_bytes());
-        let mut fat = Vec::new();
-        fat.extend_from_slice(&0xCAFE_BABEu32.to_be_bytes());
-        fat.extend_from_slice(&1u32.to_be_bytes()); // nfat_arch
-        fat.extend_from_slice(&0x0100_000Cu32.to_be_bytes()); // arm64
-        fat.extend_from_slice(&0u32.to_be_bytes());
-        fat.extend_from_slice(&64u32.to_be_bytes()); // offset
-        fat.extend_from_slice(&(slice.len() as u32).to_be_bytes());
-        fat.extend_from_slice(&14u32.to_be_bytes()); // align
-        fat.resize(64, 0);
-        fat.extend_from_slice(&slice);
-        let universal = dir.path().join("fat");
-        std::fs::write(&universal, &fat).unwrap();
-        let pairs: Vec<(String, String)> = super::read_clients(&universal)
-            .into_iter()
-            .map(|(id, secret)| (id, secret.expose().to_owned()))
-            .collect();
-        assert_eq!(
-            pairs.first(),
-            Some(&(super::CONSUMER_CLIENT_ID.to_owned(), secret_b))
+            super::Google.limits(&login, now, spent).err(),
+            Some(Problem::unanswered(
+                "no Antigravity program holds its client"
+            ))
         );
     }
 
     #[test]
-    fn refresh_answers_map_revoked_grants_wrong_clients_and_outages() {
-        let answered = |status: u16, body: &str, retry_after: Option<i64>| super::Answered {
+    fn a_renewal_is_a_token_a_refused_login_or_a_client_google_doesnt_take() {
+        let now = 1_790_000_000_000;
+        let answered = |status: u16, body: &str| Answered {
             status,
-            retry_after,
+            retry_after: None,
             body: body.as_bytes().to_vec(),
         };
-        let now = 1_790_000_000_000;
-        match super::parse_refresh(
-            &answered(
-                200,
-                r#"{"access_token":"ya29.made-up","expires_in":3599}"#,
-                None,
-            ),
-            now,
-        ) {
-            super::Exchange::Token(token, exp) => {
-                assert_eq!(token.expose(), "ya29.made-up");
-                assert_eq!(exp, now + 3_599_000);
-            }
-            _ => panic!("expected refreshed token"),
-        }
+        let token = |status, body| {
+            super::token(&answered(status, body), now)
+                .map(|token| token.map(|(token, expires)| (token.expose().to_owned(), expires)))
+        };
+        assert_eq!(
+            token(200, r#"{"access_token": "made-up", "expires_in": 3599}"#),
+            Ok(Some(("made-up".to_owned(), now + 3_599_000)))
+        );
+        assert_eq!(
+            token(400, r#"{"error": "invalid_grant"}"#),
+            Err(Problem::SignIn)
+        );
+        assert_eq!(token(401, r#"{"error": "invalid_client"}"#), Ok(None));
+        assert_eq!(token(400, r#"{"error": "unauthorized_client"}"#), Ok(None));
+        assert_eq!(
+            token(200, r#"{"access_token": ""}"#),
+            Err(Problem::not_understood(super::TOKEN))
+        );
         assert!(matches!(
-            super::parse_refresh(&answered(400, r#"{"error":"invalid_grant"}"#, None), now),
-            super::Exchange::Failed(super::Problem::SignIn)
-        ));
-        assert!(matches!(
-            super::parse_refresh(&answered(401, r#"{"error":"invalid_client"}"#, None), now),
-            super::Exchange::WrongClient
-        ));
-        assert!(matches!(
-            super::parse_refresh(
-                &answered(400, r#"{"error":"unauthorized_client"}"#, None),
-                now
-            ),
-            super::Exchange::WrongClient
-        ));
-        assert!(matches!(
-            super::parse_refresh(&answered(429, "slow down", Some(60_000)), now),
-            super::Exchange::Failed(super::Problem::Unavailable {
-                retry_after: Some(60_000),
-                answered: true,
-                ..
-            })
-        ));
-        assert!(matches!(
-            super::parse_refresh(&answered(200, r#"{"access_token":""}"#, None), now),
-            super::Exchange::Failed(super::Problem::Unavailable { answered: true, .. })
+            token(503, "down"),
+            Err(Problem::Unavailable { answered: true, .. })
         ));
     }
 
+    /// A 64-bit Mach-O whose one section, `__TEXT,__rodata`, holds `strings`.
+    fn program(strings: &[u8]) -> Vec<u8> {
+        let name = |name: &str| {
+            let mut padded = [0; 16];
+            padded[..name.len()].copy_from_slice(name.as_bytes());
+            padded
+        };
+        let commands: u32 = 72 + 80;
+        let mut program = Vec::new();
+        for word in [0xFEED_FACF_u32, 0x0100_000C, 0, 2, 1, commands, 0, 0] {
+            program.extend(word.to_le_bytes());
+        }
+        program.extend(0x19_u32.to_le_bytes());
+        program.extend(commands.to_le_bytes());
+        program.extend(name("__TEXT"));
+        program.extend([0; 40]);
+        program.extend(1_u32.to_le_bytes());
+        program.extend(0_u32.to_le_bytes());
+        program.extend(name("__rodata"));
+        program.extend(name("__TEXT"));
+        program.extend(0_u64.to_le_bytes());
+        program.extend((strings.len() as u64).to_le_bytes());
+        program.extend((32 + commands).to_le_bytes());
+        program.extend([0; 28]);
+        program.extend(strings);
+        program
+    }
+
     #[test]
-    fn app_version_is_read_from_info_plist_with_a_safe_fallback() {
+    fn the_secrets_are_read_from_the_program_that_holds_the_client() {
         let dir = tempfile::tempdir().unwrap();
-        let binary = dir
-            .path()
-            .join("Antigravity.app/Contents/Resources/bin/language_server");
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::write(&binary, b"").unwrap();
-        let plist = dir.path().join("Antigravity.app/Contents/Info.plist");
-        std::fs::write(
-            &plist,
-            "<plist><dict><key>CFBundleShortVersionString</key><string>2.99.0</string></dict></plist>",
-        )
-        .unwrap();
-        assert!(super::user_agent(&[binary]).starts_with("User-Agent: antigravity/2.99.0 "));
-        assert!(super::user_agent(&[]).starts_with("User-Agent: antigravity/2.34.0 "));
-        assert_eq!(
-            super::plist_version(
-                "<key>CFBundleShortVersionString</key><string>1.0\r\nX: y</string>"
-            ),
-            None
+        let (one, two) = (
+            format!("GOCSPX-{}", "a".repeat(28)),
+            format!("GOCSPX-{}", "B_-9".repeat(7)),
         );
+        // Go packs its strings one against the next, with nothing between.
+        let strings = format!("{one}gzip{}{two}{one}GOCSPX-short", super::CLIENT_ID);
+        let held = dir.path().join("language_server");
+        std::fs::write(&held, program(strings.as_bytes())).unwrap();
+        let secrets: Vec<String> = super::secrets(&held)
+            .unwrap()
+            .iter()
+            .map(|secret| secret.expose().to_owned())
+            .collect();
+        assert_eq!(secrets, [one.clone(), two]);
+
+        // Not Antigravity's: no client id, or not a Mach-O, or cut short.
+        let other = dir.path().join("other");
+        std::fs::write(&other, program(one.as_bytes())).unwrap();
+        assert!(super::secrets(&other).is_none());
+        std::fs::write(&other, strings.as_bytes()).unwrap();
+        assert!(super::secrets(&other).is_none());
+        let whole = program(strings.as_bytes());
+        std::fs::write(&other, &whole[..whole.len() - 10]).unwrap();
+        assert!(super::secrets(&other).is_none());
+        assert!(super::secrets(&dir.path().join("missing")).is_none());
     }
 }

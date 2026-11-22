@@ -39,9 +39,10 @@ Every command that prints data takes `--json`. Examples of the JSON are in
 
 Before answering, `status`, `usage`, `accounts` and `doctor` bring the
 database up to date. They read what's new in the
-agents' history, the limits when five minutes have passed since any process
-read them, and the prices when six hours have. If that fails, they answer
-from what's known and say why on standard error.
+agents' history, the limits of each account as they come due, 5 minutes
+after the last reading of one in use and 20 after one not, and the prices
+when six hours have passed since any process read them. If that fails,
+they answer from what's known and say why on standard error.
 
 The first time, and again after an update that changes how history is
 read, they read all of your agents' history, which can take minutes. They
@@ -218,9 +219,8 @@ if it has the limit, or else the first account shown that has it. `--since`
 moves the start, and then rows get no share. A limit whose window reset
 since it was read counts from the reset, or from one window's length ago
 when the reset is longer ago than that, and its rows get no share either:
-how much of the new window is used isn't known. Nor do they when 5% or
-more of the weighted token volume has no known price, since a share is of
-cost: a line says so.
+how much of the new window is used isn't known. Nor do they while some of
+the usage has no known price, since a share is of cost: a line says so.
 A key's own limit counts only the usage made with that key. With `--json`,
 `sharePercents` holds each row's share in the rows' order, and
 `restSharePercent` the share of the row adding up the rest, each `null`
@@ -368,15 +368,14 @@ in the tests:
 Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at this pace it runs out 13:00 (in 1h).
 ```
 
-A hook waits for the guard, so it reads no history and no prices. While
-the menu bar app runs (holding `app.lock`), the app keeps limits current
-outside any agent sandbox and `guard` reads the database alone. Otherwise
-it reads due limits itself, and not once a newer Turnscope has written to
-the data: then it guards by the limits read before. Nor does it make the
-database or take in 0.2's: before Turnscope has, or after an update until
-the new version has opened it, the standing isn't known. Each read of a
-login's limits gives up after 15 seconds, whether its provider takes one
-request or two, or after 5 if it can't connect.
+A hook waits for the guard, so it reads no history and no prices. It reads
+the limits only as they come due, and not while the app runs, which reads
+them itself, nor once a newer Turnscope has written to the data: then it
+guards by the limits read before. Nor does it make the database or take in
+0.2's: before Turnscope has, or after an update until the new version has
+opened it, the standing isn't known. Each read of a login's limits gives
+up after 15 seconds, whether its provider takes one request or two, or
+after 5 if it can't connect.
 
 ## Status line
 
@@ -385,8 +384,10 @@ turnscope statusline [--account <name>]
 ```
 
 `statusline` prints one line for an agent's status line: the account it
-draws on, its limits on all its usage, and any other limit running out or
-used up. When a limit on all its usage is used up, only those show.
+draws on, the limits it stands by, and any other limit running out or used
+up. An account stands by its limits on all its usage, or with none, as
+Google AI's plans, by those of the pool it last drew on. When one it stands
+by is used up, only those show.
 
 | Flag | Default | |
 |---|---|---|
@@ -403,7 +404,7 @@ SuperGrok · sign in again
 A limit running out ends with `out` and when: a countdown within 3 hours,
 else a clock time. A used-up limit says `used up, back` and when. Limits
 from an earlier read end with `as of` and the time. An account never read
-says `updates on next use` when its cached token expired, and `not read yet` otherwise. An API key with no limits shows its spend this month.
+says `login expired` when that's why, and `not read yet` otherwise. An API key with no limits shows its spend this month.
 
 In Claude Code's `settings.json`:
 
@@ -416,10 +417,8 @@ In Claude Code's `settings.json`:
 Without `--account`, it takes the account of the session Claude Code names
 on standard input (`session_id`), then the calling agent's, then the first
 account in use. A new session isn't read yet, so the calling agent's
-account shows for it. When Claude Code includes `rate_limits` on standard
-input, `statusline` records those live readings on a best-effort 50 ms
-write (preserving scoped limits from the last full poll) before printing
-the line. It never waits on the network and never creates or migrates the
-database: before Turnscope has made the database, or after an update until
-the new version has opened it, it prints nothing. It always exits 0: when
-nothing is known, it prints nothing.
+account shows for it. It answers from the database alone, so it never
+waits on the network, and never writes it: before Turnscope has made the
+database, or after an update until the new version has opened it, it
+prints nothing. It always exits 0: when nothing is known, it prints
+nothing.

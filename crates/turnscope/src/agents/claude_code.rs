@@ -47,9 +47,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use super::{Agent, Credential, InBand, Info, Login, Read, Response, Secret, Title, Tokens};
-use crate::providers::Reading;
-use crate::time::{DAY, HOUR};
+use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
 use crate::{Error, Result};
 
 pub struct ClaudeCode;
@@ -518,47 +516,7 @@ impl Agent for ClaudeCode {
     }
 
     fn login_file(&self, path: &Path) -> bool {
-        matches!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some(".credentials.json" | ".claude.json")
-        )
-    }
-
-    fn statusline_limits(&self, input: &Value, now: i64) -> Option<InBand> {
-        let rate_limits = input.get("rate_limits")?.as_object()?;
-        let mut readings = Vec::new();
-        for (key, length) in [("five_hour", 5 * HOUR), ("seven_day", 7 * DAY)] {
-            let Some(window) = rate_limits.get(key) else {
-                continue;
-            };
-            let Some(used) = window["used_percentage"]
-                .as_f64()
-                .filter(|used| used.is_finite())
-            else {
-                continue;
-            };
-            let resets = match &window["resets_at"] {
-                Value::Number(num) => num.as_i64().and_then(super::unix_millis),
-                Value::String(text) => crate::time::millis(text),
-                _ => None,
-            }
-            .or((used == 0.0).then_some(now + length));
-            readings.push(Reading {
-                key: key.to_owned(),
-                name: crate::providers::window_name(length),
-                scope: None,
-                used: used.clamp(0.0, 100.0),
-                size: None,
-                starts: resets.map(|resets| resets - length),
-                resets,
-            });
-        }
-        (!readings.is_empty()).then(|| InBand {
-            provider: "anthropic".to_owned(),
-            at: now,
-            plan: None,
-            readings,
-        })
+        path.file_name() == Some(".credentials.json".as_ref())
     }
 }
 
@@ -1087,36 +1045,14 @@ mod tests {
                     .is_none()
             );
         }
-    }
 
-    #[test]
-    fn statusline_limits_reads_five_hour_and_seven_day_windows() {
-        let now = 1_790_856_000_000_i64;
-        let input = json!({
-            "session_id": "s1",
-            "rate_limits": {
-                "five_hour": {"used_percentage": 35.5, "resets_at": 1_790_863_200},
-                "seven_day": {"used_percentage": 12.0, "resets_at": "2026-10-05T00:00:00Z"}
-            }
-        });
-        let snapshot = ClaudeCode.statusline_limits(&input, now).unwrap();
-        assert_eq!(snapshot.provider, "anthropic");
-        assert_eq!(snapshot.at, now);
-        assert_eq!(snapshot.readings.len(), 2);
-        assert_eq!(snapshot.readings[0].key, "five_hour");
-        assert_eq!(snapshot.readings[0].used, 35.5);
-        assert_eq!(snapshot.readings[0].resets, Some(1_790_863_200_000));
-        assert_eq!(
-            snapshot.readings[0].starts,
-            Some(1_790_863_200_000 - 5 * HOUR)
-        );
-        assert_eq!(snapshot.readings[1].key, "seven_day");
-        assert_eq!(snapshot.readings[1].used, 12.0);
-        assert!(snapshot.readings[1].resets.is_some());
-        assert!(
-            ClaudeCode
-                .statusline_limits(&json!({"session_id": "s1"}), now)
-                .is_none()
-        );
+        // A token with no expiry is still read.
+        std::fs::write(
+            folder.join(".credentials.json"),
+            json!({"claudeAiOauth": {"accessToken": "tok-1"}}).to_string(),
+        )
+        .unwrap();
+        let logins = ClaudeCode.logins(&folder, home.path()).unwrap();
+        assert_eq!(logins[0].credential.as_ref().unwrap().expires, None);
     }
 }

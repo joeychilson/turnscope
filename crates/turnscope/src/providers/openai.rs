@@ -34,15 +34,6 @@ impl Provider for OpenAi {
         super::account(INFO.id, credential, || workspace(credential))
     }
 
-    fn owns_model(&self, model: &str) -> bool {
-        model.starts_with("gpt-")
-            || model.starts_with("codex-")
-            || matches!(model, "o1" | "o3" | "o4")
-            || model.starts_with("o1-")
-            || model.starts_with("o3-")
-            || model.starts_with("o4-")
-    }
-
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
         // `account` passed over a sign-in naming no workspace, so this is
         // only to name it.
@@ -58,29 +49,22 @@ impl Provider for OpenAi {
     }
 }
 
-/// The workspace a sign-in is to and its owner's email, as the token or
-/// agent's stored account metadata says.
+/// The workspace a sign-in is to and its owner's email, as the token says,
+/// or else as the agent keeps them beside it.
 fn workspace(credential: &Credential) -> Option<(String, Option<String>)> {
     let claims = claims(credential.secret.expose());
-    let workspace = claims["https://api.openai.com/auth"]["chatgpt_account_id"]
-        .as_str()
-        .filter(|workspace| !workspace.is_empty());
-    match workspace {
-        Some(workspace) => {
-            let email = claims["https://api.openai.com/profile"]["email"]
-                .as_str()
-                .filter(|email| !email.is_empty())
-                .map(str::to_owned)
-                .or_else(|| {
-                    credential
-                        .identity
-                        .as_ref()
-                        .and_then(|(_, mail)| mail.clone())
-                });
-            Some((workspace.to_owned(), email))
-        }
-        None => credential.identity.clone(),
-    }
+    let said = |value: &Value| {
+        value
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    let kept = credential.identity.as_ref();
+    let workspace = said(&claims["https://api.openai.com/auth"]["chatgpt_account_id"])
+        .or_else(|| kept.map(|(workspace, _)| workspace.clone()))?;
+    let email = said(&claims["https://api.openai.com/profile"]["email"])
+        .or_else(|| kept.and_then(|(_, email)| email.clone()));
+    Some((workspace, email))
 }
 
 /// `None` for an answer with no `rate_limit` at all, such as an error sent
@@ -126,15 +110,8 @@ fn windows(rate: &Value, scope: Option<&str>, now: i64) -> Option<Vec<Reading>> 
                 .and_then(|after| after.checked_mul(1000))
                 .and_then(|ms| now.checked_add(ms)),
         };
-        readings.push(Reading {
-            key: scope.map_or_else(|| key.to_owned(), |scope| format!("{key}:{scope}")),
-            name: super::window_name(length),
-            scope: scope.map(str::to_owned),
-            used: window["used_percent"].as_f64()?,
-            size: None,
-            starts: resets.and_then(|resets| resets.checked_sub(length)),
-            resets,
-        });
+        let used = window["used_percent"].as_f64()?;
+        readings.push(super::window(key, scope, used, length, resets));
     }
     Some(readings)
 }

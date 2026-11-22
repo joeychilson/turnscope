@@ -49,6 +49,13 @@
 //! history has a `forked_from_id` too, from the parent's `session_meta` in
 //! its copy (`core/src/session/session.rs`), but its copy ends at
 //! `subagent_history_start_ordinal`.
+//!
+//! **Limits.** A `token_count` also gives the account's limits as of that
+//! response, `rate_limits`, which are taken in between reads of the
+//! provider (`limits::record_in_band`). Not measured: the fields are as
+//! Codex's `RateLimitSnapshot` names them, `resets_at` in Unix seconds.
+//! Files read before aren't read again for them, so `ingest::READERS`
+//! stays: what they hold is older than the account's last read.
 
 use std::borrow::Cow;
 use std::ops::ControlFlow;
@@ -59,7 +66,7 @@ use serde_json::value::RawValue;
 
 use super::{Agent, Credential, InBand, Info, Login, Read, Response, Secret, Title, Tokens};
 use crate::Result;
-use crate::providers::Reading;
+use crate::providers;
 use crate::time::MINUTE;
 
 pub struct Codex;
@@ -109,6 +116,14 @@ struct Cursor {
     titled: bool,
     /// Responses before any model was named.
     waiting: Vec<Response>,
+}
+
+impl Cursor {
+    /// The provider the rollout's responses and limits are of: the one its
+    /// `session_meta` names, or else OpenAI's.
+    fn provider(&self) -> String {
+        self.provider.clone().unwrap_or("openai".to_owned())
+    }
 }
 
 /// Where a rollout holds a copy of its parent's history.
@@ -332,7 +347,6 @@ struct Totals {
 struct RateLimits {
     limit_id: Option<String>,
     limit_name: Option<String>,
-    plan_type: Option<String>,
     primary: Option<RateWindow>,
     secondary: Option<RateWindow>,
 }
@@ -512,7 +526,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
             if !copied
                 && let Some(limits) = parsed::<RateLimits>(payload.rate_limits)
                 && let Some(at) = line.at()
-                && let Some(snapshot) = in_band(limits, cursor.provider.as_deref(), at)
+                && let Some(snapshot) = in_band(limits, cursor, at)
             {
                 read.in_band(snapshot);
             }
@@ -690,55 +704,37 @@ fn report(
     })
 }
 
-/// Convert a Codex `token_count` event's `rate_limits` object into an in-band
-/// snapshot matching `providers::openai`'s keys (`primary_window`,
-/// `secondary_window`).
-fn in_band(limits: RateLimits, provider: Option<&str>, at: i64) -> Option<InBand> {
-    let scope = match limits.limit_name.as_deref().filter(|name| !name.is_empty()) {
-        Some(name) => Some(name.to_owned()),
-        None => match limits.limit_id.as_deref() {
-            None | Some("") | Some("codex") => None,
-            // Ignore unknown non-codex limit ids that lack a display name so
-            // they don't overwrite the plan's own windows.
-            Some(_) => return None,
-        },
+/// The limits a `token_count` gives, keyed as the provider's answer keys
+/// them, so each takes the place of the one read before: the plan's own
+/// windows, or with a `limit_name` those on some models. None of another
+/// limit with no name, which would be taken for the plan's own.
+fn in_band(limits: RateLimits, cursor: &Cursor, at: i64) -> Option<InBand> {
+    let scope = match (limits.limit_name.as_deref(), limits.limit_id.as_deref()) {
+        (Some(name), _) if !name.is_empty() => Some(name),
+        (_, None | Some("" | "codex")) => None,
+        _ => return None,
     };
-    let mut readings = Vec::new();
-    for (base_key, window) in [
+    let readings: Vec<_> = [
         ("primary_window", limits.primary),
         ("secondary_window", limits.secondary),
-    ] {
-        let Some(window) = window else {
-            continue;
-        };
-        let Some(minutes) = window.window_minutes.filter(|&minutes| minutes > 0) else {
-            continue;
-        };
-        if !window.used_percent.is_finite() {
-            continue;
-        }
-        let length = minutes.saturating_mul(MINUTE);
-        let resets = window.resets_at.and_then(super::unix_millis);
-        readings.push(Reading {
-            key: match &scope {
-                Some(scope) => format!("{base_key}:{scope}"),
-                None => base_key.to_owned(),
-            },
-            name: crate::providers::window_name(length),
-            scope: scope.clone(),
-            used: window.used_percent.clamp(0.0, 100.0),
-            size: None,
-            starts: resets.map(|resets| resets - length),
+    ]
+    .into_iter()
+    .filter_map(|(key, window)| {
+        let window = window?;
+        let length = window.window_minutes.filter(|minutes| *minutes > 0)? * MINUTE;
+        let resets = window.resets_at.filter(|at| *at > 0).map(|at| at * 1000);
+        Some(providers::window(
+            key,
+            scope,
+            window.used_percent,
+            length,
             resets,
-        });
-    }
+        ))
+    })
+    .collect();
     (!readings.is_empty()).then(|| InBand {
-        provider: provider.unwrap_or("openai").to_owned(),
+        provider: cursor.provider(),
         at,
-        plan: limits
-            .plan_type
-            .filter(|plan| !plan.is_empty())
-            .map(|plan| plan.replace("prolite", "pro lite")),
         readings,
     })
 }
@@ -753,7 +749,7 @@ const WAITING: usize = 64;
 /// provider and tier in force, or before any model is named, under none, and
 /// kept waiting for the first.
 fn respond(mut response: Response, cursor: &mut Cursor, read: &mut Read) {
-    response.provider = cursor.provider.clone().unwrap_or("openai".to_owned());
+    response.provider = cursor.provider();
     response.model = cursor.model.clone().unwrap_or_default();
     response.priority = cursor.priority;
     if cursor.model.is_none() && cursor.waiting.len() < WAITING {
@@ -1201,24 +1197,8 @@ mod tests {
     }
 
     #[test]
-    fn token_count_rate_limits_become_latest_in_band_readings() {
+    fn a_rollout_gives_the_last_limits_codex_wrote() {
         let dir = tempfile::tempdir().unwrap();
-        let snapshot = |ordinal: i64, primary: f64, secondary: f64| {
-            line(
-                ordinal,
-                "event_msg",
-                json!({
-                    "type": "token_count",
-                    "info": null,
-                    "rate_limits": {
-                        "limit_id": "codex",
-                        "plan_type": "plus",
-                        "primary": {"used_percent": primary, "window_minutes": 300, "resets_at": 1_790_870_000},
-                        "secondary": {"used_percent": secondary, "window_minutes": 10080, "resets_at": 1_791_450_000}
-                    }
-                }),
-            )
-        };
         let file = rollout(
             dir.path(),
             "t-limits",
@@ -1229,23 +1209,58 @@ mod tests {
                     json!({"id": "t-limits", "model_provider": "openai"}),
                 ),
                 line(1, "turn_context", json!({"model": "gpt-5.5"})),
-                snapshot(2, 15.0, 4.0),
-                snapshot(3, 22.5, 6.0),
+                json!({
+                    "timestamp": "2026-10-01T10:00:00Z",
+                    "ordinal": 2,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": null,
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "plan_type": "plus",
+                            "primary": {"used_percent": 15.0, "window_minutes": 300, "resets_at": 1_790_870_000},
+                            "secondary": {"used_percent": 4.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
+                        }
+                    }
+                }),
+                json!({
+                    "timestamp": "2026-10-01T10:05:00Z",
+                    "ordinal": 3,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": null,
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "plan_type": "plus",
+                            "primary": {"used_percent": 22.5, "window_minutes": 300, "resets_at": 1_790_870_000},
+                            "secondary": {"used_percent": 6.0, "window_minutes": 10080, "resets_at": 1_791_450_000}
+                        }
+                    }
+                }),
             ],
         );
         let read = Codex.read(&file, "").unwrap();
         assert_eq!(read.limits.len(), 1);
-        let snap = &read.limits[0];
-        assert_eq!(snap.provider, "openai");
-        assert_eq!(snap.plan.as_deref(), Some("plus"));
+        let limits = &read.limits[0];
+        assert_eq!(limits.provider, "openai");
         assert_eq!(
-            snap.at,
-            crate::time::millis("2026-09-30T09:00:03Z").unwrap()
+            limits.at,
+            crate::time::millis("2026-10-01T10:05:00Z").unwrap()
         );
-        let pairs: Vec<_> = snap
+        let pairs: Vec<_> = limits
             .readings
             .iter()
-            .map(|r| (r.key.as_str(), r.name.as_str(), r.scope.as_deref(), r.used))
+            .map(|reading| {
+                let name = reading.name.as_str();
+                (
+                    reading.key.as_str(),
+                    name,
+                    reading.scope.as_deref(),
+                    reading.used,
+                )
+            })
             .collect();
         assert_eq!(
             pairs,

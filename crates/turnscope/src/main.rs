@@ -420,9 +420,7 @@ fn cmd_usage_limit(
             );
             let mut text =
                 heading + &usage::text(&used, shares.as_ref().map(|shares| (limit, shares)));
-            if shares.is_none()
-                && let Some(why) = usage::unshared(&used, limit).filter(|_| since.is_none())
-            {
+            if let Some(why) = usage::unshared(&used, limit).filter(|_| since.is_none()) {
                 text += &format!("\n{why}");
             }
             text
@@ -652,8 +650,10 @@ fn doctor(db: &rusqlite::Connection, data: &Path, home: &Path, now: i64) -> Resu
 /// `None` when there's room, or the standing isn't known.
 ///
 /// A hook waits for it, so it reads no history and no prices: only limits,
-/// when five minutes have passed since any process read them. While the
-/// app runs, it has always read them more recently.
+/// when an account's are due, and not while an app keeps the data current
+/// (`engine::running`). The app reads them as they come due, within a
+/// minute, so a hook that read them too would only wait on the provider,
+/// up to 15 s, for what the app reads anyway.
 ///
 /// Nor is it what makes the database, or takes in 0.2's: that took 6.9 s
 /// for a made-up one of 240 MB, while every other process waited. Before
@@ -710,11 +710,7 @@ fn guard(
             ))
         ),
         outlook => {
-            let mut said = format!(
-                "{called} has {}{}% left, under {below}%.",
-                if found.estimated { "~" } else { "" },
-                found.left_percent
-            );
+            let mut said = format!("{called} has {}% left, under {below}%.", found.left_percent);
             if let Some(resets) = found.resets() {
                 said += &format!(" It resets {}", ahead(resets));
                 if let status::Outlook::RunsOut { likely, .. } = outlook {
@@ -727,40 +723,20 @@ fn guard(
     }))
 }
 
-/// From the database alone, so it's quick. When a harness pipes live
-/// `rate_limits` on standard input (as Claude Code does), records them on a
-/// best-effort 50 ms write before rendering.
+/// From the database alone, so it's quick. Not from the limits Claude Code
+/// gives it on standard input, `rate_limits`: those are of the session's
+/// last response, so a session left open gives old ones as new, over newer
+/// ones another has read, and the account they'd go to, the session's
+/// latest response's, may be signed out since.
 fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String> {
     let db = db::read(data)?;
-    let given = stdin_json();
-    let now = now();
-    let snapshot = given.as_ref().and_then(|given| {
-        agents::ALL
-            .iter()
-            .find_map(|agent| agent.statusline_limits(given, now))
-    });
-    let known_id = if account.is_none() {
-        given
-            .as_ref()
-            .and_then(|given| harness_account(&db, given))
-            .or_else(|| mcp::Caller::detect().account_id(&db, home).ok().flatten())
-    } else {
-        None
-    };
-    // Record before computing status when the account id is already known so
-    // the common harness path computes `status::status` only once.
-    let mut recorded = false;
-    if let (Some(id), Some(snapshot)) = (&known_id, &snapshot) {
-        limits::record_statusline_limits(data, id, snapshot, now);
-        recorded = true;
-    }
-    let status = status::status(&db, now).ok()?;
-    let target = match account {
+    let status = status::status(&db, now()).ok()?;
+    let account = match account {
         // A line is better than none: of several named, the first.
         Some(name) => *status::named(&status, name).ok()?.first()?,
-        None => known_id
-            .as_deref()
+        None => harness(&db)
             .and_then(|id| status.accounts.iter().find(|account| account.id == id))
+            .or_else(|| mcp::Caller::detect().account(&db, home, &status).ok()?)
             .or_else(|| {
                 status
                     .accounts
@@ -768,20 +744,18 @@ fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String>
                     .find(|account| account.in_use && !account.hidden)
             })?,
     };
-    if !recorded
-        && let Some(snapshot) = &snapshot
-        && limits::record_statusline_limits(data, &target.id, snapshot, now)
-        && let Ok(fresh) = status::status(&db, now)
-        && let Some(updated) = fresh.accounts.iter().find(|found| found.id == target.id)
-    {
-        return Some(status::line(updated, fresh.at));
-    }
-    Some(status::line(target, status.at))
+    Some(status::line(account, status.at))
 }
 
-/// JSON piped by a harness to `turnscope statusline` on standard input, or
-/// None when stdin is a terminal, empty, or not JSON within 300 ms.
-fn stdin_json() -> Option<serde_json::Value> {
+/// The account of the session a harness names by `session_id` in the JSON
+/// it writes to a status line's standard input, as Claude Code does. None
+/// for a session not read yet, as a status line never catches up.
+///
+/// The calling agent's account answers then, over the account of the latest
+/// response in the session's folder, which can be another agent's: after
+/// Codex ran last in a folder, a new Claude Code session showed the Codex
+/// account's limits.
+fn harness(db: &rusqlite::Connection) -> Option<String> {
     use std::io::IsTerminal as _;
     if std::io::stdin().is_terminal() {
         return None;
@@ -794,18 +768,7 @@ fn stdin_json() -> Option<serde_json::Value> {
         let _ = send.send(text);
     });
     let text = receive.recv_timeout(Duration::from_millis(300)).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// The account of the session a harness names by `session_id` in the JSON
-/// it writes to a status line's standard input, as Claude Code does. None
-/// for a session not read yet, as a status line never catches up.
-///
-/// The calling agent's account answers then, over the account of the latest
-/// response in the session's folder, which can be another agent's: after
-/// Codex ran last in a folder, a new Claude Code session showed the Codex
-/// account's limits.
-fn harness_account(db: &rusqlite::Connection, given: &serde_json::Value) -> Option<String> {
+    let given: serde_json::Value = serde_json::from_str(&text).ok()?;
     // The agent names its session by its own id, whichever agent's it is.
     let native = given["session_id"].as_str()?;
     agents::ALL.iter().find_map(|agent| {
