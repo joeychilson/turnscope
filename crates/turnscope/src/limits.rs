@@ -1567,6 +1567,43 @@ mod tests {
     }
 
     #[test]
+    fn an_account_never_read_in_full_shows_every_limit_an_agent_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let minute = crate::time::MINUTE;
+        let at = 1_000 * crate::time::DAY;
+        failed(&mut db, Problem::unavailable("down"), at);
+        let snapshot = |at: i64, five: f64| agents::InBand {
+            provider: "fake".to_owned(),
+            at,
+            readings: vec![
+                Reading {
+                    used: five,
+                    resets: Some(1_001 * crate::time::DAY),
+                    ..limit("five")
+                },
+                Reading {
+                    resets: Some(1_007 * crate::time::DAY),
+                    ..limit("seven")
+                },
+            ],
+        };
+        for (at, five) in [(at + minute, 30.0), (at + 2 * minute, 40.0)] {
+            let tx = crate::db::write(&mut db).unwrap();
+            assert!(record_in_band(&tx, "fake:account", &snapshot(at, five), at).unwrap());
+            tx.commit().unwrap();
+        }
+        // The second wrote the limit that moved alone: the other still shows.
+        let status = crate::status::status(&db, at + 3 * minute).unwrap();
+        let left: Vec<(&str, u8)> = status.accounts[0]
+            .limits
+            .iter()
+            .map(|limit| (limit.key.as_str(), limit.left_percent))
+            .collect();
+        assert_eq!(left, [("five", 60), ("seven", 90)]);
+    }
+
+    #[test]
     fn limits_asked_for_that_no_provider_answers_leave_the_account_as_it_was() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let mut db = crate::db::open(data.path()).unwrap();
