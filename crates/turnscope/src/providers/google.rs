@@ -31,18 +31,19 @@
 //! 5-hour window reset 10 hours after the week began: 5-hour windows follow
 //! one another from the week's first use.
 //!
-//! **The plan's own limits.** A plan has a pool for Gemini models and one
-//! for Claude and GPT models, each with a 5-hour and a weekly bucket, and
-//! none on all usage. The Gemini pool's are the plan's own, over giving
-//! every limit a scope: Antigravity's own models draw on them, and with no
-//! limit of its own an account has nothing to stand by in the status line
-//! or for `guard`. Every other bucket is scoped by its group, as `Weekly
-//! (Claude and GPT)`, and still shows when it runs out.
+//! **Pools.** A plan has a pool for Gemini models and one for Claude and
+//! GPT models, each with a 5-hour and a weekly bucket, and none on all
+//! usage. Each bucket is scoped by its pool, as `Weekly (Gemini)` and
+//! `Weekly (Claude and GPT)`, over leaving the Gemini pool's unscoped as the
+//! plan's own: unscoped, its work rate and shares counted Claude's usage,
+//! which never draws on it. An account stands by the pool its latest
+//! response drew on (`status::pool`), and with none, by Gemini's, which
+//! Antigravity's own models draw on.
 //!
-//! **Keys.** A limit is keyed by its window, and one not the plan's own by
-//! its bucket too, as `weekly:3p-weekly`, over the bucket's id alone: the
-//! status lists limits by key, and by id the Claude and GPT pool's came
-//! before the plan's own.
+//! **Keys.** A limit is keyed by its window, and one not Gemini's by its
+//! bucket too, as `weekly:3p-weekly`, over the bucket's id alone: the
+//! status lists limits by key, so Gemini's come first, and by id the Claude
+//! and GPT pool's came before them.
 //!
 //! **Renewing.** From the app 2.33.1 on, Antigravity doesn't write the
 //! token it renews back to its Keychain item (`agents::antigravity`), so
@@ -404,10 +405,10 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
                     false => format!("{window}:{id}"),
                 },
                 name: super::window_name(length),
-                scope: match (own, group["displayName"].as_str().map(scope)) {
-                    (true, _) => None,
-                    (false, Some(group)) if !group.is_empty() => Some(group.to_owned()),
-                    (false, _) => Some(super::words(id)),
+                scope: match group["displayName"].as_str().map(scope) {
+                    Some(group) if !group.is_empty() => Some(group.to_owned()),
+                    _ if own => Some("Gemini".to_owned()),
+                    _ => Some(super::words(id)),
                 },
                 used: ((1.0 - left) * 100.0).clamp(0.0, 100.0),
                 size: None,
@@ -450,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn the_gemini_pool_is_the_plans_own_and_the_others_are_their_groups() {
+    fn each_pool_is_scoped_by_its_group() {
         let answer = json!({
             "groups": [
                 {
@@ -489,8 +490,8 @@ mod tests {
         assert_eq!(
             read,
             [
-                ("weekly", "Weekly", None, 2.3),
-                ("5h", "5 hours", None, 0.0),
+                ("weekly", "Weekly", Some("Gemini"), 2.3),
+                ("5h", "5 hours", Some("Gemini"), 0.0),
                 ("weekly:3p-weekly", "Weekly", Some("Claude and GPT"), 100.0),
                 ("5h:3p-5h", "5 hours", Some("Claude and GPT"), 75.0),
             ]

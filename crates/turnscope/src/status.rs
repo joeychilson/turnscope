@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use jiff::tz::TimeZone;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::forecast::{self, Window};
@@ -141,6 +141,20 @@ impl Account {
         self.limits
             .iter()
             .find(|limit| Some(&limit.key) == self.deciding.as_ref())
+    }
+
+    /// Whether it stands by `limit`, for whether it can be used and how
+    /// long: a limit on all its usage, or where it has none, one of the
+    /// pool its deciding limit is in (`pool`).
+    pub fn stands_by(&self, limit: &Limit) -> bool {
+        if self.limits.iter().any(Limit::whole) {
+            return limit.whole();
+        }
+        limit.scope.is_some()
+            && !limit.key.starts_with("key-")
+            && self
+                .deciding_limit()
+                .is_some_and(|deciding| deciding.scope == limit.scope)
     }
 
     /// Its login was refused, at its last read or every one.
@@ -559,7 +573,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             spend: (kind == Kind::ApiKey)
                 .then(|| spend(db, &id, now))
                 .transpose()?,
-            deciding: deciding(&limits).map(|limit| limit.key.clone()),
+            deciding: deciding(&limits, pool(db, &id, &limits)?).map(|limit| limit.key.clone()),
             in_use: !used_by.is_empty() || rose,
             recent: !used_by.is_empty() || rose || row.get(8)?,
             provider: row.get(1)?,
@@ -965,13 +979,19 @@ fn outlook(window: &Window, now: i64) -> Outlook {
     }
 }
 
-/// The limit that decides how an account stands. Of several used up, the
-/// last back decides, over the first listed: the account can't be used
-/// until every one is back. With 5 hours back in an hour and Weekly in
-/// three days, the first listed said the account was back in an hour.
-fn deciding(limits: &[Limit]) -> Option<&Limit> {
-    limits
+/// The limit that decides how an account stands, of those in `pool` where
+/// it draws on one. Of several used up, the last back decides, over the
+/// first listed: the account can't be used until every one is back. With 5
+/// hours back in an hour and Weekly in three days, the first listed said
+/// the account was back in an hour.
+fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
+    let standing: Vec<&Limit> = limits
         .iter()
+        .filter(|limit| pool.is_none_or(|pool| limit.scope.as_deref() == Some(pool)))
+        .collect();
+    standing
+        .iter()
+        .copied()
         .filter(|limit| limit.reset_since.is_none())
         .min_by_key(|limit| {
             let least = match &limit.outlook {
@@ -988,7 +1008,48 @@ fn deciding(limits: &[Limit]) -> Option<&Limit> {
                 least,
             )
         })
-        .or_else(|| limits.iter().max_by_key(|limit| limit.reset_since))
+        .or_else(|| standing.into_iter().max_by_key(|limit| limit.reset_since))
+}
+
+/// The pool an account stands by when each of its limits is on some
+/// models alone, as Google AI's Gemini and Claude and GPT pools: the one its
+/// latest response drew on, or with none that did, the first listed, which
+/// its provider lists first as the plan's own. None when it has a limit on
+/// all its usage. Chosen over standing by the most urgent pool, which said
+/// an account working on Gemini was used up when only Claude and GPT were.
+fn pool<'a>(
+    db: &rusqlite::Connection,
+    account: &str,
+    limits: &'a [Limit],
+) -> Result<Option<&'a str>> {
+    if limits.iter().any(Limit::whole) {
+        return Ok(None);
+    }
+    let mut pools: Vec<&str> = Vec::new();
+    for limit in limits.iter().filter(|limit| !limit.key.starts_with("key-")) {
+        if let Some(scope) = limit.scope.as_deref()
+            && !pools.contains(&scope)
+        {
+            pools.push(scope);
+        }
+    }
+    // The latest response is of a pool's models as `usage` counts one
+    // toward a limit: one seek in `response_account` for each pool.
+    for &pool in &pools {
+        let (filters, mut values) = crate::usage::limited(&crate::usage::models(Some(pool)), None);
+        values.push(account.to_owned().into());
+        let drew: Option<bool> = db
+            .prepare_cached(&format!(
+                "SELECT {} FROM response r WHERE r.account = ? ORDER BY r.at DESC LIMIT 1",
+                filters.join(" AND ")
+            ))?
+            .query_row(rusqlite::params_from_iter(values), |row| row.get(0))
+            .optional()?;
+        if drew == Some(true) {
+            return Ok(Some(pool));
+        }
+    }
+    Ok(pools.first().copied())
 }
 
 /// The order every front end lists accounts in.
@@ -1155,7 +1216,7 @@ mod tests {
             back: Some(Moment::of(now + hours * HOUR, now)),
         };
         let never = Outlook::UsedUp { back: None };
-        let decides = |account: &Account| deciding(&account.limits).unwrap().key.clone();
+        let decides = |account: &Account| deciding(&account.limits, None).unwrap().key.clone();
         // 5 hours is back in an hour and Weekly in three days: the account
         // can't be used until Weekly is.
         (account.limits[0].outlook, account.limits[1].outlook) = (back(1), back(72));
@@ -1177,6 +1238,62 @@ mod tests {
         assert_eq!(decides(&account), "seven_day");
         (account.limits[0].outlook, account.limits[1].outlook) = (never, back(72));
         assert_eq!(decides(&account), "five_hour");
+    }
+
+    #[test]
+    fn an_account_of_pools_stands_by_the_one_it_last_drew_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let now = 2 * HOUR;
+        db.execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at)
+                 VALUES ('google:g', 'google', 'subscription', 'Google AI Ultra', {now}, {now});
+             INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('antigravity', '/g', 'google', 0, 'google:g');
+             INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets) VALUES
+                 ('google:g', '5h', {now}, '5 hours', 'Gemini', 5.0, 0, {five}),
+                 ('google:g', 'weekly:3p-weekly', {now}, 'Weekly', 'Claude and GPT', 100.0, 0, {week});",
+            five = 5 * HOUR,
+            week = 7 * DAY,
+        ))
+        .unwrap();
+        let drew = |id: &str, at: i64, model: &str| {
+            db.execute(
+                "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+                     input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+                     web_searches, priority, cost, account)
+                 VALUES ('antigravity', ?1, 's', 0, 1, '/g', ?2, 'google', ?3,
+                     1, 0, 0, 0, 1, 0, 1, 0, 0, NULL, 'google:g')",
+                params![id, at, model],
+            )
+            .unwrap();
+        };
+        let shown = |db: &rusqlite::Connection| status(db, now).unwrap().accounts.remove(0);
+        // Drawn on by no response: by Gemini's, listed first, though Claude
+        // and GPT are used up.
+        let account = shown(&db);
+        assert_eq!(account.deciding.as_deref(), Some("5h"));
+        assert!(!verdict(&account, now).contains("used up"));
+        assert!(
+            line(&account, now).starts_with(
+                "Google AI Ultra · Gemini 5h 95% · Claude and GPT weekly used up, back"
+            )
+        );
+        // Working on Claude, its pool is used up: so is the account for it.
+        drew("r1", now - MINUTE, "claude-opus-5-5");
+        let account = shown(&db);
+        assert_eq!(account.deciding.as_deref(), Some("weekly:3p-weekly"));
+        assert!(
+            verdict(&account, now)
+                .starts_with("Google AI Ultra: Weekly (Claude and GPT) is used up, back"),
+        );
+        assert_eq!(
+            fit(&account, 1.0, now).unwrap(),
+            "1 more hour of work doesn't fit: Weekly (Claude and GPT) is used up."
+        );
+        // Back on Gemini.
+        drew("r2", now, "gemini-3.8-flash");
+        assert_eq!(shown(&db).deciding.as_deref(), Some("5h"));
     }
 
     /// An account and its sign-in, read at `now`, with `readings` of its

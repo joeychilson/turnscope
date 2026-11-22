@@ -28,6 +28,17 @@
 - **Claude Code's login is also read from `.credentials.json`** in its
   folder, where Claude Code keeps it without the Keychain, and the fresher
   copy is used.
+- **An expired login no longer asks you to open its agent.** The agent
+  renews it when it runs, so the row goes on showing its limits as last
+  read, and opened, says when that was.
+- **A Google AI plan goes by the pool it draws on.** While you work on
+  Claude or GPT, the panel, the status line, `status --hours` and
+  `check_limits` go by the Claude and GPT limits, and say when they're used
+  up: they went by Gemini's, which said there was room. Gemini's limits are
+  now named `(Gemini)`, and their work rate and what used them count Gemini
+  usage alone.
+- **Claude used through Antigravity has a cost,** at Anthropic's list
+  prices, including what was used before.
 
 ## 0.3.1
 

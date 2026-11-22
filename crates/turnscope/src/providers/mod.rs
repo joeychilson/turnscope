@@ -35,6 +35,11 @@ pub fn by_id(id: &str) -> Option<&'static dyn Provider> {
         .find(|provider| provider.info().id == id)
 }
 
+/// The provider that makes `model`, as Anthropic makes `claude-opus-5-5`.
+pub fn maker(model: &str) -> Option<&'static dyn Provider> {
+    ALL.iter().copied().find(|provider| provider.makes(model))
+}
+
 /// A provider of models and the accounts that pay for them.
 pub trait Provider: Sync {
     fn info(&self) -> &'static Info;
@@ -66,6 +71,11 @@ pub trait Provider: Sync {
     /// whose limits give the same mark are one plan.
     fn plan_mark(&self, _limits: &Limits) -> Option<i64> {
         None
+    }
+    /// Whether it makes `model`: another provider serving one it doesn't
+    /// list prices it at this one's list price (`prices`).
+    fn makes(&self, _model: &str) -> bool {
+        false
     }
 }
 

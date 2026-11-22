@@ -289,8 +289,11 @@ impl Words {
     fn short(&self, limit: &Limit) -> String {
         let name = self.name(limit);
         match &limit.outlook {
+            // Its models can't be used until it's back, and with its limit's
+            // name too, "Claude and GPT weekly back Tue 2:40 AM" was cut short.
             Outlook::UsedUp { back } => format!(
-                "{name} back {}",
+                "{} back {}",
+                limit.scope.as_ref().unwrap_or(&name),
                 back.as_ref().map_or("later".into(), |b| self.at(b))
             ),
             Outlook::RunsOut { likely, .. } => {
@@ -322,13 +325,6 @@ impl Words {
                 "Sign in again to update".into()
             };
         }
-        if account.state.why() == Some(Stale::Expired) {
-            let agent = account
-                .agents
-                .first()
-                .map_or("its agent", |a| turnscope::agents::name(a));
-            return format!("Open {agent} to renew its login");
-        }
         if let Some(limit) = account.deciding_limit() {
             return match limit.reset_since {
                 Some(reset) => format!("{} reset {}", self.name(limit), self.ago(reset)),
@@ -339,6 +335,7 @@ impl Words {
             return self.spent_line(spend);
         }
         match account.state.why() {
+            Some(Stale::Expired) => "Login expired".into(),
             Some(Stale::ReadFailed) => "Couldn't be read yet".into(),
             Some(Stale::SignedOut) => "Signed out".into(),
             _ => "Not read yet".into(),
@@ -441,6 +438,15 @@ impl Words {
                 Standing::Lasts,
             );
         };
+        // A limit on some models decides only an account with none on all its
+        // usage, as a Google AI plan's pools: those models, not the account,
+        // are used up, as "Claude and GPT are used up". Named by its models
+        // over its own name, which ran to two lines: "Claude and GPT weekly
+        // is used up".
+        let (subject, plural) = match &limit.scope {
+            Some(models) => (models.clone(), models.contains(" and ")),
+            None => (account.title.clone(), false),
+        };
         match &limit.outlook {
             Outlook::UsedUp { back } => {
                 let after = back
@@ -448,18 +454,16 @@ impl Words {
                     .map_or("It isn't known when it's back.".into(), |b| {
                         format!("Back {}.", self.at(b))
                     });
-                (
-                    format!("{} is used up", account.title),
-                    after,
-                    Standing::UsedUp,
-                )
+                let is = if plural { "are" } else { "is" };
+                (format!("{subject} {is} used up"), after, Standing::UsedUp)
             }
             Outlook::RunsOut { likely, .. } => {
                 let when = match likely.horizon {
                     Horizon::Soon | Horizon::Later => self.at(likely),
                     Horizon::Today | Horizon::ThisWeek => self.when(likely.at),
                 };
-                let headline = format!("{} runs out {}", account.title, unbroken(&when));
+                let runs = if plural { "run" } else { "runs" };
+                let headline = format!("{subject} {runs} out {}", unbroken(&when));
                 let back = limit
                     .window
                     .as_ref()
@@ -606,7 +610,7 @@ impl Words {
             State::Unread { why: Stale::SignIn } => format!("Open {with} to sign in again."),
             State::Unread {
                 why: Stale::Expired,
-            } => format!("Its login expired. Open {with} to renew it."),
+            } => format!("Its login expired; it's read when {with} runs."),
             State::Unread {
                 why: Stale::ReadFailed,
             } => "It couldn't be read yet.".into(),
@@ -630,7 +634,7 @@ impl Words {
                 why: Stale::Expired,
             } => {
                 format!(
-                    "Last read {}. Open {with} to renew its login.",
+                    "Last read {}. Its login expired; it's read again when {with} runs.",
                     self.ago(*read_at)
                 )
             }
@@ -1506,13 +1510,14 @@ mod tests {
             w.opened(&as_of(Stale::SignIn, noon(), half()), false),
             some("Last read 12 PM. Open Claude Code to sign in.")
         );
-        // Every login expired. An agent renews it when next used, so no sign-in is needed.
+        // Every login expired. Its agent renews one when next used, so nothing
+        // is asked of you, and the row goes on showing its limit.
         let expired = as_of(Stale::Expired, noon(), half());
         assert_eq!(
             w.opened(&expired, false),
-            some("Last read 12 PM. Open Claude Code to renew its login.")
+            some("Last read 12 PM. Its login expired; it's read again when Claude Code runs.")
         );
-        assert_eq!(w.status(&expired), "Open Claude Code to renew its login");
+        assert_eq!(w.status(&expired), "5 hours resets in 3h");
         assert!(!expired.refused());
         // Never read, each says why, and what to do where there's something.
         let lapsed = Account {
@@ -1521,10 +1526,10 @@ mod tests {
             },
             ..account(vec![])
         };
-        assert_eq!(w.status(&lapsed), "Open Claude Code to renew its login");
+        assert_eq!(w.status(&lapsed), "Login expired");
         assert_eq!(
             w.opened(&lapsed, false),
-            some("Its login expired. Open Claude Code to renew it.")
+            some("Its login expired; it's read when Claude Code runs.")
         );
         let unreachable = Account {
             state: State::Unread {
@@ -1779,11 +1784,12 @@ mod tests {
     #[test]
     fn of_other_limits_used_up_the_verdict_names_the_last_back() {
         let w = words();
-        // A plan whose own weekly limit lasts, with both its limits on Claude and GPT used up:
-        // 5 hours back in an hour, weekly on Saturday. Those models can't be used until
-        // Saturday.
+        // A plan drawn on for Gemini, whose weekly lasts, with both its limits on Claude and
+        // GPT used up: 5 hours back in an hour, weekly on Saturday. Those models can't be used
+        // until Saturday.
         let week = Limit {
             key: "weekly".into(),
+            scope: some("Gemini"),
             ..weekly(lasts(), 60)
         };
         let five = |outlook| Limit {
@@ -1803,7 +1809,7 @@ mod tests {
             title: "Google AI Pro".into(),
             ..account(vec![week.clone(), five, used_weekly.clone()])
         };
-        let lasts = "At this pace, Google AI Pro's weekly lasts until it resets.";
+        let lasts = "At this pace, Google AI Pro's Gemini weekly lasts until it resets.";
         let back = plan(five(used_up(Some(moment("2026-09-30T13:00:00Z", Soon)))));
         assert_eq!(
             w.verdict(&[&back], false).1,
@@ -1822,6 +1828,20 @@ mod tests {
             w.verdict(&[&running], false).1,
             format!("{lasts} Claude and GPT weekly is used up, back Sat 9 AM.")
         );
+        // Drawn on for Claude, its pool decides: that pool is used up, not the plan.
+        let claude = Account {
+            deciding: some("weekly:3p-weekly"),
+            ..back
+        };
+        assert_eq!(
+            w.verdict(&[&claude], false),
+            (
+                "Claude and GPT are used up".into(),
+                "Back Sat 9 AM.".into(),
+                Standing::UsedUp
+            )
+        );
+        assert_eq!(w.status(&claude), "Claude and GPT back Sat 9 AM");
     }
 
     #[test]

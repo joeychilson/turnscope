@@ -46,6 +46,10 @@ impl Provider for Anthropic {
         super::account(INFO.id, credential, || credential.identity.clone())
     }
 
+    fn makes(&self, model: &str) -> bool {
+        model.starts_with("claude-")
+    }
+
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
         let answer = super::ask(USAGE, credential, &["anthropic-beta: oauth-2025-04-20"], by)?;
         let readings = parse(&answer, now)

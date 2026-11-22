@@ -384,8 +384,10 @@ turnscope statusline [--account <name>]
 ```
 
 `statusline` prints one line for an agent's status line: the account it
-draws on, its limits on all its usage, and any other limit running out or
-used up. When a limit on all its usage is used up, only those show.
+draws on, the limits it stands by, and any other limit running out or used
+up. An account stands by its limits on all its usage, or with none, as
+Google AI's plans, by those of the pool it last drew on. When one it stands
+by is used up, only those show.
 
 | Flag | Default | |
 |---|---|---|

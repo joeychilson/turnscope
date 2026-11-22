@@ -148,6 +148,10 @@ account, and the folders and usage of the rest move to it. OpenCode Go's is
 the instant its monthly window resets, which keys to one plan report to the
 second. The default, `None`, never merges.
 
+If another provider serves the provider's models under its own id, as
+Google serves Claude to Antigravity, implement `makes`: a model a provider
+serves but models.dev doesn't list under it takes its maker's list price.
+
 A failure is a `Problem`:
 
 - `Problem::SignIn`: the provider refused the login. Refused at two reads

@@ -80,7 +80,10 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
     Some(match why {
         Stale::SignedOut => "no agent here is signed in to it now".to_owned(),
         Stale::SignIn => format!("its login was refused; open {agents} to sign in again"),
-        Stale::Expired => format!("its login expired; open {agents} to renew it"),
+        Stale::Expired => format!(
+            "its login expired; it's read {}when {agents} runs",
+            if read_at.is_some() { "again " } else { "" }
+        ),
         Stale::ReadFailed => format!(
             "it couldn't be read {}; it's tried again every {} to {} minutes",
             match read_at {
@@ -266,17 +269,19 @@ fn range(limit: &Limit, left: &HoursLeft, now: i64) -> String {
     }
 }
 
-/// `account`'s limit on all its usage that's used up, and when it's back:
-/// the limit that decides it, so of several, the last back.
+/// `account`'s limit it stands by that's used up, and when it's back: the
+/// limit that decides it, so of several, the last back.
 fn used_up(account: &Account) -> Option<(&Limit, Option<Moment>)> {
-    let limit = account.deciding_limit().filter(|limit| limit.whole())?;
+    let limit = account
+        .deciding_limit()
+        .filter(|limit| account.stands_by(limit))?;
     match limit.outlook {
         Outlook::UsedUp { back } => Some((limit, back)),
         _ => None,
     }
 }
 
-/// `account`'s limit on all its usage with the fewest likely hours of work
+/// `account`'s limit it stands by with the fewest likely hours of work
 /// left, and those hours. One reset since it was read counts, with a new
 /// window's work left: left out, an account whose 5 hours had just reset
 /// would be said to have room to keep going, even working nonstop.
@@ -284,13 +289,13 @@ fn first_out(account: &Account) -> Option<(&Limit, HoursLeft)> {
     account
         .limits
         .iter()
-        .filter(|limit| limit.whole())
+        .filter(|limit| account.stands_by(limit))
         .filter_map(|limit| Some((limit, limit.work?.left_hours?)))
         .min_by(|(_, a), (_, b)| a.likely.total_cmp(&b.likely))
 }
 
-/// Whether `hours` more of work fit `account`'s limits on all its usage, at
-/// the work rate so far.
+/// Whether `hours` more of work fit the limits `account` stands by, at the
+/// work rate so far.
 ///
 /// A limit with no work rate measured, too little work or a window that
 /// rolls, says it can't be told, naming it and what's left of it: said to
@@ -309,14 +314,18 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
     if let Some((limit, _)) = used_up(account) {
         return Ok(format!(
             "{more} of work {dont_fit}: {} {} used up.",
-            limit.name,
+            limit.named(),
             agree(limit, "is", "are")
         ));
     }
     let mut out: Option<(&Limit, f64)> = None;
     let mut after = Vec::new();
     let mut untold = None;
-    for limit in account.limits.iter().filter(|limit| limit.whole()) {
+    for limit in account
+        .limits
+        .iter()
+        .filter(|limit| account.stands_by(limit))
+    {
         let Some(work) = &limit.work else {
             // A window that rolls has no start to measure work from.
             let rolls = limit
@@ -334,7 +343,7 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
             };
             let why = format!(
                 "{} {} {} left, and {why}",
-                limit.name,
+                limit.named(),
                 agree(limit, "has", "have"),
                 left(limit)
             );
@@ -344,13 +353,13 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
         match ends(limit, work, hours, now) {
             End::Out(at) if out.is_none_or(|(_, first)| at < first) => out = Some((limit, at)),
             End::Out(_) => {}
-            End::Leaves(left) => after.push(format!("about {left:.0}% of {}", limit.name)),
+            End::Leaves(left) => after.push(format!("about {left:.0}% of {}", limit.named())),
         }
     }
     if let Some((limit, at)) = out {
         return Ok(format!(
             "{more} of work {dont_fit}: {} {} out after {} of work.",
-            limit.name,
+            limit.named(),
             agree(limit, "runs", "run"),
             about(at)
         ));
@@ -413,7 +422,7 @@ fn ends(limit: &Limit, work: &crate::status::Work, hours: f64, now: i64) -> End 
 }
 
 /// The one thing to know of `account`: whether there's room to keep going,
-/// and for how much work, by the limit on all its usage that runs out first.
+/// and for how much work, by the limit it stands by that runs out first.
 pub fn verdict(account: &Account, now: i64) -> String {
     let title = account.full_title();
     let Some(stale) = stale(account, true, now) else {
@@ -432,8 +441,8 @@ pub fn verdict(account: &Account, now: i64) -> String {
 }
 
 /// How `account`, read, stands: used up until the limit that decides it is
-/// back, or else by its limit on all its usage closest to running out, by
-/// the work left or else the clock's pace.
+/// back, or else by the limit it stands by closest to running out, by the
+/// work left or else the clock's pace.
 ///
 /// The limit that decides it, with no work rate measured, is said by the
 /// clock's pace, over another's work left: OpenCode Go's rolling 5 hours at
@@ -445,11 +454,11 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
             format!(", back {}", time::ahead(back.at, now))
         });
         let is = agree(limit, "is", "are");
-        return format!("{title}: {} {is} used up{back}.", limit.name);
+        return format!("{title}: {} {is} used up{back}.", limit.named());
     }
     let unmeasured = account
         .deciding_limit()
-        .is_some_and(|limit| limit.whole() && limit.work.is_none());
+        .is_some_and(|limit| account.stands_by(limit) && limit.work.is_none());
     if !unmeasured && let Some((limit, left)) = first_out(account) {
         let resets = limit.resets().map_or(String::new(), |resets| {
             format!("; it resets {}", time::ahead(resets, now))
@@ -458,16 +467,16 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
             "{title}: {} of work left{} before {} {} out{resets}.",
             about(left.likely),
             range(limit, &left, now),
-            limit.name,
+            limit.named(),
             agree(limit, "runs", "run")
         );
     }
-    let whole: Vec<&Limit> = account
+    let stood_by: Vec<&Limit> = account
         .limits
         .iter()
-        .filter(|limit| limit.whole())
+        .filter(|limit| account.stands_by(limit))
         .collect();
-    if !whole.is_empty() && whole.iter().all(|limit| limit.work.is_some()) {
+    if !stood_by.is_empty() && stood_by.iter().all(|limit| limit.work.is_some()) {
         return format!(
             "{title}: room to keep going; no limit runs out before it resets, even working nonstop."
         );
@@ -491,13 +500,17 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
         (_, None) => String::new(),
     };
     let has = agree(limit, "has", "have");
-    format!("{title}: {} {has} {} left{ahead}.", limit.name, left(limit))
+    format!(
+        "{title}: {} {has} {} left{ahead}.",
+        limit.named(),
+        left(limit)
+    )
 }
 
-/// `account` as one line, for an agent's status line: its title, its limits
-/// on all its usage, and any other running out or used up, as `Claude Max ·
-/// 5h 86% · weekly 25%, out Sat 18:00`. Once a limit on all its usage is
-/// used up, only that one.
+/// `account` as one line, for an agent's status line: its title, the limits
+/// it stands by, and any other running out or used up, as `Claude Max · 5h
+/// 86% · weekly 25%, out Sat 18:00`. Once one it stands by is used up, only
+/// that one.
 pub fn line(account: &Account, now: i64) -> String {
     if account.refused() {
         return format!("{} · sign in again", account.title);
@@ -507,14 +520,16 @@ pub fn line(account: &Account, now: i64) -> String {
     let blocking: Vec<&Limit> = account
         .limits
         .iter()
-        .filter(|limit| limit.whole() && used_up(limit))
+        .filter(|limit| account.stands_by(limit) && used_up(limit))
         .collect();
     let shown: Vec<&Limit> = if blocking.is_empty() {
         account
             .limits
             .iter()
             .filter(|limit| {
-                limit.whole() || used_up(limit) || matches!(limit.outlook, Outlook::RunsOut { .. })
+                account.stands_by(limit)
+                    || used_up(limit)
+                    || matches!(limit.outlook, Outlook::RunsOut { .. })
             })
             .collect()
     } else {
@@ -855,14 +870,22 @@ mod tests {
             let verdict = verdict(account, status.at);
             assert!(verdict.ends_with(&format!(": {why}")), "{verdict}");
         }
-        // Its agent renews an expired login when next used.
+        // Its agent renews an expired login when next used: nothing is asked.
         let mut expired = status.accounts[0].clone();
         expired.state = State::Unread {
             why: Stale::Expired,
         };
         assert_eq!(
             verdict(&expired, status.at),
-            "Claude Max (me@example.com): its login expired; open Claude Code to renew it."
+            "Claude Max (me@example.com): its login expired; it's read when Claude Code runs."
+        );
+        expired.state = State::AsOf {
+            read_at: status.at - 45 * MINUTE,
+            why: Stale::Expired,
+        };
+        assert!(
+            verdict(&expired, status.at)
+                .ends_with("its login expired; it's read again when Claude Code runs."),
         );
     }
 }
