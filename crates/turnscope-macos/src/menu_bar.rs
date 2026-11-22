@@ -25,8 +25,9 @@ use objc2_foundation::{
     NSArray, NSAttributedStringKey, NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString,
 };
 
-use crate::standing::*;
+use crate::standing::{AccountStanding, Standing};
 use crate::state::State;
+use crate::style::{AMBER, GUTTER, PANEL_WIDTH, RED, channels};
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -328,10 +329,10 @@ thread_local! {
     /// Amber and red, then dimmed, built once: each is four colors and the block that picks
     /// one, and the image draws itself each time AppKit asks.
     static URGENT: [Retained<NSColor>; 4] = [
-        dynamic(Standing::RunningOut, 1.0),
-        dynamic(Standing::UsedUp, 1.0),
-        dynamic(Standing::RunningOut, DIMMED),
-        dynamic(Standing::UsedUp, DIMMED),
+        dynamic(AMBER, 1.0),
+        dynamic(RED, 1.0),
+        dynamic(AMBER, DIMMED),
+        dynamic(RED, DIMMED),
     ];
 }
 
@@ -342,17 +343,12 @@ fn urgent(standing: Standing, dimmed: bool) -> Retained<NSColor> {
     URGENT.with(|colors| colors[index].clone())
 }
 
-fn dynamic(standing: Standing, fraction: f64) -> Retained<NSColor> {
-    let srgb = |dark: bool, more: bool| {
-        let (r, g, b) = crate::style::urgency_srgb(standing, dark, more);
+/// `hexes` in each appearance, in `style::AMBER`'s order, at `fraction` opacity.
+fn dynamic(hexes: [u32; 4], fraction: f64) -> Retained<NSColor> {
+    let colors = hexes.map(|hex| {
+        let [r, g, b] = channels(hex).map(f64::from);
         NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, fraction)
-    };
-    let colors = [
-        srgb(false, false),
-        srgb(true, false),
-        srgb(false, true),
-        srgb(true, true),
-    ];
+    });
     let names = unsafe {
         NSArray::from_slice(&[
             NSAppearanceNameAqua,
@@ -419,7 +415,7 @@ pub fn placed() -> bool {
 /// Where the panel's window goes, in points from the primary screen's top-left, y down, as Rune
 /// places a window: in pixels, the panel landed at half or twice its place on a screen of
 /// another scale. With no place for the item, it's at the primary screen's top right.
-pub fn panel_place(width: f64, gutter: f64) -> Option<rune::OverlayPlacement> {
+pub fn panel_place() -> Option<rune::OverlayPlacement> {
     let mtm = MainThreadMarker::new()?;
     let primary = NSScreen::screens(mtm).firstObject()?;
     let (mid, under, visible) = match item_window(mtm) {
@@ -445,8 +441,8 @@ pub fn panel_place(width: f64, gutter: f64) -> Option<rune::OverlayPlacement> {
         under,
         visible,
         primary.frame().size.height,
-        width,
-        gutter,
+        f64::from(PANEL_WIDTH),
+        f64::from(GUTTER),
     );
     Some(rune::OverlayPlacement::Rect {
         x: x as f32,

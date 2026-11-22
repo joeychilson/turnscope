@@ -2,11 +2,12 @@
 //! screen allows scrolls under its title.
 
 use rune::{El, Tx, col, row, spacer, text};
+use turnscope::status::{Account, Agent, Connection};
 
+use crate::engine;
 use crate::login;
-use crate::panel::{account_name, agent_name, waiting};
+use crate::panel::{account_name, agent_name, centered, explained, waiting};
 use crate::preferences::MenuShows;
-use crate::standing::*;
 use crate::state::{Page, State, Tab};
 use crate::style::*;
 use crate::updater;
@@ -39,7 +40,7 @@ pub fn page(s: &State, ink: &Ink) -> El {
             "Settings",
             &Tab::ALL,
             s.tab,
-            |s, tab, _| s.tab = tab,
+            |s, tab| s.tab = tab,
             ink,
         ));
     let tab = match s.tab {
@@ -98,6 +99,17 @@ fn setting(key: &str, title: &str, help: Option<&str>, control: El, ink: &Ink) -
     line
 }
 
+/// A setting macOS holds, with a button that opens System Settings where it's changed.
+fn open_row(key: &str, title: &str, label: &str, open: fn(), ink: &Ink) -> El {
+    let button = pill(&format!("open-{key}"), "Open", true, true, ink)
+        .label(label)
+        .on_press_tx(move |_: &mut State, tx: &mut Tx| {
+            tx.close_window();
+            open();
+        });
+    appears(setting(key, title, None, button, ink))
+}
+
 fn general(s: &State, ink: &Ink) -> El {
     col()
         .key("general")
@@ -117,7 +129,7 @@ fn menu_bar(s: &State, ink: &Ink) -> El {
             (MenuShows::One, "Most urgent"),
         ],
         s.preferences.menu_shows,
-        |s, shows, _| {
+        |s, shows| {
             s.preferences.set_menu_shows(shows);
             crate::menu_bar::draw(s);
         },
@@ -142,18 +154,13 @@ fn menu_bar(s: &State, ink: &Ink) -> El {
     ];
     // macOS may hold it until it's allowed in System Settings.
     if s.login == login::Login::NeedsApproval {
-        rows.push(appears(setting(
+        rows.push(open_row(
             "approve",
             "Allow it in System Settings",
-            None,
-            pill("open-login-items", "Open", true, true, ink)
-                .label("Open Login Items in System Settings")
-                .on_press_tx(|_: &mut State, tx: &mut Tx| {
-                    tx.close_window();
-                    login::open_settings();
-                }),
+            "Open Login Items in System Settings",
+            login::open_settings,
             ink,
-        )));
+        ));
     }
     group("menu-bar", "Menu bar", rows, ink)
 }
@@ -161,18 +168,13 @@ fn menu_bar(s: &State, ink: &Ink) -> El {
 fn notifications(s: &State, ink: &Ink) -> El {
     let mut rows = Vec::new();
     if s.notifications_denied {
-        rows.push(appears(setting(
+        rows.push(open_row(
             "off",
             "Notifications are off for Turnscope",
-            None,
-            pill("open-notifications", "Open", true, true, ink)
-                .label("Open Notifications in System Settings")
-                .on_press_tx(|_: &mut State, tx: &mut Tx| {
-                    tx.close_window();
-                    crate::notifier::open_settings();
-                }),
+            "Open Notifications in System Settings",
+            crate::notifier::open_settings,
             ink,
-        )));
+        ));
     }
     // Each finishes the sentence "Notify me when". They come with the status, so until the
     // first one there's nothing to change, nor once the engine has stopped for good.
@@ -282,21 +284,7 @@ fn agents(s: &State, ink: &Ink) -> El {
 }
 
 fn empty(key: &str, headline: &str, detail: &str, ink: &Ink) -> El {
-    col()
-        .key(key)
-        .w_full()
-        .min_h(140.0)
-        .padding(24.0)
-        .center()
-        .gap(8.0)
-        .child(text(headline).font(STRONG).color(ink.primary))
-        .child(
-            text(detail)
-                .font(LINE)
-                .color(ink.secondary)
-                .wrap()
-                .align(rune::Align::Center),
-        )
+    centered(key, explained("said", headline, detail, ink))
 }
 
 fn agent_row(s: &State, agent: &Agent, ink: &Ink) -> El {
@@ -307,7 +295,7 @@ fn agent_row(s: &State, agent: &Agent, ink: &Ink) -> El {
         });
     let mut line = item_row(format!("agent:{}", agent.id))
         .min_h(row_size::SETTING)
-        .child(agent_logo(&agent.id, row_size::LOGO, ink.primary, ink))
+        .child(agent_logo(&agent.id, ink.primary, ink))
         .child(agent_name(agent, note, ink))
         .child(spacer().min_w(8.0));
     // Shown beside the switch rather than under the name so the row doesn't resize.
@@ -338,7 +326,7 @@ fn agent_row(s: &State, agent: &Agent, ink: &Ink) -> El {
                 .iter()
                 .find(|a| a.id == id)
                 .is_some_and(|a| a.connection == Connection::Connected);
-            crate::connect(s, &id, !connected);
+            engine::connect(s, &id, !connected);
         }),
     )
 }
@@ -371,7 +359,7 @@ fn account_switch(a: &Account, enabled: bool, ink: &Ink) -> El {
     let id = a.id.clone();
     item_row(format!("account:{}", a.id))
         .min_h(row_size::SETTING)
-        .child(account_logo(&a.provider, row_size::LOGO, ink.primary, ink))
+        .child(account_logo(&a.provider, ink.primary, ink))
         .child(account_name(a, ink.primary, ink.secondary, ink))
         .child(spacer().min_w(8.0))
         .child(
@@ -384,7 +372,7 @@ fn account_switch(a: &Account, enabled: bool, ink: &Ink) -> El {
             )
             .on_press(move |s: &mut State| {
                 if let Some(account) = s.all().iter().find(|a| a.id == id) {
-                    crate::hide(s, &id, !account.hidden);
+                    engine::hide(s, &id, !account.hidden);
                 }
             }),
         )

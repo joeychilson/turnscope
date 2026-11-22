@@ -1,13 +1,16 @@
 //! Every word the app shows: the panel, the menu bar item, notifications and what VoiceOver
 //! says. Times are in the Mac's own time zone, as of the minute the panel last ticked.
 
-use crate::standing::*;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 use turnscope::alerts::{Alert, Kind as AlertKind};
 use turnscope::engine::UsedMost;
-use turnscope::status::State;
+use turnscope::status::{
+    Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, State, Unknown,
+};
+
+use crate::standing::{LimitStanding, Standing};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Note {
@@ -231,13 +234,9 @@ impl Words {
         };
         let Some(limit) = account.deciding_limit() else {
             if account.refused() {
-                let open = account
-                    .agents
-                    .first()
-                    .map(|a| format!("Open {} to sign in.", turnscope::agents::name(a)));
                 return (
                     format!("Sign in to {} again", account.title),
-                    open.unwrap_or("Its limits can't be read until then.".into()),
+                    sign_in(account),
                     Standing::Lasts,
                 );
             }
@@ -371,7 +370,7 @@ impl Words {
         let with = first_agent(account);
         match &account.state {
             State::Unread { why } => Some(match why {
-                Stale::SignIn => format!("Open {with} to sign in again."),
+                Stale::SignIn => sign_in(account),
                 Stale::Expired => format!("Its login expired; it's read when {with} runs."),
                 Stale::ReadFailed => "It couldn't be read yet.".into(),
                 Stale::SignedOut => "No agent here is signed in to it.".into(),
@@ -382,7 +381,7 @@ impl Words {
                 }
                 let ago = self.ago(*read_at);
                 Some(match why {
-                    Stale::SignIn => format!("Last read {ago}. Open {with} to sign in."),
+                    Stale::SignIn => format!("Last read {ago}. {}", sign_in(account)),
                     Stale::ReadFailed => format!("It couldn't be read since {ago}."),
                     Stale::Expired => {
                         format!(
@@ -494,11 +493,7 @@ impl Words {
         let (subtitle, body) = match alert.kind {
             AlertKind::SignIn => (
                 "Sign in again".into(),
-                account
-                    .and_then(|a| a.agents.first())
-                    .map_or(String::new(), |a| {
-                        format!("Open {} to sign in.", turnscope::agents::name(a))
-                    }),
+                account.map_or(String::new(), sign_in),
             ),
             AlertKind::RunningOut => {
                 let out = alert
@@ -637,12 +632,7 @@ fn spent(spend: &Spend) -> String {
 
 pub fn name(limit: &Limit) -> String {
     if !limit.held_by.is_empty() {
-        let names: Vec<&str> = limit
-            .held_by
-            .iter()
-            .map(|a| turnscope::agents::name(a))
-            .collect();
-        return format!("{}'s key", list(&names, "and"));
+        return format!("{}'s key", agents(&limit.held_by));
     }
     match &limit.scope {
         Some(scope) => format!("{scope} {}", limit.name.to_lowercase()),
@@ -750,15 +740,7 @@ pub fn connection(agent: &Agent) -> Option<String> {
 }
 
 pub fn via(account: &Account) -> Option<String> {
-    if account.agents.is_empty() {
-        return None;
-    }
-    let names: Vec<&str> = account
-        .agents
-        .iter()
-        .map(|a| turnscope::agents::name(a))
-        .collect();
-    Some(format!("via {}", list(&names, "and")))
+    (!account.agents.is_empty()).then(|| format!("via {}", agents(&account.agents)))
 }
 
 pub fn used(used: &UsedMost, agents: bool) -> String {
@@ -781,11 +763,18 @@ pub fn called(account: &Account, labelled: bool) -> String {
     }
 }
 
+/// Whether another shown account of `among` has `account`'s title, so its label tells them apart.
+pub fn twinned<'a>(account: &Account, among: impl IntoIterator<Item = &'a Account>) -> bool {
+    among
+        .into_iter()
+        .any(|a| a.id != account.id && !a.hidden && a.title == account.title)
+}
+
 /// Notifications stand alone, so include the label only when another in-use account shares the title.
 fn called_among(account: &Account, accounts: &[Account]) -> String {
     called(
         account,
-        account.twinned(accounts.iter().filter(|a| a.in_use)),
+        twinned(account, accounts.iter().filter(|a| a.in_use)),
     )
 }
 
@@ -798,6 +787,17 @@ fn first_agent(account: &Account) -> &str {
         .agents
         .first()
         .map_or("its agent", |a| turnscope::agents::name(a))
+}
+
+/// "Open Claude Code to sign in.": the agent whose login was refused renews it.
+fn sign_in(account: &Account) -> String {
+    format!("Open {} to sign in.", first_agent(account))
+}
+
+/// "Claude Code and Codex", from agents' ids.
+fn agents(ids: &[String]) -> String {
+    let names: Vec<&str> = ids.iter().map(|id| turnscope::agents::name(id)).collect();
+    list(&names, "and")
 }
 
 fn refilled(account: &Account) -> bool {
@@ -1401,7 +1401,7 @@ mod tests {
         );
 
         let all = [mine.clone(), twin.clone(), other.clone()];
-        let row = |a: &Account| called(a, a.twinned(&all));
+        let row = |a: &Account| called(a, twinned(a, &all));
         assert_eq!(row(&mine), "Claude Max (me@example.com)");
         assert_eq!(row(&twin), "Claude Max (work@example.com)");
         assert_eq!(row(&other), "ChatGPT Pro");
@@ -1559,6 +1559,14 @@ mod tests {
             Some("It couldn't be read yet.")
         );
         assert_eq!(w.opened(&unreachable, true), None);
+        let refused = Account {
+            state: State::Unread { why: Stale::SignIn },
+            ..account(vec![])
+        };
+        assert_eq!(
+            w.opened(&refused, false).as_deref(),
+            Some("Open Claude Code to sign in.")
+        );
         assert_eq!(w.opened(&account(vec![limit(runs_out())]), false), None);
         assert_eq!(w.opened(&api_key(vec![], None), false), None);
     }
@@ -1669,7 +1677,10 @@ mod tests {
                 body: "$10 of $20 left.".into()
             }
         );
+    }
 
+    #[test]
+    fn a_session_that_used_a_limit_says_its_share_project_and_agent() {
         let mut used_most = UsedMost {
             session: "codex:s".into(),
             title: Some("Fix it".into()),
@@ -1682,20 +1693,5 @@ mod tests {
         assert_eq!(used(&used_most, false), "<1% · app");
         used_most.share_percent = None;
         assert_eq!(used(&used_most, false), "app");
-
-        let reads = ["Claude Code", "Codex"];
-        assert_eq!(welcome(&[], &reads, true).0, "Getting your limits");
-        assert_eq!(
-            welcome(&[], &reads, false).1,
-            "Turnscope reads Claude Code and Codex. Sign in to one, and its limits show up."
-        );
-        let codex = Agent {
-            id: "codex".into(),
-            name: "Codex".into(),
-            installed: true,
-            connection: Connection::Available,
-            in_use: false,
-        };
-        assert_eq!(welcome(&[&codex], &[], false).0, "No accounts found yet");
     }
 }

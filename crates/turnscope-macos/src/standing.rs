@@ -1,11 +1,8 @@
-//! The engine's status, as the app reads it: the engine's own types, with what the app adds
-//! to them: how a limit or an account stands, which sets its color.
+//! How a limit or an account stands, which sets its color.
 
-pub use turnscope::status::{
-    Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, Status, Unknown,
-};
+use turnscope::status::{Account, Limit, Outlook};
 
-/// How a limit stands, from calmest to most urgent. It sets the color.
+/// How a limit stands, from calmest to most urgent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Standing {
     Lasts,
@@ -29,18 +26,11 @@ impl LimitStanding for Limit {
 
 pub trait AccountStanding {
     fn standing(&self) -> Standing;
-    fn twinned<'a>(&self, among: impl IntoIterator<Item = &'a Account>) -> bool;
 }
 
 impl AccountStanding for Account {
     fn standing(&self) -> Standing {
         self.deciding_limit()
             .map_or(Standing::Lasts, LimitStanding::standing)
-    }
-
-    fn twinned<'a>(&self, among: impl IntoIterator<Item = &'a Account>) -> bool {
-        among
-            .into_iter()
-            .any(|a| a.id != self.id && !a.hidden && a.title == self.title)
     }
 }

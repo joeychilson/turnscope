@@ -31,15 +31,13 @@ use objc2_app_kit::{
 };
 use objc2_foundation::NSNotification;
 use rune::{App, AppHandle, AppSpec, DisplayTarget, RunOptions, Tx, WindowOptions, WindowSpec};
-use turnscope::alerts::Alert;
 use turnscope::engine::Shown;
 use turnscope::time::{MINUTE, minute};
 
 use launch::{Launch, Opening};
 use preferences::Preferences;
-use standing::*;
 use state::{Page, State};
-use style::{GUTTER, PANEL_WIDTH};
+use style::PANEL_WIDTH;
 
 pub static HANDLE: OnceLock<AppHandle<State>> = OnceLock::new();
 static STARTED: OnceLock<Instant> = OnceLock::new();
@@ -53,58 +51,7 @@ thread_local! {
     static CLOSED: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
-pub fn took(s: &mut State, shown: Shown, alerts: Vec<Alert>, tx: &mut Tx) {
-    // Rune shows a change no input caused at once: animated, the open panel's changes move.
-    if s.panel_open {
-        tx.animated();
-    }
-    let taken = take(s, shown);
-    drew(s);
-    notifier::renewed(&taken.readable);
-    for (account, limit) in taken.asks {
-        engine::ask(|e| e.used_most(account, limit));
-    }
-    notifier::tell(s, alerts);
-}
-
-struct Taken {
-    asks: Vec<(String, String)>,
-    readable: Vec<String>,
-}
-
-fn take(s: &mut State, shown: Shown) -> Taken {
-    let first = s.status.is_none();
-    let refused: Vec<String> = s
-        .all()
-        .iter()
-        .filter(|a| a.refused())
-        .map(|a| a.id.clone())
-        .collect();
-    s.take(shown);
-    if let Some(opening) = s.opening.take() {
-        open_with(opening);
-    }
-    if let Some(clicked) = s.clicked.take()
-        && s.panel_open
-        && s.page == Page::Main
-    {
-        s.open_in_place(&clicked);
-    }
-    let readable = s
-        .all()
-        .iter()
-        .filter(|a| !a.refused() && (first || refused.contains(&a.id)))
-        .map(|a| a.id.clone())
-        .collect();
-    let asks = if s.panel_open {
-        asks(s, |a| s.open.as_deref() == Some(a.id.as_str()))
-    } else {
-        Vec::new()
-    };
-    Taken { asks, readable }
-}
-
-fn drew(s: &State) {
+pub fn drew(s: &State) {
     menu_bar::draw(s);
     let counting = s.panel_open || s.urgent();
     COUNTING.store(counting, Ordering::Release);
@@ -124,53 +71,6 @@ fn apply(s: &mut State, opening: Opening) {
         s.page = Page::Settings;
         s.tab = tab;
     }
-}
-
-pub fn hide(s: &mut State, id: &str, hidden: bool) {
-    if s.stopped() {
-        return;
-    }
-    s.mark_hidden(id, hidden);
-    drew(s);
-    engine::ask(|e| e.hide(id.to_owned(), hidden));
-}
-
-pub fn connect(s: &mut State, id: &str, connecting: bool) {
-    if !engine::running() || s.stopped() || s.from_disk_image || s.changing_agents.contains_key(id)
-    {
-        return;
-    }
-    let to = if connecting {
-        Connection::Connected
-    } else {
-        Connection::Available
-    };
-    s.changing_agents.insert(id.to_owned(), to);
-    s.agent_errors.remove(id);
-    engine::ask(|e| e.connect(id.to_owned(), connecting));
-}
-
-pub fn ask_used(s: &State, id: &str) {
-    if let Some(limit) = s
-        .all()
-        .iter()
-        .find(|a| a.id == id)
-        .and_then(|a| a.deciding.clone())
-    {
-        engine::ask(|e| e.used_most(id.to_owned(), limit));
-    }
-}
-
-fn asks(s: &State, again: impl Fn(&Account) -> bool) -> Vec<(String, String)> {
-    s.all()
-        .iter()
-        .filter(|a| !a.hidden)
-        .filter_map(|a| {
-            let limit = a.deciding.as_ref()?;
-            let have = s.used.get(&a.id).is_some_and(|(of, _)| of == limit);
-            (again(a) || !have).then(|| (a.id.clone(), limit.clone()))
-        })
-        .collect()
 }
 
 /// Runs `f` once macOS has placed the status item, or 2 s after launch: until then its window
@@ -193,7 +93,7 @@ fn when_placed(f: impl FnOnce(&mut State) + Send + 'static) {
     });
 }
 
-fn open_with(opening: Opening) {
+pub fn open_with(opening: Opening) {
     when_placed(move |s| {
         show_panel(s);
         apply(s, opening);
@@ -246,7 +146,7 @@ fn show_panel(s: &mut State) {
     s.now = minute(turnscope::now());
     if engine::running() {
         // Pre-fetch so expanding a row doesn't jump a second time up to 250 ms later.
-        for (account, limit) in asks(s, |_| true) {
+        for (account, limit) in engine::asks(s, |_| true) {
             engine::ask(|e| e.used_most(account, limit));
         }
         notifier::check();
@@ -254,7 +154,7 @@ fn show_panel(s: &mut State) {
         engine::ask(|e| e.ask_limits());
         s.checks_automatically = updater::automatic();
     }
-    if let Some(place) = menu_bar::panel_place(PANEL_WIDTH as f64, GUTTER as f64) {
+    if let Some(place) = menu_bar::panel_place() {
         handle.place(DisplayTarget::Primary, place);
     }
     menu_bar::highlight(true);
@@ -527,68 +427,4 @@ fn main() {
     rune::run_windows_with_args(RunOptions { accessory: true }, [], move |_| {
         vec![WindowSpec::from_app("panel", app).configured_options(options)]
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::state::tests::example;
-
-    const CLAUDE: &str = "anthropic:acct-1:org-1";
-    const CODEX: &str = "openai:acct-2";
-    const OPENROUTER: &str = "openrouter:api";
-    const OPENCODE_GO: &str = "opencode-go:key-0123456789abcdef";
-
-    fn asked(taken: &Taken) -> Vec<&str> {
-        taken.asks.iter().map(|(id, _)| id.as_str()).collect()
-    }
-
-    #[test]
-    fn a_notification_clicked_before_the_first_status_opens_its_account_with_what_used_it() {
-        // As `open_panel` leaves it when the click launched the app.
-        let mut s = State {
-            panel_open: true,
-            clicked: Some(CODEX.into()),
-            ..State::default()
-        };
-        let taken = take(&mut s, example());
-        assert_eq!(s.open.as_deref(), Some(CODEX));
-        // Every account shown that has a deciding limit, the one clicked among them.
-        assert_eq!(asked(&taken), [CLAUDE, CODEX, OPENROUTER]);
-    }
-
-    #[test]
-    fn while_the_panel_is_open_a_status_asks_what_used_each_account_that_has_none() {
-        let mut s = State::default();
-        take(&mut s, example());
-        s.panel_open = true;
-        s.open = Some(CLAUDE.into());
-        for (id, limit) in asks(&s, |_| true) {
-            s.used.insert(id, (limit, Vec::new()));
-        }
-        // Only the open account's again, as its sessions move with the status.
-        assert_eq!(asked(&take(&mut s, example())), [CLAUDE]);
-        // Another limit decides Codex now.
-        let mut changed = example();
-        changed.status.accounts[1].deciding = Some("primary".into());
-        assert_eq!(asked(&take(&mut s, changed)), [CLAUDE, CODEX]);
-        // Closed, the panel asks for none.
-        s.panel_open = false;
-        assert!(take(&mut s, example()).asks.is_empty());
-    }
-
-    #[test]
-    fn a_sign_in_notification_goes_on_the_first_status_and_once_its_account_is_read_again() {
-        let mut s = State::default();
-        // Each account that can be read, for a notification left from before the app started.
-        let first = take(&mut s, example()).readable;
-        assert_eq!(first, [CLAUDE, CODEX, OPENROUTER, "anthropic:api"]);
-        // Then none, while no account is read again.
-        assert!(take(&mut s, example()).readable.is_empty());
-        let mut read = example();
-        read.status.accounts[3].state = turnscope::status::State::Live {
-            read_at: read.status.at,
-        };
-        assert_eq!(take(&mut s, read).readable, [OPENCODE_GO]);
-    }
 }

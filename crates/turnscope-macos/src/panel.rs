@@ -5,13 +5,16 @@ use rune::{
     text,
 };
 
+use turnscope::engine::{Stopped, UsedMost};
+use turnscope::status::{Account, Agent, Connection, Limit};
+
+use crate::engine;
 use crate::settings;
-use crate::standing::*;
+use crate::standing::{AccountStanding, LimitStanding, Standing};
 use crate::state::{Page, State};
 use crate::style::*;
 use crate::symbols::Weight;
 use crate::words::{self, Words};
-use turnscope::engine::UsedMost;
 
 pub const FRAME: &str = "frame";
 
@@ -122,31 +125,20 @@ fn first_page(s: &State, ink: &Ink) -> El {
 pub fn waiting(s: &State, ink: &Ink) -> El {
     let said = match &s.problem {
         Some(problem) => {
-            let mut said = col()
-                .key("failed")
-                .gap(8.0)
-                .items_center()
-                .child(
-                    text("Turnscope can't read its data")
-                        .font(STRONG)
-                        .color(ink.primary),
-                )
-                .child(
-                    text(&problem.why)
-                        .font(LINE)
-                        .color(ink.secondary)
-                        .wrap()
-                        .align(rune::Align::Center)
-                        .selectable(true),
-                );
-            if problem.trying_again {
-                said = said.child(
+            let said = explained(
+                "failed",
+                "Turnscope can't read its data",
+                &problem.to_string(),
+                ink,
+            );
+            match problem {
+                Stopped::Failing(_) => said.child(
                     text("It tries again on its own.")
                         .font(SMALL)
                         .color(ink.tertiary),
-                );
+                ),
+                Stopped::Newer { .. } => said,
             }
-            said
         }
         None => col()
             .key("reading")
@@ -159,13 +151,35 @@ pub fn waiting(s: &State, ink: &Ink) -> El {
                     .color(ink.secondary),
             ),
     };
+    centered("waiting", said)
+}
+
+/// What a page says in place of what it can't list yet, centered.
+pub fn centered(key: &str, said: El) -> El {
     col()
-        .key("waiting")
+        .key(key)
         .w_full()
         .min_h(140.0)
         .padding(24.0)
         .center()
         .child(said)
+}
+
+/// A headline and the sentences behind it, as `centered` shows them.
+pub fn explained(key: &str, headline: &str, detail: &str, ink: &Ink) -> El {
+    col()
+        .key(key)
+        .gap(8.0)
+        .items_center()
+        .child(text(headline).font(STRONG).color(ink.primary))
+        .child(
+            text(detail)
+                .font(LINE)
+                .color(ink.secondary)
+                .wrap()
+                .align(rune::Align::Center)
+                .selectable(true),
+        )
 }
 
 fn verdict(s: &State, w: &Words, ink: &Ink) -> El {
@@ -238,42 +252,11 @@ fn account_row(s: &State, w: &Words, a: &Account, headlined: bool, ink: &Ink) ->
     let note = w.opened(a, headlined);
     let openable = !a.limits.is_empty() || note.is_some();
     let open = openable && s.open.as_deref() == Some(a.id.as_str());
-    let labelled = a.twinned(s.all());
+    let labelled = words::twinned(a, s.all());
     let called = words::called(a, labelled);
     // Open, its limit lines say what the line under its name and its figure would.
     let lines = open && !a.limits.is_empty();
-
-    let mut name = col()
-        .key("name")
-        .gap(1.0)
-        .shrink()
-        .min_w(0.0)
-        .child(account_title(a, labelled, ink.primary, ink.secondary));
-    // What VoiceOver says for the row.
-    let mut said = called.clone();
-    let mut figure = None;
-    if !lines {
-        let status = w.status(a);
-        let (shown, spoken) = row_figure(a, ink);
-        said = format!("{called}, {status}, {spoken}");
-        name = name.child(appears(
-            text(status)
-                .key("status")
-                .font(SMALL)
-                .color(ink.ink(a.standing(), ink.secondary))
-                .truncate(),
-        ));
-        figure = Some(appears(shown));
-    }
-    let mut header = item_row("header")
-        .child(account_logo(&a.provider, row_size::LOGO, ink.primary, ink))
-        .child(name)
-        .child(spacer().min_w(8.0))
-        .child(hide_button(s, a, &called, ink));
-    if let Some(figure) = figure {
-        header = header.child(figure);
-    }
-    header = header.label(said);
+    let mut header = row_header(s, w, a, labelled, &called, lines, ink);
     if openable {
         // A press shades only the header: on an open row, or one a click just closed, it showed
         // as a band darker than the rest, so there it's too faint to see. With no press overlay
@@ -301,7 +284,7 @@ fn account_row(s: &State, w: &Words, a: &Account, headlined: bool, ink: &Ink) ->
     }
 
     let menu_id = a.id.clone();
-    let mut body = body
+    let body = body
         // Moving between the accounts in use and those used this week, it slides to its new
         // place. A flight takes the spring set on its own element, not the one it inherits.
         .matched(format!("account:{}", a.id))
@@ -328,16 +311,61 @@ fn account_row(s: &State, w: &Words, a: &Account, headlined: bool, ink: &Ink) ->
                 .item(PopupItem::new("hide", format!("Hide {called}")).enabled(!s.stopped()));
             tx.popup_menu(menu, at, move |s: &mut State, picked, _| {
                 if picked == Some("hide") {
-                    crate::hide(s, &id, true);
+                    engine::hide(s, &id, true);
                 }
             });
         });
-    // A click on what opened closes it too, unshaded, as one on the open header does.
-    if open {
-        let id = a.id.clone();
-        body = body.on_press_tx(move |s: &mut State, tx: &mut Tx| toggle_open(s, &id, tx));
+    if !open {
+        return body;
     }
-    body
+    // A click on what opened closes it too, unshaded, as one on the open header does.
+    let id = a.id.clone();
+    body.on_press_tx(move |s: &mut State, tx: &mut Tx| toggle_open(s, &id, tx))
+}
+
+/// A row's logo, name and Hide button, and unless its limit `lines` show, the line under its
+/// name and its figure.
+fn row_header(
+    s: &State,
+    w: &Words,
+    a: &Account,
+    labelled: bool,
+    called: &str,
+    lines: bool,
+    ink: &Ink,
+) -> El {
+    let mut name = col()
+        .key("name")
+        .gap(1.0)
+        .shrink()
+        .min_w(0.0)
+        .child(account_title(a, labelled, ink.primary, ink.secondary));
+    // What VoiceOver says for the row.
+    let mut said = called.to_owned();
+    let mut figure = None;
+    if !lines {
+        let status = w.status(a);
+        let (shown, spoken) = row_figure(a, ink);
+        said = format!("{called}, {status}, {spoken}");
+        name = name.child(appears(
+            text(status)
+                .key("status")
+                .font(SMALL)
+                .color(ink.ink(a.standing(), ink.secondary))
+                .truncate(),
+        ));
+        figure = Some(appears(shown));
+    }
+    let header = item_row("header")
+        .child(account_logo(&a.provider, ink.primary, ink))
+        .child(name)
+        .child(spacer().min_w(8.0))
+        .child(hide_button(s, a, called, ink));
+    match figure {
+        Some(figure) => header.child(figure),
+        None => header,
+    }
+    .label(said)
 }
 
 /// What an open row shows under its header: its limits' lines, `note`, and what used it most.
@@ -373,23 +401,20 @@ fn opened(
 /// The Hide button, which shows on hover. Sized to a name's line and always given its room, so
 /// nothing moves when it shows.
 fn hide_button(s: &State, a: &Account, called: &str, ink: &Ink) -> El {
-    let can_hide = !s.stopped();
-    let hide = icon_button(
+    let id = a.id.clone();
+    icon_button(
         &format!("hide:{}", a.id),
         "eye.slash",
         22.0,
         16.0,
-        can_hide,
+        !s.stopped(),
         ink,
     )
     .group_opacity(0.0, 1.0)
     .label(format!("Hide {called}"))
-    .help(format!("Hide {called} from the menu bar and the panel"));
-    if !can_hide {
-        return hide;
-    }
-    let id = a.id.clone();
-    hide.on_press(move |s: &mut State| crate::hide(s, &id, true))
+    .help(format!("Hide {called} from the menu bar and the panel"))
+    // Attached while disabled too, when `hide` refuses: without it, a press opens the row.
+    .on_press(move |s: &mut State| engine::hide(s, &id, true))
 }
 
 /// The figure on a row's right, and what VoiceOver says for it.
@@ -429,7 +454,7 @@ fn toggle_open(s: &mut State, id: &str, tx: &mut Tx) {
         return;
     }
     s.open = Some(id.to_owned());
-    crate::ask_used(s, id);
+    engine::ask_used(s, id);
     // The bars grow once the lines have faded in: growing at once, they were two thirds grown
     // before the lines showed.
     let due = tx.clock() + f64::from(APPEAR_AFTER);
@@ -689,14 +714,11 @@ fn fold(key: &str, label: &str, open: bool, toggle: fn(&mut State), ink: &Ink) -
 
 fn hidden_row(s: &State, a: &Account, ink: &Ink) -> El {
     let id = a.id.clone();
-    let enabled = !s.stopped();
-    let mut show = pill(&format!("show:{}", a.id), "Show", true, enabled, ink)
-        .label(format!("Show {}", words::called(a, true)));
-    if enabled {
-        show = show.on_press(move |s: &mut State| crate::hide(s, &id, false));
-    }
+    let show = pill(&format!("show:{}", a.id), "Show", true, !s.stopped(), ink)
+        .label(format!("Show {}", words::called(a, true)))
+        .on_press(move |s: &mut State| engine::hide(s, &id, false));
     item_row(format!("hidden:{}", a.id))
-        .child(account_logo(&a.provider, row_size::LOGO, ink.tertiary, ink))
+        .child(account_logo(&a.provider, ink.tertiary, ink))
         .child(account_name(a, ink.secondary, ink.tertiary, ink))
         .child(spacer().min_w(8.0))
         .child(show)
@@ -730,7 +752,7 @@ fn connect_offer(s: &State, ink: &Ink) -> Option<El> {
         .cloned()
         .or_else(|| words::connection(agent));
     let mut line = item_row(format!("connect:{}", agent.id))
-        .child(agent_logo(&agent.id, row_size::LOGO, ink.primary, ink))
+        .child(agent_logo(&agent.id, ink.primary, ink))
         .child(agent_name(agent, note, ink))
         .child(spacer().min_w(8.0));
     line = if s.changing_agents.contains_key(&agent.id) {
@@ -746,16 +768,13 @@ fn connect_offer(s: &State, ink: &Ink) -> Option<El> {
                 agent.name
             )
         };
-        // Rune's `disabled` doesn't suppress `on_press`, so attach only when enabled.
-        let enabled = !s.stopped();
-        let mut connect = pill("connect", verb, true, enabled, ink)
-            .label(format!("{verb} {}", agent.name))
-            .help(help);
-        if enabled {
-            let connect_id = id.clone();
-            connect = connect.on_press(move |s: &mut State| crate::connect(s, &connect_id, true));
-        }
-        line.child(connect)
+        let connect_id = id.clone();
+        line.child(
+            pill("connect", verb, true, !s.stopped(), ink)
+                .label(format!("{verb} {}", agent.name))
+                .help(help)
+                .on_press(move |s: &mut State| engine::connect(s, &connect_id, true)),
+        )
     };
     let dismiss = round_button("dismiss-connect", "xmark", ink)
         .help("Don't suggest this again")
@@ -766,60 +785,8 @@ fn connect_offer(s: &State, ink: &Ink) -> Option<El> {
 
 fn footer(s: &State, ink: &Ink) -> El {
     let mut footer = row().key("footer").gap(2.0).w_full().center_y();
-    if s.status.is_some()
-        && let Some(problem) = &s.problem
-    {
-        let said = if problem.trying_again {
-            "Not up to date · trying again"
-        } else if problem.why == turnscope::db::UPDATED_SINCE {
-            // This copy was replaced while it ran, as an update by hand does.
-            "Not up to date · start Turnscope again"
-        } else {
-            "Not up to date · update Turnscope"
-        };
-        // Cut short before the buttons: at full length beside "Update available" it hid Quit.
-        footer = footer.child(appears(
-            text(said)
-                .key("stale")
-                .font(SMALL)
-                .color(ink.secondary)
-                .truncate()
-                .shrink()
-                .min_w(0.0)
-                .help(&problem.why)
-                .label(format!(
-                    "Not up to date: {}.{}",
-                    problem.why,
-                    if problem.trying_again {
-                        " Trying again."
-                    } else {
-                        ""
-                    }
-                ))
-                .pl(12.0),
-        ));
-    } else if s.reading() && !s.all().is_empty() {
-        // Before any account is found, the headline says this instead.
-        footer = footer.child(appears(
-            row()
-                .key("reading")
-                .gap(6.0)
-                .center_y()
-                .shrink()
-                .min_w(0.0)
-                .pl(12.0)
-                .child(spinner(ink))
-                .child(
-                    text("Reading your agents' history…")
-                        .font(SMALL)
-                        .color(ink.secondary)
-                        .truncate()
-                        .shrink()
-                        .min_w(0.0),
-                )
-                .help("Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.")
-                .label("Reading your agents' history"),
-        ));
+    if let Some(note) = footer_note(s, ink) {
+        footer = footer.child(appears(note.pl(12.0)));
     }
     footer = footer.child(spacer());
     if s.update_available {
@@ -848,4 +815,49 @@ fn footer(s: &State, ink: &Ink) -> El {
                 .help_keys(["⌘", "Q"])
                 .on_press_tx(|_: &mut State, tx: &mut Tx| tx.quit()),
         )
+}
+
+/// Why what the panel shows isn't up to date, or that history is still being read.
+fn footer_note(s: &State, ink: &Ink) -> Option<El> {
+    if s.status.is_some()
+        && let Some(problem) = &s.problem
+    {
+        let (said, then) = match problem {
+            Stopped::Failing(_) => ("Not up to date · trying again", " Trying again."),
+            Stopped::Newer { replaced: true } => ("Not up to date · start Turnscope again", ""),
+            Stopped::Newer { replaced: false } => ("Not up to date · update Turnscope", ""),
+        };
+        // Cut short before the buttons: at full length beside "Update available" it hid Quit.
+        return Some(
+            text(said)
+                .key("stale")
+                .font(SMALL)
+                .color(ink.secondary)
+                .truncate()
+                .shrink()
+                .min_w(0.0)
+                .help(problem.to_string())
+                .label(format!("Not up to date: {problem}.{then}")),
+        );
+    }
+    // Before any account is found, the headline says this instead.
+    (s.reading() && !s.all().is_empty()).then(|| {
+        row()
+            .key("reading")
+            .gap(6.0)
+            .center_y()
+            .shrink()
+            .min_w(0.0)
+            .child(spinner(ink))
+            .child(
+                text("Reading your agents' history…")
+                    .font(SMALL)
+                    .color(ink.secondary)
+                    .truncate()
+                    .shrink()
+                    .min_w(0.0),
+            )
+            .help("Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.")
+            .label("Reading your agents' history")
+    })
 }

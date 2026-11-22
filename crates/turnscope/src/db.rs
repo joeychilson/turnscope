@@ -491,23 +491,15 @@ fn binary() -> Option<(u64, SystemTime)> {
     Some((file.ino(), file.modified().ok()?))
 }
 
-/// Why this Turnscope writes nothing more: start it again when its binary
-/// was replaced since it started, otherwise update it.
+/// Why this Turnscope writes nothing more.
 pub fn newer() -> Error {
-    let updated = matches!(
-        (STARTED_FROM.get(), binary()),
-        (Some(Some(then)), Some(now)) if *then != now
-    );
-    Error::Newer(
-        match updated {
-            true => UPDATED_SINCE,
-            false => "a newer Turnscope has updated this data; update Turnscope",
-        }
-        .to_owned(),
-    )
+    Error::Newer {
+        replaced: matches!(
+            (STARTED_FROM.get(), binary()),
+            (Some(Some(then)), Some(now)) if *then != now
+        ),
+    }
 }
-
-pub const UPDATED_SINCE: &str = "Turnscope was updated after this one started; start it again";
 
 pub fn tokens(row: &Row, from: usize) -> rusqlite::Result<Tokens> {
     let count = |at: usize| {

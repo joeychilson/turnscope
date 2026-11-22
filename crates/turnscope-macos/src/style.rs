@@ -7,8 +7,8 @@ use std::os::fd::AsRawFd;
 use std::sync::OnceLock;
 
 use rune::{
-    Color, Curve, Easing, El, Family, Icon, Span, Spring, SpringPair, TextStyle, Transition, Tx,
-    el, icon, rich, row, text,
+    Color, Curve, Easing, El, Family, Icon, Span, Spring, SpringPair, TextStyle, Transition, el,
+    icon, rich, row, text,
 };
 
 use crate::standing::Standing;
@@ -105,45 +105,36 @@ pub struct Ink {
     red: Color,
 }
 
-/// Amber and red, as sRGB, in light, dark, light with Increase Contrast and dark with it. The
-/// menu bar item draws them too.
+/// Amber and red, as sRGB, in each appearance, in `appearance`'s order. The menu bar item draws
+/// them too.
 ///
 /// Each is text as small as 11 points, so it reaches 4.5:1 against the darkest background
 /// it's on: an open row on the panel's glass, about #DDDDDD in light mode and #3B3B3B in dark.
 /// With Increase Contrast, which also makes the glass opaque, each reaches 7:1 against an open
 /// row on the window's background, #E6E6E6 and #343434. Each keeps its hue, and as much of its
 /// chroma as sRGB holds. One amber and one red for every appearance were 1.7:1 and 2.9:1 on a
-/// light open row on the glass, and the red 2.9:1 on a dark one (October 2026). With Increase
-/// Contrast, the open row's fill grew from 0.05 to 0.1 (`Ink::new`), and the amber and red
-/// chosen for the old fill fell to 6.1 to 6.5:1, so they were made again (November 2026).
+/// light open row.
 ///
 /// | | Light | Dark | Light, Increase Contrast | Dark, Increase Contrast |
 /// |---|---|---|---|---|
 /// | Amber | #8A5303, 4.7:1 | #ED941A, 4.7:1 | #6B3E00, 7.2:1 | #FFB76B, 7.2:1 |
 /// | Red | #C1070E, 4.7:1 | #FE8375, 4.7:1 | #970007, 7.2:1 | #FFB3A8, 7.2:1 |
-const AMBER: [u32; 4] = [0x8A5303, 0xED941A, 0x6B3E00, 0xFFB76B];
-const RED: [u32; 4] = [0xC1070E, 0xFE8375, 0x970007, 0xFFB3A8];
+pub const AMBER: [u32; 4] = [0x8A5303, 0xED941A, 0x6B3E00, 0xFFB76B];
+pub const RED: [u32; 4] = [0xC1070E, 0xFE8375, 0x970007, 0xFFB3A8];
 
-/// The sRGB channels (0..=1) of amber or red for `standing` in the given
-/// appearance, shared with the AppKit menu bar item.
-pub fn urgency_srgb(standing: Standing, dark: bool, more: bool) -> (f64, f64, f64) {
-    let at = usize::from(dark) + 2 * usize::from(more);
-    let hex = match standing {
-        Standing::UsedUp => RED[at],
-        Standing::RunningOut | Standing::Lasts => AMBER[at],
-    };
-    let channel = |shift: u32| f64::from((hex >> shift) & 0xFF) / 255.0;
-    (channel(16), channel(8), channel(0))
+/// Light, dark, light with Increase Contrast, dark with it.
+fn appearance(dark: bool, more: bool) -> usize {
+    usize::from(dark) + 2 * usize::from(more)
+}
+
+/// A hex sRGB color's red, green and blue, from 0 to 1.
+pub fn channels(hex: u32) -> [f32; 3] {
+    [16, 8, 0].map(|shift| ((hex >> shift) & 0xFF) as f32 / 255.0)
 }
 
 fn srgb(hex: u32) -> Color {
-    let channel = |shift: u32| rune::color::srgb_decode(((hex >> shift) & 0xFF) as f32 / 255.0);
-    Color {
-        r: channel(16),
-        g: channel(8),
-        b: channel(0),
-        a: 1.0,
-    }
+    let [r, g, b] = channels(hex).map(rune::color::srgb_decode);
+    Color { r, g, b, a: 1.0 }
 }
 
 /// The overlay that, drawn over `under`, shows `to`: hover and press overlays are drawn over
@@ -174,7 +165,7 @@ impl Ink {
             (false, true) => (1.0, 0.76, 0.56, 0.35),
             (true, true) => (1.0, 0.7, 0.5, 0.3),
         };
-        let at = usize::from(dark) + 2 * usize::from(more);
+        let at = appearance(dark, more);
         Ink {
             dark,
             bg: if dark { srgb(0x1E1E1E) } else { Color::WHITE },
@@ -232,38 +223,32 @@ mod logos {
     include!(concat!(env!("OUT_DIR"), "/logos.rs"));
 }
 
-pub fn provider_svg(provider: &str) -> Option<&'static str> {
-    logos::PROVIDER_SVGS
+fn provider(name: &str) -> Option<&'static (&'static str, Icon, &'static str)> {
+    logos::PROVIDERS.iter().find(|(key, ..)| *key == name)
+}
+
+pub fn provider_svg(name: &str) -> Option<&'static str> {
+    provider(name).map(|(.., svg)| *svg)
+}
+
+pub fn account_logo(provider_name: &str, color: Color, ink: &Ink) -> El {
+    let found = provider(provider_name).map(|(_, icon, _)| icon);
+    logo(found, "key.fill", color, ink)
+}
+
+pub fn agent_logo(agent: &str, color: Color, ink: &Ink) -> El {
+    let found = logos::AGENTS
         .iter()
-        .find(|(name, _)| *name == provider)
-        .map(|(_, svg)| *svg)
+        .find(|(key, _)| *key == agent)
+        .map(|(_, icon)| icon);
+    logo(found, "terminal.fill", color, ink)
 }
 
-pub fn account_logo(provider: &str, size: f32, color: Color, ink: &Ink) -> El {
-    logo(
-        logos::PROVIDER_ICONS,
-        provider,
-        "key.fill",
-        size,
-        color,
-        ink,
-    )
-}
-
-pub fn agent_logo(agent: &str, size: f32, color: Color, ink: &Ink) -> El {
-    logo(logos::AGENT_ICONS, agent, "terminal.fill", size, color, ink)
-}
-
-fn logo(
-    table: &'static [(&'static str, Icon)],
-    name: &str,
-    fallback: &'static str,
-    size: f32,
-    color: Color,
-    ink: &Ink,
-) -> El {
-    match table.iter().find(|(key, _)| *key == name) {
-        Some((_, i)) => icon(i, size).color(color).a11y_hidden(),
+/// A logo the size of a row's, or `fallback`'s symbol where there's none.
+fn logo(found: Option<&'static Icon>, fallback: &'static str, color: Color, ink: &Ink) -> El {
+    let size = row_size::LOGO;
+    match found {
+        Some(found) => icon(found, size).color(color).a11y_hidden(),
         None => el()
             .size(size, size)
             .center()
@@ -313,12 +298,8 @@ pub fn icon_button(
         .continuous_corners()
         .role("button");
     if !enabled {
-        // Consume clicks so they don't bubble and open the enclosing row.
-        return button
-            .disabled(true)
-            .opacity(0.5)
-            .on_press(|_: &mut State| {})
-            .child(sf(symbol_name, points, Weight::Medium, ink, ink.secondary));
+        let symbol = sf(symbol_name, points, Weight::Medium, ink, ink.secondary);
+        return button.disabled(true).opacity(0.5).child(symbol);
     }
     button
         .hover_group()
@@ -371,7 +352,7 @@ pub fn choice<T: Copy + PartialEq + 'static>(
     label: &str,
     options: &[(T, &str)],
     selected: T,
-    pick: fn(&mut State, T, &mut Tx),
+    pick: fn(&mut State, T),
     ink: &Ink,
 ) -> El {
     let mut pills = row()
@@ -388,7 +369,7 @@ pub fn choice<T: Copy + PartialEq + 'static>(
                 .role("radio")
                 .checked(chosen)
                 .focus_selected(chosen)
-                .on_press_tx(move |s: &mut State, tx: &mut Tx| pick(s, value, tx)),
+                .on_press(move |s: &mut State| pick(s, value)),
         );
     }
     pills
