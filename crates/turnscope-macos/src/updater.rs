@@ -34,13 +34,13 @@ define_class!(
         #[unsafe(method(standardUserDriverWillHandleShowingUpdate:forUpdate:state:))]
         fn will_show(&self, handle_showing: Bool, _update: &AnyObject, _state: &AnyObject) {
             if !handle_showing.as_bool() {
-                waiting(true);
+                crate::set(|s| &mut s.update_available, true);
             }
         }
 
         #[unsafe(method(standardUserDriverWillFinishUpdateSession))]
         fn finished(&self) {
-            waiting(false);
+            crate::set(|s| &mut s.update_available, false);
         }
     }
 );
@@ -52,16 +52,6 @@ struct Sparkle {
 
 thread_local! {
     static SPARKLE: OnceCell<Option<Sparkle>> = const { OnceCell::new() };
-}
-
-fn waiting(on: bool) {
-    if let Some(handle) = crate::HANDLE.get() {
-        handle.update_if(move |s, _| {
-            let changed = s.update_available != on;
-            s.update_available = on;
-            changed && s.panel_open
-        });
-    }
 }
 
 /// Starts Sparkle, if this copy can update itself: it has a public key, and Sparkle is in its

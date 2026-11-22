@@ -28,7 +28,6 @@ pub struct Preferences {
 }
 
 impl Preferences {
-    /// The preferences in the app's defaults.
     pub fn read() -> Preferences {
         let defaults = NSUserDefaults::standardUserDefaults();
         let string = |key: &str| {
@@ -68,7 +67,6 @@ impl Preferences {
         );
     }
 
-    /// Stop offering to connect the agent `id`.
     pub fn dismiss_connect(&mut self, id: &str) {
         if !self.dismissed_connect.insert(id.to_owned()) {
             return;

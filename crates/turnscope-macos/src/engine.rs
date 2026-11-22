@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use rune::{AppHandle, Tx};
-use turnscope::alerts::Settings;
 use turnscope::engine::{Engine, Event};
 use turnscope::status::Connection;
 
@@ -19,9 +18,10 @@ static ENGINE: OnceLock<Engine> = OnceLock::new();
 pub fn binary() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     let folder = exe.parent().unwrap_or(Path::new("/"));
-    match folder.file_name().is_some_and(|name| name == "MacOS") {
-        true => folder.with_file_name("Helpers").join("turnscope"),
-        false => folder.join("turnscope"),
+    if folder.file_name().is_some_and(|name| name == "MacOS") {
+        folder.with_file_name("Helpers").join("turnscope")
+    } else {
+        folder.join("turnscope")
     }
 }
 
@@ -34,13 +34,10 @@ pub fn start(home: PathBuf, data: PathBuf, handle: AppHandle<State>) {
 
 fn took(s: &mut State, event: Event, tx: &mut Tx) -> bool {
     match event {
-        Event::Shown(shown, mut alerts) => {
-            if !s.alerts_waiting.is_empty() {
-                let mut combined = std::mem::take(&mut s.alerts_waiting);
-                combined.append(&mut alerts);
-                alerts = combined;
-            }
-            crate::took(s, *shown, alerts, tx);
+        Event::Shown(shown, alerts) => {
+            let mut waiting = std::mem::take(&mut s.alerts_waiting);
+            waiting.extend(alerts);
+            crate::took(s, *shown, waiting, tx);
             s.panel_open
         }
         Event::Pending(alerts) if s.status.is_none() => {
@@ -82,13 +79,13 @@ fn took(s: &mut State, event: Event, tx: &mut Tx) -> bool {
                 Some(error) => {
                     s.agent_errors.insert(agent, error);
                 }
-                // Shown now, so the old switch doesn't come back until the
-                // next status says the same.
+                // Shown now, or the old switch came back until the next status.
                 None => {
                     if let Some(shown) = s.agents.iter_mut().find(|a| a.id == agent) {
-                        shown.connection = match connecting {
-                            true => Connection::Connected,
-                            false => Connection::Available,
+                        shown.connection = if connecting {
+                            Connection::Connected
+                        } else {
+                            Connection::Available
                         };
                     }
                 }
@@ -102,43 +99,20 @@ pub fn running() -> bool {
     ENGINE.get().is_some()
 }
 
-fn ask(request: impl FnOnce(&Engine)) {
+/// Asks the engine for `request`, if it runs: a fixed status has none.
+pub fn ask(request: impl FnOnce(&Engine)) {
     if let Some(engine) = ENGINE.get() {
         request(engine);
     }
 }
 
-pub fn hide(account: String, hidden: bool) {
-    ask(|engine| engine.hide(account, hidden));
-}
-
-pub fn save_settings(settings: Settings) {
-    ask(|engine| engine.save_settings(settings));
-}
-
-pub fn acknowledge(ids: Vec<i64>) {
-    ask(|engine| engine.acknowledge(ids));
-}
-
-pub fn used_most(account: String, limit: String) {
-    ask(|engine| engine.used_most(account, limit));
-}
-
-pub fn connect(agent: String, connecting: bool) {
-    ask(|engine| engine.connect(agent, connecting));
-}
-
-pub fn ask_limits() {
-    ask(|engine| engine.ask_limits());
-}
+pub static DATA: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn log(line: &str) {
     if let Some(data) = DATA.get() {
         turnscope::engine::log(data, line);
     }
 }
-
-pub static DATA: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(test)]
 mod tests {

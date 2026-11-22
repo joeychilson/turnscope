@@ -2,10 +2,9 @@
 //! make, whose click opens or closes the panel. It's one image, redrawn only when what it shows
 //! changes.
 //!
-//! The image is drawn by AppKit when the menu bar draws it, from a drawing handler, so its
-//! colors resolve in the menu bar's own appearance, which follows the wallpaper as much as the
-//! system's setting. A color picked once, from the item before it was in the menu bar, came out
-//! light-mode amber (#8A5303) on a dark menu bar (November 2026).
+//! AppKit draws the image from a handler as the menu bar draws, so its colors resolve in the
+//! menu bar's appearance, which follows the wallpaper. A color picked once, before the item was
+//! in the menu bar, came out light-mode amber on a dark menu bar (November 2026).
 
 use std::cell::RefCell;
 use std::ptr::NonNull;
@@ -163,7 +162,6 @@ fn image(showing: &Drawn) -> Retained<NSImage> {
         standing: Standing,
         width: f64,
     }
-    // Each account: its logo, its figure in the menu bar's own size, standing, and text width.
     let parts: Vec<Part> = showing
         .slots
         .iter()
@@ -292,6 +290,8 @@ fn tinted(image: &NSImage, rect: NSRect, color: &NSColor) {
     mask.drawInRect(at);
 }
 
+/// Turnscope's mark as its icon draws it (`Turnscope.icon`): a ring around a slice, in the
+/// icon's units, 530 across the ring.
 fn mark(rect: NSRect, color: &NSColor) {
     let unit = rect.size.width / 530.0;
     let center = NSPoint::new(
@@ -310,6 +310,7 @@ fn mark(rect: NSRect, color: &NSColor) {
     ring.appendBezierPath(&circle(207.0));
     ring.setWindingRule(NSWindingRule::EvenOdd);
     ring.fill();
+    // From twelve o'clock clockwise through 235°. AppKit's y goes up, so twelve o'clock is 90°.
     let slice = NSBezierPath::bezierPath();
     slice.moveToPoint(center);
     slice.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise(
@@ -324,6 +325,8 @@ fn mark(rect: NSRect, color: &NSColor) {
 }
 
 thread_local! {
+    /// Amber and red, then dimmed, built once: each is four colors and the block that picks
+    /// one, and the image draws itself each time AppKit asks.
     static URGENT: [Retained<NSColor>; 4] = [
         dynamic(Standing::RunningOut, 1.0),
         dynamic(Standing::UsedUp, 1.0),
@@ -413,11 +416,9 @@ pub fn placed() -> bool {
     MainThreadMarker::new().is_some_and(|mtm| item_window(mtm).is_some())
 }
 
-/// Where the panel's window goes, as Rune places a window on the primary screen: in points
-/// from that screen's top-left, y down. One space of points spans every screen, whatever its
-/// scale. Turned into pixels with the item's screen's scale, the panel landed at half or twice
-/// its place when the window was on a screen of another scale, as a Retina laptop's beside a
-/// 1x display. With no place for the item, the panel is at the top right of the primary screen.
+/// Where the panel's window goes, in points from the primary screen's top-left, y down, as Rune
+/// places a window: in pixels, the panel landed at half or twice its place on a screen of
+/// another scale. With no place for the item, it's at the primary screen's top right.
 pub fn panel_place(width: f64, gutter: f64) -> Option<rune::OverlayPlacement> {
     let mtm = MainThreadMarker::new()?;
     let primary = NSScreen::screens(mtm).firstObject()?;
@@ -455,12 +456,10 @@ pub fn panel_place(width: f64, gutter: f64) -> Option<rune::OverlayPlacement> {
     })
 }
 
-/// The panel's window, `[x, y, width, height]` in points from the primary screen's top-left,
-/// y down. The panel, `width` points wide, hangs centered under `mid`, 6 points below `under`,
-/// the item's bottom edge, kept 6 points inside `visible`, the visible frame of the item's
-/// screen. `gutter` points beside it hold its shadow, and the window runs to the bottom of
-/// `visible`. `mid`, `under` and `visible` are AppKit's, y up from the primary screen's
-/// bottom-left; `primary_height` is that screen's height.
+/// The panel's window, `[x, y, width, height]`, y down from the primary screen's top-left: the
+/// panel hangs centered under `mid`, 6 points below the item's bottom edge `under` and 6 inside
+/// `visible`, with `gutter` beside it for its shadow, and runs to the bottom of `visible`. The
+/// arguments are AppKit's, y up from the primary screen's bottom-left.
 fn panel_rect(
     mid: f64,
     under: f64,

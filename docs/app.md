@@ -175,7 +175,7 @@ the top:
 1. **The headline**: whether you can keep going, from the most urgent
    account in use (`Words::verdict`). It names the account by its title
    alone: it's about the first account listed under it, whose row shows its
-   label. Before any account is found, why none is (`Words::welcome`).
+   label. Before any account is found, why none is (`words::welcome`).
 2. **Accounts in use**, most urgent first.
 3. **Used this week**: accounts not in use but used in the last 7 days, the
    most left first.
@@ -218,7 +218,7 @@ them in one motion. With each status while it's open, it asks again for the
 open account, and for each account shown that has none, such as one that
 appeared since.
 Hovering shows a Hide button, and right-clicking offers Hide too. Hide and
-Show name the account as its row does (`Words::called`), so two with the
+Show name the account as its row does (`words::called`), so two with the
 same title are told apart. Once the engine has stopped for good, as after a
 newer Turnscope wrote the data, Hide and Show are off. An account whose
 login expired goes on showing what was last read, as its agent renews the
@@ -273,7 +273,7 @@ are in cards. Changes take effect at once.
 | Tab | Holds |
 |---|---|
 | General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert, grayed out until the first status arrives, and once the engine has stopped for good. **Updates**: the version, Check now and Check automatically |
-| Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed. Run from its disk image, the switches are off and the heading says to move Turnscope to Applications. With no agent installed, what the panel's headline says then (`Words::welcome`): "No agents found", and the agents Turnscope reads |
+| Agents | Each installed agent, with a switch that connects or disconnects it. Under its name: that it uses another copy of Turnscope, which turning it on fixes, or why connecting failed. Run from its disk image, the switches are off and the heading says to move Turnscope to Applications. With no agent installed, what the panel's headline says then (`words::welcome`): "No agents found", and the agents Turnscope reads |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it, off once the engine has stopped for good. With no account, what the panel's headline says (`State::verdict`), such as "Getting your limits" |
 
 Left and Right move between the tabs, and between the options of Show. A
@@ -304,7 +304,7 @@ app run with `cargo run` posts none.
 - **Words.** `Words::note` writes each one. The title is the account, the
   subtitle is what happened, and the body is when it's back or what to do.
   The title is the account's, with its label only when another account in
-  use has the same title (`Words::called_among`). Times are clock times,
+  use has the same title (`words::called_among`). Times are clock times,
   since a notification stays on screen.
 - **Replacing.** Each is posted under the alert's `replaces`, so a newer one
   for the same limit or account replaces the older: "back" replaces "used
@@ -451,7 +451,7 @@ switches:
    `crates/turnscope/src/alerts.rs`, with its
    default.
 2. Change it in `settings.rs` as the notification switches do: change
-   `status.settings` and call `engine::save_settings`.
+   `status.settings` and send it with `engine::ask`.
 
 ### Add or change a string
 
