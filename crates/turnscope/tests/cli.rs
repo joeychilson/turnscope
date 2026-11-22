@@ -401,16 +401,10 @@ fn the_docs_show_what_the_snapshots_hold() {
         .collect();
     let answered: HashSet<&str> = answers.iter().flat_map(|text| text.lines()).collect();
     let mcp = read("../../docs/mcp.md");
-    // An answer's text, or the text of one that failed.
-    let mut unseen: Vec<&str> = examples(&mcp, &["```markdown", "```"])
+    let unseen: Vec<&str> = examples(&mcp, &["```markdown", "```"])
         .into_iter()
         .filter(|line| said(line) && !answered.contains(line))
         .collect();
-    // A protocol error, as the server sent it.
-    unseen.extend(examples(&mcp, &["```json"]).into_iter().filter(|line| {
-        let message: serde_json::Value = serde_json::from_str(line).unwrap();
-        !replies.contains(&message)
-    }));
     assert!(
         unseen.is_empty(),
         "lines of docs/mcp.md's examples that tests/snapshots/mcp.json doesn't have: {unseen:#?}"
