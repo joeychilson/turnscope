@@ -167,10 +167,10 @@ CREATE TABLE failing (
     r#"
 -- When each account's provider was last asked, and when all its limits were
 -- last read: limits an agent writes in its history move `read_at` alone
--- (`limits::record_in_band`).
+-- (`limits::record_in_band`). Before, both were when it was last read.
 ALTER TABLE account ADD COLUMN checked_at INTEGER;
 ALTER TABLE account ADD COLUMN full_read_at INTEGER;
-UPDATE account SET full_read_at = read_at;
+UPDATE account SET full_read_at = read_at, checked_at = read_at;
 "#,
 ];
 
@@ -853,7 +853,7 @@ mod tests {
                 &migrated,
                 "SELECT id, read_at, full_read_at, checked_at FROM account"
             ),
-            ["anthropic:a|1234|1234|NULL"]
+            ["anthropic:a|1234|1234|1234"]
         );
     }
 }

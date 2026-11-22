@@ -542,12 +542,16 @@ pub fn log(data: &Path, line: &str) {
 }
 
 /// Whether an app keeps the data in `data` current, holding `app.lock`
-/// (`lock`), without making the file.
+/// (`lock`), without making the file. A shared lock, so two processes
+/// asking at once don't each find the other.
 pub fn running(data: &Path) -> bool {
     let Ok(file) = File::open(data.join("app.lock")) else {
         return false;
     };
-    matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+    matches!(
+        file.try_lock_shared(),
+        Err(std::fs::TryLockError::WouldBlock)
+    )
 }
 
 /// `app.lock` in `data`, held while one app keeps the data current, or None
@@ -1181,6 +1185,11 @@ mod tests {
         assert!(lock(data.path()).unwrap().is_none());
         drop(first);
         assert!(!running(data.path()));
+        // Nor is an app found while another process asks.
+        let asking = File::open(data.path().join("app.lock")).unwrap();
+        asking.lock_shared().unwrap();
+        assert!(!running(data.path()));
+        drop(asking);
         assert!(lock(data.path()).unwrap().is_some());
     }
 
