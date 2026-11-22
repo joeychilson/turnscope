@@ -11,22 +11,22 @@
   future quota window shapes beside known ones.
 - **Unreadable agent login folders are logged and marked unavailable**
   instead of leaving an older `expired` state frozen in place.
-- **In-band limits from Codex and Claude Code.** Codex's rollout
-  `rate_limits` and Claude Code's `statusline` stdin `rate_limits` now
-  update subscription limits directly without extra provider API calls,
-  preserving scoped limits from the last full poll. Claude Code also falls
-  back to `~/.claude/.credentials.json` and Codex falls back to `account_id`
-  and `id_token` metadata when JWT claims are absent.
-- **Activity-driven and event-driven limit scheduling.** Idle accounts poll
-  every 25 minutes instead of every 5 minutes (5× less background traffic
-  while staying live), active accounts poll every 5 minutes (skipping API
-  calls while fresh in-band readings arrive), resets trigger an immediate
-  re-read right after rollover, and opening the panel, waking the Mac, or
-  updating a login file refreshes stale or failing accounts right away.
-- **Sandbox-safe `mcp` and `guard`.** While the menu bar app holds
-  `app.lock`, `turnscope mcp` and `turnscope guard` let the unsandboxed app
-  handle provider network requests so agent sandboxes never poison account
-  status.
+- **Codex's limits update as it works.** Codex writes the account's limits
+  with each response, and Turnscope now takes them in as it reads Codex's
+  history, offline too. A limit Codex doesn't write, as one on some
+  models, stays as Turnscope last read it.
+- **Accounts not in use are read every 20 minutes**, not every 5. An
+  account in use, drawn on in the last half hour or with a limit risen,
+  is still read every 5, and any account right after a limit resets.
+- **Opening the panel reads limits more than 5 minutes old**, and tries
+  again an account whose read failed. So does an agent writing a new
+  login. If it finds no network, as right after the Mac wakes, it leaves
+  the account as it was.
+- **`guard` and the MCP server leave limits to the app** while it runs, so a
+  hook or tool call doesn't wait on a provider then.
+- **Claude Code's login is also read from `.credentials.json`** in its
+  folder, where Claude Code keeps it without the Keychain, and the fresher
+  copy is used.
 
 ## 0.3.1
 

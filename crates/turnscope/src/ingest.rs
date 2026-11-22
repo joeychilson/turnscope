@@ -1,7 +1,7 @@
 //! Reading what's new in the agents' history into the database, with each
 //! response's cost and account. How history is kept: docs/architecture.md#data.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -296,41 +296,13 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
                 let tx = crate::db::write(db)?;
                 let derived = Derived::load(&tx)?;
                 let began = Instant::now();
-                let mut in_band: BTreeMap<(String, String, Option<String>), agents::InBand> =
-                    BTreeMap::new();
                 while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
                     match read {
-                        Ok(mut read) => {
-                            let folder = due.folder.to_string_lossy().into_owned();
-                            for snapshot in std::mem::take(&mut read.limits) {
-                                let scope = snapshot
-                                    .readings
-                                    .first()
-                                    .and_then(|reading| reading.scope.clone());
-                                let key = (folder.clone(), snapshot.provider.clone(), scope);
-                                match in_band.entry(key) {
-                                    std::collections::btree_map::Entry::Occupied(mut entry) => {
-                                        if snapshot.at >= entry.get().at {
-                                            entry.insert(snapshot);
-                                        }
-                                    }
-                                    std::collections::btree_map::Entry::Vacant(entry) => {
-                                        entry.insert(snapshot);
-                                    }
-                                }
-                            }
+                        Ok(read) => {
                             write(&tx, due, read, home, &derived)?;
                             wrote = true;
                         }
                         Err(error) => failed(&tx, due, &error)?,
-                    }
-                }
-                if !in_band.is_empty() {
-                    let now = crate::now();
-                    for ((folder, provider, _), snapshot) in in_band {
-                        if let Some(account) = derived.account(&folder, &provider, snapshot.at) {
-                            crate::limits::record_in_band(&tx, &account, &snapshot, now)?;
-                        }
                     }
                 }
                 tx.commit()?;
@@ -458,6 +430,23 @@ fn write(tx: &Transaction, due: &Due, read: Read, home: &Path, derived: &Derived
             response.cost,
             response.id,
         ])?;
+    }
+    if read.limits.is_empty() {
+        return Ok(());
+    }
+    // On the account the folder was signed in to when the agent wrote them,
+    // as its responses are, and only while the folder still holds a login
+    // to it: a sign-in to another is in `sign_in` once the logins are
+    // gathered again, up to `limits::DUE` later, and meanwhile the other's
+    // limits would go to this one, to stand for it once it's signed out.
+    let held = crate::limits::held_in(due.agent, &due.folder, home).unwrap_or_default();
+    let now = crate::now();
+    for limits in &read.limits {
+        if let Some(account) = derived.account(&folder, &limits.provider, limits.at)
+            && held.contains(&(limits.provider.clone(), account.clone()))
+        {
+            crate::limits::record_in_band(tx, &account, limits, now)?;
+        }
     }
     Ok(())
 }
@@ -1189,21 +1178,24 @@ mod tests {
     }
 
     #[test]
-    fn codex_rollout_rate_limits_update_account_offline_and_clear_expired() {
+    fn limits_codex_writes_are_taken_in_offline() {
         let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let mut db = crate::db::open(dir.path()).unwrap();
         let codex = home.path().join(".codex");
         let sessions = codex.join("sessions/2026/10/01");
         std::fs::create_dir_all(&sessions).unwrap();
+        let sign_in = |account: &str| {
+            let kept = serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "token", "account_id": account}
+            });
+            std::fs::write(codex.join("auth.json"), kept.to_string()).unwrap();
+        };
         let now = crate::now();
-        let at_ts = jiff::Timestamp::from_millisecond(now - 30_000)
-            .unwrap()
-            .to_string();
-        let resets_sec = (now + 3 * crate::time::HOUR) / 1000;
         let older = now - crate::time::HOUR;
         db.execute(
-            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, problem)
-             VALUES ('openai:acct-1', 'openai', 'subscription', 'ChatGPT', ?1, ?1, 'expired')",
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at, problem)
+             VALUES ('openai:acct-1', 'openai', 'subscription', 'ChatGPT', ?1, ?1, ?1, 'expired')",
             [older],
         )
         .unwrap();
@@ -1213,33 +1205,60 @@ mod tests {
             params![codex.to_string_lossy(), older],
         )
         .unwrap();
-
-        let lines = [
-            serde_json::json!({"timestamp": at_ts, "type": "session_meta", "payload": {"id": "t1"}}),
-            serde_json::json!({
-                "timestamp": at_ts,
+        let rollout = sessions.join("rollout-2026-10-01-t1.jsonl");
+        let write = |at: i64, used: f64| {
+            let resets = (now + 3 * crate::time::HOUR) / 1000;
+            let at = jiff::Timestamp::from_millisecond(at).unwrap().to_string();
+            let mut lines = String::new();
+            if !rollout.exists() {
+                let meta = serde_json::json!({"timestamp": at, "type": "session_meta", "payload": {"id": "t1"}});
+                lines += &format!("{meta}\n");
+            }
+            let count = serde_json::json!({
+                "timestamp": at,
                 "type": "event_msg",
                 "payload": {
                     "type": "token_count",
                     "rate_limits": {
                         "limit_id": "codex",
                         "plan_type": "plus",
-                        "primary": {"used_percent": 30.0, "window_minutes": 300, "resets_at": resets_sec},
-                        "secondary": {"used_percent": 15.0, "window_minutes": 10080, "resets_at": resets_sec + 86400}
+                        "primary": {"used_percent": used, "window_minutes": 300, "resets_at": resets},
+                        "secondary": {"used_percent": 15.0, "window_minutes": 10080, "resets_at": resets + 86400}
                     }
                 }
-            }),
-        ];
-        let body: String = lines.iter().map(|line| format!("{line}\n")).collect();
-        std::fs::write(sessions.join("rollout-2026-10-01-t1.jsonl"), body).unwrap();
+            });
+            lines += &format!("{count}\n");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&rollout)
+                .unwrap();
+            std::io::Write::write_all(&mut file, lines.as_bytes()).unwrap();
+        };
+        let left = |db: &Connection| {
+            let status = crate::status::status(db, now).unwrap();
+            let account = &status.accounts[0];
+            let left: Vec<u8> = account
+                .limits
+                .iter()
+                .map(|limit| limit.left_percent)
+                .collect();
+            (
+                matches!(account.state, crate::status::State::Live { .. }),
+                left,
+            )
+        };
 
+        sign_in("acct-1");
+        write(now - 60_000, 30.0);
         assert!(ingest(&mut db, home.path(), None).unwrap());
-        let status = crate::status::status(&db, now).unwrap();
-        let account = &status.accounts[0];
-        assert_eq!(account.title, "ChatGPT Plus");
-        assert!(matches!(account.state, crate::status::State::Live { .. }));
-        assert_eq!(account.limits.len(), 2);
-        assert_eq!(account.limits[0].left_percent, 70);
-        assert_eq!(account.limits[1].left_percent, 85);
+        // Codex's login works where the one read before had expired.
+        assert_eq!(left(&db), (true, vec![70, 85]));
+        // Signed in to another account since the logins were gathered, the
+        // folder's limits are the other's.
+        sign_in("acct-2");
+        write(now - 30_000, 90.0);
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        assert_eq!(left(&db), (true, vec![70, 85]));
     }
 }

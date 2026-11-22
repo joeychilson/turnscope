@@ -11,30 +11,28 @@ use crate::agents::{self, Agent, Credential};
 use crate::providers::{self, Kind, Limits, Problem, Provider, Reading};
 use crate::{Result, now};
 
-/// How long an active account's limits stand before any process reads them
-/// again, and how often login discovery runs to spot sign-ins and sign-outs.
+/// How long an account's limits stand while it's in use, before any process
+/// reads them again, and how often the agents' logins are gathered, for
+/// sign-ins and sign-outs. 5 minutes, as every account was read before
+/// `IDLE`; not measured against another.
 pub const DUE: i64 = 5 * crate::time::MINUTE;
 
-/// How long an idle account's limits stand before its provider is asked
-/// again: 25 minutes, 5 minutes before `status::STALE` (30 minutes), so
-/// healthy idle accounts stay live with 5x fewer API requests.
-pub const IDLE_DUE: i64 = 25 * crate::time::MINUTE;
+/// How long an account's limits stand while it isn't in use, and the longest
+/// between two reads of all of an account's limits, whatever an agent writes
+/// of some of them meanwhile (`record_in_band`).
+///
+/// Chosen over [`DUE`] for every account, as before: an account not in use
+/// moves only with use elsewhere, as on the web, and a read that finds a
+/// limit risen puts it in use. 20 minutes and not more, so a read that fails
+/// is tried again `DUE` later, before `status::STALE` (30 minutes) shows the
+/// account as of the read before. Worked out, not measured: 3 reads an hour
+/// of an account not in use, over 12.
+const IDLE: i64 = 20 * crate::time::MINUTE;
 
-/// How recently a response must have drawn on an account for it to count as
-/// active when scheduling limit reads.
-const ACTIVE_WINDOW: i64 = 15 * crate::time::MINUTE;
-
-/// How recently an in-band reading suppresses the active 5-minute API poll
-/// while a full poll has still run within [`IDLE_DUE`].
-const IN_BAND_FRESH: i64 = 2 * crate::time::MINUTE;
-
-/// Short concurrency claim window when a specific account becomes due between
-/// 5-minute discovery ticks (such as after a window reset or resumed work).
-const CLAIM_GAP: i64 = 15 * 1000;
-
-/// Delay past a window's reset time before polling for the fresh counter,
-/// giving the provider's backend a moment to roll the window over.
-const RESET_GRACE: i64 = 5 * 1000;
+/// How long a claim to read accounts that are due holds off other processes:
+/// longer than a read takes, [`WAIT`] after the logins are gathered, so two
+/// processes don't ask a provider for one account at once.
+const CLAIM: i64 = 30 * 1000;
 
 /// The longest an account waits between reads while its provider keeps
 /// failing (`backoff`).
@@ -101,6 +99,19 @@ impl Read {
             problem: Some(problem),
         }
     }
+
+    /// Nothing was read, and no provider answered, as while the Mac is
+    /// offline.
+    fn unanswered(&self) -> bool {
+        self.limits.is_none()
+            && matches!(
+                self.problem,
+                Some(Problem::Unavailable {
+                    answered: false,
+                    ..
+                })
+            )
+    }
 }
 
 /// An account, and the logins it's read with.
@@ -149,37 +160,54 @@ struct Gathered {
     unreadable: BTreeMap<String, String>,
 }
 
-/// Read due accounts' limits (and discover sign-in changes at least every
-/// [`DUE`]); whether a refresh ran.
+/// Read the limits of each account that's due (`Schedule::due`), and the
+/// agents' logins, when no process has claimed doing so in the last
+/// `CLAIM`, or the last [`DUE`] with no account due; whether it did.
 pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
-    refresh_with(db, home, false)
+    refresh_with(db, home, agents::ALL, providers::ALL, false)
 }
 
-/// Check logins now and refresh any account that is stale (`>= DUE`), unread,
-/// past a window reset, or failing (for panel open, Mac wake, or auth file
-/// changes); whether anything changed.
-pub fn refresh_stale(db: &mut Connection, home: &Path) -> Result<bool> {
-    refresh_with(db, home, true)
+/// [`refresh`], for limits asked for, as when the panel opens: whatever
+/// another process claimed, an account read [`DUE`] ago or more is read
+/// again, and so is one whose last read failed, unless its provider asked
+/// to be left. A read here that no provider answered leaves the account as
+/// it was, for the next `refresh` to try: asked for as the Mac woke, before
+/// its network was back, the account showed as unread for five minutes.
+pub fn refresh_asked(db: &mut Connection, home: &Path) -> Result<bool> {
+    refresh_with(db, home, agents::ALL, providers::ALL, true)
 }
 
-fn refresh_with(db: &mut Connection, home: &Path, force: bool) -> Result<bool> {
+fn refresh_with(
+    db: &mut Connection,
+    home: &Path,
+    agents: &[&dyn Agent],
+    providers: &[&'static dyn Provider],
+    asked: bool,
+) -> Result<bool> {
     let now = now();
-    let due = due_accounts(db, now, force)?;
-    if !claim(db, now, force, !due.is_empty())? {
+    let schedules = schedules(db, now)?;
+    let due: HashSet<&str> = schedules
+        .iter()
+        .filter(|(_, schedule)| schedule.due(now, asked))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    let signed_in_due = schedules
+        .iter()
+        .any(|(id, schedule)| schedule.signed_in && due.contains(id.as_str()));
+    let gap = match (asked, signed_in_due) {
+        (true, _) => 0,
+        (false, true) => CLAIM,
+        (false, false) => DUE,
+    };
+    if !claim(db, now, gap)? {
         return Ok(false);
     }
-    let mut gathered = gather(db, home, agents::ALL, providers::ALL)?;
-    let known: HashSet<String> = db
-        .prepare("SELECT id FROM account")?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    let newly_signed = newly_signed_in(db, &gathered.signed_in)?;
-    let waiting = waiting(db, now, force)?;
-    gathered.accounts.retain(|id, _| {
-        newly_signed.contains(id)
-            || (!waiting.contains(id) && (due.contains(id) || !known.contains(id)))
-    });
-    // Every due account at once, so the slowest provider sets how long it takes.
+    let mut gathered = gather(db, home, agents, providers)?;
+    // An account not known before is read at once.
+    gathered
+        .accounts
+        .retain(|id, _| due.contains(id.as_str()) || !schedules.contains_key(id));
+    // Every account at once, so the slowest provider sets how long it takes.
     let answers: Vec<(Read, Held)> = std::thread::scope(|scope| {
         let reading: Vec<_> = gathered
             .accounts
@@ -191,154 +219,119 @@ fn refresh_with(db: &mut Connection, home: &Path, force: bool) -> Result<bool> {
             .filter_map(|thread| thread.join().ok())
             .collect()
     });
-    let changed = record(db, gathered.signed_in, answers, gathered.unreadable, now)?;
-    // On a normal scheduled claim, return true even when no accounts exist yet
-    // so the engine announces the initial limit check before history ingest.
-    Ok(if force { changed } else { true })
+    let answers = answers
+        .into_iter()
+        .filter(|(read, _)| !(asked && read.unanswered()))
+        .collect();
+    record(db, gathered.signed_in, answers, gathered.unreadable, now)?;
+    Ok(true)
 }
 
-/// Signed-in accounts that need a provider poll at `now`.
-fn due_accounts(db: &Connection, now: i64, force: bool) -> Result<HashSet<String>> {
+/// What decides when an account's limits are read (`Schedule::due`).
+struct Schedule {
+    /// An agent folder is signed in to it now.
+    signed_in: bool,
+    /// The last reading: a read's, or one an agent wrote (`record_in_band`).
+    read_at: Option<i64>,
+    /// The last read of all its limits that worked.
+    full_read_at: Option<i64>,
+    /// When its provider was last asked, whatever came of it.
+    checked_at: Option<i64>,
+    /// Its last read failed (`failing`).
+    failing: bool,
+    /// When its provider asked to be asked again (`backoff`).
+    retry_at: Option<i64>,
+    /// In use, as the status says: drawn on in the last half hour, or a
+    /// limit rose at its last reading, taken in the last half hour
+    /// (`status::Account::in_use`).
+    in_use: bool,
+    /// A limit's window reset after the provider was last asked.
+    reset_passed: bool,
+}
+
+impl Schedule {
+    /// Whether the account's limits are read at `now`; `asked` when they're
+    /// asked for (`refresh_asked`).
+    fn due(&self, now: i64, asked: bool) -> bool {
+        // A wait longer than any is a clock set back since.
+        if self
+            .retry_at
+            .is_some_and(|at| now < at && at <= now + BACKED_OFF)
+        {
+            return false;
+        }
+        // Long ago for a time ahead of now by more than `DUE`: the clock was
+        // set back since.
+        let ago = |at: Option<i64>| match at {
+            Some(at) if at <= now + DUE => now - at,
+            _ => i64::MAX,
+        };
+        if self.checked_at.is_none() || self.reset_passed {
+            return true;
+        }
+        if self.failing {
+            return asked || ago(self.checked_at) >= DUE;
+        }
+        let stands = if self.in_use || asked { DUE } else { IDLE };
+        ago(self.read_at) >= stands || ago(self.full_read_at) >= IDLE
+    }
+}
+
+/// Every account's [`Schedule`] at `now`, by id.
+fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
+    // A limit's latest reading is one with none of its limit after it. It
+    // rose over the one before of its window, one that resets with it
+    // (`forecast::same_reset`), as the status has it: worked out here in
+    // SQL, as this is asked at every catch-up, and the status is all of the
+    // panel.
     let mut rows = db.prepare(
-        "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, a.next_check_at, a.problem,
-                f.retry_at,
-                EXISTS (SELECT 1 FROM response r WHERE r.account = a.id AND r.at >= ?1) AS active,
-                EXISTS (
-                    SELECT 1 FROM reading rd
-                    WHERE rd.account = a.id
-                      AND rd.at = (
-                          SELECT max(at) FROM reading r2
-                          WHERE r2.account = a.id
-                            AND r2.limit_key = rd.limit_key
-                            AND r2.at >= coalesce(a.full_read_at, a.read_at, 0)
-                      )
-                      AND rd.resets IS NOT NULL
-                      AND rd.resets + ?3 <= ?2
-                      AND (
-                          coalesce(a.checked_at, a.read_at) IS NULL
-                          OR coalesce(a.checked_at, a.read_at) < rd.resets
-                      )
-                ) AS reset_passed
-         FROM account a
-         LEFT JOIN failing f ON f.account = a.id
-         WHERE EXISTS (
-             SELECT 1 FROM sign_in s
-             WHERE s.account = a.id
-               AND s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)
-         )",
+        "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, f.account IS NOT NULL, f.retry_at,
+             EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id
+                 AND s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)),
+             EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?1)
+             OR EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= ?1
+                 AND NOT EXISTS (SELECT 1 FROM reading n
+                     WHERE n.account = r.account AND n.at > r.at AND n.limit_key = r.limit_key)
+                 AND r.used > (SELECT used FROM reading p
+                     WHERE p.account = r.account AND p.at < r.at AND p.limit_key = r.limit_key
+                         AND (p.resets IS r.resets OR abs(p.resets - r.resets) <= ?3)
+                     ORDER BY p.at DESC LIMIT 1)),
+             EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= a.full_read_at
+                 AND NOT EXISTS (SELECT 1 FROM reading n
+                     WHERE n.account = r.account AND n.at > r.at AND n.limit_key = r.limit_key)
+                 AND r.resets > a.checked_at AND r.resets <= ?2)
+         FROM account a LEFT JOIN failing f ON f.account = a.id",
     )?;
-    let mut due = HashSet::new();
-    let mut rows = rows.query(params![now - ACTIVE_WINDOW, now, RESET_GRACE])?;
-    while let Some(row) = rows.next()? {
-        let id: String = row.get(0)?;
-        let read_at: Option<i64> = row.get(1)?;
-        let full_read_at: Option<i64> = row.get(2)?;
-        let checked_at: Option<i64> = row.get(3)?;
-        let next_check_at: Option<i64> = row.get(4)?;
-        let problem: Option<String> = row.get(5)?;
-        let retry_at: Option<i64> = row.get(6)?;
-        let active: bool = row.get(7)?;
-        let reset_passed: bool = row.get(8)?;
-
-        let backed_off = retry_at.is_some_and(|at| at > now && at <= now + BACKED_OFF);
-        let last_check = checked_at.or(read_at);
-        let is_due = if force {
-            let backoff_blocks =
-                backed_off && last_check.is_some_and(|at| now - at < DUE && at <= now + DUE);
-            !backoff_blocks
-                && (problem.is_some()
-                    || read_at.is_none()
-                    || reset_passed
-                    || read_at.is_some_and(|at| now - at >= DUE || at > now + DUE))
-        } else if backed_off {
-            false
-        } else if reset_passed {
-            true
-        } else {
-            let in_band_fresh = read_at.is_some_and(|at| {
-                now - at < IN_BAND_FRESH
-                    && at <= now + IN_BAND_FRESH
-                    && full_read_at.is_some_and(|full| {
-                        at > full && now - full < IDLE_DUE && full <= now + IDLE_DUE
-                    })
-            });
-            if in_band_fresh {
-                false
-            } else if active && last_check.is_none_or(|at| now - at >= DUE || at > now + DUE) {
-                true
-            } else if let Some(next) = next_check_at {
-                next <= now || next > now + BACKED_OFF.max(IDLE_DUE)
-            } else {
-                last_check.is_none_or(|at| now - at >= IDLE_DUE || at > now + IDLE_DUE)
-            }
-        };
-        if is_due {
-            due.insert(id);
-        }
-    }
-    Ok(due)
+    let schedules = rows
+        .query_map(
+            params![now - crate::status::IN_USE, now, crate::forecast::DRIFT],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    Schedule {
+                        read_at: row.get(1)?,
+                        full_read_at: row.get(2)?,
+                        checked_at: row.get(3)?,
+                        failing: row.get(4)?,
+                        retry_at: row.get(5)?,
+                        signed_in: row.get(6)?,
+                        in_use: row.get(7)?,
+                        reset_passed: row.get(8)?,
+                    },
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(schedules)
 }
 
-/// Accounts whose folder sign-in changed since the last refresh (such as a
-/// re-login or account switch), so they are polled right away.
-fn newly_signed_in(db: &Connection, signed_in: &[SignedIn]) -> Result<HashSet<String>> {
-    let mut latest = db.prepare(
-        "SELECT account, key FROM sign_in WHERE folder = ?1 AND provider = ?2
-         ORDER BY since DESC LIMIT 1",
-    )?;
-    let mut changed = HashSet::new();
-    for signed in signed_in {
-        let Some(account) = &signed.account else {
-            continue;
-        };
-        let held: Option<(Option<String>, Option<String>)> = latest
-            .query_row(params![signed.folder, signed.provider], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .optional()?;
-        if held.as_ref() != Some(&(signed.account.clone(), signed.key.clone())) {
-            changed.insert(account.clone());
-        }
-    }
-    Ok(changed)
-}
-
-/// The accounts whose provider kept failing that wait out their backoff at
-/// `now`. A wait longer than any is a clock set back since. When `force` is
-/// set, accounts last checked at least [`DUE`] ago are retried.
-fn waiting(db: &Connection, now: i64, force: bool) -> Result<HashSet<String>> {
-    if force {
-        let mut stmt = db.prepare(
-            "SELECT f.account FROM failing f
-             LEFT JOIN account a ON a.id = f.account
-             WHERE f.retry_at > ?1 AND f.retry_at <= ?1 + ?2
-               AND coalesce(a.checked_at, a.read_at) IS NOT NULL
-               AND ?1 - coalesce(a.checked_at, a.read_at) < ?3
-               AND coalesce(a.checked_at, a.read_at) <= ?1 + ?3",
-        )?;
-        let rows = stmt.query_map(params![now, BACKED_OFF, DUE], |row| row.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    } else {
-        let mut stmt =
-            db.prepare("SELECT account FROM failing WHERE retry_at > ?1 AND retry_at <= ?1 + ?2")?;
-        let rows = stmt.query_map(params![now, BACKED_OFF], |row| row.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-}
-
-/// Claim reading the limits if they're due, in one statement, so no two
-/// processes read them at once. Not once a newer Turnscope has written.
-fn claim(db: &mut Connection, now: i64, force: bool, has_due: bool) -> Result<bool> {
-    if force {
-        let tx = crate::db::write(db)?;
-        tx.execute("UPDATE state SET limits_at = ?1", [now])?;
-        tx.commit()?;
-        return Ok(true);
-    }
+/// Claim reading the limits, in one statement, unless a process claimed it
+/// less than `gap` ago, so no two processes read them at once. Not once a
+/// newer Turnscope has written.
+fn claim(db: &mut Connection, now: i64, gap: i64) -> Result<bool> {
     // Looked at first: claiming waits for the write lock, which a hook
     // shouldn't when nothing is due.
     let last: Option<i64> = db.query_row("SELECT limits_at FROM state", [], |row| row.get(0))?;
-    let gap = if has_due { CLAIM_GAP } else { DUE };
     if last.is_some_and(|last| now - gap < last && last <= now + DUE) {
         return Ok(false);
     }
@@ -396,10 +389,7 @@ fn gather(
             let mut named = Vec::new();
             for login in logins {
                 let mut held = login.credential.and_then(|credential| {
-                    let provider = *providers
-                        .iter()
-                        .find(|provider| provider.info().id == credential.provider)?;
-                    let account = provider.account(&credential)?;
+                    let (provider, account) = account_of(&credential, providers)?;
                     Some((provider, account, credential))
                 });
                 let key = held
@@ -485,14 +475,13 @@ fn gather(
 /// each folder's sign-ins and whose usage is whose since, then each account
 /// and its readings. A read that failed differently from the one before is
 /// added to `app.log` in the data directory, for `turnscope doctor`.
-/// Returns whether any account, reading, or sign-in changed.
 fn record(
     db: &mut Connection,
     mut signed_in: Vec<SignedIn>,
     answers: Vec<(Read, Held)>,
     unreadable: BTreeMap<String, String>,
     now: i64,
-) -> Result<bool> {
+) -> Result<()> {
     let tx = crate::db::write(db)?;
     let existing: HashSet<String> = tx
         .prepare("SELECT id FROM account")?
@@ -507,7 +496,7 @@ fn record(
             signed.account = Some(first.clone());
         }
     }
-    let sign_in_changed = sign_ins(&tx, &signed_in, now)?;
+    sign_ins(&tx, &signed_in, now)?;
     let mut own_ok = HashSet::new();
     let mut plan_ok = HashSet::new();
     for (read, held) in &answers {
@@ -540,21 +529,17 @@ fn record(
         let account = &held.account;
         // Named in `app.log` by its title alone: a label can be an email,
         // and `doctor` prints the log for a report someone may post.
-        let (log_line, retry_at) = failing(&tx, &id, &read, &title(&held, &read), now)?;
-        logged.extend(log_line);
-        let next_check = next_check_at(&tx, &id, &read, retry_at, now)?;
+        logged.extend(failing(&tx, &id, &read, &title(&held, &read), now)?);
         // A read that failed may not know the plan, so the title stays.
         tx.execute(
-            "INSERT INTO account (id, provider, kind, title, label, read_at, problem, full_read_at, checked_at, next_check_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO account (id, provider, kind, title, label, read_at, full_read_at, checked_at, problem)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)
              ON CONFLICT (id) DO UPDATE SET
                  title = iif(excluded.read_at IS NULL, title, excluded.title),
                  label = coalesce(excluded.label, label),
                  read_at = coalesce(excluded.read_at, read_at),
                  full_read_at = coalesce(excluded.full_read_at, full_read_at),
-                 problem = excluded.problem,
-                 checked_at = excluded.checked_at,
-                 next_check_at = excluded.next_check_at",
+                 checked_at = excluded.checked_at, problem = excluded.problem",
             params![
                 id,
                 held.provider.info().id,
@@ -565,10 +550,8 @@ fn record(
                 title(&held, &read),
                 account.label,
                 read.limits.is_some().then_some(now),
-                read.problem.as_ref().map(problem_name),
-                read.limits.is_some().then_some(now),
                 now,
-                next_check,
+                read.problem.as_ref().map(problem_name),
             ],
         )?;
         for reading in read.limits.iter().flat_map(|limits| &limits.readings) {
@@ -592,7 +575,6 @@ fn record(
     // Accounts whose login folder couldn't be read aren't signed out, but
     // their failure is recorded and logged instead of leaving an older state
     // (such as "expired") frozen in place.
-    let mut unreadable_written = false;
     for (id, why) in unreadable {
         let id = one.get(&id).unwrap_or(&id);
         if written.contains(id) {
@@ -607,14 +589,11 @@ fn record(
             continue;
         };
         let read = Read::failed(Problem::unanswered(why));
-        let (log_line, _) = failing(&tx, id, &read, &named, now)?;
-        logged.extend(log_line);
+        logged.extend(failing(&tx, id, &read, &named, now)?);
         tx.execute(
-            "UPDATE account SET problem = 'unavailable', checked_at = ?2, next_check_at = ?3
-             WHERE id = ?1",
-            params![id, now, now + DUE],
+            "UPDATE account SET problem = 'unavailable', checked_at = ?2 WHERE id = ?1",
+            params![id, now],
         )?;
-        unreadable_written = true;
     }
     tx.commit()?;
     if let Some(data) = db.path().and_then(|file| Path::new(file).parent()) {
@@ -622,156 +601,85 @@ fn record(
             crate::engine::log(data, &line);
         }
     }
-    Ok(sign_in_changed || !written.is_empty() || unreadable_written)
+    Ok(())
 }
 
-/// When `account` should next be polled after `read` at `now`: its backoff
-/// time when backed off, [`DUE`] while active or recovering from an error,
-/// [`IDLE_DUE`] while idle, or [`RESET_GRACE`] past its soonest upcoming
-/// window reset if earlier.
-fn next_check_at(
-    tx: &Transaction,
-    account: &str,
-    read: &Read,
-    retry_at: Option<i64>,
-    now: i64,
-) -> Result<i64> {
-    if let Some(retry_at) = retry_at {
-        return Ok(retry_at);
-    }
-    let Some(limits) = &read.limits else {
-        return Ok(now + DUE);
-    };
-    let mut active: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM response WHERE account = ?1 AND at >= ?2)",
-        params![account, now - ACTIVE_WINDOW],
-        |row| row.get(0),
-    )?;
-    if !active && let Some(previous) = stored_limits(tx, account)? {
-        active = limits.readings.iter().any(|reading| {
-            previous
-                .readings
-                .iter()
-                .find(|before| before.key == reading.key)
-                .is_some_and(|before| reading.used > before.used + 0.05)
-        });
-    }
-    let mut next = now + if active { DUE } else { IDLE_DUE };
-    if let Some(soonest_reset) = limits
-        .readings
+/// The provider of `credential` among `providers`, and the account it's a
+/// login to, if Turnscope reads that provider and the login names one.
+fn account_of(
+    credential: &Credential,
+    providers: &[&'static dyn Provider],
+) -> Option<(&'static dyn Provider, providers::Account)> {
+    let provider = *providers
         .iter()
-        .filter_map(|reading| reading.resets)
-        .filter(|&resets| resets > now)
-        .min()
-    {
-        let after_reset = soonest_reset.saturating_add(RESET_GRACE);
-        if after_reset < next {
-            next = after_reset.max(now + CLAIM_GAP);
-        }
-    }
-    Ok(next)
+        .find(|provider| provider.info().id == credential.provider)?;
+    Some((provider, provider.account(credential)?))
 }
 
-/// Record live limit readings emitted directly by an agent (such as Codex's
-/// `token_count` event or Claude Code's `statusline` stdin JSON).
-///
-/// Advances `account.read_at` without touching `full_read_at`, so scoped
-/// limits from the last full API poll stay visible until the next full poll.
-/// Returns whether any reading was written.
+/// The accounts `agent`'s `folder` holds a login to now, each with the
+/// provider as the agent names it, as a read of the limits finds them.
+pub fn held_in(agent: &dyn Agent, folder: &Path, home: &Path) -> Result<Vec<(String, String)>> {
+    Ok(agent
+        .logins(folder, home)?
+        .into_iter()
+        .filter_map(|login| {
+            let (_, account) = account_of(login.credential.as_ref()?, providers::ALL)?;
+            Some((login.provider, account.id))
+        })
+        .collect())
+}
+
+/// Take in the limits an agent wrote in its history for `account`, as Codex
+/// does with each response: each reading newer than the last of its limit
+/// and unlike it. They move `read_at` alone, so a limit the agent doesn't
+/// write, as one on some models, stands as the last read of all of them
+/// gave it (`full_read_at`), and the account is read in full within
+/// `IDLE` of that read whatever the agent writes. Nor do they change how
+/// the last read went: the status weighs that against the readings by
+/// their times. Whether any was taken in.
 pub fn record_in_band(
     tx: &Transaction,
     account: &str,
     snapshot: &agents::InBand,
     now: i64,
 ) -> Result<bool> {
-    if snapshot.readings.is_empty()
-        || snapshot.at < now - 7 * crate::time::DAY
-        || snapshot.at > now + 5 * crate::time::MINUTE
-    {
-        return Ok(false);
-    }
-    struct Stored {
-        kind: String,
-        title: String,
-        read_at: Option<i64>,
-        full_read_at: Option<i64>,
-        problem: Option<String>,
-    }
-    let Some(stored) = tx
+    let full_read_at: Option<Option<i64>> = tx
         .query_row(
-            "SELECT kind, title, read_at, full_read_at, problem FROM account WHERE id = ?1",
+            "SELECT full_read_at FROM account WHERE id = ?1 AND kind = 'subscription'",
             [account],
-            |row| {
-                Ok(Stored {
-                    kind: row.get(0)?,
-                    title: row.get(1)?,
-                    read_at: row.get(2)?,
-                    full_read_at: row.get(3)?,
-                    problem: row.get(4)?,
-                })
-            },
+            |row| row.get(0),
         )
-        .optional()?
-    else {
+        .optional()?;
+    // Older than a read of all the limits, it says less; stamped ahead of
+    // now, the clock was set back since.
+    let Some(full_read_at) = full_read_at else {
         return Ok(false);
     };
-    let Stored {
-        kind,
-        title: current_title,
-        read_at,
-        full_read_at,
-        problem,
-    } = stored;
-    if kind != "subscription" {
+    if full_read_at.is_some_and(|full| snapshot.at <= full) || snapshot.at > now {
         return Ok(false);
     }
-    if full_read_at.is_some_and(|full| snapshot.at <= full) {
-        return Ok(false);
-    }
-
-    let mut latest: BTreeMap<String, (i64, f64, Option<i64>)> = BTreeMap::new();
-    if let Some(since) = full_read_at.or(read_at) {
-        let mut rows = tx.prepare_cached(
-            "SELECT limit_key, at, used, resets FROM reading
-             WHERE account = ?1 AND at >= ?2 ORDER BY at",
-        )?;
-        let mut rows = rows.query(params![account, since])?;
-        while let Some(row) = rows.next()? {
-            latest.insert(row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?));
-        }
-    }
-
-    let fresh: Vec<&Reading> = snapshot
-        .readings
-        .iter()
-        .filter(|reading| {
-            reading.used.is_finite()
-                && latest
-                    .get(&reading.key)
-                    .is_none_or(|(at, _, _)| snapshot.at > *at)
-        })
-        .collect();
-    if fresh.is_empty() {
-        return Ok(false);
-    }
-
-    if problem.is_none()
-        && fresh.iter().all(|reading| {
-            latest.get(&reading.key).is_some_and(|(at, used, resets)| {
-                snapshot.at - *at < crate::time::MINUTE
-                    && (reading.used.max(0.0) - *used).abs() < 0.05
-                    && reading.resets == *resets
-            })
-        })
-    {
-        return Ok(false);
-    }
-
+    let mut last = tx.prepare_cached(
+        "SELECT at, used, resets FROM reading WHERE account = ?1 AND limit_key = ?2
+         ORDER BY at DESC LIMIT 1",
+    )?;
     let mut insert = tx.prepare_cached(
-        "INSERT OR REPLACE INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
+        "INSERT INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
-    for reading in &fresh {
+    let mut took = false;
+    for reading in &snapshot.readings {
+        let before: Option<(i64, f64, Option<i64>)> = last
+            .query_row(params![account, reading.key], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .optional()?;
+        // The same again adds nothing: Codex writes its limits with every
+        // response, most often unchanged.
+        if before.is_some_and(|(at, used, resets)| {
+            at >= snapshot.at || (used == reading.used && resets == reading.resets)
+        }) {
+            continue;
+        }
         insert.execute(params![
             account,
             reading.key,
@@ -783,74 +691,15 @@ pub fn record_in_band(
             reading.starts,
             reading.resets,
         ])?;
+        took = true;
     }
-    drop(insert);
-
-    let new_title = snapshot
-        .plan
-        .as_deref()
-        .filter(|plan| !plan.is_empty())
-        .and_then(|plan| {
-            let subscription = providers::ALL
-                .iter()
-                .find(|provider| provider.info().id == snapshot.provider)?
-                .info()
-                .subscription?;
-            (current_title == subscription)
-                .then(|| format!("{subscription} {}", providers::words(plan)))
-        });
-
-    let mut next_check = now + DUE;
-    // Never push a full poll past `IDLE_DUE` from the last full poll so
-    // scoped limits stay fresh even under continuous in-band updates.
-    if let Some(full) = full_read_at.or(read_at) {
-        next_check = next_check.min(full.saturating_add(IDLE_DUE));
+    if took {
+        tx.execute(
+            "UPDATE account SET read_at = max(coalesce(read_at, ?2), ?2) WHERE id = ?1",
+            params![account, snapshot.at],
+        )?;
     }
-    if let Some(soonest_reset) = fresh
-        .iter()
-        .filter_map(|reading| reading.resets)
-        .filter(|&resets| resets > now)
-        .min()
-    {
-        let after_reset = soonest_reset.saturating_add(RESET_GRACE);
-        if after_reset < next_check {
-            next_check = after_reset.max(now + CLAIM_GAP);
-        }
-    }
-
-    tx.execute(
-        "UPDATE account
-         SET title = coalesce(?2, title),
-             full_read_at = coalesce(full_read_at, read_at),
-             read_at = max(coalesce(read_at, ?3), ?3),
-             problem = NULL,
-             next_check_at = ?4
-         WHERE id = ?1",
-        params![account, new_title, snapshot.at, next_check],
-    )?;
-    tx.execute("DELETE FROM failing WHERE account = ?1", [account])?;
-    Ok(true)
-}
-
-/// Best-effort write of live `statusline` stdin `rate_limits` into an existing
-/// database. Waits at most 50 ms for the write lock and swallows errors so a
-/// status line stays fast and never fails.
-pub fn record_statusline_limits(
-    data: &Path,
-    account: &str,
-    snapshot: &agents::InBand,
-    now: i64,
-) -> bool {
-    let Some(mut db) = crate::db::open_existing_rw(data, Duration::from_millis(50)) else {
-        return false;
-    };
-    let Ok(tx) = crate::db::write(&mut db) else {
-        return false;
-    };
-    match record_in_band(&tx, account, snapshot, now) {
-        Ok(true) => tx.commit().is_ok(),
-        _ => false,
-    }
+    Ok(took)
 }
 
 /// How `account.problem` names `problem`.
@@ -864,17 +713,18 @@ fn problem_name(problem: &Problem) -> &'static str {
 
 /// Note in `failing` how `account`'s read went, before its row says: how
 /// many reads in a row failed as this one did, what it met, and when it's
-/// read next. Returns `(log_line, retry_at)`.
+/// read next. What's new of it, if anything, as the log says it, `named`
+/// naming the account.
 fn failing(
     tx: &Transaction,
     account: &str,
     read: &Read,
     named: &str,
     now: i64,
-) -> Result<(Option<String>, Option<i64>)> {
+) -> Result<Option<String>> {
     let Some(problem) = &read.problem else {
         tx.execute("DELETE FROM failing WHERE account = ?1", [account])?;
-        return Ok((None, None));
+        return Ok(None);
     };
     let before: Option<(Option<String>, Option<i64>, Option<String>)> = tx
         .query_row(
@@ -911,18 +761,17 @@ fn failing(
         "INSERT OR REPLACE INTO failing (account, reads, why, retry_at) VALUES (?1, ?2, ?3, ?4)",
         params![account, reads, why, retry_at],
     )?;
-    let line = match problem {
+    Ok(match problem {
         _ if again && said.as_deref() == why => None,
         Problem::Unavailable { why, .. } => Some(format!("{named}: limits not read: {why}")),
         Problem::SignIn => Some(format!("{named}: its login was refused")),
         // The status says so, and what to do.
         Problem::Expired => None,
-    };
-    Ok((line, retry_at))
+    })
 }
 
 /// Write each folder's sign-in that changed, and the account of the
-/// responses made in that folder since. Returns whether any sign-in changed.
+/// responses made in that folder since.
 ///
 /// In the write that records the change, over after it: a process that
 /// ended between the two left the responses on the account before for
@@ -930,7 +779,7 @@ fn failing(
 /// `ingest.lock`, so a hook never waits out a read of history: a read
 /// takes in the sign-ins at each of its writes (`ingest::Derived`), so
 /// it writes nothing with one gone stale.
-fn sign_ins(tx: &Transaction, signed_in: &[SignedIn], now: i64) -> Result<bool> {
+fn sign_ins(tx: &Transaction, signed_in: &[SignedIn], now: i64) -> Result<()> {
     // The sign-in in force at each response, or before the folder's first,
     // the first, as `ingest::Derived::of` finds it.
     let mut update = tx.prepare(&format!(
@@ -938,7 +787,6 @@ fn sign_ins(tx: &Transaction, signed_in: &[SignedIn], now: i64) -> Result<bool> 
          WHERE folder = ?1 AND provider = ?2 AND at >= ?3",
         crate::prices::SIGN_IN_AT
     ))?;
-    let mut changed = false;
     for signed in signed_in {
         let held: Option<(Option<String>, Option<String>)> = tx
             .query_row(
@@ -965,10 +813,9 @@ fn sign_ins(tx: &Transaction, signed_in: &[SignedIn], now: i64) -> Result<bool> 
             // too; any later one only from now.
             let from = if held.is_some() { now } else { i64::MIN };
             update.execute(params![signed.folder, signed.provider, from])?;
-            changed = true;
         }
     }
-    Ok(changed)
+    Ok(())
 }
 
 /// What to call `held`: a subscription by its plan, as `read` or else one
@@ -1069,42 +916,26 @@ fn stored<'a>(
     Ok(found)
 }
 
-/// What `account` was last read with, as a provider gave it (preserving
-/// scoped limits from its last full poll alongside any newer in-band readings).
+/// What `account` was last read with, as a provider gave it: at its last
+/// read of all its limits, not counting what an agent wrote of some since.
 fn stored_limits(tx: &Transaction, account: &str) -> Result<Option<Limits>> {
-    let since: Option<i64> = tx
-        .query_row(
-            "SELECT min(coalesce(full_read_at, read_at), read_at) FROM account WHERE id = ?1",
-            [account],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    let Some(since) = since else {
-        return Ok(None);
-    };
-    let mut latest: BTreeMap<String, Reading> = BTreeMap::new();
-    let mut rows = tx.prepare_cached(
-        "SELECT limit_key, name, scope, used, size, starts, resets FROM reading
-         WHERE account = ?1 AND at >= ?2 ORDER BY at, limit_key",
-    )?;
-    let mut rows = rows.query(params![account, since])?;
-    while let Some(row) = rows.next()? {
-        let key: String = row.get(0)?;
-        latest.insert(
-            key.clone(),
-            Reading {
-                key,
+    let readings: Vec<Reading> = tx
+        .prepare(
+            "SELECT limit_key, name, scope, used, size, starts, resets FROM reading
+             WHERE account = ?1 AND at = (SELECT full_read_at FROM account WHERE id = ?1)",
+        )?
+        .query_map([account], |row| {
+            Ok(Reading {
+                key: row.get(0)?,
                 name: row.get(1)?,
                 scope: row.get(2)?,
                 used: row.get(3)?,
                 size: row.get(4)?,
                 starts: row.get(5)?,
                 resets: row.get(6)?,
-            },
-        );
-    }
-    let readings: Vec<Reading> = latest.into_values().collect();
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
     Ok((!readings.is_empty()).then_some(Limits {
         plan: None,
         readings,
@@ -1279,9 +1110,10 @@ mod tests {
     use crate::providers::Reading;
 
     /// A provider that answers each login by its secret: one with `refused`
-    /// in it is refused, one with `down` out of reach, and any other reads a
-    /// limit keyed by it, after 300 ms for one with `slow`. The account's
-    /// credits refuse a key with `nocredits`. It notes what it was asked.
+    /// in it is refused, one with `down` out of reach, one with `offline`
+    /// unanswered, and any other reads a limit keyed by it, after 300 ms for
+    /// one with `slow`. The account's credits refuse a key with `nocredits`.
+    /// It notes what it was asked.
     /// Every key is one account, and accounts whose `monthly` limit resets
     /// at one time are one plan.
     struct Fake {
@@ -1368,6 +1200,9 @@ mod tests {
             match secret {
                 refused if refused.contains("refused") => Err(Problem::SignIn),
                 down if down.contains("down") => Err(Problem::unavailable("down")),
+                offline if offline.contains("offline") => {
+                    Err(Problem::unanswered("no route to host"))
+                }
                 busy if busy.contains("busy") => Err(Problem::Unavailable {
                     why: "busy".to_owned(),
                     retry_after: Some(600_000),
@@ -1628,13 +1463,190 @@ mod tests {
         failed(&mut db, Problem::SignIn, at);
         failed(&mut db, Problem::SignIn, at + 5 * minute);
         assert_eq!(retry_at(&db), None);
-        // Waiting, it isn't read: until its wait is out, or unless the wait
-        // is longer than any, as when the clock was set back.
+        // Waiting, it isn't read, even when asked for: until its wait is
+        // out, or unless the wait is longer than any, as when the clock was
+        // set back.
         failed(&mut db, asks(3600), at);
-        let waiting = |now| waiting(&db, now, false).unwrap().contains("fake:account");
-        assert!(waiting(at + 5 * minute));
-        assert!(!waiting(at + 30 * minute));
-        assert!(!waiting(at - 5 * minute));
+        assert!(!due(&db, at + 5 * minute, true));
+        assert!(due(&db, at + 30 * minute, false));
+        assert!(due(&db, at - 10 * minute, false));
+    }
+
+    /// Whether the fake provider's account is read at `now`.
+    fn due(db: &Connection, now: i64, asked: bool) -> bool {
+        schedules(db, now).unwrap()["fake:account"].due(now, asked)
+    }
+
+    /// The fake provider's account read at `at`, its limit `used` and
+    /// resetting at `resets`.
+    fn read_at(db: &mut Connection, at: i64, used: f64, resets: i64) {
+        let mut read = monthly(resets);
+        read.limits.as_mut().unwrap().readings[0].used = used;
+        let (_, held) = fake(Kind::Subscription, &[]);
+        record(db, signed_in(), vec![(read, held)], BTreeMap::new(), at).unwrap();
+    }
+
+    #[test]
+    fn an_account_is_read_as_often_as_its_use_needs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let minute = crate::time::MINUTE;
+        let at = 1_000 * crate::time::DAY;
+        read_at(&mut db, at, 10.0, at + 300 * minute);
+        // Not in use, its limits stand 20 minutes, or 5 when asked for.
+        assert!(!due(&db, at + 10 * minute, false));
+        assert!(due(&db, at + IDLE, false));
+        assert!(!due(&db, at + 2 * minute, true));
+        assert!(due(&db, at + DUE, true));
+        // Drawn on, it's in use: they stand 5.
+        db.execute(
+            "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+                 web_searches, priority, account)
+             VALUES ('fake', 'r1', 's1', 0, 1, '/f', ?1, 'fake', 'm', 1, 0, 0, 0, 1, 0, 1,
+                 0, 0, 'fake:account')",
+            [at + minute],
+        )
+        .unwrap();
+        assert!(!due(&db, at + 4 * minute, false));
+        assert!(due(&db, at + DUE, false));
+
+        // Once a window resets, it's read, in use or not; and once read
+        // after, not again, though the provider still gives the old window.
+        let at = at + 60 * minute;
+        read_at(&mut db, at, 10.0, at + 8 * minute);
+        assert!(!due(&db, at + 7 * minute, false));
+        assert!(due(&db, at + 8 * minute, false));
+        read_at(&mut db, at + 9 * minute, 10.0, at + 8 * minute);
+        assert!(!due(&db, at + 10 * minute, false));
+
+        // A limit that rose at its last read, as use elsewhere makes it, puts
+        // it in use; not one that's of a new window.
+        read_at(&mut db, at + 20 * minute, 10.0, at + 300 * minute);
+        assert!(!due(&db, at + 25 * minute, false));
+        read_at(&mut db, at + 30 * minute, 20.0, at + 300 * minute);
+        assert!(due(&db, at + 35 * minute, false));
+    }
+
+    /// Codex's limits for the fake provider's account, as its history gave
+    /// them at `at`.
+    fn in_band(at: i64, used: f64) -> agents::InBand {
+        agents::InBand {
+            provider: "fake".to_owned(),
+            at,
+            readings: vec![Reading {
+                used,
+                resets: Some(1_001 * crate::time::DAY),
+                ..limit("five")
+            }],
+        }
+    }
+
+    #[test]
+    fn limits_an_agent_writes_move_read_at_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let minute = crate::time::MINUTE;
+        let at = 1_000 * crate::time::DAY;
+        let (_, held) = fake(Kind::Subscription, &[]);
+        let read = Read {
+            limits: Some(Limits {
+                plan: None,
+                readings: vec![limit("five"), limit("seven:Opus")],
+            }),
+            problem: None,
+        };
+        record(
+            &mut db,
+            signed_in(),
+            vec![(read, held)],
+            BTreeMap::new(),
+            at,
+        )
+        .unwrap();
+        failed(&mut db, Problem::unavailable("down"), at + 5 * minute);
+        let take = |db: &mut Connection, snapshot: agents::InBand| {
+            let tx = crate::db::write(db).unwrap();
+            let took = record_in_band(&tx, "fake:account", &snapshot, at + 10 * minute).unwrap();
+            tx.commit().unwrap();
+            took
+        };
+        // Older than the last read of all of them, or stamped ahead of now,
+        // it's left.
+        assert!(!take(&mut db, in_band(at - minute, 30.0)));
+        assert!(!take(&mut db, in_band(at + 11 * minute, 30.0)));
+        assert!(take(&mut db, in_band(at + 6 * minute, 30.0)));
+        // The same again adds nothing.
+        assert!(!take(&mut db, in_band(at + 7 * minute, 30.0)));
+
+        let read: (i64, i64, Option<String>) = db
+            .query_row(
+                "SELECT read_at, full_read_at, problem FROM account",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(read, (at + 6 * minute, at, Some("unavailable".to_owned())));
+        // Newer than the read that failed, the status has it current, the
+        // limit it didn't write as the last read gave it.
+        let status = crate::status::status(&db, at + 7 * minute).unwrap();
+        let account = &status.accounts[0];
+        assert!(matches!(account.state, crate::status::State::Live { .. }));
+        let left: Vec<(&str, u8)> = account
+            .limits
+            .iter()
+            .map(|limit| (limit.key.as_str(), limit.left_percent))
+            .collect();
+        assert_eq!(left, [("five", 70), ("seven:Opus", 90)]);
+        // A read that fails after it is said again.
+        failed(&mut db, Problem::unavailable("down"), at + 8 * minute);
+        let status = crate::status::status(&db, at + 8 * minute).unwrap();
+        assert!(matches!(
+            status.accounts[0].state,
+            crate::status::State::AsOf { .. }
+        ));
+    }
+
+    #[test]
+    fn limits_asked_for_that_no_provider_answers_leave_the_account_as_it_was() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut db = crate::db::open(data.path()).unwrap();
+        let fake: &'static Fake = Box::leak(Box::default());
+        let folder = home.path().join(".fake");
+        std::fs::create_dir(&folder).unwrap();
+        let login = |key: &str| {
+            std::fs::write(folder.join("login"), format!(r#"{{"fake": "{key}"}}"#)).unwrap();
+        };
+        let refresh = |db: &mut Connection, asked: bool| {
+            // As if no process had claimed reading them.
+            db.execute("UPDATE state SET limits_at = NULL", []).unwrap();
+            refresh_with(db, home.path(), &[&FakeAgent], &[fake], asked).unwrap()
+        };
+        let account = |db: &Connection| -> (i64, Option<String>) {
+            db.query_row("SELECT checked_at, problem FROM account", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+        };
+        login("key-nocredits");
+        assert!(refresh(&mut db, false));
+        // Due whether asked for or not.
+        let ago = now() - IDLE - crate::time::MINUTE;
+        db.execute(
+            "UPDATE account SET read_at = ?1, full_read_at = ?1, checked_at = ?1",
+            [ago],
+        )
+        .unwrap();
+
+        // Offline, as before the network is back once the Mac wakes.
+        login("offline-nocredits");
+        assert!(refresh(&mut db, true));
+        assert_eq!(account(&db), (ago, None));
+        // A read it wasn't asked for says so.
+        assert!(refresh(&mut db, false));
+        let (checked, problem) = account(&db);
+        assert!(checked > ago);
+        assert_eq!(problem.as_deref(), Some("unavailable"));
     }
 
     #[test]
@@ -2402,200 +2414,5 @@ mod tests {
         let covered = gathered(&db, home.path());
         assert!(covered.accounts.contains_key("fake:api"));
         assert!(!covered.unreadable.contains_key("fake:api"));
-    }
-
-    #[test]
-    fn scheduling_polls_idle_every_25m_active_every_5m_and_promptly_after_reset() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let minute = crate::time::MINUTE;
-        let t0 = 1_790_856_000_000_i64;
-        // Idle account with a reset 2 hours away: scheduled 25 minutes out.
-        let (_, held_idle) = fake(Kind::Subscription, &[]);
-        record(
-            &mut db,
-            signed_in(),
-            vec![(monthly(t0 + 120 * minute), held_idle)],
-            BTreeMap::new(),
-            t0,
-        )
-        .unwrap();
-        let next: i64 = db
-            .query_row(
-                "SELECT next_check_at FROM account WHERE id = 'fake:account'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(next, t0 + IDLE_DUE);
-        assert!(
-            due_accounts(&db, t0 + 10 * minute, false)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            due_accounts(&db, t0 + IDLE_DUE, false)
-                .unwrap()
-                .contains("fake:account")
-        );
-        // `force` (panel open / wake) refreshes an account that is >= 5m old,
-        // but skips one read 2 minutes ago.
-        assert!(due_accounts(&db, t0 + 2 * minute, true).unwrap().is_empty());
-        assert!(
-            due_accounts(&db, t0 + DUE, true)
-                .unwrap()
-                .contains("fake:account")
-        );
-
-        // Once a response lands on the idle account, it wakes to the 5m cadence.
-        db.execute(
-            "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                 web_searches, priority, account)
-             VALUES ('fake', 'r1', 's1', 0, 1, '/f', ?1, 'fake', 'm', 1, 0, 0, 0, 1, 0, 1,
-                 0, 0, 'fake:account')",
-            [t0 + 6 * minute],
-        )
-        .unwrap();
-        assert!(
-            due_accounts(&db, t0 + 7 * minute, false)
-                .unwrap()
-                .contains("fake:account")
-        );
-
-        // An account with a reset 8 minutes away schedules RESET_GRACE past it,
-        // and becomes due right after the reset even while idle.
-        let (_, held_reset) = fake(Kind::Subscription, &[]);
-        let t1 = t0 + 60 * minute;
-        let resets = t1 + 8 * minute;
-        record(
-            &mut db,
-            signed_in(),
-            vec![(monthly(resets), held_reset)],
-            BTreeMap::new(),
-            t1,
-        )
-        .unwrap();
-        let next_reset: i64 = db
-            .query_row(
-                "SELECT next_check_at FROM account WHERE id = 'fake:account'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(next_reset, resets + RESET_GRACE);
-        assert!(due_accounts(&db, resets, false).unwrap().is_empty());
-        assert!(
-            due_accounts(&db, resets + RESET_GRACE, false)
-                .unwrap()
-                .contains("fake:account")
-        );
-    }
-
-    #[test]
-    fn in_band_readings_clear_problems_dedup_and_suppress_redundant_polls() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = crate::db::open(dir.path()).unwrap();
-        let minute = crate::time::MINUTE;
-        let t0 = 1_790_856_000_000_i64;
-        db.execute(
-            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at, next_check_at, problem)
-             VALUES ('openai:acct-1', 'openai', 'subscription', 'ChatGPT', ?1, ?1, ?1, ?2, 'expired')",
-            params![t0, t0 + DUE],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO sign_in (agent, folder, provider, since, account)
-             VALUES ('codex', '/f', 'openai', ?1, 'openai:acct-1')",
-            [t0],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO failing (account, reads) VALUES ('openai:acct-1', 1)",
-            [],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets)
-             VALUES ('openai:acct-1', 'primary_window:Spark', ?1, '5 hours', 'Spark', 10.0, ?1, ?2)",
-            params![t0, t0 + 5 * crate::time::HOUR],
-        )
-        .unwrap();
-
-        let make = |at: i64, used: f64| agents::InBand {
-            provider: "openai".to_owned(),
-            at,
-            plan: Some("plus".to_owned()),
-            readings: vec![Reading {
-                key: "primary_window".to_owned(),
-                name: "5 hours".to_owned(),
-                scope: None,
-                used,
-                size: None,
-                starts: Some(t0),
-                resets: Some(t0 + 5 * crate::time::HOUR),
-            }],
-        };
-
-        // Older than `full_read_at` is ignored.
-        let tx = crate::db::write(&mut db).unwrap();
-        assert!(
-            !record_in_band(&tx, "openai:acct-1", &make(t0 - minute, 5.0), t0 + minute).unwrap()
-        );
-        tx.commit().unwrap();
-
-        // Newer snapshot writes reading, clears problem + failing, refines
-        // title, and leaves `full_read_at` untouched.
-        let t1 = t0 + 6 * minute;
-        let tx = crate::db::write(&mut db).unwrap();
-        assert!(record_in_band(&tx, "openai:acct-1", &make(t1, 25.0), t1).unwrap());
-        tx.commit().unwrap();
-        let (title, read_at, full_read_at, problem): (String, i64, i64, Option<String>) = db
-            .query_row(
-                "SELECT title, read_at, full_read_at, problem FROM account WHERE id = 'openai:acct-1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(title, "ChatGPT Plus");
-        assert_eq!((read_at, full_read_at, problem), (t1, t0, None));
-        assert_eq!(retry_at(&db), None);
-
-        // Identical snapshot within a minute is deduplicated.
-        let tx = crate::db::write(&mut db).unwrap();
-        assert!(
-            !record_in_band(&tx, "openai:acct-1", &make(t1 + 20_000, 25.0), t1 + 20_000).unwrap()
-        );
-        // Changed value within a minute IS recorded.
-        assert!(
-            record_in_band(&tx, "openai:acct-1", &make(t1 + 30_000, 27.0), t1 + 30_000).unwrap()
-        );
-        tx.commit().unwrap();
-
-        // While active with fresh in-band data and a recent full poll, API
-        // polling is suppressed; once `full_read_at` ages to `IDLE_DUE`, a
-        // full poll becomes due so scoped limits stay fresh.
-        db.execute(
-            "INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                 input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                 web_searches, priority, account)
-             VALUES ('codex', 'r1', 's1', 0, 1, '/f', ?1, 'openai', 'gpt-5', 1, 0, 0, 0, 1, 0, 1,
-                 0, 0, 'openai:acct-1')",
-            [t1 + 30_000],
-        )
-        .unwrap();
-        assert!(due_accounts(&db, t1 + minute, false).unwrap().is_empty());
-        // Advance to `t0 + IDLE_DUE` with a fresh in-band reading just 30s old.
-        let t2 = t0 + IDLE_DUE;
-        let tx = crate::db::write(&mut db).unwrap();
-        assert!(
-            record_in_band(&tx, "openai:acct-1", &make(t2 - 30_000, 35.0), t2 - 30_000).unwrap()
-        );
-        tx.commit().unwrap();
-        assert!(
-            due_accounts(&db, t2, false)
-                .unwrap()
-                .contains("openai:acct-1")
-        );
     }
 }

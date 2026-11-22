@@ -495,8 +495,30 @@ pub fn words(key: &str) -> String {
         .join(" ")
 }
 
+/// A limit `used` percent of a window `length` ms long that resets at
+/// `resets`, named for its length: keyed `key`, or `key:scope` for one on
+/// some models. Of one answer or an agent's history (`agents::InBand`), the
+/// key is the same.
+pub fn window(
+    key: &str,
+    scope: Option<&str>,
+    used: f64,
+    length: i64,
+    resets: Option<i64>,
+) -> Reading {
+    Reading {
+        key: scope.map_or(key.to_owned(), |scope| format!("{key}:{scope}")),
+        name: window_name(length),
+        scope: scope.map(str::to_owned),
+        used,
+        size: None,
+        starts: resets.map(|resets| resets - length),
+        resets,
+    }
+}
+
 /// What a window `length` ms long is called: `5 hours`, `Weekly`.
-pub(crate) fn window_name(length: i64) -> String {
+fn window_name(length: i64) -> String {
     let hours = (length + HOUR / 2) / HOUR;
     // Whole days, as a window across a clock change is an hour off.
     let days = (length + DAY / 2) / DAY;

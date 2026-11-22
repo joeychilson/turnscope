@@ -137,8 +137,8 @@ pub fn connect(agent: String, connecting: bool) {
     ask(|engine| engine.connect(agent, connecting));
 }
 
-pub fn poke() {
-    ask(|engine| engine.poke());
+pub fn ask_limits() {
+    ask(|engine| engine.ask_limits());
 }
 
 /// Add `line` to the log beside the data, once the engine runs.

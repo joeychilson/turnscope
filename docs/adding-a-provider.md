@@ -167,11 +167,12 @@ The helpers in `src/providers/mod.rs` each have a doc comment:
 body, refused, by)`, `asked_bearer(url, token, headers, body, refused,
 by)`, `post_form(url, fields, by)` and
 `request(url, headers, body, seconds)`; and
-`absent(window)`, `reset(value)`, `window_name(length)` and `words(key)`
-for reading an answer.
+`absent(window)`, `reset(value)`, `window(key, scope, used, length,
+resets)`, `window_name(length)` and `words(key)` for reading an answer.
 
-How Turnscope calls it, every five minutes, or less often while it
-answers but is unavailable (`limits::backoff`):
+How Turnscope calls it, as each account's limits come due
+(`limits::Schedule`), or less often while it answers but is unavailable
+(`limits::backoff`):
 
 - Every login the agents hold goes to `account`. Logins to one account are
   read together, in 15 s all told.

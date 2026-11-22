@@ -97,16 +97,12 @@ pub trait Agent: Sync {
     /// server, if any. Each of its folders keeps its own.
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
 
-    /// Whether `path` is a login file for this agent: changes to it wake the
-    /// engine to refresh stale or failing accounts right away.
+    /// Whether `path` is a file the agent keeps a login in, so a write to
+    /// it asks for limits (`limits::refresh_asked`), as once it signs in
+    /// again. Not one it keeps other things in too, as Claude Code's
+    /// `.claude.json`.
     fn login_file(&self, _path: &Path) -> bool {
         false
-    }
-
-    /// In-band limit readings from JSON a harness pipes to `turnscope statusline`
-    /// on standard input, such as Claude Code's `rate_limits` field.
-    fn statusline_limits(&self, _input: &Value, _now: i64) -> Option<InBand> {
-        None
     }
 }
 
@@ -150,22 +146,21 @@ pub struct Read {
     pub sessions: BTreeMap<String, Session>,
     /// By id, each response's reports merged.
     pub responses: HashMap<String, Response>,
-    /// Live limit snapshots emitted in-band by the agent (such as Codex's
-    /// `token_count` events), newest kept per `(provider, scope)`.
+    /// Limits the agent wrote, the latest of each provider and scope
+    /// (`Read::in_band`).
     pub limits: Vec<InBand>,
     /// Lines or rows it couldn't read.
     pub skipped: u64,
 }
 
-/// Live limit readings emitted directly by an agent, avoiding a separate
-/// provider API poll.
+/// Limits an agent wrote in its history, as Codex does with each response
+/// (`limits::record_in_band`), keyed as its provider's are.
 pub struct InBand {
-    /// The provider as the agent's responses name it (matching `sign_in.provider`).
+    /// The provider as the agent's responses name it.
     pub provider: String,
-    /// When the agent recorded this snapshot, in Unix milliseconds.
+    /// When the agent wrote them.
     pub at: i64,
-    /// Optional plan name reported alongside the limits (such as `"plus"`).
-    pub plan: Option<String>,
+    /// Of one scope: the plan's own limits, or one on some models.
     pub readings: Vec<crate::providers::Reading>,
 }
 
@@ -174,27 +169,18 @@ impl Read {
         self.sessions.entry(id.to_owned()).or_default()
     }
 
-    /// Record an in-band limit snapshot, keeping the newest timestamp for each
-    /// `(provider, scope)` bucket group so re-reading a long file keeps only
-    /// its latest snapshot.
+    /// Take in limits the agent wrote, over any it wrote before of the same
+    /// provider and scope: a long file's first read keeps its latest alone.
     pub fn in_band(&mut self, snapshot: InBand) {
-        if snapshot.readings.is_empty() {
-            return;
-        }
-        let scope = snapshot.readings[0].scope.as_deref();
-        if let Some(existing) = self.limits.iter_mut().find(|known| {
-            known.provider == snapshot.provider
-                && known
-                    .readings
-                    .first()
-                    .and_then(|reading| reading.scope.as_deref())
-                    == scope
-        }) {
-            if snapshot.at >= existing.at {
-                *existing = snapshot;
-            }
-        } else {
-            self.limits.push(snapshot);
+        let scope = |limits: &InBand| limits.readings.first().map(|reading| reading.scope.clone());
+        let same = self
+            .limits
+            .iter_mut()
+            .find(|known| known.provider == snapshot.provider && scope(known) == scope(&snapshot));
+        match same {
+            Some(known) if known.at > snapshot.at => {}
+            Some(known) => *known = snapshot,
+            None => self.limits.push(snapshot),
         }
     }
 
