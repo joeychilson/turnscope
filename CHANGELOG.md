@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2
+
+- **Antigravity's limits stay current whether its app is open, closed, or
+  updated.** Instead of scraping Antigravity's running server process and
+  local ports, Turnscope now reads both the Keychain item and
+  `~/.gemini/jetski-standalone-oauth-token`, refreshes expired Google
+  access tokens in memory without touching Keychain or Antigravity's
+  files, caches the Google project across reads, and ignores unknown
+  future quota window shapes beside known ones.
+- **Unreadable agent login folders are logged and marked unavailable**
+  instead of leaving an older `expired` state frozen in place.
+
 ## 0.3.1
 
 - **Resets and run-outs a week or more off show the date instead of a

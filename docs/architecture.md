@@ -49,8 +49,8 @@ formats correctly, and the forecast.
 | Source | Gives |
 |---|---|
 | Agents' history files | Responses and sessions |
-| Agents' login files, the Keychain, and Antigravity's running app | Which account each agent folder is signed in to, and the logins to read limits with |
-| Providers' APIs, and Antigravity's app while it runs | Readings |
+| Agents' login files and the Keychain | Which account each agent folder is signed in to, and the logins to read limits with |
+| Providers' APIs | Readings |
 | models.dev | Prices |
 
 Everything is kept in one SQLite file, `turnscope.db`, in the data
@@ -205,6 +205,7 @@ pub trait Provider: Sync {
     fn account_limits(&self, _credential: &Credential, _now: i64, _by: Instant) -> std::result::Result<Vec<Reading>, Problem> { Ok(Vec::new()) }
     fn rolls(&self, _key: &str) -> Option<i64> { None }
     fn plan_mark(&self, _limits: &Limits) -> Option<i64> { None }
+    fn refreshes(&self) -> bool { false }
 }
 ```
 

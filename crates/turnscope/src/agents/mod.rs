@@ -317,11 +317,47 @@ pub struct Credential {
     pub identity: Option<(String, Option<String>)>,
     /// The plan, where the agent's files say, such as `max`.
     pub plan: Option<String>,
-    /// Where the agent's app, while it runs, is asked in the provider's
-    /// place: the ports it listens on at 127.0.0.1, with `secret` the app's
-    /// own token. Such a login has no `expires`, as the app renews its
-    /// sign-in itself. Empty for a login sent to the provider.
-    pub app_ports: Vec<u16>,
+    /// What a provider with non-rotating refresh tokens uses to renew an
+    /// expired access token in memory, without writing to the agent's files or
+    /// Keychain.
+    pub refresh: Option<Refresh>,
+}
+
+/// What a provider with non-rotating refresh tokens uses to renew an expired
+/// access token in memory.
+pub struct Refresh {
+    pub token: Secret,
+    /// Installed binaries holding the agent's OAuth client, in preference
+    /// order.
+    pub binaries: Vec<PathBuf>,
+}
+
+/// The fresher of two reads of the same login (such as Keychain and a fallback
+/// file). A readable login wins over a missing or unreadable second copy; a
+/// read error beside no login is returned so a half-written file never signs
+/// the account out.
+pub fn fresher(
+    first: Result<Option<Credential>>,
+    second: Result<Option<Credential>>,
+) -> Result<Option<Credential>> {
+    match (first, second) {
+        (Ok(Some(mut a)), Ok(Some(mut b))) => {
+            if b.expires > a.expires {
+                if b.refresh.is_none() {
+                    b.refresh = a.refresh;
+                }
+                Ok(Some(b))
+            } else {
+                if a.refresh.is_none() {
+                    a.refresh = b.refresh;
+                }
+                Ok(Some(a))
+            }
+        }
+        (Ok(Some(kept)), Ok(None) | Err(_)) | (Ok(None) | Err(_), Ok(Some(kept))) => Ok(Some(kept)),
+        (Ok(None), Ok(None)) => Ok(None),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
 }
 
 /// A token or key. It can't be printed, serialized or cloned, so it can't
@@ -482,7 +518,7 @@ pub fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> 
             expires: kept["expires"].as_i64(),
             identity: None,
             plan: None,
-            app_ports: Vec::new(),
+            refresh: None,
         }),
         provider: provider.to_owned(),
     }
@@ -912,5 +948,34 @@ mod tests {
             found(ended(1, "", "")),
             Err("security gave no reason (exit status: 1)".to_owned())
         );
+    }
+
+    #[test]
+    fn fresher_prefers_later_expiry_and_keeps_errors_from_signing_out() {
+        let cred = |secret: &str, expires: Option<i64>| Credential {
+            provider: "google",
+            secret: Secret::new(secret),
+            key: false,
+            expires,
+            identity: None,
+            plan: None,
+            refresh: None,
+        };
+        let picked = fresher(
+            Ok(Some(cred("old", Some(100)))),
+            Ok(Some(cred("new", Some(200)))),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(picked.secret.expose(), "new");
+        let picked = fresher(
+            Err(Error::Failed("locked".into())),
+            Ok(Some(cred("file", Some(100)))),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(picked.secret.expose(), "file");
+        assert!(fresher(Ok(None), Err(Error::Failed("corrupt".into()))).is_err());
+        assert!(fresher(Ok(None), Ok(None)).unwrap().is_none());
     }
 }
