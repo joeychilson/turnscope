@@ -197,7 +197,7 @@ impl Engine {
                 return;
             }
             let done = match inner.showing().as_mut() {
-                Some(showing) => alerts::acknowledge(&mut showing.db, &ids).map(|_| ()),
+                Some(showing) => alerts::acknowledge(&mut showing.db, &ids),
                 None => return,
             };
             if let Err(error) = done {
@@ -285,8 +285,7 @@ impl Engine {
 
 /// A thread that runs what's sent to it, in the order sent, until the
 /// `Engine` is dropped. A request that panics is logged and the next runs:
-/// unguarded, the panic ended the thread, and every later request went
-/// unanswered until the app restarted.
+/// unguarded, every later request went unanswered until the app restarted.
 fn queue(inner: &Arc<Inner>) -> Sender<Work> {
     let (send, received) = mpsc::channel::<Work>();
     let inner = Arc::clone(inner);
@@ -354,10 +353,9 @@ impl Inner {
                     }
                 }
                 // Another app keeps it current: this one shows what that
-                // one writes, until it's gone. It writes nothing, so it
-                // looks for a newer Turnscope's writes itself: otherwise,
-                // behind a newer app, it failed to raise alerts every 5 s
-                // for good and never said to update.
+                // one writes. It writes nothing, so it looks for a newer
+                // Turnscope's writes itself: else, behind a newer app, it
+                // failed to raise alerts every 5 s and never said to update.
                 Ok(None) => {
                     let newer = match self.showing().as_ref() {
                         Some(showing) => crate::db::writing(&showing.db),
@@ -511,11 +509,9 @@ fn lock(data: &Path) -> Result<Option<File>> {
 const GAP: Duration = Duration::from_secs(5);
 
 /// The least time between two reads of limits asked for
-/// (`limits::refresh_asked`): asked for again sooner, they're read once it's
-/// passed. Each read gathers every agent's logins, the Keychain's with
-/// `/usr/bin/security`, and asks again a provider that failed, so opening
-/// the panel again and again would ask that often. 30 s is a guess at how
-/// soon someone looks again, not measured.
+/// (`limits::refresh_asked`): each gathers every agent's logins, the
+/// Keychain's with `security`, and asks a failing provider again. A guess
+/// at how soon someone opens the panel again, not measured.
 const ASKED: Duration = Duration::from_secs(30);
 
 enum Caught {
@@ -538,13 +534,10 @@ fn keep(
     let (changed, changes) = mpsc::channel::<Wake>();
     *locked(wake) = Some(changed.clone());
     // Any write, not only to history: macOS reports a write when its file
-    // is closed, and Codex keeps a session's file open, and OpenCode its
-    // database, while they work. Their other writes are what show it.
-    // But not a SQLite database's `-shm` file, which Turnscope writes too
-    // when it opens the database: counted, a database that fails every read,
-    // with a log left beside it, started a catch-up every 5 s for good (21 in
-    // 100 s, measured 2026-11-11). An agent's writes to its database are in
-    // the `-wal` file.
+    // is closed, and Codex and OpenCode keep theirs open while they work.
+    // Not a SQLite `-shm` file, which opening a database writes: counted, a
+    // database that failed every read started a catch-up every 5 s (21 in
+    // 100 s, measured 2026-11-11). An agent's writes are in its `-wal`.
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let paths = event.as_ref().map_or(&[][..], |event| &event.paths[..]);
         let ours = !paths.is_empty()
@@ -562,10 +555,8 @@ fn keep(
     let mut watched: Vec<PathBuf> = Vec::new();
     let mut watch = |watcher: &mut notify::RecommendedWatcher| {
         for agent in agents::ALL {
-            // Watching an uninstalled agent's folder, such as `~/.gemini` when
-            // only the Gemini command line is there, would start a catch-up on
-            // every write it makes. Once the agent is installed, the next
-            // minute's pass watches it.
+            // Not an uninstalled agent's folder, as `~/.gemini` with only the
+            // Gemini command line there: each of its writes would catch up.
             for folder in agent.installed_folders(home) {
                 if watched.contains(&folder) {
                     continue;
@@ -579,32 +570,16 @@ fn keep(
             }
         }
     };
-    // The minute and SQLite's `data_version` at the last catch-up that
-    // worked. `data_version` moves when another connection writes, as an
-    // agent's MCP server does. A catch-up that read nothing new, in the same
-    // minute, with no other write since, has nothing new to show, and no
-    // status is worked out: as when an agent writes anything but history in
-    // its folder. Chosen over working one out after every catch-up: with a
-    // stand-in agent writing so three times a second for 30 s, it ran 11.3G
-    // instructions that way and 0.4G with this. The cost: an agent's MCP
-    // settings changed outside the app show at the next minute.
+    // The minute and SQLite's `data_version`, which another connection's
+    // write moves, at the last catch-up that worked: with neither moved and
+    // nothing read, there's nothing new to show. Working out a status after
+    // every catch-up ran 11.3G instructions, with a stand-in agent writing
+    // three times a second for 30 s, against 0.4G with this.
     let mut pushed = None;
-    // The limits first, and `told` called, over calling it only once the
-    // first catch-up is done: on a first launch that reads all of history
-    // (12 s for a made-up one of 5,000 files, 176 MB), the app showed no
-    // account until it ended. The catch-up then finds the limits read.
-    if crate::online() {
-        let read = match crate::limits::refresh(&mut db, home) {
-            Ok(read) => read,
-            Err(error @ Error::Newer(_)) => return Err(error),
-            Err(error) => {
-                log(data, &error.to_string());
-                true
-            }
-        };
-        if read && !told(Caught::Limits) {
-            return Ok(());
-        }
+    // The limits before history: on a first launch that reads all of it (12 s
+    // for a made-up 5,000 files), the app showed no account until it ended.
+    if crate::online() && read_limits(&mut db, home, data, false)? && !told(Caught::Limits) {
+        return Ok(());
     }
     // Limits asked for and not read yet, and when they last were.
     let (mut asked, mut asked_at) = (false, None::<Instant>);
@@ -613,14 +588,7 @@ fn keep(
         let mut read_asked = false;
         if asked && crate::online() && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
             (asked, asked_at) = (false, Some(Instant::now()));
-            read_asked = match crate::limits::refresh_asked(&mut db, home) {
-                Ok(read) => read,
-                Err(error @ Error::Newer(_)) => return Err(error),
-                Err(error) => {
-                    log(data, &error.to_string());
-                    true
-                }
-            };
+            read_asked = read_limits(&mut db, home, data, true)?;
         }
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
@@ -666,6 +634,24 @@ fn keep(
                 return Err(Error::Failed("the agents' folders can't be watched".into()));
             }
         }
+    }
+}
+
+/// Read the limits due (`limits::refresh`), or asked for; whether any were.
+/// A failure is logged, and counts as a read so the status is told again,
+/// unless a newer Turnscope wrote.
+fn read_limits(db: &mut Connection, home: &Path, data: &Path, asked: bool) -> Result<bool> {
+    let read = match asked {
+        true => crate::limits::refresh_asked(db, home),
+        false => crate::limits::refresh(db, home),
+    };
+    match read {
+        Err(error @ Error::Newer(_)) => Err(error),
+        Err(error) => {
+            log(data, &error.to_string());
+            Ok(true)
+        }
+        read => read,
     }
 }
 
@@ -884,29 +870,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn keeping_the_data_current_stops_once_a_newer_turnscope_writes() {
-        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let folder = home.path().join(".claude/projects/-work-a");
-        std::fs::create_dir_all(&folder).unwrap();
-        let db = read_just_now(data.path());
-        let (_engine, told) = start(data.path(), home.path());
-        next(&told, 10, |event| {
-            matches!(event, Event::Kept(None)).then_some(())
-        });
-        db.execute_batch(NEWER[0]).unwrap();
-        std::fs::write(folder.join("s1.jsonl"), "{}\n").unwrap();
-        let stopped = next(&told, 20, |event| match event {
-            Event::Kept(Some(stopped)) => Some(stopped),
-            _ => None,
-        });
-        assert_eq!(stopped.why, crate::db::newer().to_string());
-        assert!(!stopped.trying_again);
-    }
-
-    /// Once a newer Turnscope has written to the data, the engine writes
-    /// nothing more: a hide changes nothing, and the status told after says
-    /// so; a connect runs no command, and says why.
+    /// Once a newer Turnscope has written to the data, the engine stops and
+    /// writes nothing more: a hide changes nothing, and the status told after
+    /// says so; a connect runs no command, and says why.
     #[test]
     fn once_a_newer_turnscope_writes_requests_are_refused() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -929,6 +895,7 @@ mod tests {
             Event::Kept(Some(stopped)) => Some(stopped),
             _ => None,
         });
+        assert_eq!(stopped.why, crate::db::newer().to_string());
         assert!(!stopped.trying_again);
         engine.hide("anthropic:a".to_owned(), true);
         let hidden = next(&told, 10, |event| match event {

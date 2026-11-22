@@ -11,55 +11,29 @@ use crate::agents::{self, Agent, Credential};
 use crate::providers::{self, Kind, Limits, Problem, Provider, Reading};
 use crate::{Result, now};
 
-/// How long an account's limits stand while it's in use, before any process
-/// reads them again, and how often the agents' logins are gathered, for
-/// sign-ins and sign-outs. 5 minutes, as every account was read before
-/// `IDLE`; not measured against another.
+/// How long an account's limits stand while it's in use, and how often the
+/// agents' logins are gathered for sign-ins and sign-outs.
 pub const DUE: i64 = 5 * crate::time::MINUTE;
 
 /// How long an account's limits stand while it isn't in use, and the longest
-/// between two reads of all of an account's limits, whatever an agent writes
-/// of some of them meanwhile (`record_in_band`).
-///
-/// Chosen over [`DUE`] for every account, as before: an account not in use
-/// moves only with use elsewhere, as on the web, and a read that finds a
-/// limit risen puts it in use. 20 minutes and not more, so a read that fails
-/// is tried again `DUE` later, before `status::STALE` (30 minutes) shows the
-/// account as of the read before. Worked out, not measured: 3 reads an hour
-/// of an account not in use, over 12.
+/// between two reads of all its limits, whatever an agent writes of some
+/// (`record_in_band`). Under `status::STALE` (30 minutes) by more than `DUE`,
+/// so a failed read is tried again before the account shows as stale.
 const IDLE: i64 = 20 * crate::time::MINUTE;
 
-/// How long a claim to read accounts that are due holds off other processes:
-/// longer than a read takes, [`WAIT`] after the logins are gathered, so two
-/// processes don't ask a provider for one account at once.
+/// How long a claim to read the accounts due holds off other processes:
+/// longer than a read takes ([`WAIT`]), so no two ask a provider at once.
 const CLAIM: i64 = 30 * 1000;
 
 /// The longest an account waits between reads while its provider keeps
 /// failing (`backoff`).
 pub const BACKED_OFF: i64 = 30 * crate::time::MINUTE;
 
-/// How long an account waits for its next read after `reads` reads in a
-/// row found its provider busy or not understood: [`DUE`], doubled with
-/// each read after the first, up to [`BACKED_OFF`], and as long as the
-/// provider asked, up to that too. A read that works ends it.
-///
-/// Only a provider that answered is backed off. With no answer, as when the
-/// Mac is offline, the next read is in five minutes: backed off too, limits
-/// stayed unread for up to half an hour after the Mac was back online. With
-/// a stand-in provider out of reach for 36 minutes, the first read that
-/// worked was at minute 65 (measured 2026-11-18). The cost: a provider
-/// that takes the read's 15 s without answering is asked every five
-/// minutes, as before.
-///
-/// Chosen over asking again in five minutes whatever the answer, as before:
-/// a provider down, or answering 429, was asked every five minutes for as
-/// long as it lasted. At most 30 minutes, so limits are back within half an
-/// hour of the provider, and a `Retry-After` beyond that is cut to it, over
-/// leaving limits unread for hours on one header. A refused login isn't
-/// backed off: signing in again in the agent gives a new login, which the
-/// next read, in five minutes, shows. Nor is a read of some of an API-key
-/// account's keys, as the provider answered. Not measured: no provider's 429 or
-/// `Retry-After` has been seen here.
+/// How long an account waits after `reads` reads in a row its provider
+/// answered busy or not understood: [`DUE`], doubled with each, or as long as
+/// the provider asked, up to [`BACKED_OFF`]. Only an answer is backed off:
+/// backed off too, a provider out of reach for 36 minutes was first read
+/// again at minute 65 (measured 2026-11-18).
 fn backoff(reads: i64, retry_after: Option<i64>) -> i64 {
     let doubled = DUE.saturating_mul(1_i64 << (reads - 1).clamp(0, 8));
     doubled.max(retry_after.unwrap_or(0)).min(BACKED_OFF)
@@ -78,10 +52,8 @@ fn asked_for(problem: &Problem) -> (bool, Option<i64>) {
     }
 }
 
-/// How long an account's read is waited for, all its requests together.
-/// Where models.dev's catalog gets 60 s: `guard` reads limits inside an
-/// agent's hook, which holds the agent until it's done, and an answer of
-/// limits is one small JSON object, not a download.
+/// How long an account's read is waited for, all its requests together:
+/// `guard` reads limits inside an agent's hook, which holds the agent.
 const WAIT: Duration = Duration::from_secs(15);
 
 /// What a read of an account gave: its limits, if any were read, and what
@@ -166,9 +138,9 @@ pub fn refresh(db: &mut Connection, home: &Path) -> Result<bool> {
 /// [`refresh`], for limits asked for, as when the panel opens: whatever
 /// another process claimed, an account read [`DUE`] ago or more is read
 /// again, and so is one whose last read failed, unless its provider asked
-/// to be left. A read here that no provider answered leaves the account as
-/// it was, for the next `refresh` to try: asked for as the Mac woke, before
-/// its network was back, the account showed as unread for five minutes.
+/// to be left. A read no provider answered leaves the account as it was:
+/// asked for as the Mac woke, before its network was back, it showed as
+/// unread for five minutes.
 pub fn refresh_asked(db: &mut Connection, home: &Path) -> Result<bool> {
     refresh_with(db, home, agents::ALL, providers::ALL, true)
 }
@@ -248,9 +220,7 @@ struct Schedule {
     failing: bool,
     /// When its provider asked to be asked again (`backoff`).
     retry_at: Option<i64>,
-    /// In use, as the status says: drawn on in the last half hour, or a
-    /// limit rose at its last reading, taken in the last half hour
-    /// (`status::Account::in_use`).
+    /// In use, as `status::Account::in_use` has it.
     in_use: bool,
     /// A limit's window reset after the provider was last asked.
     reset_passed: bool,
@@ -286,12 +256,8 @@ impl Schedule {
 
 /// Every account's [`Schedule`] at `now`, by id.
 fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
-    // A limit's latest reading is one with none of its limit after it. It
-    // rose over the one before of its window, one that resets with it
-    // (`forecast::same_reset`), as the status has it: worked out here in
-    // SQL, as this is asked at every catch-up, and the status is all of the
-    // panel.
-    let mut rows = db.prepare(
+    // In SQL, over working out the status: this is asked at every catch-up.
+    let mut rows = db.prepare_cached(
         "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, f.account IS NOT NULL, f.retry_at,
              EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id
                  AND s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)),
@@ -365,9 +331,8 @@ fn gather(
     let mut accounts: BTreeMap<String, Held> = BTreeMap::new();
     let mut signed_in = Vec::new();
     let mut unreadable: BTreeMap<String, String> = BTreeMap::new();
-    // A key is to one account for good: the one it was last signed in to,
-    // which may be another key's it was made one with. Only at the same
-    // provider: the same key kept under another is that provider's.
+    // A key is to the account it was last signed in to, which may be
+    // another key's it was made one with, at the same provider alone.
     let mut kept = db.prepare(
         "SELECT account FROM sign_in WHERE key = ?1 AND provider = ?2 AND account IS NOT NULL
          ORDER BY since DESC LIMIT 1",
@@ -435,13 +400,9 @@ fn gather(
             }
             read.push((folder, named));
         }
-        // A login gone from a folder that was read is signed out of. So is
-        // every login of a folder no longer listed: one deleted, or a second
-        // account's without the file its agent writes once signed in. A
-        // folder is listed by what's under `home` alone, so none drops off
-        // the list while its agent is signed in there. A home that can't be
-        // listed, as one on a volume that's away, lists no second account's
-        // folder: each then keeps what it held.
+        // A login gone from a folder read is signed out of, and so is every
+        // login of a folder no longer listed. A home that can't be listed,
+        // as one on a volume that's away, lists none: each keeps what it held.
         for row in latest.query_map([agent.info().id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })? {
@@ -471,8 +432,7 @@ fn gather(
         }
     }
     // An account whose logins couldn't be read isn't signed out: its read
-    // fails, with why, over its standing as it last did, as a login to
-    // renew. Unless another folder's login to it is read.
+    // fails with why, unless another folder's login to it is read.
     let mut stored = db.prepare("SELECT provider, kind, label FROM account WHERE id = ?1")?;
     let mut failed = Vec::new();
     for (id, why) in unreadable {
@@ -560,12 +520,12 @@ fn record(
         if !written.insert(id.clone()) {
             continue;
         }
-        let account = &held.account;
+        let title = title(&held, &read);
         // Named in `app.log` by its title alone: a label can be an email,
         // and `doctor` prints the log for a report someone may post.
-        logged.extend(failing(&tx, &id, &read, &title(&held, &read), now)?);
+        logged.extend(failing(&tx, &id, &read, &title, now)?);
         // A read that failed may not know the plan, so the title stays.
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO account (id, provider, kind, title, label, read_at, full_read_at, checked_at, problem)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)
              ON CONFLICT (id) DO UPDATE SET
@@ -574,36 +534,22 @@ fn record(
                  read_at = coalesce(excluded.read_at, read_at),
                  full_read_at = coalesce(excluded.full_read_at, full_read_at),
                  checked_at = excluded.checked_at, problem = excluded.problem",
-            params![
-                id,
-                held.provider.info().id,
-                match account.kind {
-                    Kind::Subscription => "subscription",
-                    Kind::ApiKey => "apiKey",
-                },
-                title(&held, &read),
-                account.label,
-                read.limits.is_some().then_some(now),
-                now,
-                read.problem.as_ref().map(problem_name),
-            ],
-        )?;
-        for reading in read.limits.iter().flat_map(|limits| &limits.readings) {
-            tx.execute(
-                "INSERT OR REPLACE INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    id,
-                    reading.key,
-                    now,
-                    reading.name,
-                    reading.scope,
-                    reading.used.max(0.0),
-                    reading.size,
-                    reading.starts,
-                    reading.resets,
-                ],
-            )?;
+        )?
+        .execute(params![
+            id,
+            held.provider.info().id,
+            match held.account.kind {
+                Kind::Subscription => "subscription",
+                Kind::ApiKey => "apiKey",
+            },
+            title,
+            held.account.label,
+            read.limits.is_some().then_some(now),
+            now,
+            read.problem.as_ref().map(problem_name),
+        ])?;
+        if let Some(limits) = &read.limits {
+            write_readings(&tx, &id, now, &limits.readings)?;
         }
     }
     tx.commit()?;
@@ -640,14 +586,38 @@ pub fn held_in(agent: &dyn Agent, folder: &Path, home: &Path) -> Result<Vec<(Str
         .collect())
 }
 
+/// Write `readings` of `account`, as taken at `at`.
+fn write_readings<'a>(
+    tx: &Transaction,
+    account: &str,
+    at: i64,
+    readings: impl IntoIterator<Item = &'a Reading>,
+) -> Result<()> {
+    let mut insert = tx.prepare_cached(
+        "INSERT OR REPLACE INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for reading in readings {
+        insert.execute(params![
+            account,
+            reading.key,
+            at,
+            reading.name,
+            reading.scope,
+            reading.used.max(0.0),
+            reading.size,
+            reading.starts,
+            reading.resets,
+        ])?;
+    }
+    Ok(())
+}
+
 /// Take in the limits an agent wrote in its history for `account`, as Codex
 /// does with each response: each reading newer than the last of its limit
 /// and unlike it. They move `read_at` alone, so a limit the agent doesn't
-/// write, as one on some models, stands as the last read of all of them
-/// gave it (`full_read_at`), and the account is read in full within
-/// `IDLE` of that read whatever the agent writes. Nor do they change how
-/// the last read went: the status weighs that against the readings by
-/// their times. Whether any was taken in.
+/// write, as one on some models, stands as the last full read gave it, and
+/// the account is still read in full within `IDLE`. Whether any was taken in.
 pub fn record_in_band(
     tx: &Transaction,
     account: &str,
@@ -655,11 +625,8 @@ pub fn record_in_band(
     now: i64,
 ) -> Result<bool> {
     let full_read_at: Option<Option<i64>> = tx
-        .query_row(
-            "SELECT full_read_at FROM account WHERE id = ?1 AND kind = 'subscription'",
-            [account],
-            |row| row.get(0),
-        )
+        .prepare_cached("SELECT full_read_at FROM account WHERE id = ?1 AND kind = 'subscription'")?
+        .query_row([account], |row| row.get(0))
         .optional()?;
     // Older than a read of all the limits, it says less; stamped ahead of
     // now, the clock was set back since.
@@ -673,44 +640,27 @@ pub fn record_in_band(
         "SELECT at, used, resets FROM reading WHERE account = ?1 AND limit_key = ?2
          ORDER BY at DESC LIMIT 1",
     )?;
-    let mut insert = tx.prepare_cached(
-        "INSERT INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-    )?;
-    let mut took = false;
+    let mut new = Vec::new();
     for reading in &snapshot.readings {
         let before: Option<(i64, f64, Option<i64>)> = last
             .query_row(params![account, reading.key], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .optional()?;
-        // The same again adds nothing: Codex writes its limits with every
-        // response, most often unchanged.
-        if before.is_some_and(|(at, used, resets)| {
+        // Codex writes its limits with every response, most often unchanged.
+        if !before.is_some_and(|(at, used, resets)| {
             at >= snapshot.at || (used == reading.used && resets == reading.resets)
         }) {
-            continue;
+            new.push(reading);
         }
-        insert.execute(params![
-            account,
-            reading.key,
-            snapshot.at,
-            reading.name,
-            reading.scope,
-            reading.used.max(0.0),
-            reading.size,
-            reading.starts,
-            reading.resets,
-        ])?;
-        took = true;
     }
-    if took {
-        tx.execute(
-            "UPDATE account SET read_at = max(coalesce(read_at, ?2), ?2) WHERE id = ?1",
-            params![account, snapshot.at],
-        )?;
+    if new.is_empty() {
+        return Ok(false);
     }
-    Ok(took)
+    write_readings(tx, account, snapshot.at, new)?;
+    tx.prepare_cached("UPDATE account SET read_at = max(coalesce(read_at, ?2), ?2) WHERE id = ?1")?
+        .execute(params![account, snapshot.at])?;
+    Ok(true)
 }
 
 /// How `account.problem` names `problem`.
@@ -782,14 +732,10 @@ fn failing(
 }
 
 /// Write each folder's sign-in that changed, and the account of the
-/// responses made in that folder since.
-///
-/// In the write that records the change, over after it: a process that
-/// ended between the two left the responses on the account before for
-/// good, and the next refresh saw no change to work from. Without
-/// `ingest.lock`, so a hook never waits out a read of history: a read
-/// takes in the sign-ins at each of its writes (`ingest::Derived`), so
-/// it writes nothing with one gone stale.
+/// responses made in that folder since, in the same write: after it, a
+/// process that ended between the two left the responses on the account
+/// before for good. Without `ingest.lock`, as a read of history takes in the
+/// sign-ins at each of its writes (`ingest::Derived`).
 fn sign_ins(tx: &Transaction, signed_in: &[SignedIn], now: i64) -> Result<()> {
     // The sign-in in force at each response, or before the folder's first,
     // the first, as `ingest::Derived::of` finds it.
@@ -854,15 +800,11 @@ fn title(held: &Held, read: &Read) -> String {
 
 /// Each account read as the same plan as another, by its provider's
 /// `plan_mark`, with the account that stands for them: one already known,
-/// so its history is kept, or else the first, accounts being in order.
+/// so its history is kept, or else the first.
 ///
-/// An account known from before and not read now, or whose login was
-/// refused (`Problem::SignIn`), counts by the mark of its last read: a key
-/// swapped for a new one to the same plan made the plan a second account,
-/// the first signed out or refused, with no readings behind the new. Other
-/// failures don't merge: `merge` can't be undone, and `plan` stops at the
-/// first failure that isn't a refused login, so an old key failing another
-/// way would stop the working key from being read.
+/// An account not read now, or whose login was refused, counts by the mark
+/// of its last read, so a key swapped for a new one to the same plan keeps
+/// its account. Other failures don't merge: `merge` can't be undone.
 fn same_plan(
     tx: &Transaction,
     answers: &[(Read, Held)],
@@ -1027,15 +969,10 @@ fn plan(provider: &dyn Provider, logins: &[&Credential], now: i64, by: Instant) 
 /// Why a read that panicked failed.
 const PANICKED: &str = "reading it failed unexpectedly";
 
-/// An API-key account's limits: each key's own, as each can carry one, and
-/// the account's, asked once. All at once, over one after another: `guard`
-/// waits on the read in an agent's hook, and three keys to a provider out
-/// of reach held it 45 s, three times [`WAIT`].
-///
-/// Read when anything is. A key that can't be read is the account's
-/// problem, so it isn't shown as read in full with that key's limit gone.
-/// Of a refusal and another problem, the refusal is said, as the one
-/// someone can act on.
+/// An API-key account's limits: each key's own and the account's, all at
+/// once: one after another, three keys to a provider out of reach held
+/// `guard` 45 s. A key that can't be read is the account's problem, and of a
+/// refusal and another problem, the refusal is said, as the one to act on.
 fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) -> Read {
     let (own, shared) = std::thread::scope(|scope| {
         let own: Vec<_> = keys
@@ -1071,10 +1008,8 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
             limits.plan = limits.plan.take().or(read.plan);
             limits.readings.extend(read.readings);
         }
-        // A refusal is kept over any other problem. Of two others, an answer
-        // is kept over none, then the longest `Retry-After` over none or a
-        // shorter one, with its reason, so the log says why it waits. Only
-        // an answer has a `Retry-After`, so the one kept waits longest.
+        // Of two others, an answer over none, then the longest `Retry-After`,
+        // so the log says why it waits.
         Err(error) => {
             problem = Some(match (problem.take(), error) {
                 (Some(Problem::SignIn), _) | (_, Problem::SignIn) => Problem::SignIn,
@@ -1100,7 +1035,6 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::Reading;
 
     /// A provider that answers each login by its secret: one with `refused`
     /// in it is refused, one with `down` out of reach, one with `offline`

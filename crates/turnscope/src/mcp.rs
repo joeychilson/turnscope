@@ -622,9 +622,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     };
     let top = input.top.unwrap_or(5).clamp(1, 20);
     let yours = ask.caller.session.as_deref();
-    // When grouping by session with a known caller session, fetch every row
-    // once so we can inspect the caller's own session before folding into
-    // `rest`, avoiding a second pass over the recursive session tree.
+    // Every row, so the caller's own session is found past the top.
     let fetch_top = if by == By::Session && yours.is_some() {
         usize::MAX
     } else {

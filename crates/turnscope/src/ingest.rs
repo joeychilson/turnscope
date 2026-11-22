@@ -17,24 +17,17 @@ use crate::{Error, Result};
 
 /// Raised when a reader would read a file it read before differently. A
 /// file last read with an older one is read again from the start when it's
-/// next found: where it was, moved, or back after it was gone. Chosen over
-/// reading again only the files still at their paths, which kept what the
-/// older reader made of a file moved since, as Codex moves a thread it
-/// archives. A file never found again, as one its agent deleted, keeps what
-/// it made.
+/// next found, moved too: read again only at its path, a thread Codex
+/// archives kept what the older reader made of it. A file never found
+/// again, as one its agent deleted, keeps what it made.
 const READERS: i64 = 8;
 
 /// How long a transaction writes history before it lets the write lock go,
-/// and for how long. A first read of 10,785 real files, 11 GB, took 18 to
-/// 30 s, longer than another process's write waits (`db::open`'s 10 s).
-/// SQLite retries a waiting write at most every 100 ms, so a longer pause
-/// lets it in.
-///
-/// Measured November 2026 on a made-up 616 MB history of 256 files, with a
-/// setting saved every half second: one transaction for all held the lock 6
-/// to 23 s, and the write failed in 4 runs of 8; one a file let a write in
-/// only by chance between commits, after up to 4.3 s; a second, then 110 ms,
-/// had no write fail or wait over 1.1 s in 6 runs, and read no slower.
+/// and for how long: another process's write waits 10 s (`db::open`), and
+/// SQLite retries it at most every 100 ms. On a made-up 616 MB history with
+/// a setting saved every half second (November 2026): one transaction held
+/// the lock 6 to 23 s and the write failed in 4 runs of 8; one a file let it
+/// in after up to 4.3 s; a second, then 110 ms, had none wait over 1.1 s.
 const HOLD: Duration = Duration::from_secs(1);
 const PAUSE: Duration = Duration::from_millis(110);
 
@@ -140,21 +133,14 @@ fn lock_path(db: &Connection) -> PathBuf {
     Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock")
 }
 
-/// How long a command waits for `ingest.lock` before it says so, over
-/// saying so at once: the app's engine catches up as often as every 5 s
-/// while agents work, holding the lock even when it reads nothing, which over a made-up
-/// history of 5,000 files took 135 to 153 ms. Said at once, a command run
-/// beside the app would now and then say it waits, for a wait no one notices.
+/// How long a command waits for `ingest.lock` before it says so: the app
+/// holds it as often as every 5 s while agents work, 135 to 153 ms over a
+/// made-up 5,000 files, a wait no one notices.
 const QUIET: Duration = Duration::from_secs(1);
 
-/// What a catch-up is about to wait for, which can take minutes, in words
-/// for the command line to say first: another Turnscope reading history,
-/// once it has waited `QUIET`, or this one reading all of it, the first time
-/// and after `READERS` was raised. Asked before the catch-up, over from
-/// inside `ingest`, so only the command line says it: no one reads what
-/// the MCP server writes to standard error. The cost: a command
-/// that finds the lock held reads the limits and prices due up to `QUIET`
-/// later.
+/// What a catch-up is about to wait for, which can take minutes, for the
+/// command line to say first: another Turnscope reading history, once it has
+/// waited `QUIET`, or this one reading all of it.
 pub fn waits(db: &Connection) -> Option<&'static str> {
     match crate::db::lock_within(&lock_path(db), QUIET) {
         Ok(Some(_)) => {}
@@ -446,11 +432,11 @@ fn write(
     let mut holds =
         tx.prepare_cached("INSERT OR IGNORE INTO session_file (session, file) VALUES (?1, ?2)")?;
     for (id, facts) in &read.sessions {
-        let project_name = facts.cwd.as_deref().and_then(|cwd| {
+        let project_name = facts.cwd.as_deref().map(|cwd| {
             if !projects.contains_key(cwd) {
                 projects.insert(cwd.to_owned(), project(cwd, home));
             }
-            projects.get(cwd).map(String::as_str)
+            projects[cwd].as_str()
         });
         session.execute(params![
             id,
@@ -492,10 +478,8 @@ fn write(
         return Ok(());
     }
     // On the account the folder was signed in to when the agent wrote them,
-    // as its responses are, and only while the folder still holds a login
-    // to it: a sign-in to another is in `sign_in` once the logins are
-    // gathered again, up to `limits::DUE` later, and meanwhile the other's
-    // limits would go to this one, to stand for it once it's signed out.
+    // and only while it still holds a login to it: a sign-in to another is
+    // in `sign_in` up to `limits::DUE` later, and its limits would go to this.
     let held = crate::limits::held_in(due.agent, Path::new(folder), home).unwrap_or_default();
     let now = crate::now();
     for limits in &read.limits {
@@ -543,7 +527,7 @@ fn execute_response(
     ])
 }
 
-/// A response as stored, its columns in `RESPONSE_COLUMNS`' order.
+/// A response as stored, its columns in `response_columns!`'s order.
 fn stored(row: &Row) -> rusqlite::Result<Response> {
     let count = |at: usize| row.get::<_, i64>(at).map(|count| count as u64);
     Ok(Response {
@@ -565,13 +549,9 @@ fn stored(row: &Row) -> rusqlite::Result<Response> {
 /// what each agent folder held for each provider from when, oldest first.
 ///
 /// Loaded in each write, so a price or sign-in another process wrote since
-/// the read began is used: `prices::take` and `limits::record` work out
-/// again, in their own writes, only what was written before them, and wait
-/// for no read of history. Chosen over loading once a read and taking prices
-/// in under `ingest.lock`, which made an agent's tool call wait out the
-/// app's read of all of history. The cost: 3.3 ms to load 4,000 prices
-/// (November 2026), once a write, and a catch-up that reads for under a
-/// second writes once.
+/// is used: loaded once and taking prices in under `ingest.lock`, an agent's
+/// tool call waited out the app's read of all of history. The cost: 3.3 ms
+/// for 4,000 prices (November 2026), once a write.
 struct Derived {
     prices: Prices,
     /// The accounts each agent folder held, by folder then provider: one row
@@ -618,23 +598,14 @@ impl Derived {
 
 /// Price again, in `tx`, every response of `models` (by provider and
 /// model), priced for the first time in it, and every response with no
-/// known cost. No list price was in force before a model's first, so its
-/// usage from before takes that first price, as a read of it now would.
-/// Chosen over keeping an agent's own estimate, which left an OpenCode
-/// response of 1M input tokens at the $0.001 it put on it, where a fresh
-/// read gave $2.00.
-///
-/// One with no known cost may have one by a model listed long before: a
-/// model another provider serves takes its maker's list price
-/// (`prices::Prices::cost`), as Claude served to Antigravity takes
-/// Anthropic's. Chosen over raising `READERS`, which reads every file again
-/// from the start, for prices alone.
+/// known cost, which may take a model's maker's price (`prices::Prices::cost`).
+/// A model's usage from before its first price takes it: kept, an agent's
+/// own estimate left an OpenCode response of 1M input tokens at $0.001,
+/// where a fresh read gave $2.00.
 pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> {
-    // One scan of `response`, over a query per model: `response` has no
-    // index on `(provider, model)`, so querying per model scanned the whole
-    // table for each. On 50,000 responses and 20 newly priced models, this
-    // took 12 ms (11–17 ms) against 72 ms (71–74 ms) with a query per model
-    // (2026-11-20).
+    // One scan, over a query per model, as `response` has no index on
+    // `(provider, model)`: 12 ms against 72 ms on 50,000 responses and 20
+    // models (2026-11-20).
     tx.execute(
         "CREATE TEMP TABLE repriced (
              provider TEXT NOT NULL,
@@ -669,18 +640,11 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
 
 /// Forget what an older reader made of `files`, so each is read from the
 /// start. The sessions only such files hold lose their title and parent, as
-/// `SESSION` would keep the older reader's, and keep their project.
-///
-/// The project is kept as it was worked out when the session was first
-/// seen, from the folders then: worked out again, a worktree removed since,
-/// as one `git worktree add` made beside its repository, is a project of its
-/// own, and the repository's usage splits in two. The cost: a project worked
-/// out from a working directory an older reader got wrong stays wrong.
+/// `SESSION` would keep the older reader's, and keep their project: worked
+/// out again, a worktree removed since is a project of its own.
 fn read_again(tx: &Transaction, files: &[i64]) -> Result<()> {
-    // One transaction, not split as reading is: it held the lock 0.62 to
-    // 0.80 s on the history `HOLD` was measured on, 123,140 responses, and
-    // 0.75 to 1.24 s on 3,000 files and 120,000 responses (2026-11-14), far
-    // under the 10 s another write waits.
+    // One transaction, not split as reading is: it held the lock at most
+    // 1.24 s on 3,000 files and 120,000 responses (2026-11-14).
     tx.execute("CREATE TEMP TABLE again (file INTEGER PRIMARY KEY)", [])?;
     let mut again = tx.prepare("INSERT INTO again (file) VALUES (?1)")?;
     for file in files {

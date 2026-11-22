@@ -45,13 +45,11 @@ pub enum Error {
     /// Exit 1; the message says how to fix it.
     Failed(String),
     /// A newer Turnscope has written to the data, so this one writes
-    /// nothing more (`db::newer`). Exit 1. A variant, over comparing the
-    /// message, which changes once an update replaces the binary.
+    /// nothing more (`db::newer`). Exit 1.
     Newer(String),
     /// Another Turnscope was reading history for longer than this one
-    /// waited (`ingest::ingest`). Exit 1. A variant, so an MCP answer can say
-    /// its usage is only part of it while all of history is read, over
-    /// saying so for any error then: it hid "start it again".
+    /// waited (`ingest::ingest`), so an MCP answer says its usage is only
+    /// part of it. Exit 1.
     Busy(String),
 }
 

@@ -139,17 +139,10 @@ pub fn ago(at: i64, now: i64) -> String {
     told(at, now, Ordering::Less)
 }
 
-/// `at` as far off as the clocks say: from the minute `now` is in to the
-/// minute `at` is in, which its clock shows. At 12:00:40, 11:00:40 is
-/// 11:00, 1h ago. Chosen over counting from the second, which said 59m in
-/// an answer that also said since 11:00 (1h ago).
-///
-/// In now's own minute, the caller says which way it reads, by
-/// `in_minute`. An answer is as of the minute's start, its status's `at`,
-/// so a read at 12:00:10 asked about at 12:00:40 has gone by, while a reset
-/// at 12:00:20, rounded to 12:00, or a time a limit runs out, rounded to
-/// now, is still to come. Decided from the two times alone, one of them
-/// read wrong: the read in 0m, or the reset 0m ago.
+/// `at` as far off as the clocks say, minute to minute: at 12:00:40,
+/// 11:00:40 is 11:00, 1h ago. Counted from the second, an answer said 59m
+/// beside since 11:00 (1h ago). In now's own minute, `in_minute` says which
+/// way it reads: a read then has gone by, a reset or run-out is to come.
 fn told(at: i64, now: i64, in_minute: Ordering) -> String {
     let span = span(minute(at) - minute(now));
     match minute(at).cmp(&minute(now)).then(in_minute) {

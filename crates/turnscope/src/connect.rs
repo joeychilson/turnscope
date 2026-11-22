@@ -136,11 +136,8 @@ fn command(
     if let Some(path) = path {
         command.env("PATH", path);
     }
-    // An agent keeps its settings under its home, so it's run with `HOME`
-    // set to the home Turnscope was given, over the process's own: with
-    // `--home` at a copy, Turnscope read the copy, found no server there,
-    // and had the agent add one to the person's own settings. That each
-    // agent takes its home from `HOME` isn't tested: that runs its command.
+    // The home Turnscope was given, over the process's own: with `--home` at
+    // a copy, the agent added the server to the person's own settings.
     command.env("HOME", home);
     // A second account's folder, as `~/.claude-work`, keeps its own
     // settings: the agent is pointed at it as it's run for that account.
@@ -190,14 +187,10 @@ pub fn connection(agent: &dyn Agent, home: &Path, engine: &Path) -> Connection {
     }
 }
 
-/// An app started from Finder runs with a bare `PATH`, so the
-/// agent's command is found with the `PATH` of the person's interactive
-/// login shell, where agents' installers add their folders: on 2026-09-30,
-/// `zsh -lc` found none of four agents, and `zsh -ilc` all four, in 0.15 s.
-///
-/// Asked in the person's own home, whatever home Turnscope was given: the
-/// shell sets its `PATH` from the files it reads there, as `~/.zshrc`. A
-/// copy of a home may hold none, and the agent's command wouldn't be found.
+/// An app started from Finder runs with a bare `PATH`, so the agent's
+/// command is found with the `PATH` of the person's interactive login shell,
+/// in their own home: on 2026-09-30, `zsh -lc` found none of four agents,
+/// and `zsh -ilc` all four, in 0.15 s.
 fn login_path() -> Option<String> {
     let shell = std::env::var("SHELL").unwrap_or("/bin/zsh".to_owned());
     let mut command = Command::new(shell);

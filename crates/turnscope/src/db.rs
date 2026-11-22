@@ -281,30 +281,14 @@ const OLD_REVISIONS: i64 = 6;
 
 /// Take in all of the old database, into a new one, by its columns' names:
 /// each revision's columns are a subset or superset of the next's. Its rows
-/// are left as they were, for a release, in case what's taken in has to be
-/// looked at. `serve.lock`, which 0.1 and 0.2 kept beside it, 0.2's
-/// `serve.log`, and the `serve.sock` a `serve` that crashed left are
-/// removed after: nothing uses them now.
+/// are left as they were. A copy, over a fresh read of the agents' history:
+/// agents delete their own (Claude Code after 30 days), and readings,
+/// prices, sign-ins and alerts exist only here. A made-up 0.2.1 database of
+/// 240 MB took 6.9 s (November 2026), while every process waited.
 ///
-/// It runs once, while every process that opens the database waits. A
-/// made-up 0.2.1 database of 240 MB, 467,000 responses and 100,000
-/// readings, took 6.9 s: 2.3 s of it user and 4.4 s system (November 2026).
-///
-/// Its schema's revision is raised past 0.2's last, so a Turnscope 0.2
-/// still running, as an agent's MCP server started before the update,
-/// writes nothing more there and says why. Left alone, it went on reading
-/// history and limits into a file no one else reads. 0.1 doesn't look:
-/// 0.1.7 and 0.1.8 went on reading into it (November 2026).
-///
-/// Chosen over keeping the old file and its six revisions, two of which
-/// dropped tables and columns, so the schema is one script. A copy, not a
-/// fresh read of the agents' history: agents delete their own (Claude Code
-/// after 30 days), and limit readings, prices, sign-ins, hidden accounts and
-/// alerts exist only here.
-///
-/// A file with no revision, as one that's empty, never held 0.1's or 0.2's
-/// data, which set its revision with its first tables: there's nothing to
-/// take in. 0.2 started such a file anew.
+/// Its revision is raised past 0.2's last, so a 0.2 still running, as an
+/// agent's MCP server, writes nothing more there and says why. A file with
+/// no revision never held 0.1's or 0.2's data.
 fn import(tx: &Transaction) -> rusqlite::Result<()> {
     let revision: i64 = tx.query_row("PRAGMA old.user_version", [], |row| row.get(0))?;
     if revision == 0 {
@@ -376,12 +360,8 @@ fn import(tx: &Transaction) -> rusqlite::Result<()> {
 
 /// Begin a write: a transaction that holds the write lock from its start,
 /// with `writing` checked inside it, as a newer Turnscope may have written
-/// while this one waited, for the lock or for anything before.
-///
-/// Every write of more than one statement begins here, over each writer
-/// checking by hand, which one missed: costs worked out after waiting out
-/// another process's read of history were written over a newer
-/// Turnscope's.
+/// while this one waited. Every write of more than one statement begins
+/// here: checked by hand, one writer missed it.
 pub fn write(db: &mut Connection) -> Result<Transaction<'_>> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     writing(&tx)?;
@@ -487,8 +467,8 @@ fn binary() -> Option<(u64, SystemTime)> {
     Some((file.ino(), file.modified().ok()?))
 }
 
-/// Checks if our own binary was replaced on disk since launch so a stale
-/// long-lived process tells the user to restart rather than to update.
+/// Why this Turnscope writes nothing more: start it again when its binary
+/// was replaced since it started, otherwise update it.
 pub fn newer() -> Error {
     let updated = matches!(
         (STARTED_FROM.get(), binary()),

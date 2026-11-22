@@ -262,20 +262,15 @@ pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>>
     Ok(pending)
 }
 
-pub fn acknowledge(db: &mut Connection, ids: &[i64]) -> Result<usize> {
-    if ids.is_empty() {
-        return Ok(0);
-    }
+pub fn acknowledge(db: &mut Connection, ids: &[i64]) -> Result<()> {
     let tx = crate::db::write(db)?;
-    let mut statement =
-        tx.prepare("UPDATE alert SET acknowledged = 1 WHERE id = ?1 AND acknowledged = 0")?;
-    let mut done = 0;
+    let mut statement = tx.prepare("UPDATE alert SET acknowledged = 1 WHERE id = ?1")?;
     for id in ids {
-        done += statement.execute([id])?;
+        statement.execute([id])?;
     }
     drop(statement);
     tx.commit()?;
-    Ok(done)
+    Ok(())
 }
 
 fn alert(id: i64, kind: Kind, account: &str, limit: &str, detail: Detail, now: i64) -> Alert {
@@ -393,7 +388,7 @@ mod tests {
         assert_eq!(raised[0].replaces, "limit:anthropic:acct-1:org-1:five_hour");
         assert!(raise(&mut db, &used_up).unwrap().is_empty(), "told once");
         assert_eq!(pending(&db, &used_up, DAY).unwrap().len(), 1);
-        assert_eq!(acknowledge(&mut db, &[raised[0].id]).unwrap(), 1);
+        acknowledge(&mut db, &[raised[0].id]).unwrap();
         assert!(pending(&db, &used_up, DAY).unwrap().is_empty());
         // Use given back within the window: it's back.
         let back = status(DAY + MINUTE, 60, LASTS);

@@ -14,9 +14,8 @@ pub fn output_within(command: &mut Command, wait: Duration) -> std::io::Result<O
         .stderr(Stdio::piped())
         .spawn()?;
     // Read as written, so a child that writes more than a pipe holds
-    // doesn't wait on us. Multiplex both pipes onto one channel so a
-    // lingering background process waits one `QUIET` window, not two, and
-    // stdout can't starve stderr near the deadline.
+    // doesn't wait on us, both pipes onto one channel so a process left
+    // holding them waits one `QUIET`, not two.
     fn drain(
         pipe: Option<impl std::io::Read + Send + 'static>,
         is_stdout: bool,
@@ -49,14 +48,10 @@ pub fn output_within(command: &mut Command, wait: Duration) -> std::io::Result<O
         std::thread::sleep(Duration::from_millis(10));
     };
     // A child can leave a process holding its pipes open, as a login
-    // shell's background job does, so each pipe is read until it closes or
-    // is quiet for `QUIET`: until the deadline, or `QUIET` past it for a
-    // child that ended just before. Chosen over reading to the deadline,
-    // which waited all of it: 10 s for a login shell's `PATH`. The cost:
-    // output is lost if its reader waits longer than `QUIET` for a
-    // processor. Measured 2026-11-14 at a load of 7 on 8 cores: `sleep 4 &
-    // echo said` came back in 0.22 s, not 4 s, and 300 children writing
-    // 1 MB per pipe lost nothing.
+    // shell's background job does, so the pipes are read until they close or
+    // are quiet for `QUIET`: read to the deadline, a login shell's `PATH`
+    // took all 10 s. At a load of 7 on 8 cores (2026-11-14), `sleep 4 & echo
+    // said` came back in 0.22 s, and 300 children writing 1 MB lost nothing.
     const QUIET: Duration = Duration::from_millis(100);
     let until = deadline.max(Instant::now() + QUIET);
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
