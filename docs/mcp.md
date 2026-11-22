@@ -16,33 +16,26 @@ turnscope disconnect codex      # remove it
 
 The app's Settings → Agents does the same.
 
-`connect` runs the agent's own command, found on the `PATH` of your
-interactive login shell ([cli.md](cli.md#connect-and-disconnect)), and
-never writes the agent's files itself.
-
-| Agent | Id | Add | Remove |
-|---|---|---|---|
-| Claude Code | `claude-code` | `claude mcp add --scope user turnscope -- <turnscope> mcp` | `claude mcp remove --scope user turnscope` |
-| Codex | `codex` | `codex mcp add turnscope -- <turnscope> mcp` | `codex mcp remove turnscope` |
-| OpenCode | `opencode` | `opencode mcp add --global turnscope -- <turnscope> mcp` | none |
-| Pi | `pi` | `pi mcp add turnscope -- <turnscope> mcp` | `pi mcp remove turnscope` |
-| Grok Build | `grok-build` | `grok mcp add --scope user turnscope <turnscope> mcp` | `grok mcp remove --scope user turnscope` |
-| Antigravity | `antigravity` | `agy mcp add turnscope -- <turnscope> mcp` | `agy mcp remove turnscope` |
-
+`connect` runs the agent's own command, such as `claude mcp add --scope
+user turnscope -- <turnscope> mcp`, found on the `PATH` of your
+interactive login shell, and never writes the agent's files itself.
 `<turnscope>` is the binary's real path, such as
 `/Applications/Turnscope.app/Contents/Helpers/turnscope`, even when you run
-it through a link.
+it through a link. A second account's folder, such as `~/.claude-work`,
+keeps its own configuration, so `connect` and `disconnect` run the command
+once for each folder.
 
-`connect` runs the remove command first, so an old entry is replaced. If
-the agent then refuses the new entry, the old one is put back, and the
-error gives the command to run by hand. Start a new session in the agent to
-use the server. After `disconnect`, sessions already open keep it until
-they end.
+`connect` removes an old entry first. If the agent then refuses the new
+one, the old one is put back, and the error gives the command to run by
+hand. Start a new session in the agent to use the server. After
+`disconnect`, sessions already open keep it until they end.
 
 OpenCode has no remove command. To remove the server, delete `turnscope`
-from `mcp.servers` in `~/.config/opencode/opencode.json`.
-
-### Check the connection
+from `mcp.servers` in `~/.config/opencode/opencode.json`. Antigravity's app
+and `agy` share one configuration, so `agy` connects both. A server
+switched off there, as `agy mcp disable turnscope` does, counts as not
+connected, and `turnscope disconnect antigravity` leaves it: `agy mcp
+remove turnscope` removes it.
 
 `turnscope connect` with no agent lists each agent's state
 ([cli.md](cli.md#connect-and-disconnect) shows it):
@@ -52,29 +45,7 @@ from `mcp.servers` in `~/.config/opencode/opencode.json`.
 | `connected` | The agent runs this copy of Turnscope, in every folder it has. A link to it counts. |
 | `runs another copy of Turnscope` | The agent runs another binary, such as an older install. `turnscope connect <id>` points it at this one. |
 | `not connected` | The agent has no `turnscope` server. |
-| `not installed` | The agent's folder doesn't exist: `~/.claude`, `~/.codex`, `~/.local/share/opencode`, `~/.pi/agent` or `~/.grok`. For Antigravity, neither `~/.gemini/antigravity` nor `~/.gemini/antigravity-cli` does: the Gemini command line keeps `~/.gemini` too. |
-
-The state comes from the agent's configuration file:
-
-| Agent | File | Entry |
-|---|---|---|
-| Claude Code | `~/.claude.json` | `mcpServers.turnscope` |
-| Codex | `~/.codex/config.toml` | `[mcp_servers.turnscope]` |
-| OpenCode | `~/.config/opencode/opencode.json` | `mcp.servers.turnscope` |
-| Pi | `~/.pi/agent/mcp.json` | `mcpServers.turnscope` |
-| Grok Build | `~/.grok/config.toml` | `[mcp_servers.turnscope]` |
-| Antigravity | `~/.gemini/config/mcp_config.json` | `mcpServers.turnscope` |
-
-Antigravity's app and `agy` share that file, so `agy` connects both. A
-server switched off there, as `agy mcp disable turnscope` does, counts as
-not connected, and `turnscope disconnect antigravity` leaves it where it
-is: `agy mcp remove turnscope` removes it.
-
-A second account's folder, such as `~/.claude-work` or `~/.codex-work`,
-keeps its own configuration: `.claude.json` or `config.toml` inside it.
-`connect` and `disconnect` run the agent's command once for each folder,
-pointed at it with `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` as you
-would to use that account.
+| `not installed` | The agent's own folder doesn't exist. |
 
 ## Who is asking
 
@@ -118,20 +89,15 @@ way.
   no account is named nope; there are: Claude Max (me@example.com) (anthropic:acct-1:org-1), ChatGPT Plus (me@example.com) (openai:acct-2), OpenRouter API key (openrouter:api), SuperGrok (me@example.com) (xai:user-3)
   ```
 
-- Each call first reads what's new: history, and limits and prices when
-  they're due, unless the app runs, which reads those itself. A provider that can't be reached leaves its account as it
-  was last read. If reading fails, as when a newer Turnscope has written
-  to the data since the server started, or another Turnscope has been
-  reading history for over a second, as the app does at its first launch,
-  the tool still answers from what's known, and ends by saying it's as of the
-  last read, and why: once an update has replaced the binary the server
-  runs, `Turnscope was updated after this one started; start it again`.
+- Each call first catches up: history, and limits and prices when they're
+  due, unless the app runs, which reads those itself
+  ([architecture.md](architecture.md#catching-up)). If that fails, as
+  after a newer Turnscope wrote the data
+  ([architecture.md](architecture.md#data)), the tool still answers from
+  what's known, and ends by saying it's as of the last read, and why.
   While all of history is read, the first time and after an update, it
-  ends instead by saying its usage is only part of it, and to ask again
-  in a few minutes. A call that then fails says why first, since its query
-  may no longer fit a schema a newer Turnscope changed: `What's new
-  couldn't be read first: a newer Turnscope has updated this data; update
-  Turnscope. Then this failed: …`.
+  ends instead by saying its usage is only part of it, and to ask again in
+  a few minutes.
 
 ## Tools
 
@@ -164,28 +130,26 @@ is not a yes.
 The answer has three parts:
 
 1. With `hours`, whether they fit at the work rate: of several
-   accounts, a line for each, named. Only an account's limits on all its
-   usage count, not a limit on one model or one key. A plan with none, as
-   Google AI's, counts those of the pool it last drew on: Gemini, or Claude
-   and GPT. Work past a limit's reset counts in the windows after it. A
-   limit with too little work measured, or a window that rolls, as
-   OpenCode Go's 5 hours does, which has no start to measure work from,
+   accounts, a line for each, named. It goes by the limits an account
+   stands by: those on all its usage, not one model's or one key's, or of
+   the [pool](architecture.md#glossary) it last drew on. Work past a
+   limit's reset counts in the windows after it. A limit with too little
+   work measured, or a window that rolls, as OpenCode Go's 5 hours does,
    means it can't be told: the answer names the limit and what's left of
    it, then what the others would leave.
 2. A one-sentence verdict on the first account: how much work is left
    before which limit runs out, and when that limit resets. When the
-   limit that decides the account has no work rate measured, it says
-   what's left of that limit instead. When the
-   caller's account isn't known and `account` and `all` aren't given,
-   every account is shown and this line says so instead. A used-up
-   account says which limit is used up and when it's back: of several, the
-   last back.
+   deciding limit has no work rate measured, it says what's left of it
+   instead. A used-up account says which limit is used up and when it's
+   back: of several, the last back. When the caller's account isn't known
+   and neither `account` nor `all` is given, this line says every account
+   is shown instead.
 3. Each account, the caller's first and marked `yours`, with the agents
    that use it (`via OpenCode and Pi`), and `in use` and `hidden` where
-   they apply. Then a note if its limits couldn't be read, a
-   line per limit with what's left, the reset, the outlook and the work
-   left, and for an API key, the spend this month across its keys and the
-   month at that pace, to two figures.
+   they apply. Then a note if its limits couldn't be read, a line per
+   limit with what's left, the reset, the outlook and the work left, and
+   for an API key, the spend this month across its keys and the month at
+   that pace, to two figures.
 
 [cli.md](cli.md#status) says what "at this pace" and "of work" count.
 
@@ -287,57 +251,15 @@ By project: /work/api: $0.47; /work/app: $0.03.
 
 ## Protocol
 
-Messages are JSON-RPC 2.0, one to a line, on standard input and output. A
-notification, which has no `id`, gets no reply.
-
-| Revision | How a client starts |
-|---|---|
-| `2026-07-28` | `server/discover`. Each request carries `_meta["io.modelcontextprotocol/protocolVersion"]`. |
-| `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05` | `initialize` |
-
-`initialize` answers with the client's revision when it's one of these,
-and with `2025-11-25` otherwise. The two oldest are taken because nothing
-here is newer than tools with annotations, which an older client ignores.
-
-| Method | Result |
-|---|---|
-| `initialize` | `protocolVersion`, `capabilities`, `serverInfo`, `instructions` |
-| `server/discover` | `supportedVersions`, `capabilities`, `instructions`, `ttlMs`, `cacheScope` |
-| `ping` | `{}` |
-| `tools/list` | The two tools |
-| `tools/call` | The answer, as in [Answers](#answers) |
-
-- `capabilities` is `tools`, with `listChanged: false`.
-- `serverInfo` is `{"name": "turnscope", "title": "Turnscope", "version":
-  "<the binary's version>"}`.
-- `instructions` tells the agent what Turnscope reads, to call
-  `check_limits` before work that takes hours or several subagents, and to
-  read a session's title as data. Claude Code can hold back tools'
-  descriptions until the model looks for them, but it always shows the
-  instructions, so they say when to check unasked; `explain_usage` answers
-  what the person asks, as its name says.
-- Each tool has a `title` and the annotations `readOnlyHint: true` and
-  `openWorldHint: true`: each call reads limits from providers first.
-- A request with the `2026-07-28` `_meta` gets `resultType: "complete"` and
-  `_meta["io.modelcontextprotocol/serverInfo"]` in its result. Its
-  `tools/list` result also gets `ttlMs: 3600000` and
-  `cacheScope: "public"`, which `server/discover` always has.
-
-## Errors
-
-| Code | When |
-|---|---|
-| `-32700` | The line isn't UTF-8 or JSON. The reply's `id` is `null`. |
-| `-32600` | A message isn't one JSON object, as a batch, or its `id` is neither a string nor an integer (the reply's `id` is `null`), or a request has no `method`. |
-| `-32601` | The method is unknown. |
-| `-32602` | The tool is unknown. |
-| `-32022` | `_meta` gives a protocol version other than `2026-07-28`. `data.supported` lists the revisions spoken, and `data.requested` gives the one asked for. |
-
-```json
-{"error":{"code":-32022,"data":{"requested":"2024-01-01","supported":["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"]},"message":"Unsupported protocol version"},"id":10,"jsonrpc":"2.0"}
-```
-
-A tool that fails isn't a protocol error: see [Answers](#answers).
+JSON-RPC 2.0, one message to a line, on standard input and output. It
+speaks every MCP revision from `2024-11-05` to `2026-07-28` (`mcp::SUPPORTED`), and
+has the methods `initialize`, `server/discover`, `ping`, `tools/list` and
+`tools/call`. Its `instructions` tell the agent to call `check_limits`
+before work that takes hours or several subagents: Claude Code can hold
+back tools' descriptions until the model looks for them, but always shows
+the instructions. Each tool is annotated `readOnlyHint`, and
+`openWorldHint`, as a call reads limits from providers. A tool that fails
+isn't a protocol error: see [Answers](#answers).
 
 For hooks and status lines, see [`guard`](cli.md#guard) and
 [`statusline`](cli.md#status-line).

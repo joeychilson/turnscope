@@ -20,4 +20,5 @@ OpenCode Go share OpenCode's mark, as models.dev gives it for both, padded
 until its ink covers as much of the frame as Anthropic's, 21%, measured on a
 render with its lighter middle counted at its opacity.
 
-An agent or provider without a logo is drawn with a generic mark.
+A provider without a logo gets a key in the panel, and an agent a
+terminal; the menu bar shows none.

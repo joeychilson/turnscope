@@ -6,7 +6,8 @@ file knows the agent's formats. The app needs nothing but a logo: it takes
 the agent's name from the status.
 
 The steps use an agent called Acme, with id `acme`. Pi
-(`src/agents/pi.rs`) is the shortest complete agent to read alongside.
+(`src/agents/pi.rs`) is a complete agent with JSON Lines history to read
+alongside; OpenCode (`src/agents/opencode.rs`) keeps a SQLite database.
 Paths are in the engine's crate, `crates/turnscope/`, but for the logo.
 
 ## 1. Measure the agent's files
@@ -15,9 +16,8 @@ Before writing code, look at real history: where the files are, what each
 record holds, and how usage, sessions, subagents, forks and logins are
 written. Read only what the agent writes today.
 
-The module comment of `src/agents/acme.rs` says what the agent's files are.
-Each decision you measured goes on the code it applies to, with its
-numbers and dates.
+The module comment of `src/agents/acme.rs` says what the agent's files are,
+and the agent's version they were read from.
 
 ## 2. Describe it in `Info`
 
@@ -285,8 +285,8 @@ TURNSCOPE_BLESS=1 cargo test --test cli
 
 Add a one-color SVG (`currentColor`) at
 `crates/turnscope-macos/assets/logos/agents/acme.svg`, and say where it
-came from in that folder's `README.md`. Without one, the app
-draws a generic mark.
+came from in that folder's `README.md`. Without one, the panel shows a
+terminal in its place.
 
 ## 7. Update the docs
 
@@ -297,10 +297,9 @@ Name the agent in:
   [Environment](cli.md#environment), and the examples whose snapshots
   changed, such as the `connect` output, copied from
   `crates/turnscope/tests/snapshots/connect.txt`.
-- `docs/mcp.md`: the table of `connect` commands, the agents' folders and
-  configuration files, the commands "Who is asking" looks for and any
+- `docs/mcp.md`: the commands "Who is asking" looks for, and any
   `session_var` or `folder_var`.
-- `docs/architecture.md`: the agent list, the glossary and the code map.
+- `docs/architecture.md`: the agent list and the glossary.
 - `CHANGELOG.md`.
 
 ## Done when

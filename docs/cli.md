@@ -18,7 +18,8 @@ Inside the app it is
 | [`guard`](#guard) | For an agent's hook: exit 2 when a limit is under a percent left |
 | [`statusline`](#status-line) | One line for an agent's status line |
 
-`turnscope <command> --help` prints a command's flags.
+`turnscope <command> --help` prints a command's flags. This page adds what
+the help doesn't say.
 
 The examples below are the output of the snapshot tests
 (`crates/turnscope/tests/snapshots/`), run on synthetic accounts and
@@ -26,29 +27,23 @@ sessions at Thu Oct 1 12:00 UTC.
 
 ## Global options
 
-| Option | Default | |
-|---|---|---|
-| `--data <dir>` | `~/Library/Application Support/com.joeychilson.turnscope` | Where Turnscope keeps its data |
-| `--home <dir>` | `$HOME` | The home folder to read the agents' history and logins from. `connect` and `disconnect` change the agents' settings there |
-| `--json` | | Print JSON instead of text |
-| `-h`, `--help` | | Print help |
-| `-V`, `--version` | | Print the version |
-
-Every command that prints data takes `--json`. Examples of the JSON are in
+Every command takes `--data <dir>`, where Turnscope keeps its data, and
+`--home <dir>`, the home folder to read the agents' history and logins
+from; `connect` and `disconnect` change the agents' settings there. Every
+command that prints data takes `--json`. Examples of the JSON are in
 `crates/turnscope/tests/snapshots/*.json`.
 
-Before answering, `status`, `usage`, `accounts` and `doctor` bring the
-database up to date. They read what's new in the
-agents' history, the limits of each account as they come due, 5 minutes
-after the last reading of one in use and 20 after one not, and the prices
-when six hours have passed since any process read them. If that fails,
-they answer from what's known and say why on standard error.
+Before answering, `status`, `usage`, `accounts` and `doctor` catch up:
+they read what's new in the agents' history, and limits and prices as they
+come due ([architecture.md](architecture.md#catching-up)). `accounts hide`
+and `show` don't. If catching up fails, they answer from what's known and
+say why on standard error.
 
 The first time, and again after an update that changes how history is
 read, they read all of your agents' history, which can take minutes. They
 say `Reading your agents' history…` on standard error first. While another
-Turnscope reads history, such as the app's or an agent's MCP server, they
-wait for it, and after a second they say
+Turnscope reads history, such as the app or an agent's MCP server, they
+wait for it, and after a second say
 `Waiting while another Turnscope reads your agents' history…`.
 
 ## Names
@@ -107,7 +102,7 @@ own.
 | `TURNSCOPE_NOW` | Fixes the clock, in UTC milliseconds, so output can be reproduced. |
 | `HOME` | The default for `--home`. |
 | `TZ` | The time zone times are read and shown in. |
-| `SHELL` | `connect` and `disconnect` find the agent's command on the `PATH` this shell sets as a login shell. Default `/bin/zsh`. |
+| `SHELL` | `connect` and `disconnect` find the agent's command on the `PATH` this shell sets as an interactive login shell. Default `/bin/zsh`. |
 | `CLAUDE_CODE_SESSION_ID` | Set by Claude Code: the calling session, whose account is yours. |
 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME` | The agent folder the calling agent uses, when it isn't its own: which account is yours. |
 
@@ -124,11 +119,8 @@ pace, and the hours of work left. An API key also shows its spend this
 month and, after the month's first day, the month at that pace, to two
 figures: `on pace for about $62`.
 
-| Flag | |
-|---|---|
-| `--account <name>` | Only the accounts this names, hidden or not. It may name several. |
-| `--all` | Hidden accounts too. |
-| `--hours <n>` | Whether n more hours of work fit the first account shown, at its work rate. Zero or more; decimals work. |
+`--account` may name several accounts, hidden or not. `--hours` takes
+zero or more, decimals too.
 
 ```console
 $ turnscope status
@@ -178,15 +170,11 @@ What was used and what it cost. Costs are at list prices: what the same
 tokens cost on each provider's API. A response with no known price is
 counted as unpriced, not free.
 
-| Flag | Default | |
-|---|---|---|
-| `--since <when>` | 30 days back | A [time form](#time-forms), before `--until`. |
-| `--until <when>` | now | A time form. Not with `--limit`. |
-| `--by <group>` | `day`, or `session` with `--limit` | `day`, `week`, `month`, `model`, `project`, `agent`, `account` or `session`. |
-| `--agent <id>` | every agent | Only this agent's usage. Not with `--limit`. |
-| `--account <name>` | every account | Only this account's usage. The name must match one account. |
-| `--limit <name>` | | What used this limit (below). |
-| `--top <n>` | 20 | How many rows to show, 1 or more. By time, the latest n, with the earlier ones added up in a first row. Otherwise the n that cost most, with the rest added up in a last row. |
+`--since` and `--until` take a [time form](#time-forms), and `--since`
+must be earlier. `--account` must match one account. `--until` and
+`--agent` don't go with `--limit`. Grouped by time, `--top` shows the
+latest rows, with the earlier ones added up in a first row; otherwise the
+rows that cost most, with the rest added up in a last row.
 
 ```console
 $ turnscope usage --since 2026-09-29 --by model
@@ -239,10 +227,10 @@ Costs are at list prices: what the same tokens cost on each provider's API.
 ```
 
 Shares are approximate. Providers say how much of a limit is used, not by
-what, so each row's share is its part of the cost. A limit on one model,
-such as `Weekly (Opus)`, counts only the responses of models whose id
-names it, such as `claude-opus-5`. One on several, such as `Weekly (Claude
-and GPT)`, counts those of any of them.
+what, so each row's share is its part of the cost. A limit on some models,
+such as `Weekly (Opus)` or a [pool](architecture.md#glossary) such as
+`Weekly (Claude and GPT)`, counts only the responses of models whose id
+names one of them, such as `claude-opus-5`.
 
 ## Accounts
 
@@ -302,7 +290,7 @@ the agent would lose it once that's gone.
 
 With `--home`, the agent's command runs with `HOME` set to that folder, so
 that it changes the settings there and not your own. The command is still
-found on the `PATH` your login shell sets in your own home.
+found on the `PATH` your interactive login shell sets in your own home.
 
 ## Doctor
 
@@ -334,12 +322,9 @@ turnscope guard --limit <name> --below <percent> [--account <name>] [--say <text
 
 `guard` turns a limit into an exit code, for an agent's hook.
 
-| Flag | Default | |
-|---|---|---|
-| `--limit <name>` | required | The limit, such as `week`, `"5 hours"` or `"opus weekly"` ([Names](#names)). |
-| `--below <percent>` | required | Block when the limit has less than this percent left, 0 to 100. |
-| `--account <name>` | The calling agent's | The account. The name must match one account. |
-| `--say <text>` | The reason | What to print on standard error when it blocks. |
+`--limit` is named as in [Names](#names). `--below` is 0 to 100.
+`--account` must match one account. `--say` replaces the reason printed
+when it blocks.
 
 In Claude Code's `settings.json`, this stops subagents from starting when
 the weekly limit has under 10% left:
@@ -384,14 +369,10 @@ turnscope statusline [--account <name>]
 ```
 
 `statusline` prints one line for an agent's status line: the account it
-draws on, the limits it stands by, and any other limit running out or used
-up. An account stands by its limits on all its usage, or with none, as
-Google AI's plans, by those of the pool it last drew on. When one it stands
-by is used up, only those show.
-
-| Flag | Default | |
-|---|---|---|
-| `--account <name>` | Below | The account. Of several it names, the first. |
+draws on, the limits it stands by (those on all its usage, or of the
+[pool](architecture.md#glossary) it last drew on), and any other limit
+running out or used up. When one it stands by is used up, only those show.
+`--account` takes the first account it names.
 
 From the tests:
 
