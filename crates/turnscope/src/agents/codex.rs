@@ -691,8 +691,14 @@ fn in_band(limits: RateLimits, cursor: &Cursor, at: i64) -> Option<InBand> {
     .into_iter()
     .filter_map(|(key, window)| {
         let window = window?;
-        let length = window.window_minutes.filter(|minutes| *minutes > 0)? * MINUTE;
-        let resets = window.resets_at.filter(|at| *at > 0).map(|at| at * 1000);
+        let length = window
+            .window_minutes
+            .filter(|minutes| *minutes > 0)?
+            .checked_mul(MINUTE)?;
+        let resets = window
+            .resets_at
+            .filter(|at| *at > 0)
+            .and_then(|at| at.checked_mul(1000));
         Some(providers::window(
             key,
             scope,

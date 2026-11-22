@@ -1014,6 +1014,13 @@ mod tests {
         );
         assert_eq!(read(failed(), signed("file", 1)).as_deref(), Some("file"));
         assert_eq!(read(signed("kept", 1), failed()).as_deref(), Some("kept"));
+        let lasting = signed("kept", 0).map(|one| {
+            one.map(|kept| Credential {
+                expires: None,
+                ..kept
+            })
+        });
+        assert_eq!(read(lasting, signed("file", 2)).as_deref(), Some("kept"));
         assert!(crate::agents::fresher(Ok(None), failed()).is_err());
     }
 }
