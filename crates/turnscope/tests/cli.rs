@@ -368,8 +368,7 @@ fn examples<'a>(doc: &'a str, fences: &[&str]) -> Vec<&'a str> {
 }
 
 /// The examples in docs/cli.md and docs/mcp.md are what the binary says:
-/// each line of their output is a line of some snapshot, and an MCP
-/// message shown is one the server sent.
+/// each line of their output is a line of some snapshot or MCP answer.
 #[test]
 fn the_docs_show_what_the_snapshots_hold() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

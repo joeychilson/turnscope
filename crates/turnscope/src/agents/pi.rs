@@ -67,9 +67,9 @@ struct Line<'a> {
     id: Option<Cow<'a, str>>,
     #[serde(borrow, default, deserialize_with = "super::lenient")]
     timestamp: Option<Cow<'a, str>>,
-    #[serde(borrow)]
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
     cwd: Option<Cow<'a, str>>,
-    #[serde(borrow)]
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
     name: Option<Cow<'a, str>>,
     #[serde(borrow)]
     provider: Option<Cow<'a, str>>,
@@ -91,9 +91,19 @@ struct Message<'a> {
     provider: Option<Cow<'a, str>>,
     #[serde(borrow)]
     model: Option<Cow<'a, str>>,
-    #[serde(rename = "responseModel", borrow)]
+    #[serde(
+        rename = "responseModel",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
     response_model: Option<Cow<'a, str>>,
-    #[serde(rename = "responseId", borrow)]
+    #[serde(
+        rename = "responseId",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
     response_id: Option<Cow<'a, str>>,
     /// In Unix milliseconds, where it reads as one; else the line's time.
     #[serde(borrow)]
@@ -489,7 +499,7 @@ mod tests {
             &[
                 json!({"type": "session", "id": "s1", "timestamp": "2026-09-30T09:00:00Z"}),
                 json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant",
-                    "provider": "xai", "model": "grok-4.6", "responseId": "resp_1", "timestamp": "soon", "usage": odd}}),
+                    "provider": "xai", "model": "grok-4.6", "responseModel": 4.6, "responseId": "resp_1", "timestamp": "soon", "usage": odd}}),
             ],
         );
         let response = &Pi.read(&file, "").unwrap().responses["resp_1"];

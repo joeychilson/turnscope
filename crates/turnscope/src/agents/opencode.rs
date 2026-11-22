@@ -160,7 +160,9 @@ struct CacheTokens {
 
 #[derive(Deserialize)]
 struct MessageTime {
+    #[serde(default, deserialize_with = "super::lenient")]
     completed: Option<i64>,
+    #[serde(default, deserialize_with = "super::lenient")]
     created: Option<i64>,
 }
 

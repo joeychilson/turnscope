@@ -630,30 +630,32 @@ fn keep(
         if !told(caught) {
             return Ok(());
         }
+        // A write waits for a burst of writes to settle, a second at most,
+        // and out the gap: the next catch-up reads what's written meanwhile.
+        // Limits asked for are read at once, unless read under `ASKED` ago:
+        // waiting out the gap, they were read 5 s later.
         let waited = Instant::now();
-        match changes.recv_timeout(Duration::from_secs(60)) {
-            // At once, unless read under `ASKED` ago: waiting out the gap,
-            // limits asked for right after a catch-up were read 5 s later.
-            Ok(Wake::Asked) if asked_at.is_none_or(|at| at.elapsed() >= ASKED) => asked = true,
-            Ok(wake) => {
-                asked |= wake == Wake::Asked;
-                // Let a burst of writes settle, a second at most.
-                let start = Instant::now();
-                while let Ok(wake) = changes.recv_timeout(Duration::from_millis(250)) {
+        let (mut first, mut settled) = (None::<Instant>, false);
+        loop {
+            let wait = match first {
+                None => Duration::from_secs(60),
+                Some(_) if !settled => Duration::from_millis(250),
+                Some(_) => GAP.saturating_sub(waited.elapsed()),
+            };
+            match changes.recv_timeout(wait) {
+                Ok(wake) => {
                     asked |= wake == Wake::Asked;
-                    if start.elapsed() >= Duration::from_secs(1) {
-                        break;
-                    }
+                    let first = *first.get_or_insert_with(Instant::now);
+                    settled |= first.elapsed() >= Duration::from_secs(1);
                 }
-                // The next catch-up reads what's written meanwhile.
-                std::thread::sleep(GAP.saturating_sub(waited.elapsed()));
-                while let Ok(wake) = changes.try_recv() {
-                    asked |= wake == Wake::Asked;
+                Err(RecvTimeoutError::Timeout) if first.is_none() || settled => break,
+                Err(RecvTimeoutError::Timeout) => settled = true,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(Error::Failed("the agents' folders can't be watched".into()));
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(Error::Failed("the agents' folders can't be watched".into()));
+            if asked && crate::online() && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+                break;
             }
         }
     }
@@ -1113,6 +1115,9 @@ mod tests {
             })
         });
         told.recv_timeout(Duration::from_secs(10)).unwrap();
+        // As when an agent at work writes just before the panel opens.
+        locked(&wake).as_ref().unwrap().send(Wake::Written).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
         let asked = Instant::now();
         locked(&wake).as_ref().unwrap().send(Wake::Asked).unwrap();
         let answered = told.recv_timeout(Duration::from_secs(10)).unwrap();
