@@ -11,8 +11,8 @@
   such as one on some models, stays as last read.
 - **An account not in use is read every 20 minutes**, not every 5. One in
   use is still read every 5, and any account right after a limit resets.
-- **Opening the panel reads limits more than 5 minutes old**, and those
-  whose read failed. So does an agent writing a new login file. If that
+- **Opening the panel reads limits more than 5 minutes old right away**,
+  and those whose read failed. So does an agent writing a new login file. If that
   read finds no network, as right after the Mac wakes, the account stays
   as it was.
 - **An account whose login can't be read**, as while the Keychain is
@@ -37,6 +37,8 @@
   price, earlier usage included.
 - **The app shows an amount that rounds to no cents as `$0`**, not
   `$0.00`.
+- **A session title cut to length no longer ends in a space**, as it
+  could in `usage --json`.
 
 ## 0.3.1
 
