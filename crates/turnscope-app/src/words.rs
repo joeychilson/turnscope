@@ -3,7 +3,7 @@
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, Zoned};
+use jiff::{Timestamp, ZonedDateTime};
 use turnscope::alerts::{Alert, Kind as AlertKind};
 use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{
@@ -34,15 +34,15 @@ impl Words {
         let now = turnscope::time::minute(now_ms);
         let today = Timestamp::from_millisecond(now)
             .unwrap_or_default()
-            .to_zoned(tz.clone())
+            .to_zoned_datetime(tz.clone())
             .date();
         Words { now, tz, today }
     }
 
-    fn zoned(&self, ms: i64) -> Zoned {
+    fn zoned(&self, ms: i64) -> ZonedDateTime {
         Timestamp::from_millisecond(ms)
             .unwrap_or_default()
-            .to_zoned(self.tz.clone())
+            .to_zoned_datetime(self.tz.clone())
     }
 
     /// Past is "0m": a status can be minutes old, as only one that changed is told.
@@ -97,7 +97,7 @@ impl Words {
         fmt_month_day(&z, false)
     }
 
-    fn day_name(&self, z: &Zoned) -> String {
+    fn day_name(&self, z: &ZonedDateTime) -> String {
         let date = z.date();
         if date == self.today {
             return "today".into();
@@ -531,7 +531,7 @@ impl Words {
     }
 }
 
-fn fmt_time(z: &Zoned) -> String {
+fn fmt_time(z: &ZonedDateTime) -> String {
     let format = if z.minute() == 0 {
         "%-I %p"
     } else {
@@ -540,12 +540,12 @@ fn fmt_time(z: &Zoned) -> String {
     z.strftime(format).to_string()
 }
 
-fn fmt_weekday(z: &Zoned, full: bool) -> String {
+fn fmt_weekday(z: &ZonedDateTime, full: bool) -> String {
     z.strftime(if full { "%A" } else { "%a" }).to_string()
 }
 
 /// "Oct 30", or "October 30" if `full`.
-fn fmt_month_day(z: &Zoned, full: bool) -> String {
+fn fmt_month_day(z: &ZonedDateTime, full: bool) -> String {
     z.strftime(if full { "%B %-d" } else { "%b %-d" })
         .to_string()
 }
