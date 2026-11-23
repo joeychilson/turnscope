@@ -19,10 +19,11 @@ struct Floating: View {
         Panel()
             .clipShape(shape)
             .background {
+                // Keep hit-testing on the material so WindowServer's event shape covers the whole
+                // panel; disabling it makes closed rows and row gaps click-through to windows behind.
                 shape
                     .fill(.regularMaterial)
                     .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
-                    .allowsHitTesting(false)
             }
             .overlay {
                 shape
