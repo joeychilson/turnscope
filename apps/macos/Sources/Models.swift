@@ -1,8 +1,29 @@
 // Wire models exchanged with `libturnscope_app.a` (`crates/turnscope-app/src/view.rs`
-// and `state.rs`) plus launch argument parsing. Pure Foundation so `cargo test` can
-// compile this file directly to verify the Rust <-> Swift JSON contract.
+// and `state.rs`), launch argument parsing, and panel placement. Pure Foundation /
+// CoreGraphics so `cargo test` can compile this file directly to verify the contract.
 
+import CoreGraphics
 import Foundation
+
+// MARK: - Panel Placement
+
+func panelFrame(
+    midX: CGFloat,
+    underY: CGFloat,
+    visible: CGRect,
+    panelWidth: CGFloat,
+    gutter: CGFloat
+) -> CGRect {
+    let left = max(visible.minX + 6, min(midX - panelWidth / 2, visible.maxX - panelWidth - 6))
+    let top = underY - 6
+    let height = max(200, top - visible.minY)
+    return CGRect(
+        x: left - gutter,
+        y: visible.minY,
+        width: panelWidth + gutter * 2,
+        height: height
+    )
+}
 
 // MARK: - Launch Arguments (docs/app.md#launch-arguments)
 

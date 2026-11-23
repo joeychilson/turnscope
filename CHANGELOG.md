@@ -27,7 +27,7 @@
 - **Edge-case fixes:** older costs update when prices change, `app.log`
   keeps the previous 1 MiB in `app.log.1` instead of clearing it, Codex
   and Grok Build's connected status is read when `config.toml` has
-  comments or single-quoted paths, and an agent installed in a path with
+  comments or single-quoted paths, and Antigravity installed in a path with
   spaces is still recognized when it calls the MCP server.
 
 ## 0.3.2

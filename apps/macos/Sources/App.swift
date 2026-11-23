@@ -395,15 +395,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             return
         }
-        let left = max(visible.minX + 6, min(midX - panelWidth / 2, visible.maxX - panelWidth - 6))
-        let top = underY - 6
-        let height = max(200, top - visible.minY)
         panel.setFrame(
-            NSRect(
-                x: left - Floating.gutter,
-                y: visible.minY,
-                width: panelWidth + Floating.gutter * 2,
-                height: height
+            panelFrame(
+                midX: midX,
+                underY: underY,
+                visible: visible,
+                panelWidth: panelWidth,
+                gutter: Floating.gutter
             ),
             display: true
         )

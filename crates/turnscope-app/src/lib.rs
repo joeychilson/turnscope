@@ -668,7 +668,7 @@ mod tests {
                         id: "openai:b".into(),
                         provider: "openai".into(),
                         title: "ChatGPT Pro".into(),
-                        label: None,
+                        label: Some("work@example.com".into()),
                         via: Some("Codex".into()),
                         called: "ChatGPT Pro".into(),
                     }],
@@ -690,7 +690,12 @@ mod tests {
                     }),
                     settings: SettingsModel {
                         menu_shows: MenuShows::All,
-                        notify: Some(Notify::default()),
+                        notify: Some(Notify {
+                            running_out: true,
+                            used_up: false,
+                            reset: true,
+                            sign_in: false,
+                        }),
                         can_edit_notify: true,
                         agents_empty: None,
                         agents_title: "Let these agents check their limits".into(),
@@ -860,12 +865,58 @@ let args = CommandLine.arguments
 let decoder = JSONDecoder()
 let syncs = try decoder.decode([AppSync].self, from: Data(contentsOf: URL(fileURLWithPath: args[1])))
 precondition(syncs.count == 3)
-precondition(syncs[0].panel.inUse[0].usedMost[0].sessionId == "0f6e-1234")
+
+// Verify every optional field Rust sends as Some decodes non-nil (decodeIfPresent would silently drop renamed keys).
+let p0 = syncs[0].panel
+precondition(p0.verdict?.headline == "Claude Max runs out in 50m")
+let row = p0.inUse[0]
+precondition(row.label == "me@example.com")
+precondition(row.figureThen == "· 12%")
+precondition(row.note == "As of 2:00 PM")
+precondition(row.usedMostHeading == "Used most of 5 hours")
+precondition(row.limits[0].ahead == "Runs out in 50m")
+precondition(row.limits[0].window == "Resets 3:00 PM")
+precondition(row.limits[0].timeLeftFraction == 0.42)
+precondition(row.limits[1].size == "of $30")
+precondition(row.usedMost[0].sessionId == "0f6e-1234")
+precondition(row.usedMost[0].projectPath == "/tmp/turnscope")
+precondition(p0.hidden[0].label == "work@example.com")
+precondition(p0.hidden[0].via == "Codex")
+precondition(p0.unusedFoldLabel == "1 hidden")
+precondition(p0.hiddenFoldLabel == "1 hidden")
+precondition(p0.connectOffer?.note == "Uses another Turnscope")
+precondition(p0.connectOffer?.configured == "/old/turnscope")
+precondition(p0.footerNote == .stale(text: "Not up to date", help: "Offline", spoken: "Not up to date: Offline"))
+precondition(p0.settings.notify == NotifySettings(runningOut: true, usedUp: false, reset: true, signIn: false))
+precondition(p0.settings.agents[0].note == "Uses another Turnscope")
+precondition(p0.settings.agents[0].configured == "/old/turnscope")
+precondition(p0.settings.agents[0].changing == "Connecting…")
+precondition(p0.settings.subscriptions[0].label == "me@example.com")
+precondition(p0.settings.subscriptions[0].via == "Claude Code")
 precondition(syncs[0].effects.count == 3)
+
+let p1 = syncs[1].panel
+precondition(p1.waiting?.problem == "database locked")
+precondition(p1.footerNote == .reading(text: "Reading…", help: "First run", spoken: "Reading"))
+precondition(p1.settings.agentsEmpty == EmptyMessage(headline: "No agents", detail: "Install one"))
+precondition(p1.settings.accountsEmpty == EmptyMessage(headline: "No accounts", detail: "Sign in"))
+
+precondition(syncs[2].panel.footerNote == .refreshing(text: "Refreshing limits…", spoken: "Refreshing limits"))
 
 let snaps = try decoder.decode([SnapshotResponse].self, from: Data(contentsOf: URL(fileURLWithPath: args[2])))
 precondition(snaps.count == 2)
+if case let .ok(panel) = snaps[0] {
+    precondition(panel.verdict?.headline == "Claude Max runs out in 50m")
+} else {
+    preconditionFailure("expected .ok snapshot")
+}
+if case let .err(message, code) = snaps[1] {
+    precondition(message == "unreadable" && code == 2)
+} else {
+    preconditionFailure("expected .err snapshot")
+}
 
+// Launch argument parsing.
 precondition(Launch.parse(["Turnscope"]) == Launch())
 precondition(
     Launch.parse(["Turnscope", "--fixture", "f.json", "--snapshot", "out", "--data", "d", "--home", "h", "--open", "account,unused"])
@@ -875,6 +926,22 @@ precondition(Launch.parse(["Turnscope", "--fixture", "--open"]) == Launch(openin
 precondition(Opening.parse("settings").settings == .general)
 precondition(Opening.parse("agents").settings == .agents)
 precondition(Opening.parse("accounts").settings == .accounts)
+
+// Panel placement (under item, above Dock, screen-edge clamping, multi-display coordinates).
+let laptop = CGRect(x: 0, y: 0, width: 1512, height: 949)
+let under = panelFrame(midX: 1200, underY: 949, visible: laptop, panelWidth: 340, gutter: 28)
+precondition(under == CGRect(x: 1200 - 170 - 28, y: 0, width: 396, height: 943))
+let docked = CGRect(x: 0, y: 80, width: 1512, height: 869)
+precondition(panelFrame(midX: 1200, underY: 949, visible: docked, panelWidth: 340, gutter: 28).height == 863)
+let rightEdge = panelFrame(midX: 1500, underY: 949, visible: laptop, panelWidth: 340, gutter: 28)
+precondition(rightEdge.minX + 28 + 340 == 1512 - 6)
+let leftEdge = panelFrame(midX: 10, underY: 949, visible: laptop, panelWidth: 340, gutter: 28)
+precondition(leftEdge.minX + 28 == 6)
+let narrow = CGRect(x: 0, y: 0, width: 300, height: 949)
+precondition(panelFrame(midX: 150, underY: 949, visible: narrow, panelWidth: 340, gutter: 28).minX + 28 == 6)
+let secondary = CGRect(x: -1920, y: 982, width: 1920, height: 1055)
+let multi = panelFrame(midX: -300, underY: 2037, visible: secondary, panelWidth: 340, gutter: 28)
+precondition(multi == CGRect(x: -300 - 170 - 28, y: 982, width: 396, height: 1049))
 
 let out = Out(
     actions: [
@@ -983,11 +1050,17 @@ print(String(data: data, encoding: .utf8)!)
                 Action::Tick,
             ]
         );
+        assert_eq!(parsed.start.fixture.as_deref(), Some(Path::new("f.json")));
+        assert_eq!(parsed.start.data.as_deref(), Some(Path::new("/tmp/d")));
+        assert_eq!(parsed.start.home.as_deref(), Some(Path::new("/tmp/h")));
+        assert!(parsed.start.from_disk_image);
         assert_eq!(parsed.start.menu_shows, MenuShows::One);
         assert_eq!(parsed.start.dismissed_connect, vec!["codex"]);
         assert_eq!(
             parsed.snapshot.fixture.as_deref(),
             Some(Path::new("f.json"))
         );
+        assert_eq!(parsed.snapshot.data.as_deref(), Some(Path::new("/tmp/d")));
+        assert_eq!(parsed.snapshot.home.as_deref(), Some(Path::new("/tmp/h")));
     }
 }

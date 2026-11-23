@@ -277,6 +277,8 @@ final class Bridge {
 
     private func drainWake() {
         wakePending.withLock { $0 = false }
+        // Leave effects queued in Rust until `applicationDidFinishLaunching` wires `onSync`.
+        guard onSync != nil else { return }
         sync()
     }
 

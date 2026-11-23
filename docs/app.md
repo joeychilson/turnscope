@@ -162,9 +162,8 @@ with a short fade.
 The panel is a borderless window hung under the item, with the system's
 glass behind it. The window runs to the bottom of the screen, so the panel
 grows and shrinks inside it without the window resizing, and a Settings
-tab taller than the screen scrolls under its title. A click beside or
-below the panel lands on that window and closes the panel, as a click
-outside a menu does; so does switching apps. Escape closes it from its
+tab taller than the screen scrolls under its title. A click outside the
+panel closes it; so does switching apps. Escape closes it from its
 first page, and goes back from Settings. The panel always opens on its
 first page with nothing open; `--open` and a clicked notification then set
 what's open.
