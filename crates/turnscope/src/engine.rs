@@ -127,6 +127,8 @@ enum Wake {
     /// Limits were asked for: the panel opened (`Engine::ask_limits`), or
     /// an agent wrote a login (`agents::login_file`).
     Asked,
+    /// The engine is shutting down (`Drop for Engine`).
+    Stop,
 }
 
 #[derive(PartialEq, Eq)]
@@ -317,6 +319,9 @@ fn queue(inner: &Arc<Inner>) -> Sender<Work> {
 impl Drop for Engine {
     fn drop(&mut self) {
         self.inner.ended.store(true, Ordering::Relaxed);
+        if let Some(wake) = locked(&self.inner.wake).as_ref() {
+            let _ = wake.send(Wake::Stop);
+        }
     }
 }
 
@@ -388,7 +393,9 @@ impl Inner {
                     }
                 }
             }
-            std::thread::sleep(AGAIN);
+            if !self.ended() {
+                std::thread::sleep(AGAIN);
+            }
         }
     }
 
@@ -493,16 +500,17 @@ impl Inner {
 
 const LOG_SIZE: u64 = 1 << 20;
 
-/// Append `line` with a timestamp to `app.log` in `data` (rotating past 1 MiB).
+/// Append `line` with a timestamp to `app.log` in `data`, rotating past 1 MiB to `app.log.1`.
 pub fn log(data: &Path, line: &str) {
     let path = data.join("app.log");
-    let full = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_SIZE);
-    let mut options = std::fs::OpenOptions::new();
-    match full {
-        true => options.write(true).truncate(true),
-        false => options.append(true),
-    };
-    if let Ok(mut file) = options.create(true).open(path) {
+    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_SIZE) {
+        let _ = std::fs::rename(&path, data.join("app.log.1"));
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+    {
         let line = line.replace('\n', " ");
         let _ = writeln!(file, "{:.0} {line}", jiff::Timestamp::now());
     }
@@ -646,6 +654,7 @@ fn keep(
                 Some(_) => GAP.saturating_sub(waited.elapsed()),
             };
             match changes.recv_timeout(wait) {
+                Ok(Wake::Stop) => return Ok(()),
                 Ok(wake) => {
                     asked |= wake == Wake::Asked;
                     let first = *first.get_or_insert_with(Instant::now);
@@ -1256,5 +1265,38 @@ mod tests {
                 .any(|line| line.ends_with(" answering a request panicked")),
             "{logged}"
         );
+    }
+
+    #[test]
+    fn dropping_the_engine_wakes_and_releases_its_lock() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        drop(read_just_now(data.path()));
+        let (engine, told) = start(data.path(), home.path());
+        next(&told, 10, |event| match event {
+            Event::Shown(shown, _) if shown.status.history_read => Some(()),
+            _ => None,
+        });
+        assert!(running(data.path()));
+        drop(engine);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while running(data.path()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!running(data.path()));
+    }
+
+    #[test]
+    fn log_rotates_past_limit_into_backup_file() {
+        let data = tempfile::tempdir().unwrap();
+        let path = data.path().join("app.log");
+        let existing = "x".repeat(LOG_SIZE as usize + 1);
+        std::fs::write(&path, &existing).unwrap();
+        log(data.path(), "after rotate");
+        assert_eq!(
+            std::fs::read_to_string(data.path().join("app.log.1")).unwrap(),
+            existing
+        );
+        let fresh = std::fs::read_to_string(&path).unwrap();
+        assert!(fresh.trim_end().ends_with(" after rotate"), "{fresh}");
     }
 }

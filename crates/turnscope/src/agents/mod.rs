@@ -767,8 +767,38 @@ fn toml_mcp_command(path: &Path) -> Option<String> {
         .take_while(|line| !line.trim_start().starts_with('['))
         .find_map(|line| {
             let (key, value) = line.split_once('=')?;
-            (key.trim() == "command").then(|| value.trim().trim_matches(['"', '\'']).to_owned())
+            (key.trim() == "command")
+                .then(|| toml_string(value.trim()))
+                .flatten()
         })
+}
+
+fn toml_string(value: &str) -> Option<String> {
+    if let Some(rest) = value.strip_prefix('\'') {
+        let (text, _) = rest.split_once('\'')?;
+        return Some(text.to_owned());
+    }
+    if let Some(rest) = value.strip_prefix('"') {
+        let mut out = String::new();
+        let mut chars = rest.chars();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' => return Some(out),
+                '\\' => match chars.next()? {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    other => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                },
+                other => out.push(other),
+            }
+        }
+        return None;
+    }
+    let unquoted = value.split('#').next()?.trim();
+    (!unquoted.is_empty()).then(|| unquoted.to_owned())
 }
 
 #[cfg(test)]
@@ -1027,6 +1057,30 @@ mod tests {
         assert_eq!(
             found(ended(1, "", "")),
             Err("security gave no reason (exit status: 1)".to_owned())
+        );
+    }
+
+    #[test]
+    fn toml_mcp_command_ignores_inline_comments_and_keeps_quoted_spaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(
+            &file,
+            "[mcp_servers.turnscope]\ncommand = \"/Applications/Turnscope.app/Contents/Helpers/turnscope\" # managed\n",
+        )
+        .unwrap();
+        assert_eq!(
+            toml_mcp_command(&file).as_deref(),
+            Some("/Applications/Turnscope.app/Contents/Helpers/turnscope")
+        );
+        std::fs::write(
+            &file,
+            "[mcp_servers.turnscope]\ncommand = '/Users/me/My Apps/turnscope' # literal\n",
+        )
+        .unwrap();
+        assert_eq!(
+            toml_mcp_command(&file).as_deref(),
+            Some("/Users/me/My Apps/turnscope")
         );
     }
 }

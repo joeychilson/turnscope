@@ -252,9 +252,7 @@ fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
             let info = agent.info();
             name.strip_prefix(info.command)
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
-                || info
-                    .app
-                    .is_some_and(|app| Path::new(program).ends_with(app))
+                || info.app.is_some_and(|app| matches_app(args, app))
         });
         if found.is_some() {
             return found;
@@ -262,6 +260,15 @@ fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
         pid = *parent;
     }
     None
+}
+
+fn matches_app(args: &str, app: &str) -> bool {
+    let Some((prefix, rest)) = args.split_once(app) else {
+        return false;
+    };
+    (prefix.is_empty() || prefix.ends_with('/'))
+        && !prefix.contains(" /")
+        && rest.as_bytes().first().is_none_or(u8::is_ascii_whitespace)
 }
 
 struct Server {
@@ -846,6 +853,8 @@ mod tests {
           320   300 /opt/grok/grok-1.0.41-macos-aarch64 --resume
           330   300 /usr/bin/vim agy.md
           340   300 /opt/Other.app/Contents/Resources/bin/language_server
+          350   300 /Users/me/My Apps/Antigravity.app/Contents/Resources/bin/language_server --port 2
+          360   300 /usr/bin/vim /Applications/Antigravity.app/Contents/Resources/bin/language_server
         ";
         let above = |pid| nearest(table, pid).map(|agent| agent.info().id);
         assert_eq!(above(870), Some("antigravity"));
@@ -861,6 +870,8 @@ mod tests {
         // one's, and a shell is no agent.
         assert_eq!(above(330), None);
         assert_eq!(above(340), None);
+        assert_eq!(above(350), Some("antigravity"));
+        assert_eq!(above(360), None);
         assert_eq!(above(12345), None);
     }
 }

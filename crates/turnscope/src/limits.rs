@@ -165,7 +165,7 @@ fn refresh_with(
         (false, true) => CLAIM,
         (false, false) => DUE,
     };
-    if !crate::db::claim(db, "limits_at", now, gap, now)? {
+    if !crate::db::claim(db, crate::db::Claim::Limits, now, gap, now)? {
         return Ok(false);
     }
     let mut gathered = gather(db, home, agents, providers)?;
