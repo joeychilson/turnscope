@@ -11,9 +11,10 @@ the rules and what to update when you change something.
   Mac targets, and rustup installs it on first use.
 - Xcode 26, to build and bundle the macOS app: `swiftc` compiles the
   SwiftUI shell against `libturnscope_app.a` and `actool` compiles its
-  icon. Signing a release also uses `notarytool`, `stapler` and `swift`.
-  The engine, command line and shared app core build and test with Cargo
-  alone.
+  icon. `cargo test` also runs `xcrun swiftc` on macOS to verify the
+  Rust–Swift wire models in `turnscope-app`. Signing a release also uses
+  `notarytool`, `stapler` and `swift`. The engine and command line
+  (`crates/turnscope`) build and test with Cargo alone.
 - `shellcheck`, `actionlint` and `cargo-deny`, only to run CI's lint job
   yourself.
 
@@ -21,7 +22,7 @@ the rules and what to update when you change something.
 
 ```
 crates/turnscope/        the engine, the command line and the MCP server
-crates/turnscope-app/    shared desktop app core (state, wording, view models, C ABI)
+crates/turnscope-app/    app core (state, wording, view models, C ABI)
 apps/macos/              the macOS SwiftUI + AppKit shell and its bundle assets
 assets/logos/            shared provider and agent SVG logos
 docs/                    how it works, and how to change it
