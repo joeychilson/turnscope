@@ -498,6 +498,14 @@ mod tests {
 
         let data = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
+        // Mark prices and limits current so the test doesn't fetch models.dev over the network.
+        let db = turnscope::db::open(data.path()).unwrap();
+        db.execute(
+            "UPDATE state SET prices_at = ?1, limits_at = ?1",
+            [turnscope::now()],
+        )
+        .unwrap();
+        drop(db);
         let wakes = AtomicUsize::new(0);
         let cfg = serde_json::json!({
             "data": data.path(),
