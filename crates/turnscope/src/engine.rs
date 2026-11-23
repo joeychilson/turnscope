@@ -333,7 +333,7 @@ fn queue(inner: &Arc<Inner>) -> Sender<Work> {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.inner.ended.store(true, Ordering::Relaxed);
+        self.inner.ended.store(true, Ordering::Release);
         if let Some(wake) = locked(&self.inner.wake).as_ref() {
             let _ = wake.send(Wake::Stop);
         }
@@ -346,7 +346,7 @@ impl Inner {
     }
 
     fn ended(&self) -> bool {
-        self.ended.load(Ordering::Relaxed)
+        self.ended.load(Ordering::Acquire)
     }
 
     fn run(&self) {
@@ -368,10 +368,13 @@ impl Inner {
                     }
                 }
             }
+            if self.ended() {
+                return;
+            }
             match lock(&self.data) {
                 Ok(Some(lock)) => {
                     let kept = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        keep(&self.home, &self.data, &self.wake, |caught| {
+                        keep(&self.home, &self.data, &self.wake, &self.ended, |caught| {
                             self.caught(caught)
                         })
                     }));
@@ -576,11 +579,15 @@ fn keep(
     home: &Path,
     data: &Path,
     wake: &Mutex<Option<Sender<Wake>>>,
+    ended: &AtomicBool,
     mut told: impl FnMut(Caught) -> bool,
 ) -> Result<()> {
     let mut db = crate::db::open(data)?;
     let (changed, changes) = mpsc::channel::<Wake>();
     *locked(wake) = Some(changed.clone());
+    if ended.load(Ordering::Acquire) {
+        return Ok(());
+    }
     // Any write, not only to history: macOS reports a write when its file
     // is closed, and Codex and OpenCode keep theirs open while they work.
     // Not a SQLite `-shm` file, which opening a database writes: counted, a
@@ -633,6 +640,9 @@ fn keep(
     // Limits asked for and not read yet, and when they last were.
     let (mut asked, mut asked_at, mut forced) = (false, None::<Instant>, false);
     loop {
+        if ended.load(Ordering::Acquire) {
+            return Ok(());
+        }
         watch(&mut watcher);
         let was_forced = std::mem::take(&mut forced);
         let mut read_asked = false;
@@ -1138,7 +1148,10 @@ mod tests {
         let (home_kept, data_kept) = (home.path().to_path_buf(), data.path().to_path_buf());
         std::thread::spawn(move || {
             let wake = Mutex::new(None);
-            keep(&home_kept, &data_kept, &wake, |_| sender.send(()).is_ok())
+            let ended = AtomicBool::new(false);
+            keep(&home_kept, &data_kept, &wake, &ended, |_| {
+                sender.send(()).is_ok()
+            })
         });
         // Wait to be told, and say when the limits were read, and whether
         // the history was, by then.
@@ -1172,7 +1185,8 @@ mod tests {
             Arc::clone(&wake),
         );
         std::thread::spawn(move || {
-            keep(&home_kept, &data_kept, &wake_kept, |_| {
+            let ended = AtomicBool::new(false);
+            keep(&home_kept, &data_kept, &wake_kept, &ended, |_| {
                 sender.send(Instant::now()).is_ok()
             })
         });
