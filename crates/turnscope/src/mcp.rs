@@ -252,9 +252,7 @@ fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
             let info = agent.info();
             name.strip_prefix(info.command)
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
-                || info
-                    .app
-                    .is_some_and(|app| Path::new(program).ends_with(app))
+                || info.app.is_some_and(|app| matches_app(args, app))
         });
         if found.is_some() {
             return found;
@@ -262,6 +260,15 @@ fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
         pid = *parent;
     }
     None
+}
+
+fn matches_app(args: &str, app: &str) -> bool {
+    let Some((prefix, rest)) = args.split_once(app) else {
+        return false;
+    };
+    (prefix.is_empty() || prefix.ends_with('/'))
+        && !prefix.contains(" /")
+        && rest.as_bytes().first().is_none_or(u8::is_ascii_whitespace)
 }
 
 struct Server {
@@ -533,8 +540,13 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
         true => "Which account is yours isn't known, so here is every one.".to_owned(),
         false => status::verdict(first, status.at),
     };
+    let caller_agent = ask.caller.agent.map(|agent| agent.info().id);
+    let alternate = (shown.len() == 1 && !unknown)
+        .then(|| status::alternate_note(&status, first, caller_agent))
+        .flatten()
+        .map_or(String::new(), |note| format!("\n\n{note}"));
     Ok(format!(
-        "{fit}{head}\n\n{}",
+        "{fit}{head}\n\n{}{alternate}",
         status::text(&status, &shown, yours)
     ))
 }
@@ -846,6 +858,8 @@ mod tests {
           320   300 /opt/grok/grok-1.0.41-macos-aarch64 --resume
           330   300 /usr/bin/vim agy.md
           340   300 /opt/Other.app/Contents/Resources/bin/language_server
+          350   300 /Users/me/My Apps/Antigravity.app/Contents/Resources/bin/language_server --port 2
+          360   300 /usr/bin/vim /Applications/Antigravity.app/Contents/Resources/bin/language_server
         ";
         let above = |pid| nearest(table, pid).map(|agent| agent.info().id);
         assert_eq!(above(870), Some("antigravity"));
@@ -861,6 +875,50 @@ mod tests {
         // one's, and a shell is no agent.
         assert_eq!(above(330), None);
         assert_eq!(above(340), None);
+        assert_eq!(above(350), Some("antigravity"));
+        assert_eq!(above(360), None);
         assert_eq!(above(12345), None);
+    }
+
+    #[test]
+    fn check_limits_mentions_alternate_room_only_for_single_tight_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = turnscope::db::open(dir.path()).unwrap();
+        let now = turnscope::now();
+        let resets = now + 2 * turnscope::time::HOUR;
+        db.execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at) VALUES
+                ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', {now}, {now}, {now}),
+                ('openai:b', 'openai', 'subscription', 'ChatGPT Pro', {now}, {now}, {now});
+             INSERT INTO sign_in (agent, folder, provider, since, account) VALUES
+                ('claude-code', '/h/.claude', 'anthropic', {now}, 'anthropic:a'),
+                ('codex', '/h/.codex', 'openai', {now}, 'openai:b');
+             INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+                input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+                web_searches, priority, account) VALUES
+                ('claude-code', 'r1', 'claude-code:s1', 0, 1, '/h/.claude', {now}, 'anthropic',
+                 'claude-opus', 1, 0, 0, 0, 1, 0, 0, 0, 0, 'anthropic:a');
+             INSERT INTO reading (account, at, limit_key, name, used, resets) VALUES
+                ('anthropic:a', {now}, 'five_hour', '5 hours', 100.0, {resets}),
+                ('openai:b', {now}, 'primary', 'Weekly', 10.0, {resets});"
+        ))
+        .unwrap();
+        let caller = Caller {
+            agent: agents::by_id("claude-code"),
+            session: None,
+            agent_folder: Some(PathBuf::from("/h/.claude")),
+        };
+        let ask = Ask {
+            db: &db,
+            home: Path::new("/h"),
+            caller: &caller,
+        };
+        let mine = check_limits(&ask, json!({})).unwrap();
+        assert!(
+            mine.contains("Another account has room: ChatGPT Pro has 90% left (Weekly, via Codex). Call check_limits with all: true to compare."),
+            "{mine}"
+        );
+        let all = check_limits(&ask, json!({ "all": true })).unwrap();
+        assert!(!all.contains("Another account has room:"), "{all}");
     }
 }

@@ -39,6 +39,8 @@ pub struct UsedMost {
     pub title: Option<String>,
     /// The name of its project's folder.
     pub project: Option<String>,
+    /// Full path to its project folder, when known.
+    pub project_path: Option<String>,
     /// The agent's id.
     pub agent: String,
     /// About how many points of the limit it used: its share of the cost,
@@ -127,6 +129,10 @@ enum Wake {
     /// Limits were asked for: the panel opened (`Engine::ask_limits`), or
     /// an agent wrote a login (`agents::login_file`).
     Asked,
+    /// Explicit user refresh (`Engine::refresh_now`): bypass cooldown and backoff.
+    Force,
+    /// The engine is shutting down (`Drop for Engine`).
+    Stop,
 }
 
 #[derive(PartialEq, Eq)]
@@ -271,6 +277,17 @@ impl Engine {
         }
     }
 
+    /// Ask for a limit read skipping staleness (`DUE`/`IDLE`), while still
+    /// respecting provider backoff and `CLAIM`, and always emit `Shown` when done.
+    pub fn refresh_now(&self) {
+        let sent = locked(&self.inner.wake)
+            .as_ref()
+            .is_some_and(|wake| wake.send(Wake::Force).is_ok());
+        if !sent {
+            Engine::ask(&self.requests, |inner| inner.give(Tell::Always));
+        }
+    }
+
     /// Run `change` on the open data, then tell the status again, changed
     /// or not.
     fn change(
@@ -317,6 +334,9 @@ fn queue(inner: &Arc<Inner>) -> Sender<Work> {
 impl Drop for Engine {
     fn drop(&mut self) {
         self.inner.ended.store(true, Ordering::Relaxed);
+        if let Some(wake) = locked(&self.inner.wake).as_ref() {
+            let _ = wake.send(Wake::Stop);
+        }
     }
 }
 
@@ -388,28 +408,34 @@ impl Inner {
                     }
                 }
             }
-            std::thread::sleep(AGAIN);
+            if !self.ended() {
+                std::thread::sleep(AGAIN);
+            }
         }
     }
 
     // Report current only once a catch-up reads every agent (not on lock or
     // limit read), so persistent failures like an unwritable lock stay visible.
     fn caught(&self, caught: Caught) -> bool {
-        let new = match caught {
-            Caught::Limits => true,
-            Caught::Read { new } => {
+        let (new, always) = match caught {
+            Caught::Limits => (true, false),
+            Caught::Read { new, forced } => {
                 self.kept(None);
-                new
+                (new || forced, forced)
             }
-            Caught::Failed(error) => {
+            Caught::Failed { error, forced } => {
                 if self.stopped(error) {
                     return false;
                 }
-                true
+                (true, forced)
             }
         };
         if new {
-            self.give(Tell::IfChanged);
+            self.give(if always {
+                Tell::Always
+            } else {
+                Tell::IfChanged
+            });
         }
         !self.ended() && self.newer().is_none()
     }
@@ -493,16 +519,17 @@ impl Inner {
 
 const LOG_SIZE: u64 = 1 << 20;
 
-/// Append `line` with a timestamp to `app.log` in `data` (rotating past 1 MiB).
+/// Append `line` with a timestamp to `app.log` in `data`, rotating past 1 MiB to `app.log.1`.
 pub fn log(data: &Path, line: &str) {
     let path = data.join("app.log");
-    let full = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_SIZE);
-    let mut options = std::fs::OpenOptions::new();
-    match full {
-        true => options.write(true).truncate(true),
-        false => options.append(true),
-    };
-    if let Ok(mut file) = options.create(true).open(path) {
+    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_SIZE) {
+        let _ = std::fs::rename(&path, data.join("app.log.1"));
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+    {
         let line = line.replace('\n', " ");
         let _ = writeln!(file, "{:.0} {line}", jiff::Timestamp::now());
     }
@@ -537,8 +564,8 @@ const ASKED: Duration = Duration::from_secs(30);
 
 enum Caught {
     Limits,
-    Read { new: bool },
-    Failed(Error),
+    Read { new: bool, forced: bool },
+    Failed { error: Error, forced: bool },
 }
 
 /// Catch up when the agents' folders change, and each minute, as horizons
@@ -597,19 +624,28 @@ fn keep(
     let mut pushed = None;
     // The limits before history: on a first launch that reads all of it (12 s
     // for a made-up 5,000 files), the app showed no account until it ended.
-    if crate::online() && read_limits(&mut db, home, data, false)? && !told(Caught::Limits) {
+    if crate::online()
+        && read_limits(&mut db, home, data, crate::limits::Ask::Scheduled)?
+        && !told(Caught::Limits)
+    {
         return Ok(());
     }
     // Limits asked for and not read yet, and when they last were.
-    let (mut asked, mut asked_at) = (false, None::<Instant>);
+    let (mut asked, mut asked_at, mut forced) = (false, None::<Instant>, false);
     loop {
         watch(&mut watcher);
+        let was_forced = std::mem::take(&mut forced);
         let mut read_asked = false;
-        if asked && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+        if was_forced {
+            (asked, asked_at) = (false, Some(Instant::now()));
+            if crate::online() {
+                read_asked = read_limits(&mut db, home, data, crate::limits::Ask::Force)?;
+            }
+        } else if asked && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
             (asked, asked_at) = (false, Some(Instant::now()));
             // Offline, the catch-up still takes in limits agents wrote.
             if crate::online() {
-                read_asked = read_limits(&mut db, home, data, true)?;
+                read_asked = read_limits(&mut db, home, data, crate::limits::Ask::Opened)?;
             }
         }
         let caught = match crate::catch_up(&mut db, home, None) {
@@ -620,14 +656,20 @@ fn keep(
                 );
                 let new = read || read_asked || pushed != Some(now);
                 pushed = Some(now);
-                Caught::Read { new }
+                Caught::Read {
+                    new,
+                    forced: was_forced,
+                }
             }
             Err(error) => {
                 // Once a newer Turnscope has written here, this one writes
                 // nothing more, so it stops, and the app says why. Going on,
                 // it showed what it read before as current.
                 crate::db::writing(&db)?;
-                Caught::Failed(error)
+                Caught::Failed {
+                    error,
+                    forced: was_forced,
+                }
             }
         };
         if !told(caught) {
@@ -646,6 +688,11 @@ fn keep(
                 Some(_) => GAP.saturating_sub(waited.elapsed()),
             };
             match changes.recv_timeout(wait) {
+                Ok(Wake::Stop) => return Ok(()),
+                Ok(Wake::Force) => {
+                    forced = true;
+                    break;
+                }
                 Ok(wake) => {
                     asked |= wake == Wake::Asked;
                     let first = *first.get_or_insert_with(Instant::now);
@@ -667,8 +714,13 @@ fn keep(
 /// Read the limits due (`limits::refresh`), or asked for; whether any were.
 /// A failure is logged, and counts as a read so the status is told again,
 /// unless a newer Turnscope wrote.
-fn read_limits(db: &mut Connection, home: &Path, data: &Path, asked: bool) -> Result<bool> {
-    match crate::limits::refresh(db, home, asked) {
+fn read_limits(
+    db: &mut Connection,
+    home: &Path,
+    data: &Path,
+    ask: crate::limits::Ask,
+) -> Result<bool> {
+    match crate::limits::refresh(db, home, ask) {
         Err(error @ Error::Newer { .. }) => Err(error),
         Err(error) => {
             log(data, &error.to_string());
@@ -775,13 +827,16 @@ impl Showing {
         )?;
         let mut sessions = Vec::new();
         for (at, row) in used.rows.iter().enumerate() {
-            let (project, agent) = usage::brief(&self.db, &row.key)?;
+            let (project_path, agent) = usage::brief(&self.db, &row.key)?;
+            let project = project_path
+                .as_deref()
+                .and_then(|path| path.rsplit('/').next())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned);
             sessions.push(UsedMost {
                 session: row.key.clone(),
-                project: project
-                    .as_deref()
-                    .and_then(|project| project.rsplit('/').next())
-                    .map(str::to_owned),
+                project,
+                project_path,
                 title: row.name.clone(),
                 agent,
                 share_percent: shares.as_ref().map(|shares| shares.rows[at]),
@@ -932,12 +987,16 @@ mod tests {
     #[test]
     fn a_status_is_never_told_after_a_newer_one() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        read_just_now(data.path())
-            .execute(
-                "INSERT INTO account (id, provider, kind, title)
-                 VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude')",
-                [],
-            )
+        let db = read_just_now(data.path());
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude')",
+            [],
+        )
+        .unwrap();
+        // Keep `history_read` settled so `keep`'s initial pass doesn't emit an
+        // unrelated `Event::Shown` while `hide` is racing on `showing`.
+        db.execute("UPDATE state SET history_at = ?1", [crate::now()])
             .unwrap();
         let (sender, told) = mpsc::channel();
         let (holding, held) = mpsc::channel();
@@ -1256,5 +1315,55 @@ mod tests {
                 .any(|line| line.ends_with(" answering a request panicked")),
             "{logged}"
         );
+    }
+
+    #[test]
+    fn dropping_the_engine_wakes_and_releases_its_lock() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        drop(read_just_now(data.path()));
+        let (engine, told) = start(data.path(), home.path());
+        next(&told, 10, |event| match event {
+            Event::Shown(shown, _) if shown.status.history_read => Some(()),
+            _ => None,
+        });
+        assert!(running(data.path()));
+        drop(engine);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while running(data.path()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!running(data.path()));
+    }
+
+    #[test]
+    fn log_rotates_past_limit_into_backup_file() {
+        let data = tempfile::tempdir().unwrap();
+        let path = data.path().join("app.log");
+        let existing = "x".repeat(LOG_SIZE as usize + 1);
+        std::fs::write(&path, &existing).unwrap();
+        log(data.path(), "after rotate");
+        assert_eq!(
+            std::fs::read_to_string(data.path().join("app.log.1")).unwrap(),
+            existing
+        );
+        let fresh = std::fs::read_to_string(&path).unwrap();
+        assert!(fresh.trim_end().ends_with(" after rotate"), "{fresh}");
+    }
+
+    #[test]
+    fn refresh_now_emits_shown_even_when_nothing_changed() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        drop(read_just_now(data.path()));
+        let (engine, told) = start(data.path(), home.path());
+        // Once the first catch-up reports `history_read`, `keep` has installed
+        // `wake` and parked on `changes.recv_timeout`.
+        next(&told, 10, |event| match event {
+            Event::Shown(shown, _) if shown.status.history_read => Some(()),
+            _ => None,
+        });
+        engine.refresh_now();
+        next(&told, 10, |event| {
+            matches!(event, Event::Shown(_, _)).then_some(())
+        });
     }
 }

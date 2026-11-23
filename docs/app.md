@@ -8,12 +8,11 @@ alerts to raise all come from the engine. The app chooses the words, colors
 and layout. A view that needs a threshold, an order or a choice gets it
 from the engine.
 
-It needs macOS 26. It's written in Rust, like the engine, in
-`crates/turnscope-macos`. The panel is drawn with
-[Rune](https://github.com/anomalyco/rune). The menu bar item,
-notifications, opening at login and updates use AppKit and its frameworks,
-called through `objc2`. It has no Dock icon (`LSUIElement`).
-[development.md](development.md) says how to build, run and test it.
+It needs macOS 26. The shared app core (in-process engine, state, wording,
+view models, and C ABI) lives in `crates/turnscope-app` and is statically
+linked into the thin native SwiftUI + AppKit shell in `apps/macos`. It has
+no Dock icon (`LSUIElement`). [development.md](development.md) says how to
+build, run and test it.
 
 ## The bundle
 
@@ -22,46 +21,52 @@ called through `objc2`. It has no Dock icon (`LSUIElement`).
 ```
 Turnscope.app/Contents/
   Info.plist
-  MacOS/Turnscope          the app, built as turnscope-app
+  MacOS/Turnscope          the SwiftUI app, statically linked to libturnscope_app.a
   Helpers/turnscope        the command line, which connected agents run
   Frameworks/Sparkle.framework
-  Resources/               the icon, compiled from assets/Turnscope.icon
+  Resources/               the icon (Turnscope.icon) and shared logos (logos/)
 ```
 
-The app's binary is built as `turnscope-app` since a folder on a Mac's
-disk can't hold both `Turnscope` and `turnscope`.
+The app's binary is staged as `turnscope-app` before bundling since a
+folder on a Mac's case-insensitive disk can't hold both `Turnscope` and
+`turnscope`.
 
 ## How data flows
 
 ```
-turnscope::engine ──events──▶ engine.rs ──▶ State ──▶ panel, menu bar item, notifier
-                  ◀─requests─           ◀── clicks
+turnscope::engine ──events──▶ turnscope-app (Core) ──wake/sync──▶ Bridge.swift ──▶ SwiftUI, menu bar, notifier
+                  ◀─requests─                      ◀───actions───              ◀── clicks
 ```
 
-The app starts `turnscope::engine::Engine` and shows each `Event` it tells.
+`crates/turnscope-app` starts `turnscope::engine::Engine` inside the app's
+own process and handles each `Event` it tells.
 [architecture.md](architecture.md#the-apps-engine) says what the engine
 does.
 
-- **A request**, such as hiding an account or changing a setting, runs on
-  a thread of the engine's. Hiding an account and changing a setting show
-  at once, and go back if the change failed. Connecting or disconnecting
-  an agent shows once it's done.
-- **`took`**, on the main thread, keeps the status (`State::take`), opens
-  what waited for the first status, redraws the menu bar item, and posts
-  the alerts. The status is kept until a newer one arrives, even while the
-  data can't be kept current, so the panel never goes empty.
-- **`State`** splits the accounts into the lists the panel shows (`in_use`,
-  `recent`, `unused`, `hidden`), and holds where the panel is, which agents
-  are being connected, and the sessions that used each account's deciding
-  limit. It lives on the main thread; the engine's threads change it
-  through Rune's `AppHandle::update`.
-- **`words.rs`** writes every figure and sentence made from the status:
-  what's left, times, a limit's line, the headline, the menu bar's
-  figures, notifications and what VoiceOver says. Fixed labels, such as
-  headings, button titles and setting names, are written in the view that
-  shows them. Everything is in English, on the Gregorian calendar and a
-  12-hour clock, in the Mac's time zone.
-- **`style.rs`** colors a [standing](architecture.md#glossary) gray,
+- **Domain requests**, such as hiding an account, connecting an agent,
+  forcing a refresh, or changing a setting, cross the C ABI
+  (`crates/turnscope-app/include/turnscope_app.h`) as a JSON `Action`,
+  update `State` synchronously, fire the engine call on a worker thread,
+  and return the updated `AppSync` snapshot. Ephemeral UI chrome state
+  (which row is open, folds, active page and Settings tab) stays local
+  to `UIState` in Swift so clicking around the panel never round-trips
+  through FFI or JSON.
+- **`Core::took`** handles engine events on the engine thread, updates
+  `State`, queues one-shot `Effect`s (alerts to post, sign-in alerts to
+  clear, preference saves), and invokes the host's wake callback. The
+  status is kept until a newer one arrives, even while the data can't be
+  kept current, so the panel never goes empty.
+- **`State` and `view.rs`** (in `crates/turnscope-app`) split the accounts
+  into `in_use`, `recent`, `unused`, and `hidden`, hold changing agents
+  and `used_most` sessions, and build flat serializable `MenuBarModel`
+  and `PanelModel` values.
+- **`words.rs`** (in `crates/turnscope-app`) writes every figure and
+  sentence made from the status: what's left, times, a limit's line, the
+  headline, the menu bar's figures, notifications and what VoiceOver says.
+  Fixed labels, such as headings, button titles and setting names, live in
+  the SwiftUI views. Everything is in English, on the Gregorian calendar
+  and a 12-hour clock, in the Mac's time zone.
+- **`Style.swift`** colors a [standing](architecture.md#glossary) gray,
   amber or red. Amber and red are 4.5:1 or more against an open row in
   light and dark, and 7:1 with Increase Contrast.
 - **Run from its disk image**, or from the copy macOS runs it from there
@@ -94,7 +99,9 @@ current, it's dimmed, since it shows the last status. With Settings →
 General → Show set to Most urgent, it shows only the most urgent account.
 VoiceOver reads each account's title and what its figure says, then "not
 up to date" while it's dimmed. Clicking the item opens or closes the
-panel.
+panel. Right-clicking (or Control-clicking) opens a menu with Refresh
+Limits (⌘R), Settings… (⌘,), Check for Updates… (when Sparkle is enabled)
+and Quit Turnscope (⌘Q).
 
 ## The panel
 
@@ -102,7 +109,9 @@ The panel is 340 points wide. From the top:
 
 1. **The headline**: whether you can keep going, from the most urgent
    account in use. It names the account by its title alone, as the first
-   row under it shows the label. Before any account is found, why none is.
+   row under it shows the label. When that account is running out or used
+   up and another live account has room, the line underneath names it too.
+   Before any account is found, why none is.
 2. **Accounts in use**, most urgent first.
 3. **Used this week**: accounts not in use but used in the last 7 days,
    the most left first.
@@ -110,11 +119,13 @@ The panel is 340 points wide. From the top:
    "2 hidden" lists the hidden accounts, each with a Show button.
 5. **An offer to connect an agent**, while an agent in use isn't connected
    or runs another copy of Turnscope: Connect (or Reconnect), and a button
-   that stops offering it for that agent.
+   that stops offering it for that agent. Hovering "Uses another Turnscope"
+   shows the binary path it's currently configured to run.
 6. **The footer**: "Not up to date" and why while the data can't be kept
-   current, or "Reading your agents' history…" during the first read. Then
-   "Update available" when a scheduled check found one
-   ([Updates](#updates)), Settings (⌘,) and Quit (⌘Q).
+   current, "Reading your agents' history…" during the first read, or
+   "Refreshing limits…" after ⌘R forces a refresh. Then "Update available"
+   when a scheduled check found one ([Updates](#updates)), Settings (⌘,)
+   and Quit (⌘Q).
 
 On a first launch, the headline says "Getting your limits" until the
 engine has read them. The accounts show then, while the footer says the
@@ -126,16 +137,22 @@ An account's row shows its logo, its title (and its label when another
 shown account has the same title), the line for its deciding limit, and
 what's left of it. A row opens in place on a click, Space or Return,
 closing any other. Open, it shows each limit on a line of its own with a
-bar, a note on what the limits can't say, and the sessions that used the
-deciding limit most. The app asks for those as the panel opens, so a row
-opens with them in one motion. Hovering a row shows a Hide button, and
-right-clicking offers Hide too. An account whose login expired goes on
-showing what was last read, as its agent renews the login when it runs.
+bar (a vertical tick marks how much of a fixed window's time is left, so
+a bar behind the tick is burning faster than steady pace), a note on what
+the limits can't say, and the sessions that used the deciding limit most.
+Clicking a session copies its project path (or title); right-clicking
+offers Open Project in Finder, Copy Project Path and Copy Session ID. The
+app asks for those sessions as the panel opens, so a row opens with them
+in one motion. Hovering a row shows a Hide button, and right-clicking
+offers Hide too. An account whose login expired goes on showing what was
+last read, as its agent renews the login when it runs.
 
 Tab comes to the rows once, and Up and Down move between them and the
-folds. With Full Keyboard Access on, Tab goes on to each row's Hide button
-and every other button. VoiceOver reads a row's header as one button: its
-title, line and figure, and whether it's open.
+folds; ⌘R refreshes signed-in accounts' limits without waiting for them to
+go stale, while still respecting a provider's backoff. With Full
+Keyboard Access on, Tab goes on to each row's Hide button and every other
+button. VoiceOver reads a row's header as one button: its title, line and
+figure, and whether it's open.
 
 While the panel is open, a new status fades a changed figure or headline
 to its new words, and slides a row that moves between lists. With Reduce
@@ -145,25 +162,24 @@ with a short fade.
 The panel is a borderless window hung under the item, with the system's
 glass behind it. The window runs to the bottom of the screen, so the panel
 grows and shrinks inside it without the window resizing, and a Settings
-tab taller than the screen scrolls under its title. A click beside or
-below the panel lands on that window and closes the panel, as a click
-outside a menu does; so does switching apps. Escape closes it from its
+tab taller than the screen scrolls under its title. A click outside the
+panel closes it; so does switching apps. Escape closes it from its
 first page, and goes back from Settings. The panel always opens on its
 first page with nothing open; `--open` and a clicked notification then set
 what's open.
 
 ## Settings
 
-Settings is the panel's second page, with three tabs. Changes take effect
-at once. Once the engine has stopped for good, after a newer Turnscope
-wrote the data ([architecture.md](architecture.md#data)), the switches
-for notifications, agents and accounts are off, and so are the panel's
-Hide and Show.
+Settings is the panel's second page, with three tabs (⌘1, ⌘2, ⌘3, or Left
+and Right arrows). Changes take effect at once. Once the engine has
+stopped for good, after a newer Turnscope wrote the data
+([architecture.md](architecture.md#data)), the switches for notifications,
+agents and accounts are off, and so are the panel's Hide and Show.
 
 | Tab | Holds |
 |---|---|
-| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version, Check now and Check automatically |
-| Agents | Each installed agent, with a switch that connects or disconnects it, and under its name that it runs another copy of Turnscope or why connecting failed |
+| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version (right-click for Copy Diagnostics and Reveal Log in Finder, or Option-click to copy diagnostics), Check now and Check automatically |
+| Agents | Each installed agent, with a switch that connects or disconnects it, and under its name that it runs another copy of Turnscope (hover to see the configured path) or why connecting failed |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 
 Where each setting is kept:
@@ -178,15 +194,15 @@ Where each setting is kept:
 | Connected agents | Each agent's own configuration | `turnscope connect`, `turnscope disconnect` |
 | Check automatically | Sparkle's defaults | |
 
-An app preference goes in `preferences.rs`; a setting the engine acts on
-goes in `alerts::Settings`, and Settings sends it with `engine::ask`.
+An app preference goes in `Preferences.swift` (and `state::Preferences` in
+`crates/turnscope-app`); a setting the engine acts on goes in
+`alerts::Settings`, sent through `Action::SetNotify`.
 
 ## Notifications
 
-`notifier.rs` posts every alert the engine raises: the engine has already
-dropped the kinds turned off and alerts for hidden accounts. macOS posts
-notifications only for an app bundle, so the app run with `cargo run`
-posts none.
+`Notifier.swift` posts every alert `turnscope-app` formats: the engine has
+already dropped the kinds turned off and alerts for hidden accounts. macOS
+posts notifications only for an app bundle.
 
 - **Permission.** It asks when the app starts. If notifications are off
   for Turnscope in System Settings, Settings → General says so and offers
@@ -212,8 +228,8 @@ posts none.
 
 ## Updates
 
-`updater.rs` uses Sparkle. It reads the appcast at `SUFeedURL`, the latest
-GitHub release's `appcast.xml`, checks each update's signature with
+`Updater.swift` uses Sparkle. It reads the appcast at `SUFeedURL`, the
+latest GitHub release's `appcast.xml`, checks each update's signature with
 `SUPublicEDKey`, and asks before installing.
 `SUVerifyUpdateBeforeExtraction` has it check the disk image's signature
 before mounting it. Automatic checks are on by default, and Settings →
@@ -224,9 +240,9 @@ finds would open behind other apps. Instead the footer shows "Update
 available" (Sparkle's gentle reminders) until that update is installed,
 skipped or put off.
 
-Sparkle is loaded from the bundle when the app starts, not linked, so the
-app also runs with `cargo run`. It's loaded only when `SUPublicEDKey` is
-set, which only the release build does
+Sparkle is bundled in `Contents/Frameworks/Sparkle.framework` and linked
+via `@executable_path/../Frameworks`. `Updater` starts it only when
+`SUPublicEDKey` is set, which only the release build does
 ([development.md](development.md#release)).
 
 ## Opening at login
@@ -238,9 +254,9 @@ fails, the Mac beeps.
 
 ## Logos
 
-`build.rs` builds every SVG in `assets/logos/` into the app
-([its README](../crates/turnscope-macos/assets/logos/README.md)). The panel
-tints the one-color logos like text, and the menu bar item like its
+`scripts/app.sh` copies every SVG in `assets/logos/` into
+`Contents/Resources/logos/` ([its README](../assets/logos/README.md)). The
+panel tints the one-color logos like text, and the menu bar item like its
 figures. An account or agent with no logo gets an SF Symbol in the panel
 (a key or a terminal) and none in the menu bar.
 

@@ -200,7 +200,18 @@ pub fn open(dir: &Path) -> Result<Connection> {
     db.busy_timeout(std::time::Duration::from_secs(10))?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
     let latest = REVISIONS.len() as i64;
-    if revision(&db)? == latest {
+    // Read `user_version` before `application_id`: a concurrent creator commits
+    // both together, so reading `application_id` first could observe 0 followed
+    // by a committed `user_version > 0` and falsely reject Turnscope's own DB.
+    let current = revision(&db)?;
+    let id: i32 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if (id != 0 || current > 0) && id != APPLICATION_ID {
+        return Err(Error::Failed(format!(
+            "{} isn't Turnscope's database",
+            path.display()
+        )));
+    }
+    if current == latest {
         return Ok(db);
     }
     let _lock = lock(&dir.join("turnscope.lock"))?;
@@ -208,13 +219,6 @@ pub fn open(dir: &Path) -> Result<Connection> {
     let done = revision(&db)?;
     if done == latest {
         return Ok(db);
-    }
-    let id: i32 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    if id != 0 && id != APPLICATION_ID {
-        return Err(Error::Failed(format!(
-            "{} isn't Turnscope's database",
-            path.display()
-        )));
     }
     db.pragma_update(None, "journal_mode", "WAL")?;
     let old = dir.join(OLD);
@@ -258,7 +262,10 @@ pub fn read(dir: &Path) -> Option<Connection> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let db = Connection::open_with_flags(dir.join(FILE), flags).ok()?;
     db.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
-    (revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
+    let id: i32 = db
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .ok()?;
+    (id == APPLICATION_ID && revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
 }
 
 /// Why the old database at `old` can't be taken in. Unless another process
@@ -375,13 +382,30 @@ pub fn write(db: &mut Connection) -> Result<Transaction<'_>> {
     Ok(tx)
 }
 
+/// A periodic job claimed in the `state` table so no two processes run it at once.
+#[derive(Clone, Copy)]
+pub enum Claim {
+    Prices,
+    Limits,
+}
+
+impl Claim {
+    fn column(self) -> &'static str {
+        match self {
+            Claim::Prices => "prices_at",
+            Claim::Limits => "limits_at",
+        }
+    }
+}
+
 /// Claim a job for this process, in one statement, unless another claimed
-/// it less than `gap` ago, so no two do it at once: `state`'s `column` is
-/// set to `to`. A claim more than five minutes ahead of now is of a clock
-/// set back since. Looked at first: claiming waits for the write lock,
-/// which a hook shouldn't when nothing is due.
-pub fn claim(db: &mut Connection, column: &str, now: i64, gap: i64, to: i64) -> Result<bool> {
+/// it less than `gap` ago, so no two do it at once: `state`'s column for
+/// `job` is set to `to`. A claim more than five minutes ahead of now is of
+/// a clock set back since. Looked at first: claiming waits for the write
+/// lock, which a hook shouldn't when nothing is due.
+pub fn claim(db: &mut Connection, job: Claim, now: i64, gap: i64, to: i64) -> Result<bool> {
     const AHEAD: i64 = 5 * crate::time::MINUTE;
+    let column = job.column();
     let last: Option<i64> =
         db.query_row(&format!("SELECT {column} FROM state"), [], |row| row.get(0))?;
     if last.is_some_and(|last| now - gap < last && last <= now + AHEAD) {
@@ -885,5 +909,19 @@ mod tests {
             rows(&migrated, "SELECT id, project FROM session ORDER BY id"),
             ["claude-code:a|NULL", "claude-code:b|/work/web"]
         );
+    }
+
+    #[test]
+    fn another_apps_database_at_the_same_revision_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Connection::open(dir.path().join(FILE)).unwrap();
+        db.pragma_update(None, "user_version", REVISIONS.len() as i64)
+            .unwrap();
+        db.pragma_update(None, "application_id", 0x1234_5678_i32)
+            .unwrap();
+        drop(db);
+        let error = open(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("isn't Turnscope's database"), "{error}");
+        assert!(read(dir.path()).is_none());
     }
 }

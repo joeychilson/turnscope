@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+- **The macOS app is now native SwiftUI and AppKit**, under half the size
+  (27 MB instead of 60 MB). The menu bar item opens on mouse-down, and
+  right-clicking it opens a menu with Refresh Limits, Settings, Check for
+  Updates and Quit.
+- **Press ⌘R (or choose Refresh Limits from the menu bar)** to refresh
+  your accounts' limits right away without waiting for them to go stale,
+  while still respecting when a provider asks Turnscope to wait.
+- **Fixed-window limit bars mark how much time is left**, so a bar shorter
+  than its tick is running ahead of steady pace.
+- **When an account is running out or used up, Turnscope names another
+  live account with room.** The panel says so under its headline, and
+  `check_limits` adds a final line naming the best alternate (preferring
+  one your agent can use directly, or saying which agent uses it).
+- **The panel works from the keyboard, and sessions under "Used most" can
+  be copied or opened.** Up and Down move through rows and folds, and ⌘1,
+  ⌘2, ⌘3 or Left and Right switch Settings tabs. Clicking a session copies
+  its project path (or title), and right-clicking offers Open Project in
+  Finder, Copy Project Path and Copy Session ID.
+- **Hovering "Uses another Turnscope" in Settings → Agents** shows the
+  path the agent is configured to run.
+- **Right-clicking the version in Settings → General** (or Option-clicking
+  it) copies a diagnostics report or reveals `app.log` in Finder.
+- **Edge-case fixes:** older costs update when prices change, `app.log`
+  keeps the previous 1 MiB in `app.log.1` instead of clearing it, Codex
+  and Grok Build's connected status is read when `config.toml` has
+  comments or single-quoted paths, and Antigravity installed in a path with
+  spaces is still recognized when it calls the MCP server.
+
 ## 0.3.2
 
 - **Antigravity's limits are read whether its app is open or not.**

@@ -129,18 +129,30 @@ struct Gathered {
     unreadable: Vec<(Read, Held)>,
 }
 
+/// How urgently a limit refresh is being requested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// Background schedule: active accounts every 5 min, idle every 20 min.
+    Scheduled,
+    /// Panel opened or login file written: reads accounts due (>= 5 min) and failing ones.
+    Opened,
+    /// Explicit user refresh (`⌘R`): skips staleness (`DUE`/`IDLE`), still respects backoff and `CLAIM`.
+    Force,
+}
+
 /// Read the limits of each account that's due (`Schedule::due`), and the
 /// agents' logins, when no process has claimed doing so in the last
 /// `CLAIM`, or the last [`DUE`] with no account due; whether it did.
 ///
-/// `asked` for limits asked for, as when the panel opens: whatever another
-/// process claimed, an account read [`DUE`] ago or more is read again, and
-/// so is one whose last read failed, unless its provider asked to be left.
+/// `Ask::Opened` (panel opened / login file written) reads accounts read
+/// [`DUE`] ago or more and failing ones, unless backed off. `Ask::Force`
+/// (explicit user refresh) skips the staleness wait, while still respecting
+/// a provider's backoff and `CLAIM`.
 /// A read no provider answered leaves the account as it was: asked for as
 /// the Mac woke, before its network was back, it showed as unread for five
 /// minutes.
-pub fn refresh(db: &mut Connection, home: &Path, asked: bool) -> Result<bool> {
-    refresh_with(db, home, agents::ALL, providers::ALL, asked)
+pub fn refresh(db: &mut Connection, home: &Path, ask: Ask) -> Result<bool> {
+    refresh_with(db, home, agents::ALL, providers::ALL, ask)
 }
 
 fn refresh_with(
@@ -148,24 +160,24 @@ fn refresh_with(
     home: &Path,
     agents: &[&dyn Agent],
     providers: &[&'static dyn Provider],
-    asked: bool,
+    ask: Ask,
 ) -> Result<bool> {
     let now = now();
     let schedules = schedules(db, now)?;
     let due: HashSet<&str> = schedules
         .iter()
-        .filter(|(_, schedule)| schedule.due(now, asked))
+        .filter(|(_, schedule)| schedule.due(now, ask))
         .map(|(id, _)| id.as_str())
         .collect();
     let signed_in_due = schedules
         .iter()
         .any(|(id, schedule)| schedule.signed_in && due.contains(id.as_str()));
-    let gap = match (asked, signed_in_due) {
-        (true, _) => 0,
-        (false, true) => CLAIM,
-        (false, false) => DUE,
+    let gap = match (ask, signed_in_due) {
+        (Ask::Opened, _) | (Ask::Force, true) => 0,
+        (Ask::Force, false) | (Ask::Scheduled, true) => CLAIM,
+        (Ask::Scheduled, false) => DUE,
     };
-    if !crate::db::claim(db, "limits_at", now, gap, now)? {
+    if !crate::db::claim(db, crate::db::Claim::Limits, now, gap, now)? {
         return Ok(false);
     }
     let mut gathered = gather(db, home, agents, providers)?;
@@ -198,7 +210,7 @@ fn refresh_with(
     answers.extend(gathered.unreadable);
     let answers = answers
         .into_iter()
-        .filter(|(read, _)| !(asked && read.unanswered()))
+        .filter(|(read, _)| !(ask != Ask::Scheduled && read.unanswered()))
         .collect();
     record(db, gathered.signed_in, answers, now)?;
     Ok(true)
@@ -225,9 +237,8 @@ struct Schedule {
 }
 
 impl Schedule {
-    /// Whether the account's limits are read at `now`; `asked` when they're
-    /// asked for (`refresh`).
-    fn due(&self, now: i64, asked: bool) -> bool {
+    /// Whether the account's limits are read at `now` for `ask`.
+    fn due(&self, now: i64, ask: Ask) -> bool {
         // A wait longer than any is a clock set back since.
         if self
             .retry_at
@@ -244,6 +255,10 @@ impl Schedule {
         if self.checked_at.is_none() || self.reset_passed {
             return true;
         }
+        if ask == Ask::Force {
+            return ago(self.checked_at) >= CLAIM;
+        }
+        let asked = ask == Ask::Opened;
         if self.failing {
             return asked || ago(self.checked_at) >= DUE;
         }
@@ -1353,18 +1368,18 @@ mod tests {
         failed(&mut db, Problem::SignIn, at);
         failed(&mut db, Problem::SignIn, at + 5 * minute);
         assert_eq!(retry_at(&db), None);
-        // Waiting, it isn't read, even when asked for: until its wait is
-        // out, or unless the wait is longer than any, as when the clock was
-        // set back.
+        // Waiting, it isn't read, even when opened or forced: until its wait is
+        // out, or unless the wait is longer than any (clock set back).
         failed(&mut db, asks(3600), at);
-        assert!(!due(&db, at + 5 * minute, true));
-        assert!(due(&db, at + 30 * minute, false));
-        assert!(due(&db, at - 10 * minute, false));
+        assert!(!due(&db, at + 5 * minute, Ask::Opened));
+        assert!(!due(&db, at + 5 * minute, Ask::Force));
+        assert!(due(&db, at + 30 * minute, Ask::Scheduled));
+        assert!(due(&db, at - 10 * minute, Ask::Scheduled));
     }
 
     /// Whether the fake provider's account is read at `now`.
-    fn due(db: &Connection, now: i64, asked: bool) -> bool {
-        schedules(db, now).unwrap()["fake:account"].due(now, asked)
+    fn due(db: &Connection, now: i64, ask: Ask) -> bool {
+        schedules(db, now).unwrap()["fake:account"].due(now, ask)
     }
 
     /// The fake provider's account read at `at`, its limit `used` and
@@ -1383,32 +1398,34 @@ mod tests {
         let minute = crate::time::MINUTE;
         let at = 1_000 * crate::time::DAY;
         read_at(&mut db, at, 10.0, at + 300 * minute);
-        // Not in use, its limits stand 20 minutes, or 5 when asked for.
-        assert!(!due(&db, at + 10 * minute, false));
-        assert!(due(&db, at + IDLE, false));
-        assert!(!due(&db, at + 2 * minute, true));
-        assert!(due(&db, at + DUE, true));
+        // Not in use, its limits stand 20 minutes, 5 when opened, or CLAIM when forced.
+        assert!(!due(&db, at + 10 * minute, Ask::Scheduled));
+        assert!(due(&db, at + IDLE, Ask::Scheduled));
+        assert!(!due(&db, at + 2 * minute, Ask::Opened));
+        assert!(!due(&db, at + 10_000, Ask::Force));
+        assert!(due(&db, at + 2 * minute, Ask::Force));
+        assert!(due(&db, at + DUE, Ask::Opened));
         // Drawn on, it's in use: they stand 5.
         let fake = ("fake", "/f", "fake", Some("fake:account"));
         response(&db, fake, "r1", at + minute, "m", None);
-        assert!(!due(&db, at + 4 * minute, false));
-        assert!(due(&db, at + DUE, false));
+        assert!(!due(&db, at + 4 * minute, Ask::Scheduled));
+        assert!(due(&db, at + DUE, Ask::Scheduled));
 
         // Once a window resets, it's read, in use or not; and once read
         // after, not again, though the provider still gives the old window.
         let at = at + 60 * minute;
         read_at(&mut db, at, 10.0, at + 8 * minute);
-        assert!(!due(&db, at + 7 * minute, false));
-        assert!(due(&db, at + 8 * minute, false));
+        assert!(!due(&db, at + 7 * minute, Ask::Scheduled));
+        assert!(due(&db, at + 8 * minute, Ask::Scheduled));
         read_at(&mut db, at + 9 * minute, 10.0, at + 8 * minute);
-        assert!(!due(&db, at + 10 * minute, false));
+        assert!(!due(&db, at + 10 * minute, Ask::Scheduled));
 
         // A limit that rose at its last read, as use elsewhere makes it, puts
         // it in use; not one that's of a new window.
         read_at(&mut db, at + 20 * minute, 10.0, at + 300 * minute);
-        assert!(!due(&db, at + 25 * minute, false));
+        assert!(!due(&db, at + 25 * minute, Ask::Scheduled));
         read_at(&mut db, at + 30 * minute, 20.0, at + 300 * minute);
-        assert!(due(&db, at + 35 * minute, false));
+        assert!(due(&db, at + 35 * minute, Ask::Scheduled));
     }
 
     /// Codex's limits for the fake provider's account, as its history gave
@@ -1556,7 +1573,14 @@ mod tests {
         let refresh = |db: &mut Connection, asked: bool| {
             // As if no process had claimed reading them.
             db.execute("UPDATE state SET limits_at = NULL", []).unwrap();
-            refresh_with(db, home.path(), &[&FakeAgent::default()], &[fake], asked).unwrap()
+            refresh_with(
+                db,
+                home.path(),
+                &[&FakeAgent::default()],
+                &[fake],
+                if asked { Ask::Opened } else { Ask::Scheduled },
+            )
+            .unwrap()
         };
         let account = |db: &Connection| -> (i64, Option<String>) {
             db.query_row("SELECT checked_at, problem FROM account", [], |row| {

@@ -149,7 +149,11 @@ The answer has three parts:
    they apply. Then a note if its limits couldn't be read, a line per
    limit with what's left, the reset, the outlook and the work left, and
    for an API key, the spend this month across its keys and the month at
-   that pace, to two figures.
+   that pace, to two figures. When called for a single account whose
+   deciding limit is running out or used up, and another live account has
+   room, a final line names that account (preferring one signed into the
+   calling agent, or naming which agent uses it otherwise) and suggests
+   calling `check_limits` with `all: true`.
 
 [cli.md](cli.md#status) says what "at this pace" and "of work" count.
 

@@ -129,7 +129,7 @@ pub fn catch_up(
     let (priced, limits) = match online() {
         true => (
             prices::refresh(db).unwrap_or(false),
-            limits::refresh(db, home, false),
+            limits::refresh(db, home, limits::Ask::Scheduled),
         ),
         false => (false, Ok(false)),
     };
@@ -139,4 +139,115 @@ pub fn catch_up(
 
 pub fn online() -> bool {
     std::env::var_os("TURNSCOPE_OFFLINE").is_none_or(|offline| offline == "0")
+}
+
+/// Diagnostic notes on logins, stale accounts, unreadable history files,
+/// unpriced models, and recent `app.log` entries.
+pub fn doctor(
+    db: &rusqlite::Connection,
+    data: &Path,
+    home: &Path,
+    now: i64,
+) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
+    for agent in agents::ALL {
+        for folder in agent.installed_folders(home) {
+            if let Err(error) = agent.logins(&folder, home) {
+                notes.push(format!(
+                    "{}'s logins in {} can't be read: {error}",
+                    agent.info().name,
+                    folder.display()
+                ));
+            }
+        }
+    }
+    let status = status::status(db, now)?;
+    // An account no agent here is signed in to has nothing to fix.
+    for account in &status.accounts {
+        if account.state.why() != Some(status::Stale::SignedOut)
+            && let Some(stale) = status::stale(account, false, status.at)
+        {
+            notes.push(format!("{}: {stale}.", account.full_title()));
+        }
+    }
+    let mut failed =
+        db.prepare("SELECT path, failed FROM file WHERE failed IS NOT NULL ORDER BY path")?;
+    let rows = failed.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    // One deleted isn't tried again; one in a folder that can't be looked
+    // into may still be there. Before the first ten, so deleted ones never
+    // hide one that's still failing.
+    let failing = rows.filter(|row| {
+        row.as_ref().map_or(true, |(path, _)| {
+            Path::new(path).try_exists().unwrap_or(true)
+        })
+    });
+    for row in failing.take(10) {
+        let (path, why) = row?;
+        // A reader's error often names its file already.
+        let why = if why.contains(&path) {
+            why
+        } else {
+            format!("{path}: {why}")
+        };
+        notes.push(format!(
+            "{why}. It's tried again each time history is read."
+        ));
+    }
+    let mut skipped = db.prepare(
+        "SELECT path, skipped FROM file WHERE skipped > 0 ORDER BY skipped DESC LIMIT 10",
+    )?;
+    for row in skipped.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })? {
+        let (path, skipped) = row?;
+        notes.push(format!(
+            "{path}: {} couldn't be read; their agent may write a newer format.",
+            usage::counted(skipped as u64, "line")
+        ));
+    }
+    // Before any price is read, every model is unpriced: one note says so.
+    let priced: bool = db.query_row("SELECT EXISTS (SELECT 1 FROM price)", [], |row| row.get(0))?;
+    if !priced {
+        notes.push(
+            "Prices haven't been read from models.dev yet: costs are unknown until they are."
+                .to_owned(),
+        );
+    } else {
+        let unpriced: Vec<(String, i64)> = db
+            .prepare("SELECT model, count(*) FROM response WHERE cost IS NULL GROUP BY model ORDER BY count(*) DESC LIMIT 5")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (model, count) in unpriced {
+            let model = if model.is_empty() {
+                "no model named".to_owned()
+            } else {
+                model
+            };
+            notes.push(format!(
+                "{model}: {} with no known price; models.dev doesn't list it.",
+                usage::counted(count as u64, "response")
+            ));
+        }
+    }
+    // What went wrong in the last day, the latest five: the app is started
+    // from its icon, and limits are read in agents' hooks, where no one sees
+    // their errors.
+    let log = std::fs::read_to_string(data.join("app.log")).unwrap_or_default();
+    let mut logged: Vec<&str> = log
+        .lines()
+        .rev()
+        .filter(|line| {
+            line.split_once(' ')
+                .and_then(|(at, _)| at.parse::<jiff::Timestamp>().ok())
+                .is_some_and(|at| at.as_millisecond() > now - time::DAY)
+        })
+        .take(5)
+        .collect();
+    logged.reverse();
+    for line in logged {
+        notes.push(format!("Logged: {line}"));
+    }
+    Ok(notes)
 }

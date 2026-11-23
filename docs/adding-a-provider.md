@@ -258,8 +258,8 @@ provider changes no CLI snapshot.
 
 ## 7. Add its logo
 
-Add a logo at `crates/turnscope-macos/assets/logos/providers/acme.svg`, as
-[its README](../crates/turnscope-macos/assets/logos/README.md) says.
+Add a logo at `assets/logos/providers/acme.svg`, as
+[its README](../assets/logos/README.md) says.
 Without one, the panel shows a key in its place.
 
 ## 8. Update the docs

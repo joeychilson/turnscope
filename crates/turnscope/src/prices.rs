@@ -181,7 +181,7 @@ const CLAIMED: i64 = 2 * crate::time::MINUTE;
 /// Claim the refresh for this process: for 2 minutes, until `take` records it
 /// for 6 hours, so a process that dies meanwhile holds it up 2 minutes.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
-    crate::db::claim(db, "prices_at", now, DUE, now - DUE + CLAIMED)
+    crate::db::claim(db, crate::db::Claim::Prices, now, DUE, now - DUE + CLAIMED)
 }
 
 type Catalog = Vec<((String, String), (String, Option<String>))>;

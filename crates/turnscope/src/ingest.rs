@@ -66,7 +66,7 @@ const REPLACE_RESPONSE: &str = concat!(
 const SELECT_REPRICED: &str = concat!(
     "SELECT ",
     response_columns!(),
-    ", agent FROM response
+    ", agent, cost FROM response
      WHERE cost IS NULL OR EXISTS (
          SELECT 1 FROM repriced
          WHERE repriced.provider = response.provider
@@ -644,9 +644,9 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
         add.execute(params![provider, model])?;
     }
     drop(add);
-    let rows: Vec<(String, Response)> = tx
+    let rows: Vec<(String, Option<f64>, Response)> = tx
         .prepare(SELECT_REPRICED)?
-        .query_map([], |row| Ok((row.get(16)?, stored(row)?)))?
+        .query_map([], |row| Ok((row.get(16)?, row.get(17)?, stored(row)?)))?
         .collect::<rusqlite::Result<_>>()?;
     tx.execute("DROP TABLE repriced", [])?;
     if rows.is_empty() {
@@ -654,9 +654,9 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     }
     let prices = Prices::load(tx)?;
     let mut update = tx.prepare("UPDATE response SET cost = ?3 WHERE agent = ?1 AND id = ?2")?;
-    for (agent, response) in &rows {
+    for (agent, kept, response) in &rows {
         let cost = prices.cost(agent, response);
-        if cost != response.cost {
+        if cost != *kept {
             update.execute(params![agent, response.id, cost])?;
         }
     }
@@ -1211,12 +1211,20 @@ mod tests {
         ] {
             response(&db, from, id, 0, model, cost);
         }
+        // Stored cost diverges from the agent's recorded estimate, which
+        // `prices.cost` falls back to when no catalog price applies.
+        db.execute(
+            "UPDATE response SET recorded = 1.5, cost = 7.0 WHERE id = 'r5'",
+            [],
+        )
+        .unwrap();
         let tx = crate::db::write(&mut db).unwrap();
         price_again(
             &tx,
             &[
                 ("anthropic".to_owned(), "m1".to_owned()),
                 ("anthropic".to_owned(), "m2".to_owned()),
+                ("google".to_owned(), "gemini-unlisted".to_owned()),
             ],
         )
         .unwrap();
@@ -1227,7 +1235,7 @@ mod tests {
                 "r1|2", "r2|4", "r3|9",
                 // Claude served by Google, unpriced since before the maker's
                 // price applied to it, at Anthropic's list price.
-                "r4|5", "r5|NULL",
+                "r4|5", "r5|1.5",
             ]
         );
     }
