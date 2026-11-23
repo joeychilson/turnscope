@@ -26,11 +26,11 @@
   to run.
 - **Right-clicking the version in Settings → General** (or Option-clicking
   it) copies a diagnostics report or reveals `app.log` in Finder.
-- **Edge-case fixes:** older costs update when prices change, `app.log` no
-  longer grows past 1 MiB, Codex's connected status is read when
-  `config.toml` has comments or single-quoted paths, and an agent
-  installed in a path with spaces is still recognized when it calls the
-  MCP server.
+- **Edge-case fixes:** older costs update when prices change, `app.log`
+  keeps the previous 1 MiB in `app.log.1` instead of clearing it, Codex
+  and Grok Build's connected status is read when `config.toml` has
+  comments or single-quoted paths, and an agent installed in a path with
+  spaces is still recognized when it calls the MCP server.
 
 ## 0.3.2
 
