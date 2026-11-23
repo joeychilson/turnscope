@@ -10,7 +10,7 @@ struct GeneralTab: View {
     @Environment(Updater.self) private var updater
     @Environment(\.closePanel) private var closePanel
     @State private var copiedDiagnostics = false
-    @State private var clearCopied: Task<Void, Never>?
+    @State private var copyTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -142,10 +142,12 @@ struct GeneralTab: View {
     }
 
     private func copyDiagnostics() {
-        copyToPasteboard(bridge.diagnostics())
-        clearCopied?.cancel()
-        withAnimation(.easeOut(duration: 0.12)) { copiedDiagnostics = true }
-        clearCopied = Task { @MainActor in
+        copyTask?.cancel()
+        copyTask = Task { @MainActor in
+            let report = await bridge.diagnostics()
+            guard !Task.isCancelled else { return }
+            copyToPasteboard(report)
+            withAnimation(.easeOut(duration: 0.12)) { copiedDiagnostics = true }
             try? await Task.sleep(for: .seconds(1.5))
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.16)) { copiedDiagnostics = false }

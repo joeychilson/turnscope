@@ -277,8 +277,8 @@ impl Engine {
         }
     }
 
-    /// Force an immediate limit read for every signed-in account, bypassing
-    /// cooldowns and backoff, and always emit a `Shown` event when done.
+    /// Ask for a limit read skipping staleness (`DUE`/`IDLE`), while still
+    /// respecting provider backoff and `CLAIM`, and always emit `Shown` when done.
     pub fn refresh_now(&self) {
         let sent = locked(&self.inner.wake)
             .as_ref()

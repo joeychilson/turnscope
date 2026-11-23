@@ -51,7 +51,9 @@ final class UIState {
     var openAccount: String?
     var unusedOpen = false
     var hiddenShown = false
+    var openSnippets: Set<String> = []
     var pendingAccount: String?
+    var focusNonce = 0
 
     func reset() {
         page = .main
@@ -59,7 +61,12 @@ final class UIState {
         openAccount = nil
         unusedOpen = false
         hiddenShown = false
+        openSnippets = []
         pendingAccount = nil
+    }
+
+    func panelDidShow() {
+        focusNonce &+= 1
     }
 
     func apply(_ opening: Opening, panel: PanelModel) {
@@ -111,6 +118,14 @@ final class UIState {
         }
     }
 
+    func toggleSnippets(_ agent: String) {
+        withAnimation(spring) {
+            if !openSnippets.insert(agent).inserted {
+                openSnippets.remove(agent)
+            }
+        }
+    }
+
     func go(_ page: Page, tab: SettingsTab? = nil) {
         withAnimation(spring) {
             if let tab { self.tab = tab }
@@ -146,6 +161,7 @@ final class Bridge {
     var onSync: ((AppSync) -> Void)?
 
     private var handle: OpaquePointer?
+    private let location: SnapshotConfig
     private nonisolated let wakePending = OSAllocatedUnfairLock(initialState: false)
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -153,6 +169,7 @@ final class Bridge {
     /// Initialize for live or `--fixture` mode. Exits with code 2 if `--fixture` can't be read.
     init(launch: Launch, fromDiskImage: Bool, preferences: Preferences) {
         self.isLive = launch.fixture == nil
+        self.location = SnapshotConfig(fixture: launch.fixture, data: launch.data, home: launch.home)
         let cfg = StartConfig(
             fixture: launch.fixture,
             data: launch.data,
@@ -188,6 +205,7 @@ final class Bridge {
     /// Initialize with a fixed `PanelModel` for headless `--snapshot` rendering.
     init(snapshot: PanelModel) {
         self.isLive = false
+        self.location = SnapshotConfig(fixture: "snapshot", data: nil, home: nil)
         self.panel = snapshot
     }
 
@@ -228,11 +246,16 @@ final class Bridge {
         line.withCString { turnscope_app_log(handle, $0) }
     }
 
-    func diagnostics() -> String {
-        guard let handle,
-              let report = takeRustString(turnscope_app_diagnostics(handle))
-        else { return "Turnscope \(panel.version)\n" }
-        return report
+    /// Computes the diagnostics report off the main thread because `doctor` checks
+    /// Keychain logins and scans SQLite.
+    func diagnostics() async -> String {
+        let fallback = "Turnscope \(panel.version)\n"
+        guard let encoded = try? encoder.encode(location),
+              let cfgText = String(data: encoded, encoding: .utf8)
+        else { return fallback }
+        return await Task.detached(priority: .userInitiated) {
+            cfgText.withCString { takeRustString(turnscope_app_diagnostics($0)) } ?? fallback
+        }.value
     }
 
     func logURL() -> URL? {

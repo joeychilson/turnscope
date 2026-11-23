@@ -53,6 +53,11 @@ struct FirstPage: View {
             Footer()
                 .padding(8)
         }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focus, equals: .page)
+        .onAppear { focus = .page }
+        .onChange(of: ui.focusNonce) { _, _ in focus = .page }
         .onKeyPress(.downArrow) { stepFocus(1, panel: panel) }
         .onKeyPress(.upArrow) { stepFocus(-1, panel: panel) }
     }
@@ -76,7 +81,8 @@ struct FirstPage: View {
     private func stepFocus(_ delta: Int, panel: PanelModel) -> KeyPress.Result {
         let items = focusableItems(panel)
         guard !items.isEmpty else { return .ignored }
-        let anchor = focus ?? ui.openAccount.map(PanelFocus.account)
+        let currentFocus = (focus == .page) ? nil : focus
+        let anchor = currentFocus ?? ui.openAccount.map(PanelFocus.account)
         if let current = anchor, let index = items.firstIndex(of: current) {
             let next = max(0, min(items.count - 1, index + delta))
             focus = items[next]
@@ -274,7 +280,6 @@ private struct Footer: View {
                 .accessibilityLabel("Settings")
             Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
                 .buttonStyle(IconButton())
-                .keyboardShortcut("q", modifiers: .command)
                 .help("Quit Turnscope")
                 .accessibilityLabel("Quit Turnscope")
         }

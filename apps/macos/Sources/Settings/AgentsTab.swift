@@ -67,13 +67,14 @@ private struct AgentRow: View {
 }
 
 private struct AgentSnippets: View {
+    @Environment(UIState.self) private var ui
     var agent: AgentRowModel
-    @State private var open = false
     @State private var hover = false
 
     var body: some View {
+        let open = ui.openSnippets.contains(agent.id)
         VStack(alignment: .leading, spacing: Row.spacing) {
-            Button { withAnimation(spring) { open.toggle() } } label: {
+            Button { ui.toggleSnippets(agent.id) } label: {
                 HStack(spacing: 8) {
                     Text("\(agent.name) status line & guard")
                         .font(.line)

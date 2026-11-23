@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.isOpaque = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.contentView = host
         panel.delegate = self
         panel.setAccessibilityLabel("Turnscope")
@@ -317,6 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if alreadyOpen {
             panel.makeKeyAndOrderFront(nil)
+            ui.panelDidShow()
             return
         }
         if bridge.isLive {
@@ -327,11 +328,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         place(panel)
         if !panel.isVisible { panel.alphaValue = 0 }
         panel.makeKeyAndOrderFront(nil)
+        ui.panelDidShow()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.14
             panel.animator().alphaValue = 1
         }
         item?.button?.highlight(true)
+        // `sendAction(on: .leftMouseDown)` lets NSButtonCell clear highlight when `mouseDown:`
+        // returns; re-assert on the next turn so the item stays highlighted while open.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panelOpen else { return }
+            self.item?.button?.highlight(true)
+        }
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated { self?.close() }
         }
@@ -346,6 +354,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.outsideMonitor = nil
         }
         item?.button?.highlight(false)
+        // Notify Rust synchronously so reopening during the 100ms fade still triggers `panelOpened`.
+        bridge.send(.panelClosed)
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.1
             panel.animator().alphaValue = 0
@@ -354,7 +364,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let self, !self.panelOpen else { return }
                 panel.orderOut(nil)
                 self.ui.reset()
-                self.bridge.send(.panelClosed)
             }
         })
     }

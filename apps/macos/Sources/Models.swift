@@ -205,7 +205,6 @@ struct ConnectOfferModel: Decodable, Equatable {
     var note: String?
     var configured: String?
     var changing: Bool
-    var outdated: Bool
     var verb: String
     var help: String
 }
@@ -294,7 +293,6 @@ struct PanelModel: Decodable, Equatable {
     var version: String
     var hasStatus: Bool
     var stopped: Bool
-    var fromDiskImage: Bool
     var waiting: WaitingModel?
     var verdict: VerdictModel?
     var inUse: [AccountRowModel]
@@ -308,7 +306,7 @@ struct PanelModel: Decodable, Equatable {
     var settings: SettingsModel
 
     static let empty = PanelModel(
-        version: "", hasStatus: false, stopped: false, fromDiskImage: false,
+        version: "", hasStatus: false, stopped: false,
         waiting: WaitingModel(problem: nil, retries: false),
         verdict: nil, inUse: [], recent: [], unused: [], hidden: [],
         unusedFoldLabel: nil, hiddenFoldLabel: nil, connectOffer: nil,

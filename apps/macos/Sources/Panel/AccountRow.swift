@@ -5,6 +5,7 @@ import AppKit
 import SwiftUI
 
 enum PanelFocus: Hashable {
+    case page
     case account(String)
     case unusedFold
     case hiddenFold

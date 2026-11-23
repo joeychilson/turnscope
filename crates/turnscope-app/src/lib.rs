@@ -83,7 +83,6 @@ pub struct TurnscopeApp {
     wake: Arc<Mutex<Option<Wake>>>,
     engine: Option<Arc<OnceLock<Engine>>>,
     data: Option<PathBuf>,
-    home: Option<PathBuf>,
 }
 
 impl Drop for TurnscopeApp {
@@ -204,7 +203,6 @@ pub fn start(
         wake,
         engine,
         data: runs_engine.then_some(data),
-        home: runs_engine.then_some(home),
     })
 }
 
@@ -381,17 +379,23 @@ pub unsafe extern "C" fn turnscope_app_log(app: *mut TurnscopeApp, line: *const 
     }
 }
 
-/// Build a plain-text diagnostics report for the active data directory.
+/// Build a plain-text diagnostics report from a JSON `SnapshotConfig`.
+/// Safe to invoke from a background thread (never touches `TurnscopeApp`).
 ///
 /// # Safety
-/// `app` must be null or a live pointer returned by `turnscope_app_start`.
+/// `config_json` must be null or a valid NUL-terminated UTF-8 C string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn turnscope_app_diagnostics(app: *mut TurnscopeApp) -> *mut c_char {
-    // SAFETY: Valid pointer from `turnscope_app_start`.
-    let Some(app) = (unsafe { app.as_ref() }) else {
-        return std::ptr::null_mut();
+pub unsafe extern "C" fn turnscope_app_diagnostics(config_json: *const c_char) -> *mut c_char {
+    let config = unsafe { read_c_str(config_json) }
+        .and_then(|s| serde_json::from_str::<SnapshotConfig>(s).ok())
+        .unwrap_or_default();
+    let report = if config.fixture.is_some() {
+        diagnostics(None, None)
+    } else {
+        let (home, data) = turnscope::places(config.home, config.data);
+        diagnostics(Some(&data), Some(&home))
     };
-    into_c_string(diagnostics(app.data.as_deref(), app.home.as_deref()))
+    into_c_string(report)
 }
 
 /// Return the path to `app.log` (or the data directory if no log exists yet),
@@ -557,6 +561,16 @@ mod tests {
         assert!(report.contains(&format!("Turnscope {}", env!("CARGO_PKG_VERSION"))));
         assert!(report.contains("sample diagnostic line"), "{report}");
         assert!(diagnostics(None, None).contains("Mode: fixture"));
+
+        let cfg = serde_json::json!({ "data": data.path(), "home": home.path() }).to_string();
+        let cfg_c = CString::new(cfg).unwrap();
+        let ptr = unsafe { turnscope_app_diagnostics(cfg_c.as_ptr()) };
+        let ffi_report = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        unsafe { turnscope_app_free_string(ptr) };
+        assert!(
+            ffi_report.contains("sample diagnostic line"),
+            "{ffi_report}"
+        );
     }
 
     #[test]
@@ -641,7 +655,6 @@ mod tests {
                     version: "0.3.2".into(),
                     has_status: true,
                     stopped: false,
-                    from_disk_image: false,
                     waiting: None,
                     verdict: Some(VerdictModel {
                         headline: "Claude Max runs out in 50m".into(),
@@ -667,7 +680,6 @@ mod tests {
                         note: Some("Uses another Turnscope".into()),
                         configured: Some("/old/turnscope".into()),
                         changing: false,
-                        outdated: true,
                         verb: "Reconnect".into(),
                         help: "Points Claude Code at this copy".into(),
                     }),
@@ -744,7 +756,6 @@ mod tests {
                     version: "0.3.2".into(),
                     has_status: false,
                     stopped: true,
-                    from_disk_image: true,
                     waiting: Some(WaitingModel {
                         problem: Some("database locked".into()),
                         retries: true,
@@ -794,7 +805,6 @@ mod tests {
                     version: "0.3.2".into(),
                     has_status: true,
                     stopped: false,
-                    from_disk_image: false,
                     waiting: None,
                     verdict: None,
                     in_use: vec![],

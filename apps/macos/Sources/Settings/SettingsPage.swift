@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsPage: View {
     @Environment(Bridge.self) private var bridge
     @Environment(UIState.self) private var ui
+    @FocusState private var focused: Bool
 
     var body: some View {
         let panel = bridge.panel
@@ -56,6 +57,11 @@ struct SettingsPage: View {
             .opacity(0)
             .accessibilityHidden(true)
         }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onAppear { focused = true }
+        .onChange(of: ui.focusNonce) { _, _ in focused = true }
         .onKeyPress(.leftArrow) { stepTab(-1, current: ui.tab) }
         .onKeyPress(.rightArrow) { stepTab(1, current: ui.tab) }
     }

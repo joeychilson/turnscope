@@ -63,6 +63,14 @@ struct Panel: View {
         }
         .frame(width: panelWidth)
         .fixedSize(horizontal: false, vertical: true)
+        .background {
+            // Keep ⌘Q active on both FirstPage and SettingsPage since the app has no main menu bar.
+            Button("Quit Turnscope") { NSApp.terminate(nil) }
+                .keyboardShortcut("q", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
     }
 }
 

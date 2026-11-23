@@ -42,7 +42,6 @@ pub struct PanelModel {
     pub version: String,
     pub has_status: bool,
     pub stopped: bool,
-    pub from_disk_image: bool,
     pub waiting: Option<WaitingModel>,
     pub verdict: Option<VerdictModel>,
     pub in_use: Vec<AccountRowModel>,
@@ -136,7 +135,6 @@ pub struct ConnectOfferModel {
     pub note: Option<String>,
     pub configured: Option<String>,
     pub changing: bool,
-    pub outdated: bool,
     pub verb: String,
     pub help: String,
 }
@@ -312,7 +310,6 @@ pub fn build_panel(s: &State) -> PanelModel {
             .get(&agent.id)
             .cloned()
             .or_else(|| words::connection(agent));
-        let outdated = agent.connection == Connection::Outdated;
         let (verb, help) = words::connect_action(agent);
         ConnectOfferModel {
             id: agent.id.clone(),
@@ -320,7 +317,6 @@ pub fn build_panel(s: &State) -> PanelModel {
             note,
             configured: agent.configured.clone(),
             changing: s.changing_agents.contains_key(&agent.id),
-            outdated,
             verb: verb.to_owned(),
             help,
         }
@@ -330,7 +326,6 @@ pub fn build_panel(s: &State) -> PanelModel {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         has_status,
         stopped: s.stopped(),
-        from_disk_image: s.from_disk_image,
         waiting,
         verdict,
         in_use,
