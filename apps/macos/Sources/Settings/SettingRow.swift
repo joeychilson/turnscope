@@ -26,8 +26,10 @@ struct SettingRow<Control: View>: View {
 
     var body: some View {
         HStack(spacing: Row.gap) {
-            Text(title).font(.name)
-            Spacer(minLength: 8)
+            Text(title)
+                .font(.name)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             control()
         }
         .padding(Row.padding)

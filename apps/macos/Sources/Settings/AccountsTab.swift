@@ -34,7 +34,7 @@ private struct AccountSwitch: View {
         HStack(spacing: Row.gap) {
             Logo(provider: account.provider, size: Row.logo)
             AccountName(title: account.title, label: account.label, via: account.via)
-            Spacer(minLength: 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Switch(
                 label: "Show \(account.called)",
                 on: Binding(

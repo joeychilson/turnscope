@@ -41,7 +41,7 @@ private struct AgentRow: View {
                         .help(agent.configured.map { "Configured to run \($0)" } ?? "")
                 }
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             if let changing = agent.changing {
                 Text(changing)
                     .font(.small)
@@ -78,7 +78,7 @@ private struct AgentSnippets: View {
                         Text("\(agent.name) status line & guard")
                             .font(.line)
                             .foregroundStyle(.secondary)
-                        Spacer(minLength: 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -130,7 +130,7 @@ private struct SnippetRow: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button(copied ? "Copied" : "Copy JSON") {
                 copyToPasteboard(snippet.json)
                 clearCopy?.cancel()

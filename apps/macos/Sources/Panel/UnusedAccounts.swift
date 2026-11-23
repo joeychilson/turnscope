@@ -46,8 +46,10 @@ private struct Fold: View {
         Button { withAnimation(spring, toggle) } label: {
             Hover { hover in
                 HStack(spacing: 8) {
-                    Text(text).font(.line).foregroundStyle(.secondary)
-                    Spacer(minLength: 6)
+                    Text(text)
+                        .font(.line)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.tertiary)
@@ -82,7 +84,7 @@ private struct HiddenRow: View {
                 titleStyle: .secondary,
                 subtitleStyle: .tertiary
             )
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button("Show") {
                 withAnimation(spring) {
                     bridge.send(.setHidden(id: account.id, hidden: false))

@@ -27,37 +27,38 @@ struct AccountRow: View {
             HStack(alignment: .center, spacing: Row.gap) {
                 Logo(provider: row.provider, size: Row.logo)
                 VStack(alignment: .leading, spacing: 1) {
-                    AccountTitle(title: row.title, label: row.label, labelStyle: .secondary)
+                    HStack(alignment: .center, spacing: 6) {
+                        AccountTitle(title: row.title, label: row.label, labelStyle: .secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // Always given its layout slot so showing it on hover never shifts text.
+                        Button(action: hide) { Image(systemName: "eye.slash") }
+                            .buttonStyle(IconButton(width: 22, height: 16))
+                            .disabled(stopped)
+                            .opacity(hover ? 1 : 0)
+                            .allowsHitTesting(hover)
+                            .accessibilityHidden(!hover)
+                            .help("Hide \(row.called) from the menu bar and the panel")
+                            .accessibilityLabel("Hide \(row.called)")
+                        if !lines {
+                            let left = Text(row.figure).foregroundStyle(row.standing.ink(lasting: .primary))
+                            let then = Text(row.figureThen.map { " \($0)" } ?? "")
+                                .font(.name)
+                                .foregroundStyle(.secondary)
+                            Text("\(left)\(then)")
+                                .font(.figure)
+                                .contentTransition(.numericText())
+                                .fixedSize()
+                                .transition(appears)
+                                .accessibilityLabel(row.figureSpoken)
+                        }
+                    }
                     if !lines {
                         Text(row.status)
                             .font(.small)
                             .foregroundStyle(row.standing.ink(lasting: .secondary))
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                             .transition(appears)
                     }
-                }
-                .layoutPriority(1)
-                Spacer(minLength: 8)
-                // Always given its layout slot so showing it on hover never shifts text.
-                Button(action: hide) { Image(systemName: "eye.slash") }
-                    .buttonStyle(IconButton(width: 22, height: 16))
-                    .disabled(stopped)
-                    .opacity(hover ? 1 : 0)
-                    .allowsHitTesting(hover)
-                    .accessibilityHidden(!hover)
-                    .help("Hide \(row.called) from the menu bar and the panel")
-                    .accessibilityLabel("Hide \(row.called)")
-                if !lines {
-                    let left = Text(row.figure).foregroundStyle(row.standing.ink(lasting: .primary))
-                    let then = Text(row.figureThen.map { " \($0)" } ?? "")
-                        .font(.name)
-                        .foregroundStyle(.secondary)
-                    Text("\(left)\(then)")
-                        .font(.figure)
-                        .contentTransition(.numericText())
-                        .fixedSize()
-                        .transition(appears)
-                        .accessibilityLabel(row.figureSpoken)
                 }
             }
             .contentShape(Rectangle())
@@ -153,9 +154,10 @@ private struct LimitLine: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 ViewThatFits(in: .horizontal) {
                     line([ahead, window].compactMap { $0 }).lineLimit(1)
-                    line([ahead ?? window].compactMap { $0 }).lineLimit(1).truncationMode(.tail)
+                    line([ahead ?? window].compactMap { $0 }).lineLimit(1)
+                    line([ahead ?? window].compactMap { $0 }).fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer(minLength: 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Text("\(left)\(size)")
                     .monospacedDigit()
                     .contentTransition(.numericText())
@@ -274,7 +276,7 @@ private struct UsedMostRow: View {
                         .font(.small.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                Spacer(minLength: 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 if copied {
                     Text("Copied")
                         .font(.small)
@@ -346,6 +348,7 @@ struct AccountTitle: View {
                     .foregroundStyle(labelStyle)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(label)
             }
         }
     }

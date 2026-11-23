@@ -174,7 +174,7 @@ private struct ConnectNudge: View {
                         .help(offer.configured.map { "Configured to run \($0)" } ?? "")
                 }
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             if offer.changing {
                 Spinner()
                     .accessibilityElement()
