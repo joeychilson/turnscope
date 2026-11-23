@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - **The macOS app is now native SwiftUI and AppKit**, under half the size
   (27 MB instead of 60 MB). The menu bar item opens on mouse-down, and
