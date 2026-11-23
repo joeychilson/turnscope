@@ -284,7 +284,7 @@ TURNSCOPE_BLESS=1 cargo test --test cli
 ## 6. Add its logo
 
 Add a one-color SVG (`currentColor`) at
-`crates/turnscope-macos/assets/logos/agents/acme.svg`, and say where it
+`assets/logos/agents/acme.svg`, and say where it
 came from in that folder's `README.md`. Without one, the panel shows a
 terminal in its place.
 

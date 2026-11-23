@@ -136,11 +136,14 @@ removes the import, and the old file with it.
 
 ## Code
 
-Two crates. `crates/turnscope` is the engine, a library every front end
-uses, and the `turnscope` binary: the command line and the MCP server.
-`crates/turnscope-macos` is the menu bar app ([app.md](app.md)); an app
-for another platform would be a crate beside it. Each module holds its own
-data, SQL and text. There's no central object, store layer or view types.
+Two Rust crates and native platform shells. `crates/turnscope` is the
+engine, a library every front end uses, and the `turnscope` binary: the
+command line and the MCP server. `crates/turnscope-app` is the shared
+desktop app core (in-process engine coordination, state, wording, view
+models, and a small C ABI) compiled as both a Rust library and a static
+library. `apps/macos` is the thin SwiftUI + AppKit shell statically linked
+to `turnscope-app` ([app.md](app.md)); future Windows or Linux apps sit
+beside it under `apps/` and share `turnscope-app` and `assets/logos/`.
 
 ```
 crates/turnscope/src/            the engine, a module per job (ingest, limits, prices,
@@ -148,7 +151,9 @@ crates/turnscope/src/            the engine, a module per job (ingest, limits, p
                                  line (main.rs) and the MCP server (mcp.rs)
 crates/turnscope/src/agents/     one file per agent, and agents::ALL
 crates/turnscope/src/providers/  one file per provider, and providers::ALL
-crates/turnscope-macos/src/      the menu bar app
+crates/turnscope-app/src/        shared desktop app core (state, words, view, launch, C ABI)
+apps/macos/Sources/              native macOS SwiftUI + AppKit shell
+assets/logos/                    shared provider and agent SVG logos
 ```
 
 ## Extension points
@@ -161,7 +166,7 @@ Each kind of extension lives in one place.
 | A provider | `crates/turnscope/src/providers/<provider>.rs`, implementing `Provider` | A line in `providers::ALL` ([adding-a-provider.md](adding-a-provider.md)) |
 | An MCP tool | A function `fn(&Ask, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
 | A CLI command | A variant of `main::Command` | Its arm in `main::answer`, and whether it catches up first |
-| Something an app shows or asks | An `engine::Event`, or a method of `engine::Engine` | Its handling in each app's `engine.rs` |
+| Something an app shows or asks | An `engine::Event`, or a method of `engine::Engine` | Its handling in `crates/turnscope-app/src/state.rs` and `view.rs` |
 | A database change | A new script at the end of `db::REVISIONS` | |
 
 Each trait's methods, `Agent` in `agents/mod.rs` and `Provider` in

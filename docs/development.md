@@ -9,9 +9,11 @@ the rules and what to update when you change something.
 - macOS 26, on Apple silicon or Intel. It's the app's deployment target.
 - Rust 1.98.1. `rust-toolchain.toml` pins it with clippy, rustfmt and both
   Mac targets, and rustup installs it on first use.
-- Xcode 26, to bundle the app: `actool` compiles its icon. Signing a
-  release also uses its `notarytool`, `stapler` and `swift`. The command
-  line and the app's binary build with Cargo alone.
+- Xcode 26, to build and bundle the macOS app: `swiftc` compiles the
+  SwiftUI shell against `libturnscope_app.a` and `actool` compiles its
+  icon. Signing a release also uses `notarytool`, `stapler` and `swift`.
+  The engine, command line and shared app core build and test with Cargo
+  alone.
 - `shellcheck`, `actionlint` and `cargo-deny`, only to run CI's lint job
   yourself.
 
@@ -19,7 +21,9 @@ the rules and what to update when you change something.
 
 ```
 crates/turnscope/        the engine, the command line and the MCP server
-crates/turnscope-macos/  the menu bar app
+crates/turnscope-app/    shared desktop app core (state, wording, view models, C ABI)
+apps/macos/              the macOS SwiftUI + AppKit shell and its bundle assets
+assets/logos/            shared provider and agent SVG logos
 docs/                    how it works, and how to change it
 scripts/                 building, signing and checking the app
 ```
@@ -27,7 +31,7 @@ scripts/                 building, signing and checking the app
 ## Build
 
 ```sh
-cargo build       # target/debug/turnscope and target/debug/turnscope-app
+cargo build       # target/debug/turnscope and target/debug/libturnscope_app.a
 scripts/app.sh    # target/debug/Turnscope.app, signed ad hoc
 ```
 
@@ -38,10 +42,11 @@ network, so neither your own data nor your agents' are touched:
 
 ```sh
 cargo test --test cli     # copies the fixture home to target/tmp/home
+scripts/app.sh            # builds target/debug/Turnscope.app
 export TURNSCOPE_OFFLINE=1
 target/debug/turnscope --data "$(mktemp -d)" --home "$PWD/target/tmp/home" usage --since 2026-09-01
-cargo run -p turnscope-macos -- --data "$(mktemp -d)" --home "$PWD/target/tmp/home" --open
-cargo run -p turnscope-macos -- --fixture crates/turnscope/tests/fixtures/status.json --open agents
+target/debug/Turnscope.app/Contents/MacOS/Turnscope --data "$(mktemp -d)" --home "$PWD/target/tmp/home" --open
+target/debug/Turnscope.app/Contents/MacOS/Turnscope --fixture crates/turnscope/tests/fixtures/status.json --open agents
 ```
 
 The fixture home holds made-up sessions of every agent, from September
@@ -179,9 +184,8 @@ crate. Update the crate it names.
 Actions are pinned by commit. Dependabot (`.github/dependabot.yml`) opens
 one pull request a week for the actions and one for the Rust crates, with
 versions at least 7 days old. Sparkle is pinned to a version and checksum
-in `scripts/sparkle.sh`, Rune to a commit in the root `Cargo.toml`, with
-its patches, and actionlint and cargo-deny to a version and checksum in
-`ci.yml`. These are updated by hand.
+in `scripts/sparkle.sh`, and actionlint and cargo-deny to a version and
+checksum in `ci.yml`. These are updated by hand.
 
 The `app` job and the release use Xcode 26.6, named in both workflows. A
 newer Xcode comes in a pull request that changes both, once

@@ -11,8 +11,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-cargo build --locked -p turnscope-macos
-app=${CARGO_TARGET_DIR:-target}/debug/turnscope-app
+scripts/app.sh
+app=target/debug/Turnscope.app/Contents/MacOS/Turnscope
 example=crates/turnscope/tests/fixtures/status.json
 drawn=$(mktemp -d)
 trap 'rm -rf "$drawn"' EXIT
@@ -35,7 +35,7 @@ jq '.agents |= map(.inUse = false)
 # Draw `$1` from the status in `$2`, opening what `$3` names, if anything.
 shot() {
   local name=$1 fixture=$2 opening=${3:-}
-  "$app" --snapshot "$drawn/$name" --fixture "$fixture" ${opening:+--open "$opening"}
+  TURNSCOPE_OFFLINE=1 "$app" --snapshot "$drawn/$name" --fixture "$fixture" ${opening:+--open "$opening"}
   for look in light dark; do
     mv "$drawn/$name/panel-$look.png" ".github/screenshots/$name-$look.png"
   done

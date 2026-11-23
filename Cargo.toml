@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/turnscope", "crates/turnscope-macos"]
+members = ["crates/turnscope", "crates/turnscope-app"]
 resolver = "3"
 
 # One version for the engine, the command line and every app: a release is
@@ -15,8 +15,6 @@ publish = false
 
 [workspace.dependencies]
 jiff = "0.2.37"
-# Rune has no release: a commit, the same as its patches' below.
-rune = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tempfile = "3.27.0"
@@ -30,17 +28,3 @@ unwrap_used = "deny"
 codegen-units = 1
 lto = "thin"
 strip = true
-
-# Rune's fixes to these crates, which it has no release for yet: at Rune's
-# commit above.
-[patch.crates-io]
-wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
-winit = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
-parley_engine = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
-accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
-accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "1505f9210322e9bc75bf0f67c4134dde950fa9d2" }
-
-# Dependencies optimized in debug builds too: unoptimized, Rune's layout and
-# drawing dropped frames while a row opened.
-[profile.dev.package."*"]
-opt-level = 2

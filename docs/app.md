@@ -8,12 +8,11 @@ alerts to raise all come from the engine. The app chooses the words, colors
 and layout. A view that needs a threshold, an order or a choice gets it
 from the engine.
 
-It needs macOS 26. It's written in Rust, like the engine, in
-`crates/turnscope-macos`. The panel is drawn with
-[Rune](https://github.com/anomalyco/rune). The menu bar item,
-notifications, opening at login and updates use AppKit and its frameworks,
-called through `objc2`. It has no Dock icon (`LSUIElement`).
-[development.md](development.md) says how to build, run and test it.
+It needs macOS 26. The shared app core (in-process engine, state, wording,
+view models, and C ABI) lives in `crates/turnscope-app` and is statically
+linked into the thin native SwiftUI + AppKit shell in `apps/macos`. It has
+no Dock icon (`LSUIElement`). [development.md](development.md) says how to
+build, run and test it.
 
 ## The bundle
 
@@ -22,46 +21,51 @@ called through `objc2`. It has no Dock icon (`LSUIElement`).
 ```
 Turnscope.app/Contents/
   Info.plist
-  MacOS/Turnscope          the app, built as turnscope-app
+  MacOS/Turnscope          the SwiftUI app, statically linked to libturnscope_app.a
   Helpers/turnscope        the command line, which connected agents run
   Frameworks/Sparkle.framework
-  Resources/               the icon, compiled from assets/Turnscope.icon
+  Resources/               the icon (Turnscope.icon) and shared logos (logos/)
 ```
 
-The app's binary is built as `turnscope-app` since a folder on a Mac's
-disk can't hold both `Turnscope` and `turnscope`.
+The app's binary is staged as `turnscope-app` before bundling since a
+folder on a Mac's case-insensitive disk can't hold both `Turnscope` and
+`turnscope`.
 
 ## How data flows
 
 ```
-turnscope::engine ──events──▶ engine.rs ──▶ State ──▶ panel, menu bar item, notifier
-                  ◀─requests─           ◀── clicks
+turnscope::engine ──events──▶ turnscope-app (Core) ──wake/sync──▶ Bridge.swift ──▶ SwiftUI, menu bar, notifier
+                  ◀─requests─                      ◀───actions───              ◀── clicks
 ```
 
-The app starts `turnscope::engine::Engine` and shows each `Event` it tells.
+`crates/turnscope-app` starts `turnscope::engine::Engine` inside the app's
+own process and handles each `Event` it tells.
 [architecture.md](architecture.md#the-apps-engine) says what the engine
 does.
 
-- **A request**, such as hiding an account or changing a setting, runs on
-  a thread of the engine's. Hiding an account and changing a setting show
-  at once, and go back if the change failed. Connecting or disconnecting
-  an agent shows once it's done.
-- **`took`**, on the main thread, keeps the status (`State::take`), opens
-  what waited for the first status, redraws the menu bar item, and posts
-  the alerts. The status is kept until a newer one arrives, even while the
-  data can't be kept current, so the panel never goes empty.
-- **`State`** splits the accounts into the lists the panel shows (`in_use`,
-  `recent`, `unused`, `hidden`), and holds where the panel is, which agents
-  are being connected, and the sessions that used each account's deciding
-  limit. It lives on the main thread; the engine's threads change it
-  through Rune's `AppHandle::update`.
-- **`words.rs`** writes every figure and sentence made from the status:
-  what's left, times, a limit's line, the headline, the menu bar's
-  figures, notifications and what VoiceOver says. Fixed labels, such as
-  headings, button titles and setting names, are written in the view that
-  shows them. Everything is in English, on the Gregorian calendar and a
-  12-hour clock, in the Mac's time zone.
-- **`style.rs`** colors a [standing](architecture.md#glossary) gray,
+- **A request**, such as hiding an account or changing a setting, crosses
+  the C ABI (`crates/turnscope-app/include/turnscope_app.h`) as a JSON
+  `Action`, updates `State` synchronously, fires the engine call on a
+  worker thread, and returns the updated `AppSync` snapshot immediately.
+  Hiding an account and changing a setting show at once, and go back if
+  the change failed. Connecting or disconnecting an agent shows once it's
+  done.
+- **`Core::took`** handles engine events on the engine thread, updates
+  `State`, queues one-shot `Effect`s (alerts to post, sign-in alerts to
+  clear, initial `--open`), and invokes the host's wake callback. The
+  status is kept until a newer one arrives, even while the data can't be
+  kept current, so the panel never goes empty.
+- **`State` and `view.rs`** (in `crates/turnscope-app`) split the accounts
+  into `in_use`, `recent`, `unused`, and `hidden`, hold panel navigation,
+  changing agents, and `used_most` sessions, and build flat serializable
+  `MenuBarModel` and `PanelModel` values.
+- **`words.rs`** (in `crates/turnscope-app`) writes every figure and
+  sentence made from the status: what's left, times, a limit's line, the
+  headline, the menu bar's figures, notifications and what VoiceOver says.
+  Fixed labels, such as headings, button titles and setting names, live in
+  the SwiftUI views. Everything is in English, on the Gregorian calendar
+  and a 12-hour clock, in the Mac's time zone.
+- **`Style.swift`** colors a [standing](architecture.md#glossary) gray,
   amber or red. Amber and red are 4.5:1 or more against an open row in
   light and dark, and 7:1 with Increase Contrast.
 - **Run from its disk image**, or from the copy macOS runs it from there
@@ -178,15 +182,15 @@ Where each setting is kept:
 | Connected agents | Each agent's own configuration | `turnscope connect`, `turnscope disconnect` |
 | Check automatically | Sparkle's defaults | |
 
-An app preference goes in `preferences.rs`; a setting the engine acts on
-goes in `alerts::Settings`, and Settings sends it with `engine::ask`.
+An app preference goes in `Preferences.swift` (and `state::Preferences` in
+`crates/turnscope-app`); a setting the engine acts on goes in
+`alerts::Settings`, sent through `Action::SetNotify`.
 
 ## Notifications
 
-`notifier.rs` posts every alert the engine raises: the engine has already
-dropped the kinds turned off and alerts for hidden accounts. macOS posts
-notifications only for an app bundle, so the app run with `cargo run`
-posts none.
+`Notifier.swift` posts every alert `turnscope-app` formats: the engine has
+already dropped the kinds turned off and alerts for hidden accounts. macOS
+posts notifications only for an app bundle.
 
 - **Permission.** It asks when the app starts. If notifications are off
   for Turnscope in System Settings, Settings → General says so and offers
@@ -212,8 +216,8 @@ posts none.
 
 ## Updates
 
-`updater.rs` uses Sparkle. It reads the appcast at `SUFeedURL`, the latest
-GitHub release's `appcast.xml`, checks each update's signature with
+`Updater.swift` uses Sparkle. It reads the appcast at `SUFeedURL`, the
+latest GitHub release's `appcast.xml`, checks each update's signature with
 `SUPublicEDKey`, and asks before installing.
 `SUVerifyUpdateBeforeExtraction` has it check the disk image's signature
 before mounting it. Automatic checks are on by default, and Settings →
@@ -224,9 +228,9 @@ finds would open behind other apps. Instead the footer shows "Update
 available" (Sparkle's gentle reminders) until that update is installed,
 skipped or put off.
 
-Sparkle is loaded from the bundle when the app starts, not linked, so the
-app also runs with `cargo run`. It's loaded only when `SUPublicEDKey` is
-set, which only the release build does
+Sparkle is bundled in `Contents/Frameworks/Sparkle.framework` and linked
+via `@executable_path/../Frameworks`. `Updater` starts it only when
+`SUPublicEDKey` is set, which only the release build does
 ([development.md](development.md#release)).
 
 ## Opening at login
@@ -238,9 +242,9 @@ fails, the Mac beeps.
 
 ## Logos
 
-`build.rs` builds every SVG in `assets/logos/` into the app
-([its README](../crates/turnscope-macos/assets/logos/README.md)). The panel
-tints the one-color logos like text, and the menu bar item like its
+`scripts/app.sh` copies every SVG in `assets/logos/` into
+`Contents/Resources/logos/` ([its README](../assets/logos/README.md)). The
+panel tints the one-color logos like text, and the menu bar item like its
 figures. An account or agent with no logo gets an SF Symbol in the panel
 (a key or a terminal) and none in the menu bar.
 
