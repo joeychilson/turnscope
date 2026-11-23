@@ -164,26 +164,32 @@ fn pointed(info: &Info, at: Option<&Path>, home: &Path) -> String {
     pointed
 }
 
-/// Whether `agent` runs `engine`, the `turnscope` binary. Compared as
-/// files, so a link to it, as one on the `PATH`, is the same copy.
-pub fn connection(agent: &dyn Agent, home: &Path, engine: &Path) -> Connection {
+/// Whether `agent` runs `engine`, the `turnscope` binary, plus the differing
+/// command path when `Connection::Outdated`. Compared as files, so a link to
+/// it, as one on the `PATH`, is the same copy.
+pub fn connection(agent: &dyn Agent, home: &Path, engine: &Path) -> (Connection, Option<String>) {
     let real = |path: &Path| std::fs::canonicalize(path).ok();
     let me = real(engine);
+    let mut outdated_cmd = None;
     let matches: Vec<Option<bool>> = agent
         .folders(home)
         .iter()
         .map(|folder| {
-            agent
-                .mcp_command(folder, home)
-                .map(|cmd| me.is_some() && real(Path::new(&cmd)) == me)
+            agent.mcp_command(folder, home).map(|cmd| {
+                let same = me.is_some() && real(Path::new(&cmd)) == me;
+                if !same && outdated_cmd.is_none() {
+                    outdated_cmd = Some(cmd);
+                }
+                same
+            })
         })
         .collect();
     if matches.iter().all(|&m| m == Some(true)) {
-        Connection::Connected
+        (Connection::Connected, None)
     } else if matches.contains(&Some(false)) {
-        Connection::Outdated
+        (Connection::Outdated, outdated_cmd)
     } else {
-        Connection::Available
+        (Connection::Available, None)
     }
 }
 

@@ -1,5 +1,6 @@
 // Settings → General: menu bar display, open at login, notification toggles, and updates.
 
+import AppKit
 import SwiftUI
 
 struct GeneralTab: View {
@@ -8,6 +9,8 @@ struct GeneralTab: View {
     @Environment(Notifier.self) private var notifier
     @Environment(Updater.self) private var updater
     @Environment(\.closePanel) private var closePanel
+    @State private var copiedDiagnostics = false
+    @State private var clearCopied: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -93,13 +96,36 @@ struct GeneralTab: View {
     private var updates: some View {
         SettingGroup(title: "Updates") {
             SettingRow(title: "Turnscope \(bridge.panel.version)") {
-                if updater.available {
-                    Button("Check now") {
-                        closePanel()
-                        updater.check()
+                HStack(spacing: 8) {
+                    if copiedDiagnostics {
+                        Text("Copied")
+                            .font(.small)
+                            .foregroundStyle(.secondary)
+                            .transition(.opacity)
                     }
-                    .buttonStyle(PillButton())
-                    .accessibilityLabel("Check for updates now")
+                    if updater.available {
+                        Button("Check now") {
+                            closePanel()
+                            updater.check()
+                        }
+                        .buttonStyle(PillButton())
+                        .accessibilityLabel("Check for updates now")
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if NSEvent.modifierFlags.contains(.option) {
+                    copyDiagnostics()
+                }
+            }
+            .contextMenu {
+                Button("Copy Diagnostics", action: copyDiagnostics)
+                if let logURL = bridge.logURL() {
+                    Button("Reveal Log in Finder") {
+                        closePanel()
+                        NSWorkspace.shared.activateFileViewerSelecting([logURL])
+                    }
                 }
             }
             if updater.available {
@@ -111,6 +137,17 @@ struct GeneralTab: View {
                     )
                 )
             }
+        }
+    }
+
+    private func copyDiagnostics() {
+        copyToPasteboard(bridge.diagnostics())
+        clearCopied?.cancel()
+        withAnimation(.easeOut(duration: 0.12)) { copiedDiagnostics = true }
+        clearCopied = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.16)) { copiedDiagnostics = false }
         }
     }
 

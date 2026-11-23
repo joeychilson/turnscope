@@ -17,7 +17,7 @@ use crate::{Result, agents};
 
 mod text;
 use text::NONE_READ;
-pub use text::{fit, limit_text, line, none, stale, text, verdict};
+pub use text::{alternate_note, fit, limit_text, line, none, stale, text, verdict};
 
 /// How recently a response must have drawn on an account for it to be in use.
 pub(crate) const IN_USE: i64 = 30 * MINUTE;
@@ -57,6 +57,9 @@ pub struct Agent {
     pub installed: bool,
     /// Whether it runs Turnscope's MCP server.
     pub connection: Connection,
+    /// When `connection` is `Outdated`, the command path currently configured in the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured: Option<String>,
     /// Its responses drew on an account in the last half hour.
     pub in_use: bool,
 }
@@ -611,6 +614,7 @@ pub fn agents(home: &Path, engine: &Path, in_use: impl Fn(&str) -> bool) -> Vec<
         .iter()
         .map(|agent| {
             let info = agent.info();
+            let (connection, configured) = crate::connect::connection(*agent, home, engine);
             Agent {
                 id: info.id.to_owned(),
                 name: info.name.to_owned(),
@@ -618,7 +622,8 @@ pub fn agents(home: &Path, engine: &Path, in_use: impl Fn(&str) -> bool) -> Vec<
                     .folders(home)
                     .first()
                     .is_some_and(|folder| agent.installed(folder)),
-                connection: crate::connect::connection(*agent, home, engine),
+                connection,
+                configured,
                 in_use: in_use(info.id),
             }
         })
@@ -630,6 +635,40 @@ pub fn in_use(accounts: &[Account], id: &str) -> bool {
     accounts
         .iter()
         .any(|account| account.used_by.iter().any(|by| by == id))
+}
+
+/// Another non-hidden live account with clear headroom (>= 25% left and not
+/// running out or used up), preferring subscriptions over API keys.
+pub fn alternate<'a>(
+    accounts: &'a [Account],
+    current: &Account,
+) -> Option<(&'a Account, &'a Limit)> {
+    accounts
+        .iter()
+        .enumerate()
+        .filter(|(_, account)| {
+            account.id != current.id
+                && !account.hidden
+                && matches!(account.state, State::Live { .. })
+                && !account.agents.is_empty()
+        })
+        .filter_map(|(rank, account)| {
+            let limit = account.deciding_limit()?;
+            let ok = limit.left_percent >= 25
+                && !matches!(
+                    limit.outlook,
+                    Outlook::UsedUp { .. } | Outlook::RunsOut { .. }
+                );
+            ok.then_some((rank, account, limit))
+        })
+        .max_by_key(|(rank, account, limit)| {
+            (
+                account.kind != Kind::ApiKey,
+                limit.left_percent,
+                Reverse(*rank),
+            )
+        })
+        .map(|(_, account, limit)| (account, limit))
 }
 
 /// The agents that drew on any account in the last half hour, from the

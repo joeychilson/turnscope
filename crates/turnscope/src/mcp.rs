@@ -540,8 +540,12 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
         true => "Which account is yours isn't known, so here is every one.".to_owned(),
         false => status::verdict(first, status.at),
     };
+    let alternate = (shown.len() == 1 && !unknown)
+        .then(|| status::alternate_note(&status, first))
+        .flatten()
+        .map_or(String::new(), |note| format!("\n\n{note}"));
     Ok(format!(
-        "{fit}{head}\n\n{}",
+        "{fit}{head}\n\n{}{alternate}",
         status::text(&status, &shown, yours)
     ))
 }
@@ -873,5 +877,47 @@ mod tests {
         assert_eq!(above(350), Some("antigravity"));
         assert_eq!(above(360), None);
         assert_eq!(above(12345), None);
+    }
+
+    #[test]
+    fn check_limits_mentions_alternate_room_only_for_single_tight_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = turnscope::db::open(dir.path()).unwrap();
+        let now = turnscope::now();
+        let resets = now + 2 * turnscope::time::HOUR;
+        db.execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at) VALUES
+                ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', {now}, {now}, {now}),
+                ('openai:b', 'openai', 'subscription', 'ChatGPT Pro', {now}, {now}, {now});
+             INSERT INTO sign_in (agent, folder, provider, since, account) VALUES
+                ('claude-code', '/h/.claude', 'anthropic', {now}, 'anthropic:a'),
+                ('codex', '/h/.codex', 'openai', {now}, 'openai:b');
+             INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
+                input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
+                web_searches, priority, account) VALUES
+                ('claude-code', 'r1', 'claude-code:s1', 0, 1, '/h/.claude', {now}, 'anthropic',
+                 'claude-opus', 1, 0, 0, 0, 1, 0, 0, 0, 0, 'anthropic:a');
+             INSERT INTO reading (account, at, limit_key, name, used, resets) VALUES
+                ('anthropic:a', {now}, 'five_hour', '5 hours', 100.0, {resets}),
+                ('openai:b', {now}, 'primary', 'Weekly', 10.0, {resets});"
+        ))
+        .unwrap();
+        let caller = Caller {
+            agent: agents::by_id("claude-code"),
+            session: None,
+            agent_folder: Some(PathBuf::from("/h/.claude")),
+        };
+        let ask = Ask {
+            db: &db,
+            home: Path::new("/h"),
+            caller: &caller,
+        };
+        let mine = check_limits(&ask, json!({})).unwrap();
+        assert!(
+            mine.contains("Other room: ChatGPT Pro has 90% left (Weekly). Call check_limits with all: true to compare."),
+            "{mine}"
+        );
+        let all = check_limits(&ask, json!({ "all": true })).unwrap();
+        assert!(!all.contains("Other room:"), "{all}");
     }
 }

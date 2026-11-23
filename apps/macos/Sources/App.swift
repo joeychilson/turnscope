@@ -54,7 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         startedAt = .now
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self
-        item.button?.action = #selector(toggle)
+        item.button?.action = #selector(statusItemClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         self.item = item
 
         panel = makePanel()
@@ -207,7 +208,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .environment(\.closePanel, { [weak self] in self?.close() })
     }
 
-    @objc private func toggle() {
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        let isRightClick = event?.type == .rightMouseUp
+            || (event?.type == .leftMouseUp && event?.modifierFlags.contains(.control) == true)
+        if isRightClick {
+            if panelOpen { close() }
+            showStatusMenu()
+            return
+        }
+        toggle()
+    }
+
+    private func showStatusMenu() {
+        guard let item else { return }
+        let menu = NSMenu()
+        if bridge.isLive {
+            let refresh = NSMenuItem(title: "Refresh Limits", action: #selector(menuRefreshLimits), keyEquivalent: "r")
+            refresh.target = self
+            refresh.isEnabled = !bridge.panel.stopped
+            menu.addItem(refresh)
+            menu.addItem(.separator())
+        }
+        let settings = NSMenuItem(title: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+        if updater.available {
+            let check = NSMenuItem(title: "Check for Updates…", action: #selector(menuCheckForUpdates), keyEquivalent: "")
+            check.target = self
+            menu.addItem(check)
+        }
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit Turnscope", action: #selector(menuQuit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+
+        // Assign transiently so left-click continues calling `statusItemClicked`.
+        item.menu = menu
+        item.button?.performClick(nil)
+        item.menu = nil
+    }
+
+    @objc private func menuRefreshLimits() {
+        bridge.send(.refreshNow)
+    }
+
+    @objc private func menuOpenSettings() {
+        show(opening: Opening(account: false, unused: false, settings: .general))
+    }
+
+    @objc private func menuCheckForUpdates() {
+        updater.check()
+    }
+
+    @objc private func menuQuit() {
+        NSApp.terminate(nil)
+    }
+
+    private func toggle() {
         if panelOpen {
             close()
             return

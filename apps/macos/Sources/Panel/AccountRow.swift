@@ -1,11 +1,19 @@
 // One account as a row, expanded in place on click, Space, or Return,
 // plus shared account title/name views and limit progress bars.
 
+import AppKit
 import SwiftUI
+
+enum PanelFocus: Hashable {
+    case account(String)
+    case unusedFold
+    case hiddenFold
+}
 
 struct AccountRow: View {
     @Environment(Bridge.self) private var bridge
     var row: AccountRowModel
+    var focus: FocusState<PanelFocus?>.Binding
     @State private var hover = false
 
     var body: some View {
@@ -13,6 +21,7 @@ struct AccountRow: View {
         let lines = open && !row.limits.isEmpty
         let used = open && !row.usedMost.isEmpty
         let stopped = bridge.panel.stopped
+        let focused = focus.wrappedValue == .account(row.id)
 
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: Row.gap) {
@@ -51,6 +60,8 @@ struct AccountRow: View {
                         .accessibilityLabel(row.figureSpoken)
                 }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { if row.openable { toggle() } }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(row.headerSpoken)
             .accessibilityAddTraits(row.openable ? .isButton : [])
@@ -61,12 +72,16 @@ struct AccountRow: View {
             if open {
                 VStack(alignment: .leading, spacing: 10) {
                     if lines {
-                        ForEach(row.limits) { limit in
-                            LimitLine(
-                                limit: limit,
-                                last: row.note == nil && !used && limit.id == row.limits.last?.id
-                            )
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(row.limits) { limit in
+                                LimitLine(
+                                    limit: limit,
+                                    last: row.note == nil && !used && limit.id == row.limits.last?.id
+                                )
+                            }
                         }
+                        .contentShape(Rectangle())
+                        .onTapGesture { toggle() }
                     }
                     if let note = row.note {
                         Text(note)
@@ -84,11 +99,11 @@ struct AccountRow: View {
             }
         }
         .padding(Row.padding)
-        .rowBackground(open || hover)
+        .rowBackground(open || hover || focused)
         .clipShape(RoundedRectangle(cornerRadius: Row.radius, style: .continuous))
         .onHover { over in withAnimation(.easeOut(duration: 0.12)) { hover = over } }
-        .onTapGesture { if row.openable { toggle() } }
         .focusable(row.openable, interactions: .activate)
+        .focused(focus, equals: .account(row.id))
         .onKeyPress(keys: [.space, .return]) { _ in
             guard row.openable else { return .ignored }
             toggle()
@@ -147,7 +162,11 @@ private struct LimitLine: View {
                     .fixedSize()
                     .accessibilityLabel(limit.spoken)
             }
-            Bar(leftPercent: limit.leftPercent, standing: limit.standing)
+            Bar(
+                leftPercent: limit.leftPercent,
+                timeLeftFraction: limit.timeLeftFraction,
+                standing: limit.standing
+            )
         }
         .padding(.bottom, last ? Row.underBar : 0)
         .font(.small)
@@ -156,8 +175,10 @@ private struct LimitLine: View {
 
 struct Bar: View {
     var leftPercent: UInt8
+    var timeLeftFraction: Double? = nil
     var standing: Standing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var grown = false
 
@@ -170,7 +191,14 @@ struct Bar: View {
                 BarFill(fraction: shown ? level : 0, nonZero: level > 0)
                     .fill(standing.ink(lasting: .secondary))
             )
+            .overlay {
+                if let tick = timeLeftFraction {
+                    BarTick(fraction: tick)
+                        .fill(Color.primary.opacity(contrast == .increased ? 0.55 : 0.36))
+                }
+            }
             .frame(height: 5)
+            .help(timeLeftFraction != nil ? "Tick marks time left in window" : "")
             .accessibilityHidden(true)
             .onAppear {
                 if !isSnapshot && !reduceMotion {
@@ -200,24 +228,99 @@ private struct BarFill: Shape {
     }
 }
 
+private struct BarTick: Shape {
+    var fraction: Double
+
+    func path(in rect: CGRect) -> Path {
+        let width: CGFloat = 1.5
+        let x = max(0, min(rect.width - width, rect.width * fraction - width / 2))
+        return Path(
+            roundedRect: CGRect(x: x, y: -1.5, width: width, height: rect.height + 3),
+            cornerRadius: width / 2
+        )
+    }
+}
+
 private struct UsedMostList: View {
     var heading: String
     var sessions: [UsedMostModel]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(heading)
                 .font(.small.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .padding(.bottom, 2)
             ForEach(sessions) { used in
+                UsedMostRow(used: used)
+            }
+        }
+    }
+}
+
+private struct UsedMostRow: View {
+    @Environment(\.closePanel) private var closePanel
+    var used: UsedMostModel
+    @State private var hover = false
+    @State private var copied = false
+    @State private var clearCopy: Task<Void, Never>?
+
+    var body: some View {
+        Button(action: copyPrimary) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(used.title).font(.line).lineLimit(1)
                     Text(used.detail)
                         .font(.small.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 4)
+                if copied {
+                    Text("Copied")
+                        .font(.small)
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hover ? Color.primary.opacity(0.06) : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, -6)
+        .onHover { over in withAnimation(.easeOut(duration: 0.12)) { hover = over } }
+        .help(used.projectPath != nil ? "Click to copy project path" : "Click to copy session title")
+        .contextMenu {
+            if let path = used.projectPath {
+                if FileManager.default.fileExists(atPath: path) {
+                    Button("Open Project in Finder") {
+                        closePanel()
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    }
+                }
+                Button("Copy Project Path") { copy(path) }
+            }
+            Button("Copy Session ID") { copy(used.session) }
+        }
+    }
+
+    private func copyPrimary() {
+        copy(used.projectPath ?? used.title)
+    }
+
+    private func copy(_ text: String) {
+        copyToPasteboard(text)
+        clearCopy?.cancel()
+        withAnimation(.easeOut(duration: 0.12)) { copied = true }
+        clearCopy = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.4))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.16)) { copied = false }
         }
     }
 }

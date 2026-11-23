@@ -1,7 +1,14 @@
 // Visual constants, typography, contrast-calibrated urgency colors, and small controls
 // shared across the panel and Settings.
 
+import AppKit
 import SwiftUI
+
+func copyToPasteboard(_ text: String) {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(text, forType: .string)
+}
 
 let spring = Animation.spring(response: 0.34, dampingFraction: 0.9)
 

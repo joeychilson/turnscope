@@ -31,6 +31,12 @@ char *turnscope_app_action(TurnscopeApp *app, const char *action_json);
 /* Append a line to `app.log` in the active data directory (no-op in fixture mode). */
 void turnscope_app_log(TurnscopeApp *app, const char *line);
 
+/* Build a plain-text diagnostics report (version, doctor output, recent app.log). */
+char *turnscope_app_diagnostics(TurnscopeApp *app);
+
+/* Return the path to `app.log` (or the data directory if none exists yet), or NULL in fixture mode. */
+char *turnscope_app_log_path(TurnscopeApp *app);
+
 /* Stop the background engine and free the app core. */
 void turnscope_app_stop(TurnscopeApp *app);
 

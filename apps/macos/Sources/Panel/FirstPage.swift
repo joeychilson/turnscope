@@ -4,9 +4,13 @@ import SwiftUI
 
 struct FirstPage: View {
     @Environment(Bridge.self) private var bridge
+    @Environment(\.isSnapshot) private var isSnapshot
+    @FocusState private var focus: PanelFocus?
+    @State private var overflow = false
 
     var body: some View {
         let panel = bridge.panel
+        let listCap = max(180, bridge.screenHeight - 230)
         VStack(alignment: .leading, spacing: 0) {
             if !panel.hasStatus {
                 Waiting(model: panel.waiting)
@@ -17,33 +21,84 @@ struct FirstPage: View {
                         .padding(.top, 18)
                         .padding(.bottom, 14)
                 }
-                VStack(alignment: .leading, spacing: 0) {
-                    if !panel.inUse.isEmpty {
-                        VStack(spacing: Row.spacing) {
-                            ForEach(panel.inUse) { AccountRow(row: $0) }
-                        }
+                if overflow && !isSnapshot {
+                    ScrollView(.vertical) {
+                        accountList(panel, listCap: listCap)
                     }
-                    if !panel.recent.isEmpty {
-                        VStack(alignment: .leading, spacing: Row.spacing) {
-                            SectionTitle(text: "Used this week")
-                            ForEach(panel.recent) { AccountRow(row: $0) }
-                        }
-                        .padding(.top, panel.inUse.isEmpty ? 0 : Row.groups)
-                    }
-                    if panel.unusedFoldLabel != nil {
-                        UnusedAccounts()
-                            .padding(.top, Row.spacing)
-                    }
-                    if let offer = panel.connectOffer {
-                        ConnectNudge(offer: offer)
-                            .padding(.top, Row.groups)
-                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(height: listCap)
+                } else {
+                    accountList(panel, listCap: listCap)
                 }
-                .padding(.horizontal, 8)
             }
             Footer()
                 .padding(8)
         }
+        .onKeyPress(.downArrow) { stepFocus(1, panel: panel) }
+        .onKeyPress(.upArrow) { stepFocus(-1, panel: panel) }
+    }
+
+    private func accountList(_ panel: PanelModel, listCap: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !panel.inUse.isEmpty {
+                VStack(spacing: Row.spacing) {
+                    ForEach(panel.inUse) { AccountRow(row: $0, focus: $focus) }
+                }
+            }
+            if !panel.recent.isEmpty {
+                VStack(alignment: .leading, spacing: Row.spacing) {
+                    SectionTitle(text: "Used this week")
+                    ForEach(panel.recent) { AccountRow(row: $0, focus: $focus) }
+                }
+                .padding(.top, panel.inUse.isEmpty ? 0 : Row.groups)
+            }
+            if panel.unusedFoldLabel != nil {
+                UnusedAccounts(focus: $focus)
+                    .padding(.top, Row.spacing)
+            }
+            if let offer = panel.connectOffer {
+                ConnectNudge(offer: offer)
+                    .padding(.top, Row.groups)
+            }
+        }
+        .padding(.horizontal, 8)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+            guard !isSnapshot else { return }
+            if !overflow && height > listCap {
+                overflow = true
+            } else if overflow && height < listCap - 40 {
+                overflow = false
+            }
+        }
+    }
+
+    private func focusableItems(_ panel: PanelModel) -> [PanelFocus] {
+        var items: [PanelFocus] = []
+        items.append(contentsOf: panel.inUse.filter(\.openable).map { .account($0.id) })
+        items.append(contentsOf: panel.recent.filter(\.openable).map { .account($0.id) })
+        if panel.unusedFoldLabel != nil {
+            items.append(.unusedFold)
+        }
+        if panel.unusedOpen {
+            items.append(contentsOf: panel.unused.filter(\.openable).map { .account($0.id) })
+            if panel.hiddenFoldLabel != nil {
+                items.append(.hiddenFold)
+            }
+        }
+        return items
+    }
+
+    private func stepFocus(_ delta: Int, panel: PanelModel) -> KeyPress.Result {
+        let items = focusableItems(panel)
+        guard !items.isEmpty else { return .ignored }
+        let anchor = focus ?? panel.openAccount.map(PanelFocus.account)
+        if let current = anchor, let index = items.firstIndex(of: current) {
+            let next = max(0, min(items.count - 1, index + delta))
+            focus = items[next]
+        } else {
+            focus = delta > 0 ? items.first : items.last
+        }
+        return .handled
     }
 }
 
@@ -116,6 +171,7 @@ private struct ConnectNudge: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                        .help(offer.configured.map { "Configured to run \($0)" } ?? "")
                 }
             }
             Spacer(minLength: 8)
@@ -183,6 +239,19 @@ private struct Footer: View {
                     .accessibilityLabel(spoken)
                     .padding(.leading, 12)
                     .transition(appears)
+                case let .refreshing(text, spoken):
+                    HStack(spacing: 6) {
+                        Spinner()
+                        Text(text)
+                            .font(.small)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(spoken)
+                    .padding(.leading, 12)
+                    .transition(appears)
                 }
             }
             Spacer()
@@ -191,6 +260,17 @@ private struct Footer: View {
                 .frame(width: 0, height: 0)
                 .opacity(0)
                 .accessibilityHidden(true)
+            if bridge.isLive && !bridge.panel.stopped {
+                Button("Refresh Limits") {
+                    withAnimation(spring) {
+                        bridge.send(.refreshNow)
+                    }
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+            }
             if updater.waiting {
                 Button("Update available") {
                     closePanel()

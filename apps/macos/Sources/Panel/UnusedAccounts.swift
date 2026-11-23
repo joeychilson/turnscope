@@ -5,19 +5,20 @@ import SwiftUI
 
 struct UnusedAccounts: View {
     @Environment(Bridge.self) private var bridge
+    var focus: FocusState<PanelFocus?>.Binding
 
     var body: some View {
         let panel = bridge.panel
         if let label = panel.unusedFoldLabel {
             VStack(alignment: .leading, spacing: Row.spacing) {
-                Fold(text: label, open: panel.unusedOpen) {
+                Fold(text: label, open: panel.unusedOpen, focus: focus, target: .unusedFold) {
                     bridge.send(.toggleUnused)
                 }
                 if panel.unusedOpen {
                     VStack(spacing: Row.spacing) {
-                        ForEach(panel.unused) { AccountRow(row: $0) }
+                        ForEach(panel.unused) { AccountRow(row: $0, focus: focus) }
                         if let hiddenLabel = panel.hiddenFoldLabel {
-                            Fold(text: hiddenLabel, open: panel.hiddenShown) {
+                            Fold(text: hiddenLabel, open: panel.hiddenShown, focus: focus, target: .hiddenFold) {
                                 bridge.send(.toggleHidden)
                             }
                         }
@@ -36,9 +37,12 @@ struct UnusedAccounts: View {
 private struct Fold: View {
     var text: String
     var open: Bool
+    var focus: FocusState<PanelFocus?>.Binding
+    var target: PanelFocus
     var toggle: () -> Void
 
     var body: some View {
+        let focused = focus.wrappedValue == target
         Button { withAnimation(spring, toggle) } label: {
             Hover { hover in
                 HStack(spacing: 8) {
@@ -50,10 +54,15 @@ private struct Fold: View {
                         .rotationEffect(.degrees(open ? 90 : 0))
                 }
                 .padding(Row.padding)
-                .rowBackground(hover)
+                .rowBackground(hover || focused)
             }
         }
         .buttonStyle(.plain)
+        .focused(focus, equals: target)
+        .onKeyPress(.return) {
+            withAnimation(spring, toggle)
+            return .handled
+        }
         .accessibilityLabel(text)
         .accessibilityHint(open ? "Folds them" : "Lists them")
     }

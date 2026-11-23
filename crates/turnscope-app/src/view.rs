@@ -97,7 +97,7 @@ pub struct AccountRowModel {
     pub used_most: Vec<UsedMostModel>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LimitLineModel {
     pub key: String,
@@ -108,6 +108,7 @@ pub struct LimitLineModel {
     pub size: Option<String>,
     pub spoken: String,
     pub left_percent: u8,
+    pub time_left_fraction: Option<f64>,
     pub standing: Standing,
 }
 
@@ -117,6 +118,7 @@ pub struct UsedMostModel {
     pub session: String,
     pub title: String,
     pub detail: String,
+    pub project_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -136,6 +138,7 @@ pub struct ConnectOfferModel {
     pub id: String,
     pub name: String,
     pub note: Option<String>,
+    pub configured: Option<String>,
     pub changing: bool,
     pub outdated: bool,
     pub verb: String,
@@ -155,6 +158,10 @@ pub enum FooterNoteModel {
         help: String,
         spoken: String,
     },
+    Refreshing {
+        text: String,
+        spoken: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -166,13 +173,24 @@ pub struct EmptyMessage {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SnippetModel {
+    pub title: String,
+    pub detail: String,
+    pub file: String,
+    pub json: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentRowModel {
     pub id: String,
     pub name: String,
     pub note: Option<String>,
+    pub configured: Option<String>,
     pub changing: Option<String>,
     pub connected: bool,
     pub enabled: bool,
+    pub snippets: Vec<SnippetModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -308,6 +326,7 @@ pub fn build_panel(s: &State) -> PanelModel {
             id: agent.id.clone(),
             name: agent.name.clone(),
             note,
+            configured: agent.configured.clone(),
             changing: s.changing_agents.contains_key(&agent.id),
             outdated,
             verb: verb.to_owned(),
@@ -392,6 +411,12 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
 }
 
 fn build_limit_line(w: &Words, limit: &Limit) -> LimitLineModel {
+    let time_left_fraction = limit
+        .started()
+        .zip(limit.resets())
+        .filter(|(start, reset)| reset > start)
+        .map(|(start, reset)| ((reset - w.now) as f64 / (reset - start) as f64).clamp(0.0, 1.0))
+        .filter(|fraction| (0.02..=0.98).contains(fraction));
     LimitLineModel {
         key: limit.key.clone(),
         name: words::name(limit),
@@ -401,6 +426,7 @@ fn build_limit_line(w: &Words, limit: &Limit) -> LimitLineModel {
         size: words::size(limit),
         spoken: format!("{} left", words::left_of(limit)),
         left_percent: limit.left_percent,
+        time_left_fraction,
         standing: limit.standing(),
     }
 }
@@ -417,6 +443,7 @@ fn build_used_most(sessions: &[UsedMost]) -> Vec<UsedMostModel> {
                 .clone()
                 .unwrap_or_else(|| "Untitled session".to_owned()),
             detail: words::used(used, agents),
+            project_path: used.project_path.clone(),
         })
         .collect()
 }
@@ -436,10 +463,16 @@ fn build_footer_note(s: &State) -> Option<FooterNoteModel> {
             spoken: format!("Not up to date: {problem}.{then}"),
         });
     }
-    (s.reading() && !s.all().is_empty()).then(|| FooterNoteModel::Reading {
-        text: "Reading your agents' history…".to_owned(),
-        help: "Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.".to_owned(),
-        spoken: "Reading your agents' history".to_owned(),
+    if s.reading() && !s.all().is_empty() {
+        return Some(FooterNoteModel::Reading {
+            text: "Reading your agents' history…".to_owned(),
+            help: "Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.".to_owned(),
+            spoken: "Reading your agents' history".to_owned(),
+        });
+    }
+    s.refreshing.then(|| FooterNoteModel::Refreshing {
+        text: "Refreshing limits…".to_owned(),
+        spoken: "Refreshing limits".to_owned(),
     })
 }
 
@@ -455,9 +488,10 @@ fn build_settings(s: &State) -> SettingsModel {
         "Let these agents check their limits"
     }
     .to_owned();
+    let binary = crate::binary().to_string_lossy().into_owned();
     let agents = installed
         .iter()
-        .map(|agent| build_agent_row(s, agent))
+        .map(|agent| build_agent_row(s, agent, &binary))
         .collect();
 
     let accounts_empty = s.all().is_empty().then(|| {
@@ -502,16 +536,35 @@ fn build_settings(s: &State) -> SettingsModel {
     }
 }
 
-fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
+fn build_agent_row(s: &State, agent: &Agent, binary: &str) -> AgentRowModel {
     let changing = s.changing_agents.get(&agent.id).copied();
     let note =
         s.agent_errors.get(&agent.id).cloned().or_else(|| {
             words::connection(agent).filter(|_| agent.connection != Connection::Available)
         });
+    let snippets = if s.from_disk_image {
+        Vec::new()
+    } else {
+        turnscope::agents::by_id(&agent.id)
+            .map(|found| {
+                found
+                    .snippets(binary)
+                    .into_iter()
+                    .map(|snippet| SnippetModel {
+                        title: snippet.title.to_owned(),
+                        detail: snippet.detail.to_owned(),
+                        file: snippet.file.to_owned(),
+                        json: snippet.json,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     AgentRowModel {
         id: agent.id.clone(),
         name: agent.name.clone(),
         note,
+        configured: agent.configured.clone(),
         changing: changing.map(|to| {
             if to == Connection::Connected {
                 "Connecting…".to_owned()
@@ -521,5 +574,42 @@ fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
         }),
         connected: changing.unwrap_or(agent.connection) == Connection::Connected,
         enabled: changing.is_none() && !s.from_disk_image && !s.stopped(),
+        snippets,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::tests::example;
+
+    #[test]
+    fn time_left_fraction_is_set_only_for_fixed_active_windows() {
+        let state = State::fixed(example());
+        let panel = build_panel(&state);
+        // Claude Max 5 hours: 3h left of 5h -> 0.60.
+        let five = &panel.in_use[0].limits[0];
+        assert!((five.time_left_fraction.unwrap() - 0.6).abs() < 1e-6);
+        // Claude Max Weekly: 50h left of 168h -> ~0.2976.
+        let week = &panel.in_use[0].limits[1];
+        assert!((week.time_left_fraction.unwrap() - (50.0 / 168.0)).abs() < 1e-3);
+        // ChatGPT Pro: primary reset since read, secondary rolling -> neither has a tick.
+        assert_eq!(panel.recent[0].limits[0].time_left_fraction, None);
+        assert_eq!(panel.recent[0].limits[1].time_left_fraction, None);
+    }
+
+    #[test]
+    fn footer_shows_refreshing_only_when_no_problem_or_initial_read() {
+        let mut state = State::fixed(example());
+        state.refreshing = true;
+        assert!(matches!(
+            build_panel(&state).footer_note,
+            Some(FooterNoteModel::Refreshing { .. })
+        ));
+        state.problem = Some(Stopped::Failing("offline".into()));
+        assert!(matches!(
+            build_panel(&state).footer_note,
+            Some(FooterNoteModel::Stale { .. })
+        ));
     }
 }

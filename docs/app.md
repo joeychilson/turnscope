@@ -98,7 +98,9 @@ current, it's dimmed, since it shows the last status. With Settings →
 General → Show set to Most urgent, it shows only the most urgent account.
 VoiceOver reads each account's title and what its figure says, then "not
 up to date" while it's dimmed. Clicking the item opens or closes the
-panel.
+panel. Right-clicking (or Control-clicking) opens a menu with Refresh
+Limits (⌘R), Settings… (⌘,), Check for Updates… (when Sparkle is enabled)
+and Quit Turnscope (⌘Q).
 
 ## The panel
 
@@ -106,7 +108,9 @@ The panel is 340 points wide. From the top:
 
 1. **The headline**: whether you can keep going, from the most urgent
    account in use. It names the account by its title alone, as the first
-   row under it shows the label. Before any account is found, why none is.
+   row under it shows the label. When that account is running out or used
+   up and another live account has room, the line underneath names it too.
+   Before any account is found, why none is.
 2. **Accounts in use**, most urgent first.
 3. **Used this week**: accounts not in use but used in the last 7 days,
    the most left first.
@@ -114,11 +118,13 @@ The panel is 340 points wide. From the top:
    "2 hidden" lists the hidden accounts, each with a Show button.
 5. **An offer to connect an agent**, while an agent in use isn't connected
    or runs another copy of Turnscope: Connect (or Reconnect), and a button
-   that stops offering it for that agent.
+   that stops offering it for that agent. Hovering "Uses another Turnscope"
+   shows the binary path it's currently configured to run.
 6. **The footer**: "Not up to date" and why while the data can't be kept
-   current, or "Reading your agents' history…" during the first read. Then
-   "Update available" when a scheduled check found one
-   ([Updates](#updates)), Settings (⌘,) and Quit (⌘Q).
+   current, "Reading your agents' history…" during the first read, or
+   "Refreshing limits…" after ⌘R forces a refresh. Then "Update available"
+   when a scheduled check found one ([Updates](#updates)), Settings (⌘,)
+   and Quit (⌘Q).
 
 On a first launch, the headline says "Getting your limits" until the
 engine has read them. The accounts show then, while the footer says the
@@ -130,16 +136,21 @@ An account's row shows its logo, its title (and its label when another
 shown account has the same title), the line for its deciding limit, and
 what's left of it. A row opens in place on a click, Space or Return,
 closing any other. Open, it shows each limit on a line of its own with a
-bar, a note on what the limits can't say, and the sessions that used the
-deciding limit most. The app asks for those as the panel opens, so a row
-opens with them in one motion. Hovering a row shows a Hide button, and
-right-clicking offers Hide too. An account whose login expired goes on
-showing what was last read, as its agent renews the login when it runs.
+bar (a vertical tick marks how much of a fixed window's time is left, so
+a bar behind the tick is burning faster than steady pace), a note on what
+the limits can't say, and the sessions that used the deciding limit most.
+Clicking a session copies its project path (or title); right-clicking
+offers Open Project in Finder, Copy Project Path and Copy Session ID. The
+app asks for those sessions as the panel opens, so a row opens with them
+in one motion. Hovering a row shows a Hide button, and right-clicking
+offers Hide too. An account whose login expired goes on showing what was
+last read, as its agent renews the login when it runs.
 
 Tab comes to the rows once, and Up and Down move between them and the
-folds. With Full Keyboard Access on, Tab goes on to each row's Hide button
-and every other button. VoiceOver reads a row's header as one button: its
-title, line and figure, and whether it's open.
+folds; ⌘R refreshes every signed-in account's limits right away. With Full
+Keyboard Access on, Tab goes on to each row's Hide button and every other
+button. VoiceOver reads a row's header as one button: its title, line and
+figure, and whether it's open.
 
 While the panel is open, a new status fades a changed figure or headline
 to its new words, and slides a row that moves between lists. With Reduce
@@ -158,16 +169,16 @@ what's open.
 
 ## Settings
 
-Settings is the panel's second page, with three tabs. Changes take effect
-at once. Once the engine has stopped for good, after a newer Turnscope
-wrote the data ([architecture.md](architecture.md#data)), the switches
-for notifications, agents and accounts are off, and so are the panel's
-Hide and Show.
+Settings is the panel's second page, with three tabs (⌘1, ⌘2, ⌘3, or Left
+and Right arrows). Changes take effect at once. Once the engine has
+stopped for good, after a newer Turnscope wrote the data
+([architecture.md](architecture.md#data)), the switches for notifications,
+agents and accounts are off, and so are the panel's Hide and Show.
 
 | Tab | Holds |
 |---|---|
-| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version, Check now and Check automatically |
-| Agents | Each installed agent, with a switch that connects or disconnects it, and under its name that it runs another copy of Turnscope or why connecting failed |
+| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version (right-click for Copy Diagnostics and Reveal Log in Finder, or Option-click to copy diagnostics), Check now and Check automatically |
+| Agents | Each installed agent, with a switch that connects or disconnects it, and under its name that it runs another copy of Turnscope (hover to see the configured path) or why connecting failed. For agents with hooks or a status line, a collapsed fold offers copyable JSON snippets without editing their settings files |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 
 Where each setting is kept:

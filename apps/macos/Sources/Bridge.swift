@@ -128,6 +128,7 @@ struct LimitLineModel: Decodable, Equatable, Identifiable {
     var size: String?
     var spoken: String
     var leftPercent: UInt8
+    var timeLeftFraction: Double?
     var standing: Standing
 
     var id: String { key }
@@ -137,6 +138,7 @@ struct UsedMostModel: Decodable, Equatable, Identifiable {
     var session: String
     var title: String
     var detail: String
+    var projectPath: String?
 
     var id: String { session }
 }
@@ -173,6 +175,7 @@ struct ConnectOfferModel: Decodable, Equatable {
     var id: String
     var name: String
     var note: String?
+    var configured: String?
     var changing: Bool
     var outdated: Bool
     var verb: String
@@ -182,6 +185,7 @@ struct ConnectOfferModel: Decodable, Equatable {
 enum FooterNoteModel: Decodable, Equatable {
     case stale(text: String, help: String, spoken: String)
     case reading(text: String, help: String, spoken: String)
+    case refreshing(text: String, spoken: String)
 
     private enum CodingKeys: String, CodingKey {
         case kind, text, help, spoken
@@ -190,11 +194,14 @@ enum FooterNoteModel: Decodable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let text = try c.decode(String.self, forKey: .text)
-        let help = try c.decode(String.self, forKey: .help)
         let spoken = try c.decode(String.self, forKey: .spoken)
         switch try c.decode(String.self, forKey: .kind) {
-        case "stale": self = .stale(text: text, help: help, spoken: spoken)
-        case "reading": self = .reading(text: text, help: help, spoken: spoken)
+        case "stale":
+            self = .stale(text: text, help: try c.decode(String.self, forKey: .help), spoken: spoken)
+        case "reading":
+            self = .reading(text: text, help: try c.decode(String.self, forKey: .help), spoken: spoken)
+        case "refreshing":
+            self = .refreshing(text: text, spoken: spoken)
         case let other:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown footer note: \(other)")
         }
@@ -206,13 +213,24 @@ struct EmptyMessage: Decodable, Equatable {
     var detail: String
 }
 
+struct SnippetModel: Decodable, Equatable, Identifiable {
+    var title: String
+    var detail: String
+    var file: String
+    var json: String
+
+    var id: String { title }
+}
+
 struct AgentRowModel: Decodable, Equatable, Identifiable {
     var id: String
     var name: String
     var note: String?
+    var configured: String?
     var changing: String?
     var connected: Bool
     var enabled: Bool
+    var snippets: [SnippetModel]
 }
 
 struct AccountSwitchModel: Decodable, Equatable, Identifiable {
@@ -339,6 +357,7 @@ enum AppAction: Encodable {
     case setMenuShows(shows: MenuShows)
     case dismissConnect(id: String)
     case acknowledgeAlert(id: Int64, signInAccount: String?)
+    case refreshNow
     case tick
 
     private enum CodingKeys: String, CodingKey {
@@ -389,6 +408,8 @@ enum AppAction: Encodable {
             try c.encode("acknowledgeAlert", forKey: .kind)
             try c.encode(id, forKey: .id)
             try c.encodeIfPresent(signInAccount, forKey: .signInAccount)
+        case .refreshNow:
+            try c.encode("refreshNow", forKey: .kind)
         case .tick:
             try c.encode("tick", forKey: .kind)
         }
@@ -528,6 +549,20 @@ final class Bridge {
     func log(_ line: String) {
         guard let handle else { return }
         line.withCString { turnscope_app_log(handle, $0) }
+    }
+
+    func diagnostics() -> String {
+        guard let handle,
+              let report = takeRustString(turnscope_app_diagnostics(handle))
+        else { return "Turnscope \(panel.version)\n" }
+        return report
+    }
+
+    func logURL() -> URL? {
+        guard let handle,
+              let path = takeRustString(turnscope_app_log_path(handle))
+        else { return nil }
+        return URL(fileURLWithPath: path)
     }
 
     func stop() {

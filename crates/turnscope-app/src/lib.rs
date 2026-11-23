@@ -87,6 +87,7 @@ pub struct TurnscopeApp {
     wake: Arc<Mutex<Option<Wake>>>,
     engine: Option<Arc<OnceLock<Engine>>>,
     data: Option<PathBuf>,
+    home: Option<PathBuf>,
 }
 
 impl Drop for TurnscopeApp {
@@ -185,7 +186,7 @@ pub fn start(
         let wake_for_cb = Arc::clone(&wake);
         let cell: Arc<OnceLock<Engine>> = Arc::new(OnceLock::new());
         let weak = Arc::downgrade(&cell);
-        let started = Engine::start(data.clone(), home, binary(), move |event| {
+        let started = Engine::start(data.clone(), home.clone(), binary(), move |event| {
             let (calls, should_wake) = lock_core(&core_for_cb).took(event);
             if let Some(held) = weak.upgrade() {
                 calls.send(held.get());
@@ -208,7 +209,44 @@ pub fn start(
         wake,
         engine,
         data: runs_engine.then_some(data),
+        home: runs_engine.then_some(home),
     })
+}
+
+/// Build a plain-text diagnostics report (version, `turnscope::doctor`, and
+/// the tail of `app.log`) ready to copy into a bug report.
+pub fn diagnostics(data: Option<&Path>, home: Option<&Path>) -> String {
+    let mut out = format!("Turnscope {}\n", env!("CARGO_PKG_VERSION"));
+    let (Some(data), Some(home)) = (data, home) else {
+        out += "Mode: fixture\n";
+        return out;
+    };
+    out += &format!("Binary: {}\n", binary().display());
+    match turnscope::db::read(data) {
+        Some(db) => match turnscope::doctor(&db, data, home, turnscope::now()) {
+            Ok(notes) if notes.is_empty() => out += "Doctor: Nothing to fix.\n",
+            Ok(notes) => {
+                out += "Doctor:\n";
+                for note in notes {
+                    out += &format!("- {note}\n");
+                }
+            }
+            Err(error) => out += &format!("Doctor failed: {error}\n"),
+        },
+        None => out += "Doctor: database not readable yet.\n",
+    }
+    if let Ok(log) = std::fs::read_to_string(data.join("app.log")) {
+        let lines: Vec<&str> = log.lines().collect();
+        if !lines.is_empty() {
+            let start = lines.len().saturating_sub(20);
+            out += "\nRecent app.log:\n";
+            for line in &lines[start..] {
+                out += line;
+                out.push('\n');
+            }
+        }
+    }
+    out
 }
 
 /// Build a one-shot `PanelModel` for `--snapshot`.
@@ -367,6 +405,38 @@ pub unsafe extern "C" fn turnscope_app_log(app: *mut TurnscopeApp, line: *const 
     }
 }
 
+/// Build a plain-text diagnostics report for the active data directory.
+///
+/// # Safety
+/// `app` must be null or a live pointer returned by `turnscope_app_start`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn turnscope_app_diagnostics(app: *mut TurnscopeApp) -> *mut c_char {
+    // SAFETY: Valid pointer from `turnscope_app_start`.
+    let Some(app) = (unsafe { app.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    into_c_string(diagnostics(app.data.as_deref(), app.home.as_deref()))
+}
+
+/// Return the path to `app.log` (or the data directory if no log exists yet),
+/// or NULL in fixture mode.
+///
+/// # Safety
+/// `app` must be null or a live pointer returned by `turnscope_app_start`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn turnscope_app_log_path(app: *mut TurnscopeApp) -> *mut c_char {
+    // SAFETY: Valid pointer from `turnscope_app_start`.
+    let Some(app) = (unsafe { app.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    let Some(data) = &app.data else {
+        return std::ptr::null_mut();
+    };
+    let log = data.join("app.log");
+    let target = if log.exists() { log } else { data.clone() };
+    into_c_string(target.to_string_lossy().into_owned())
+}
+
 /// Stop the background engine and free the app core.
 ///
 /// # Safety
@@ -504,5 +574,17 @@ mod tests {
         assert_eq!(panel.page, crate::state::Page::Settings);
         assert_eq!(panel.tab, crate::state::Tab::Agents);
         assert_eq!(panel.settings.agents.len(), 2);
+    }
+
+    #[test]
+    fn diagnostics_includes_version_doctor_and_recent_log() {
+        let data = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        drop(turnscope::db::open(data.path()).unwrap());
+        turnscope::engine::log(data.path(), "sample diagnostic line");
+        let report = diagnostics(Some(data.path()), Some(home.path()));
+        assert!(report.contains(&format!("Turnscope {}", env!("CARGO_PKG_VERSION"))));
+        assert!(report.contains("sample diagnostic line"), "{report}");
+        assert!(diagnostics(None, None).contains("Mode: fixture"));
     }
 }

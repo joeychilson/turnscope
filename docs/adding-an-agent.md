@@ -107,6 +107,9 @@ Beyond those:
 - An agent with `folder_var` keeps a configuration per folder: `connect`
   runs its command once for each folder, pointed at it with `folder_var`.
   So `mcp_command` reads the file that command writes for that folder.
+- `snippets` (optional) returns copyable JSON snippets beyond MCP, such as
+  Claude Code's status line and subagent guard, shown collapsed in
+  Settings → Agents.
 
 ### Reading history
 

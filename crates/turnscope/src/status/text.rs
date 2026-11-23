@@ -544,6 +544,27 @@ pub fn line(account: &Account, now: i64) -> String {
     parts.join(" · ")
 }
 
+/// One-line hint when another live account has room while `current` is running
+/// out or used up.
+pub fn alternate_note(status: &Status, current: &Account) -> Option<String> {
+    let tight = current.deciding_limit().is_some_and(|limit| {
+        matches!(
+            limit.outlook,
+            Outlook::UsedUp { .. } | Outlook::RunsOut { .. }
+        )
+    });
+    if !tight {
+        return None;
+    }
+    let (other, limit) = super::alternate(&status.accounts, current)?;
+    Some(format!(
+        "Other room: {} has {} left ({}). Call check_limits with all: true to compare.",
+        other.full_title(),
+        left(limit),
+        limit.named(),
+    ))
+}
+
 /// A limit in a few words: `5h 86%`, `weekly 25%, out Sat 18:00`, `weekly
 /// used up, back Sun 00:00`.
 fn short(limit: &Limit, now: i64) -> String {
@@ -872,5 +893,36 @@ mod tests {
             verdict(&expired, status.at)
                 .ends_with("its login expired; it's read again when Claude Code runs."),
         );
+    }
+
+    #[test]
+    fn alternate_note_recommends_live_account_with_room_when_tight() {
+        let mut status: Status = serde_json::from_value(example()).unwrap();
+        // In the fixture ChatGPT Pro is signed out and OpenRouter failed, so no live alternate.
+        assert_eq!(alternate_note(&status, &status.accounts[0]), None);
+        // Make both ChatGPT Pro (subscription, 97%) and OpenRouter (API key, 29%) live.
+        status.accounts[1].state = State::Live { read_at: status.at };
+        status.accounts[1].agents = vec!["codex".to_owned()];
+        status.accounts[2].state = State::Live { read_at: status.at };
+        // Subscription is preferred over API key.
+        assert_eq!(
+            alternate_note(&status, &status.accounts[0]).as_deref(),
+            Some(
+                "Other room: ChatGPT Pro has 97% left (Monthly). Call check_limits with all: true to compare."
+            )
+        );
+        // Hide ChatGPT Pro -> falls back to OpenRouter API key.
+        status.accounts[1].hidden = true;
+        assert_eq!(
+            alternate_note(&status, &status.accounts[0]).as_deref(),
+            Some(
+                "Other room: OpenRouter API key has $8.70 of $30.00 left (Key limit). Call check_limits with all: true to compare."
+            )
+        );
+        // When the current account lasts, no alternate is suggested.
+        status.accounts[0].limits[0].outlook = Outlook::Lasts {
+            left_at_reset: None,
+        };
+        assert_eq!(alternate_note(&status, &status.accounts[0]), None);
     }
 }

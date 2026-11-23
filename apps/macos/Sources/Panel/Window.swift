@@ -16,7 +16,7 @@ struct Floating: View {
     static let gutter: CGFloat = 28
 
     var body: some View {
-        AnimatablePanel(active: bridge.panelVisible) {
+        AnimatablePanel(active: bridge.panelVisible, maxHeight: max(280, bridge.screenHeight - 80)) {
             Panel()
         }
         .padding(.horizontal, Floating.gutter)
@@ -29,6 +29,7 @@ struct Floating: View {
 /// on every spring frame so AppKit's backdrop never snaps ahead of expanding or collapsing rows.
 private struct AnimatablePanel<Content: View>: View {
     var active: Bool
+    var maxHeight: CGFloat
     @ViewBuilder var content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var targetHeight: CGFloat = 0
@@ -38,12 +39,13 @@ private struct AnimatablePanel<Content: View>: View {
         content()
             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { newHeight in
                 guard newHeight > 0 else { return }
+                let clamped = min(newHeight, maxHeight)
                 if measured && active && !reduceMotion {
                     withAnimation(spring) {
-                        targetHeight = newHeight
+                        targetHeight = clamped
                     }
                 } else {
-                    targetHeight = newHeight
+                    targetHeight = clamped
                     if active { measured = true }
                 }
             }

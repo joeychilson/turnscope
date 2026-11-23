@@ -121,6 +121,7 @@ pub enum Action {
         id: i64,
         sign_in_account: Option<String>,
     },
+    RefreshNow,
     Tick,
 }
 
@@ -129,6 +130,7 @@ pub enum Action {
 pub struct EngineCalls {
     pub used_most: Vec<(String, String)>,
     pub ask_limits: bool,
+    pub refresh_now: bool,
     pub hide: Option<(String, bool)>,
     pub connect: Option<(String, bool)>,
     pub save_settings: Option<turnscope::alerts::Settings>,
@@ -141,7 +143,9 @@ impl EngineCalls {
         for (account, limit) in self.used_most {
             engine.used_most(account, limit);
         }
-        if self.ask_limits {
+        if self.refresh_now {
+            engine.refresh_now();
+        } else if self.ask_limits {
             engine.ask_limits();
         }
         if let Some((account, hidden)) = self.hide {
@@ -164,6 +168,7 @@ pub struct State {
     pub status: Option<Status>,
     pub agents: Vec<Agent>,
     pub problem: Option<Stopped>,
+    pub refreshing: bool,
     pub changing_agents: HashMap<String, Connection>,
     pub agent_errors: HashMap<String, String>,
     pub used: HashMap<String, (String, Vec<UsedMost>)>,
@@ -271,7 +276,7 @@ impl State {
         if self.all().is_empty() {
             words::welcome(&self.installed(), &self.agent_names(), self.reading())
         } else {
-            words.verdict(&self.in_use(), self.hidden_in_use())
+            words.verdict(&self.in_use(), self.hidden_in_use(), self.all())
         }
     }
 
@@ -422,6 +427,7 @@ impl Core {
         let mut calls = EngineCalls::default();
         match event {
             Event::Shown(shown, alerts) => {
+                self.state.refreshing = false;
                 if self.state.panel_open {
                     self.animated = true;
                 }
@@ -480,6 +486,7 @@ impl Core {
                 (calls, wake)
             }
             Event::Kept(stopped) => {
+                self.state.refreshing = false;
                 self.state.problem = stopped;
                 (calls, true)
             }
@@ -664,6 +671,12 @@ impl Core {
                     });
                 }
             }
+            Action::RefreshNow => {
+                if self.running_engine && !self.state.stopped() && !self.state.refreshing {
+                    self.state.refreshing = true;
+                    calls.refresh_now = true;
+                }
+            }
             Action::Tick => {
                 if self.state.panel_open {
                     self.state.now = turnscope::time::minute(now_ms);
@@ -769,7 +782,10 @@ pub(crate) mod tests {
         let words = reading.words();
         let verdict = reading.verdict(&words);
         assert_ne!(verdict.0, "Nothing in use");
-        assert_eq!(verdict, words.verdict(&reading.in_use()[..1], false));
+        assert_eq!(
+            verdict,
+            words.verdict(&reading.in_use()[..1], false, reading.all())
+        );
         let mut done = first;
         done.status.history_read = true;
         let read = shown(done);
@@ -972,5 +988,17 @@ pub(crate) mod tests {
                 .iter()
                 .any(|e| matches!(e, Effect::SavePreferences { .. }))
         );
+    }
+
+    #[test]
+    fn refresh_now_sets_refreshing_until_shown_arrives() {
+        let mut core = Core::new(shown(example()), true);
+        let calls = core.apply(Action::RefreshNow, 0);
+        assert!(calls.refresh_now);
+        assert!(core.state.refreshing);
+        // Second call while already refreshing is coalesced.
+        assert!(!core.apply(Action::RefreshNow, 0).refresh_now);
+        core.took(Event::Shown(Box::new(example()), Vec::new()));
+        assert!(!core.state.refreshing);
     }
 }

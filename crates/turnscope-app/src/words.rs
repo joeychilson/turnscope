@@ -215,7 +215,12 @@ impl Words {
     }
 
     /// The one thing to know, in large type, and the detail behind it.
-    pub fn verdict(&self, in_use: &[&Account], hidden_in_use: bool) -> (String, String, Standing) {
+    pub fn verdict(
+        &self,
+        in_use: &[&Account],
+        hidden_in_use: bool,
+        all: &[Account],
+    ) -> (String, String, Standing) {
         let Some(account) = in_use.first() else {
             let detail = if hidden_in_use {
                 "Only accounts you hid are in use."
@@ -250,6 +255,21 @@ impl Words {
             Some(_) => short_name(limit),
             None => (account.title.clone(), false),
         };
+        let with_alternate = |detail: String| match turnscope::status::alternate(all, account) {
+            Some((other, other_limit)) => {
+                let room = format!(
+                    "{} has {} left.",
+                    called(other, twinned(other, all)),
+                    left(other_limit)
+                );
+                if detail.is_empty() {
+                    room
+                } else {
+                    format!("{detail} {room}")
+                }
+            }
+            None => detail,
+        };
         match &limit.outlook {
             Outlook::UsedUp { back } => {
                 let after = back
@@ -258,7 +278,11 @@ impl Words {
                         format!("Back {}.", self.at(b))
                     });
                 let is = if plural { "are" } else { "is" };
-                (format!("{subject} {is} used up"), after, Standing::UsedUp)
+                (
+                    format!("{subject} {is} used up"),
+                    with_alternate(after),
+                    Standing::UsedUp,
+                )
             }
             Outlook::RunsOut { likely, .. } => {
                 let when = match likely.horizon {
@@ -271,7 +295,7 @@ impl Words {
                     .window
                     .as_ref()
                     .map_or(String::new(), |w| format!("Back {}.", self.at(&w.resets)));
-                (headline, back, Standing::RunningOut)
+                (headline, with_alternate(back), Standing::RunningOut)
             }
             Outlook::Unknown { reason } => (
                 "You can keep going".into(),
@@ -1138,7 +1162,7 @@ mod tests {
         let w = words();
         let out = account(vec![limit(runs_out())]);
         assert_eq!(
-            w.verdict(&[&out], false),
+            w.verdict(&[&out], false, &[]),
             (
                 "Claude Max runs out in\u{a0}2h".into(),
                 "Back in 3h.".into(),
@@ -1150,7 +1174,7 @@ mod tests {
             ..limit(runs_out_at(moment("2026-10-03T06:00:00Z", ThisWeek)))
         }]);
         assert_eq!(
-            w.verdict(&[&this_week], false),
+            w.verdict(&[&this_week], false, &[]),
             (
                 "Claude Max runs out Saturday\u{a0}morning".into(),
                 "Back Sun 12 AM.".into(),
@@ -1167,7 +1191,7 @@ mod tests {
             }])
         };
         assert_eq!(
-            w.verdict(&[&monthly], false),
+            w.verdict(&[&monthly], false, &[]),
             (
                 "OpenCode Go runs out Oct\u{a0}8".into(),
                 "Back Oct 30.".into(),
@@ -1182,7 +1206,11 @@ mod tests {
             }])
         };
         assert_eq!(
-            w.verdict(&[&used(moment("2026-10-03T09:00:00Z", ThisWeek))], false),
+            w.verdict(
+                &[&used(moment("2026-10-03T09:00:00Z", ThisWeek))],
+                false,
+                &[]
+            ),
             (
                 "Claude Max is used up".into(),
                 "Back Sat 9 AM.".into(),
@@ -1190,16 +1218,19 @@ mod tests {
             )
         );
         assert_eq!(
-            w.verdict(&[&used(moment("2026-09-30T15:00:00Z", Soon))], false)
+            w.verdict(&[&used(moment("2026-09-30T15:00:00Z", Soon))], false, &[])
                 .1,
             "Back in 3h."
         );
 
         assert_eq!(
-            w.verdict(&[], false),
+            w.verdict(&[], false, &[]),
             ("Nothing in use".into(), String::new(), Standing::Lasts)
         );
-        assert_eq!(w.verdict(&[], true).1, "Only accounts you hid are in use.");
+        assert_eq!(
+            w.verdict(&[], true, &[]).1,
+            "Only accounts you hid are in use."
+        );
 
         let unread = Account {
             state: State::Unread {
@@ -1208,7 +1239,7 @@ mod tests {
             ..account(vec![])
         };
         assert_eq!(
-            w.verdict(&[&unread], false),
+            w.verdict(&[&unread], false, &[]),
             (
                 "Claude Max's limits are unknown".into(),
                 "It couldn't be read yet.".into(),
@@ -1222,8 +1253,38 @@ mod tests {
             ..account(vec![])
         };
         assert_eq!(
-            w.verdict(&[&signed_out], false).1,
+            w.verdict(&[&signed_out], false, &[]).1,
             "No agent here is signed in to it."
+        );
+
+        // When running out or used up, name a live alternate with headroom.
+        let backup = Account {
+            id: "openai:b".into(),
+            provider: "openai".into(),
+            title: "ChatGPT Pro".into(),
+            agents: vec!["codex".into()],
+            ..account(vec![Limit {
+                left_percent: 97,
+                ..weekly(lasts(), 97)
+            }])
+        };
+        assert_eq!(
+            w.verdict(&[&out], false, &[out.clone(), backup.clone()]).1,
+            "Back in 3h. ChatGPT Pro has 97% left."
+        );
+        // Signed-out backup is not suggested.
+        let signed_out_backup = Account {
+            state: State::AsOf {
+                read_at: noon(),
+                why: Stale::SignedOut,
+            },
+            agents: vec![],
+            ..backup
+        };
+        assert_eq!(
+            w.verdict(&[&out], false, &[out.clone(), signed_out_backup])
+                .1,
+            "Back in 3h."
         );
     }
 
@@ -1232,7 +1293,7 @@ mod tests {
         let w = words();
         let week = weekly(lasts(), 60);
         assert_eq!(
-            w.verdict(&[&account(vec![week.clone()])], false).1,
+            w.verdict(&[&account(vec![week.clone()])], false, &[]).1,
             "At this pace, no Claude Max limit runs out."
         );
         let opus = Limit {
@@ -1242,18 +1303,19 @@ mod tests {
             ..weekly(used_up(Some(moment("2026-10-03T09:00:00Z", ThisWeek))), 0)
         };
         assert_eq!(
-            w.verdict(&[&account(vec![week.clone(), opus])], false).1,
+            w.verdict(&[&account(vec![week.clone(), opus])], false, &[])
+                .1,
             "At this pace, Claude Max's weekly lasts until it resets. Opus weekly is used up, back Sat 9 AM."
         );
         let money = credits(29, 30.0, 8.7, unknown(Unknown::NoReset));
         assert_eq!(
-            w.verdict(&[&account(vec![week.clone(), money.clone()])], false)
+            w.verdict(&[&account(vec![week.clone(), money.clone()])], false, &[])
                 .1,
             "At this pace, Claude Max's weekly lasts until it resets."
         );
         let spent_credits = credits(0, 30.0, 0.0, used_up(None));
         assert_eq!(
-            w.verdict(&[&account(vec![week.clone(), spent_credits])], false)
+            w.verdict(&[&account(vec![week.clone(), spent_credits])], false, &[])
                 .1,
             "At this pace, Claude Max's weekly lasts until it resets. Credits are used up."
         );
@@ -1265,12 +1327,12 @@ mod tests {
             ..limit(lasts())
         };
         assert_eq!(
-            w.verdict(&[&api_key(vec![held, money.clone()], None)], false)
+            w.verdict(&[&api_key(vec![held, money.clone()], None)], false, &[])
                 .1,
             "At this pace, Pi's key lasts until it resets."
         );
         assert_eq!(
-            w.verdict(&[&api_key(vec![money], None)], false).1,
+            w.verdict(&[&api_key(vec![money], None)], false, &[]).1,
             "OpenRouter API key has $8.70 of $30 left; it doesn't reset."
         );
         let stale = Account {
@@ -1281,7 +1343,7 @@ mod tests {
             ..account(vec![week.clone()])
         };
         assert_eq!(
-            w.verdict(&[&stale], false).1,
+            w.verdict(&[&stale], false, &[]).1,
             "As last read, no Claude Max limit runs out."
         );
         for (reason, said) in [
@@ -1304,7 +1366,7 @@ mod tests {
                 ..limit(unknown(reason))
             }]);
             assert_eq!(
-                w.verdict(&[&unknown], false),
+                w.verdict(&[&unknown], false, &[]),
                 ("You can keep going".into(), said.into(), Standing::Lasts)
             );
         }
@@ -1338,15 +1400,15 @@ mod tests {
         let base = "At this pace, Google AI Pro's Gemini weekly lasts until it resets.";
         let back = plan(five(used_up(Some(moment("2026-09-30T13:00:00Z", Soon)))));
         assert_eq!(
-            w.verdict(&[&back], false).1,
+            w.verdict(&[&back], false, &[]).1,
             format!("{base} Claude and GPT weekly is used up, back Sat 9 AM.")
         );
         assert_eq!(
-            w.verdict(&[&plan(five(used_up(None)))], false).1,
+            w.verdict(&[&plan(five(used_up(None)))], false, &[]).1,
             format!("{base} Claude and GPT 5 hours is used up.")
         );
         assert_eq!(
-            w.verdict(&[&plan(five(runs_out()))], false).1,
+            w.verdict(&[&plan(five(runs_out()))], false, &[]).1,
             format!("{base} Claude and GPT weekly is used up, back Sat 9 AM.")
         );
 
@@ -1356,7 +1418,7 @@ mod tests {
             ..back
         };
         assert_eq!(
-            w.verdict(&[&claude], false),
+            w.verdict(&[&claude], false, &[]),
             (
                 "Claude and GPT are used up".into(),
                 "Back Sat 9 AM.".into(),
@@ -1388,7 +1450,7 @@ mod tests {
             ..account(vec![limit(runs_out())])
         };
         assert_eq!(
-            w.verdict(&[&mine, &twin], false).0,
+            w.verdict(&[&mine, &twin], false, &[]).0,
             "Claude Max runs out in\u{a0}2h"
         );
         assert_eq!(
@@ -1692,6 +1754,7 @@ mod tests {
             session: "codex:s".into(),
             title: Some("Fix it".into()),
             project: Some("app".into()),
+            project_path: None,
             agent: "codex".into(),
             share_percent: Some(12.6),
         };

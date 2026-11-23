@@ -47,5 +47,37 @@ struct SettingsPage: View {
                 .padding(.bottom, 8)
             }
         }
+        .background {
+            HStack(spacing: 0) {
+                tabShortcut(.general, key: "1")
+                tabShortcut(.agents, key: "2")
+                tabShortcut(.accounts, key: "3")
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
+        .onKeyPress(.leftArrow) { stepTab(-1, current: panel.tab) }
+        .onKeyPress(.rightArrow) { stepTab(1, current: panel.tab) }
+    }
+
+    private func tabShortcut(_ tab: SettingsTab, key: KeyEquivalent) -> some View {
+        Button(tab.title) { selectTab(tab) }
+            .keyboardShortcut(key, modifiers: .command)
+    }
+
+    private func selectTab(_ tab: SettingsTab) {
+        withAnimation(spring) {
+            bridge.send(.setTab(tab: tab))
+        }
+    }
+
+    private func stepTab(_ delta: Int, current: SettingsTab) -> KeyPress.Result {
+        let tabs = SettingsTab.allCases
+        guard let index = tabs.firstIndex(of: current) else { return .ignored }
+        let next = max(0, min(tabs.count - 1, index + delta))
+        guard next != index else { return .handled }
+        selectTab(tabs[next])
+        return .handled
     }
 }

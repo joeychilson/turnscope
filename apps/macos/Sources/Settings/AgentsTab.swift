@@ -10,8 +10,14 @@ struct AgentsTab: View {
         if let empty = settings.agentsEmpty {
             EmptyTabMessage(message: empty)
         } else {
-            SettingGroup(title: settings.agentsTitle) {
-                ForEach(settings.agents) { AgentRow(agent: $0) }
+            let extraAgents = settings.agents.filter { !$0.snippets.isEmpty }
+            VStack(alignment: .leading, spacing: 14) {
+                SettingGroup(title: settings.agentsTitle) {
+                    ForEach(settings.agents) { AgentRow(agent: $0) }
+                }
+                ForEach(extraAgents) { agent in
+                    AgentSnippets(agent: agent)
+                }
             }
         }
     }
@@ -32,6 +38,7 @@ private struct AgentRow: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                        .help(agent.configured.map { "Configured to run \($0)" } ?? "")
                 }
             }
             Spacer(minLength: 8)
@@ -53,6 +60,90 @@ private struct AgentRow: View {
                 )
             )
             .disabled(!agent.enabled)
+        }
+        .padding(Row.padding)
+        .frame(minHeight: Row.setting)
+    }
+}
+
+private struct AgentSnippets: View {
+    var agent: AgentRowModel
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Row.spacing) {
+            Button { withAnimation(spring) { open.toggle() } } label: {
+                Hover { hover in
+                    HStack(spacing: 8) {
+                        Text("\(agent.name) status line & guard")
+                            .font(.line)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 6)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                    }
+                    .padding(Row.padding)
+                    .rowBackground(hover)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(open ? "Folds them" : "Lists copyable JSON snippets")
+
+            if open {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(agent.snippets) { snippet in
+                        SnippetRow(snippet: snippet)
+                    }
+                    if let file = agent.snippets.first?.file {
+                        Text("Paste into \(file). Turnscope never edits it.")
+                            .font(.small)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 12)
+                            .padding(.top, 2)
+                            .padding(.bottom, 6)
+                    }
+                }
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: Row.radius, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                )
+                .transition(appears)
+            }
+        }
+    }
+}
+
+private struct SnippetRow: View {
+    var snippet: SnippetModel
+    @State private var copied = false
+    @State private var clearCopy: Task<Void, Never>?
+
+    var body: some View {
+        HStack(spacing: Row.gap) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(snippet.title).font(.name)
+                Text(snippet.detail)
+                    .font(.small)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button(copied ? "Copied" : "Copy JSON") {
+                copyToPasteboard(snippet.json)
+                clearCopy?.cancel()
+                withAnimation(.easeOut(duration: 0.12)) { copied = true }
+                clearCopy = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1.5))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeOut(duration: 0.16)) { copied = false }
+                }
+            }
+            .buttonStyle(PillButton())
+            .help("Copies JSON snippet for \(snippet.file)")
+            .accessibilityLabel("Copy \(snippet.title) JSON")
         }
         .padding(Row.padding)
         .frame(minHeight: Row.setting)
