@@ -28,11 +28,13 @@ private final class PanelWindow: NSPanel {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let bridge: Bridge
+    private let ui = UIState()
     private let notifier = Notifier()
     private let updater = Updater()
     private let login = Login()
     private let menuBar = MenuBarItem()
 
+    private var initialOpening: Opening?
     private var item: NSStatusItem?
     private var panel: PanelWindow?
     private var startedAt = ContinuousClock.now
@@ -47,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     init(_ launch: Launch) {
         let prefs = launch.fixture == nil ? Preferences.read() : Preferences(menuShows: .all, dismissedConnect: [])
         self.bridge = Bridge(launch: launch, fromDiskImage: Self.fromDiskImage, preferences: prefs)
+        self.initialOpening = launch.opening
         super.init()
     }
 
@@ -93,12 +96,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func handleSync(_ sync: AppSync) {
         drawItem(sync.menuBar)
         updateTicker(counting: sync.counting)
-        for effect in sync.effects {
-            switch effect {
-            case let .openInitial(opening):
+        if sync.panel.hasStatus {
+            if let opening = initialOpening {
+                initialOpening = nil
                 whenPlaced { [self] in
                     show(opening: opening)
                 }
+            }
+            if panelOpen, ui.page == .main, let pending = ui.pendingAccount {
+                ui.pendingAccount = nil
+                ui.openInPlace(pending, panel: sync.panel)
+            }
+        }
+        for effect in sync.effects {
+            switch effect {
             case let .postAlerts(alerts):
                 notifier.post(alerts)
             case let .removeNotifications(identifiers):
@@ -202,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func makeRootView() -> some View {
         Floating()
             .environment(bridge)
+            .environment(ui)
             .environment(updater)
             .environment(notifier)
             .environment(login)
@@ -288,13 +300,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !alreadyOpen {
             panelOpen = true
             bridge.screenHeight = currentScreenHeight()
+            ui.reset()
+            bridge.send(.panelOpened)
         }
-        bridge.send(.panelOpened(opening: opening, account: account))
+        if let opening {
+            ui.apply(opening, panel: bridge.panel)
+        }
+        if let account {
+            if bridge.panel.hasStatus {
+                ui.pendingAccount = nil
+                ui.openInPlace(account, panel: bridge.panel)
+            } else {
+                ui.pendingAccount = account
+            }
+        }
         if alreadyOpen {
             panel.makeKeyAndOrderFront(nil)
             return
         }
-        bridge.panelVisible = true
         if bridge.isLive {
             notifier.check()
             login.check()
@@ -329,7 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self, !self.panelOpen else { return }
                 panel.orderOut(nil)
-                self.bridge.panelVisible = false
+                self.ui.reset()
                 self.bridge.send(.panelClosed)
             }
         })

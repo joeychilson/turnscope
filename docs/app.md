@@ -43,22 +43,23 @@ own process and handles each `Event` it tells.
 [architecture.md](architecture.md#the-apps-engine) says what the engine
 does.
 
-- **A request**, such as hiding an account or changing a setting, crosses
-  the C ABI (`crates/turnscope-app/include/turnscope_app.h`) as a JSON
-  `Action`, updates `State` synchronously, fires the engine call on a
-  worker thread, and returns the updated `AppSync` snapshot immediately.
-  Hiding an account and changing a setting show at once, and go back if
-  the change failed. Connecting or disconnecting an agent shows once it's
-  done.
+- **Domain requests**, such as hiding an account, connecting an agent,
+  forcing a refresh, or changing a setting, cross the C ABI
+  (`crates/turnscope-app/include/turnscope_app.h`) as a JSON `Action`,
+  update `State` synchronously, fire the engine call on a worker thread,
+  and return the updated `AppSync` snapshot. Ephemeral UI chrome state
+  (which row is open, folds, active page and Settings tab) stays local
+  to `UIState` in Swift so clicking around the panel never round-trips
+  through FFI or JSON.
 - **`Core::took`** handles engine events on the engine thread, updates
   `State`, queues one-shot `Effect`s (alerts to post, sign-in alerts to
-  clear, initial `--open`), and invokes the host's wake callback. The
+  clear, preference saves), and invokes the host's wake callback. The
   status is kept until a newer one arrives, even while the data can't be
   kept current, so the panel never goes empty.
 - **`State` and `view.rs`** (in `crates/turnscope-app`) split the accounts
-  into `in_use`, `recent`, `unused`, and `hidden`, hold panel navigation,
-  changing agents, and `used_most` sessions, and build flat serializable
-  `MenuBarModel` and `PanelModel` values.
+  into `in_use`, `recent`, `unused`, and `hidden`, hold changing agents
+  and `used_most` sessions, and build flat serializable `MenuBarModel`
+  and `PanelModel` values.
 - **`words.rs`** (in `crates/turnscope-app`) writes every figure and
   sentence made from the status: what's left, times, a limit's line, the
   headline, the menu bar's figures, notifications and what VoiceOver says.

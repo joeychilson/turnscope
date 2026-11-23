@@ -10,14 +10,17 @@ func copyToPasteboard(_ text: String) {
     pasteboard.setString(text, forType: .string)
 }
 
-let spring = Animation.spring(response: 0.34, dampingFraction: 0.9)
+/// Snappy, critically damped spring: starts fast and settles with zero wobble.
+let spring = Animation.spring(response: 0.25, dampingFraction: 0.92)
 
-/// New content fades in once layout space has opened, and fades out at once,
-/// so moving rows never pass over text.
+/// Expanded content fades in right as layout opens, and fades out at once.
 @MainActor let appears = AnyTransition.asymmetric(
-    insertion: .opacity.animation(.easeOut(duration: 0.16).delay(0.16)),
-    removal: .opacity.animation(.easeOut(duration: 0.06))
+    insertion: .opacity.animation(.easeOut(duration: 0.14).delay(0.05)),
+    removal: .opacity.animation(.easeOut(duration: 0.05))
 )
+
+/// Collapsed row content returns immediately so closing rows never pause blank.
+@MainActor let quickFade = AnyTransition.opacity.animation(.easeOut(duration: 0.12))
 
 enum Row {
     /// At 16pt Anthropic's mark was 9pt tall and looked small; at 20pt OpenRouter's looked heavy.
@@ -186,24 +189,28 @@ struct Hover<Content: View>: View {
     }
 }
 
-struct RowBackgroundModifier: ViewModifier {
-    var on: Bool
+struct RowSurface: View {
+    var active: Bool
+    var pressed = false
     @Environment(\.colorSchemeContrast) private var contrast
 
-    func body(content: Content) -> some View {
-        let opacity = contrast == .increased ? 0.10 : 0.06
-        content
-            .background(
-                RoundedRectangle(cornerRadius: Row.radius, style: .continuous)
-                    .fill(on ? Color.primary.opacity(opacity) : .clear)
-            )
-            .contentShape(Rectangle())
+    var body: some View {
+        let base = contrast == .increased ? 0.10 : 0.06
+        let opacity = pressed ? base + 0.06 : active ? base : 0
+        RoundedRectangle(cornerRadius: Row.radius, style: .continuous)
+            .fill(opacity > 0 ? Color.primary.opacity(opacity) : .clear)
     }
 }
 
-extension View {
-    func rowBackground(_ on: Bool) -> some View {
-        modifier(RowBackgroundModifier(on: on))
+struct RowSurfaceButtonStyle: ButtonStyle {
+    var open = false
+    var hover: Bool
+    var focused = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(RowSurface(active: open || hover || focused, pressed: !open && configuration.isPressed))
+            .contentShape(Rectangle())
     }
 }
 

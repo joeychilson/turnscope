@@ -4,12 +4,13 @@ import SwiftUI
 
 struct SettingsPage: View {
     @Environment(Bridge.self) private var bridge
+    @Environment(UIState.self) private var ui
 
     var body: some View {
         let panel = bridge.panel
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
-                Button { bridge.go(.main) } label: { Image(systemName: "chevron.left") }
+                Button { ui.go(.main) } label: { Image(systemName: "chevron.left") }
                     .buttonStyle(IconButton())
                     .keyboardShortcut(.cancelAction)
                     .help("Back")
@@ -22,11 +23,9 @@ struct SettingsPage: View {
                 Choice(
                     label: "Settings",
                     options: SettingsTab.allCases.map { ($0, $0.title) },
-                    selection: panel.tab
+                    selection: ui.tab
                 ) { tab in
-                    withAnimation(spring) {
-                        bridge.send(.setTab(tab: tab))
-                    }
+                    ui.setTab(tab)
                 }
                 .fixedSize()
             }
@@ -34,9 +33,9 @@ struct SettingsPage: View {
             .padding(.top, 8)
             .padding(.bottom, 10)
 
-            SettingsScrollView(maxHeight: max(200, bridge.screenHeight - 140)) {
+            OverflowScroll(maxHeight: max(200, bridge.screenHeight - 140)) {
                 Group {
-                    switch panel.tab {
+                    switch ui.tab {
                     case .general: GeneralTab()
                     case _ where !panel.hasStatus: Waiting(model: panel.waiting)
                     case .agents: AgentsTab()
@@ -57,19 +56,13 @@ struct SettingsPage: View {
             .opacity(0)
             .accessibilityHidden(true)
         }
-        .onKeyPress(.leftArrow) { stepTab(-1, current: panel.tab) }
-        .onKeyPress(.rightArrow) { stepTab(1, current: panel.tab) }
+        .onKeyPress(.leftArrow) { stepTab(-1, current: ui.tab) }
+        .onKeyPress(.rightArrow) { stepTab(1, current: ui.tab) }
     }
 
     private func tabShortcut(_ tab: SettingsTab, key: KeyEquivalent) -> some View {
-        Button(tab.title) { selectTab(tab) }
+        Button(tab.title) { ui.setTab(tab) }
             .keyboardShortcut(key, modifiers: .command)
-    }
-
-    private func selectTab(_ tab: SettingsTab) {
-        withAnimation(spring) {
-            bridge.send(.setTab(tab: tab))
-        }
     }
 
     private func stepTab(_ delta: Int, current: SettingsTab) -> KeyPress.Result {
@@ -77,7 +70,7 @@ struct SettingsPage: View {
         guard let index = tabs.firstIndex(of: current) else { return .ignored }
         let next = max(0, min(tabs.count - 1, index + delta))
         guard next != index else { return .handled }
-        selectTab(tabs[next])
+        ui.setTab(tabs[next])
         return .handled
     }
 }

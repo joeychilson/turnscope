@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use turnscope::engine::{Engine, Shown};
 
-use crate::launch::{Launch, Opening};
+use crate::launch::Launch;
 use crate::state::{Action, Core, MenuShows, Preferences, State};
 use crate::view::PanelModel;
 
@@ -34,7 +34,6 @@ pub fn binary() -> PathBuf {
 #[serde(rename_all = "camelCase")]
 pub struct StartConfig {
     pub fixture: Option<PathBuf>,
-    pub opening: Option<Opening>,
     pub data: Option<PathBuf>,
     pub home: Option<PathBuf>,
     #[serde(default)]
@@ -49,7 +48,6 @@ pub struct StartConfig {
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotConfig {
     pub fixture: Option<PathBuf>,
-    pub opening: Option<Opening>,
     pub data: Option<PathBuf>,
     pub home: Option<PathBuf>,
 }
@@ -175,7 +173,6 @@ pub fn start(
         },
     };
     state.from_disk_image = config.from_disk_image;
-    state.opening = config.opening;
 
     let core = Arc::new(Mutex::new(Core::new(state, runs_engine)));
     let wake = Arc::new(Mutex::new(wake.map(|cb| Wake { ctx, cb })));
@@ -262,10 +259,7 @@ pub fn snapshot(config: SnapshotConfig) -> Result<PanelModel, (String, i32)> {
             )
         })?,
     };
-    let mut state = State::fixed(shown);
-    if let Some(opening) = config.opening {
-        state.apply_opening(opening);
-    }
+    let state = State::fixed(shown);
     Ok(view::build_panel(&state))
 }
 
@@ -472,11 +466,7 @@ mod tests {
     fn ffi_round_trip_with_fixture_builds_panel_and_handles_actions() {
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../turnscope/tests/fixtures/status.json");
-        let cfg = serde_json::json!({
-            "fixture": fixture,
-            "opening": { "account": true, "unused": false, "settings": null }
-        })
-        .to_string();
+        let cfg = serde_json::json!({ "fixture": fixture }).to_string();
         let cfg_c = CString::new(cfg).unwrap();
         let mut err: *mut c_char = std::ptr::null_mut();
         let app =
@@ -496,18 +486,19 @@ mod tests {
             "Claude Max runs out in\u{a0}50m"
         );
         assert_eq!(sync["menuBar"]["slots"].as_array().unwrap().len(), 1);
-        assert_eq!(sync["effects"][0]["kind"], "openInitial");
 
-        let open_action =
-            CString::new(r#"{"kind":"toggleAccount","id":"anthropic:acct-1:org-1"}"#).unwrap();
-        let after_ptr = unsafe { turnscope_app_action(app, open_action.as_ptr()) };
+        let hide_action =
+            CString::new(r#"{"kind":"setHidden","id":"anthropic:acct-1:org-1","hidden":true}"#)
+                .unwrap();
+        let after_ptr = unsafe { turnscope_app_action(app, hide_action.as_ptr()) };
         let after_json = unsafe { CStr::from_ptr(after_ptr) }
             .to_str()
             .unwrap()
             .to_owned();
         unsafe { turnscope_app_free_string(after_ptr) };
         let after: serde_json::Value = serde_json::from_str(&after_json).unwrap();
-        assert_eq!(after["panel"]["openAccount"], "anthropic:acct-1:org-1");
+        assert_eq!(after["panel"]["inUse"].as_array().unwrap().len(), 0);
+        assert_eq!(after["panel"]["hidden"].as_array().unwrap().len(), 2);
 
         unsafe { turnscope_app_stop(app) };
     }
@@ -561,18 +552,16 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_reads_fixture_and_opens_settings_tab() {
+    fn snapshot_reads_fixture_and_builds_agents() {
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../turnscope/tests/fixtures/status.json");
         let panel = snapshot(SnapshotConfig {
             fixture: Some(fixture),
-            opening: Some(Opening::parse("agents")),
             data: None,
             home: None,
         })
         .unwrap();
-        assert_eq!(panel.page, crate::state::Page::Settings);
-        assert_eq!(panel.tab, crate::state::Tab::Agents);
+        assert!(panel.has_status);
         assert_eq!(panel.settings.agents.len(), 2);
     }
 

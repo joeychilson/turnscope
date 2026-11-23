@@ -12,12 +12,14 @@ enum PanelFocus: Hashable {
 
 struct AccountRow: View {
     @Environment(Bridge.self) private var bridge
+    @Environment(UIState.self) private var ui
     var row: AccountRowModel
+    var isOpen: Bool
     var focus: FocusState<PanelFocus?>.Binding
     @State private var hover = false
 
     var body: some View {
-        let open = row.openable && bridge.panel.openAccount == row.id
+        let open = row.openable && isOpen
         let lines = open && !row.limits.isEmpty
         let used = open && !row.usedMost.isEmpty
         let stopped = bridge.panel.stopped
@@ -26,10 +28,14 @@ struct AccountRow: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: Row.gap) {
                 Logo(provider: row.provider, size: Row.logo)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(row.openable)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(alignment: .center, spacing: 6) {
                         AccountTitle(title: row.title, label: row.label, labelStyle: .secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(row.openable)
                         // Always given its layout slot so showing it on hover never shifts text.
                         Button(action: hide) { Image(systemName: "eye.slash") }
                             .buttonStyle(IconButton(width: 22, height: 16))
@@ -48,7 +54,9 @@ struct AccountRow: View {
                                 .font(.figure)
                                 .contentTransition(.numericText())
                                 .fixedSize()
-                                .transition(appears)
+                                .transition(quickFade)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(row.openable)
                                 .accessibilityLabel(row.figureSpoken)
                         }
                     }
@@ -57,38 +65,30 @@ struct AccountRow: View {
                             .font(.small)
                             .foregroundStyle(row.standing.ink(lasting: .secondary))
                             .fixedSize(horizontal: false, vertical: true)
-                            .transition(appears)
+                            .transition(quickFade)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(row.openable)
                     }
                 }
             }
-            .contentShape(Rectangle())
-            .onTapGesture { if row.openable { toggle() } }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(row.headerSpoken)
-            .accessibilityAddTraits(row.openable ? .isButton : [])
-            .accessibilityHint(row.openable ? (open ? "Closes it" : "Opens it") : "")
-            .accessibilityAction(.default) { if row.openable { toggle() } }
-            .accessibilityAction(named: "Hide") { if !stopped { hide() } }
 
             if open {
                 VStack(alignment: .leading, spacing: 10) {
                     if lines {
-                        VStack(alignment: .leading, spacing: 10) {
-                            ForEach(row.limits) { limit in
-                                LimitLine(
-                                    limit: limit,
-                                    last: row.note == nil && !used && limit.id == row.limits.last?.id
-                                )
-                            }
+                        ForEach(row.limits) { limit in
+                            LimitLine(
+                                limit: limit,
+                                last: row.note == nil && !used && limit.id == row.limits.last?.id
+                            )
                         }
-                        .contentShape(Rectangle())
-                        .onTapGesture { toggle() }
+                        .allowsHitTesting(false)
                     }
                     if let note = row.note {
                         Text(note)
                             .font(.line)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                            .allowsHitTesting(false)
                     }
                     if used, let heading = row.usedMostHeading {
                         UsedMostList(heading: heading, sessions: row.usedMost)
@@ -100,16 +100,28 @@ struct AccountRow: View {
             }
         }
         .padding(Row.padding)
-        .rowBackground(open || hover || focused)
-        .clipShape(RoundedRectangle(cornerRadius: Row.radius, style: .continuous))
-        .onHover { over in withAnimation(.easeOut(duration: 0.12)) { hover = over } }
-        .focusable(row.openable, interactions: .activate)
-        .focused(focus, equals: .account(row.id))
-        .onKeyPress(keys: [.space, .return]) { _ in
-            guard row.openable else { return .ignored }
-            toggle()
-            return .handled
+        .background {
+            // Full-bleed native Button covers 100% of the padded row (zero dead zones,
+            // instant mouse-down press shading, and reliable rapid clicking).
+            if row.openable {
+                Button(action: toggle) {
+                    Color.clear
+                }
+                .buttonStyle(RowSurfaceButtonStyle(open: open, hover: hover, focused: focused))
+                .focused(focus, equals: .account(row.id))
+                .onKeyPress(.return) {
+                    toggle()
+                    return .handled
+                }
+                .accessibilityLabel(lines ? row.called : row.collapsedSpoken)
+                .accessibilityHint(open ? "Closes it" : "Opens it")
+                .accessibilityAction(named: "Hide") { if !stopped { hide() } }
+            } else {
+                RowSurface(active: hover)
+            }
         }
+        .clipShape(RoundedRectangle(cornerRadius: Row.radius, style: .continuous))
+        .onHover { over in withAnimation(.easeOut(duration: 0.10)) { hover = over } }
         .contextMenu {
             Button("Hide \(row.called)", action: hide)
                 .disabled(stopped)
@@ -118,14 +130,13 @@ struct AccountRow: View {
 
     private func hide() {
         withAnimation(spring) {
+            ui.didHide(row.id)
             bridge.send(.setHidden(id: row.id, hidden: true))
         }
     }
 
     private func toggle() {
-        withAnimation(spring) {
-            bridge.send(.toggleAccount(id: row.id))
-        }
+        ui.toggleAccount(row.id)
     }
 }
 
@@ -204,7 +215,7 @@ struct Bar: View {
             .accessibilityHidden(true)
             .onAppear {
                 if !isSnapshot && !reduceMotion {
-                    withAnimation(spring.delay(0.16)) { grown = true }
+                    withAnimation(spring.delay(0.08)) { grown = true }
                 }
             }
     }

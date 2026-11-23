@@ -28,6 +28,7 @@ struct AccountsTab: View {
 
 private struct AccountSwitch: View {
     @Environment(Bridge.self) private var bridge
+    @Environment(UIState.self) private var ui
     var account: AccountSwitchModel
 
     var body: some View {
@@ -41,6 +42,7 @@ private struct AccountSwitch: View {
                     get: { account.shown },
                     set: { shown in
                         withAnimation(spring) {
+                            if !shown { ui.didHide(account.id) }
                             bridge.send(.setHidden(id: account.id, hidden: !shown))
                         }
                     }

@@ -26,6 +26,10 @@ enum Snapshot {
         }
 
         let bridge = Bridge(snapshot: panelModel)
+        let ui = UIState()
+        if let opening = launch.opening {
+            ui.apply(opening, panel: panelModel)
+        }
         let updater = Updater()
         let notifier = Notifier()
         let login = Login()
@@ -34,6 +38,7 @@ enum Snapshot {
             let background = dark ? Color(hex: 0x1E1E1E) : Color.white
             let view = Panel()
                 .environment(bridge)
+                .environment(ui)
                 .environment(updater)
                 .environment(notifier)
                 .environment(login)

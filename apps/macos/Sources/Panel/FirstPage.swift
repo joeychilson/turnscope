@@ -4,13 +4,12 @@ import SwiftUI
 
 struct FirstPage: View {
     @Environment(Bridge.self) private var bridge
-    @Environment(\.isSnapshot) private var isSnapshot
+    @Environment(UIState.self) private var ui
     @FocusState private var focus: PanelFocus?
-    @State private var overflow = false
 
     var body: some View {
         let panel = bridge.panel
-        let listCap = max(180, bridge.screenHeight - 230)
+        let openAccount = ui.openAccount
         VStack(alignment: .leading, spacing: 0) {
             if !panel.hasStatus {
                 Waiting(model: panel.waiting)
@@ -21,14 +20,34 @@ struct FirstPage: View {
                         .padding(.top, 18)
                         .padding(.bottom, 14)
                 }
-                if overflow && !isSnapshot {
-                    ScrollView(.vertical) {
-                        accountList(panel, listCap: listCap)
+                OverflowScroll(maxHeight: max(180, bridge.screenHeight - 230)) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if !panel.inUse.isEmpty {
+                            VStack(spacing: Row.spacing) {
+                                ForEach(panel.inUse) {
+                                    AccountRow(row: $0, isOpen: openAccount == $0.id, focus: $focus)
+                                }
+                            }
+                        }
+                        if !panel.recent.isEmpty {
+                            VStack(alignment: .leading, spacing: Row.spacing) {
+                                SectionTitle(text: "Used this week")
+                                ForEach(panel.recent) {
+                                    AccountRow(row: $0, isOpen: openAccount == $0.id, focus: $focus)
+                                }
+                            }
+                            .padding(.top, panel.inUse.isEmpty ? 0 : Row.groups)
+                        }
+                        if panel.unusedFoldLabel != nil {
+                            UnusedAccounts(focus: $focus)
+                                .padding(.top, Row.spacing)
+                        }
+                        if let offer = panel.connectOffer {
+                            ConnectNudge(offer: offer)
+                                .padding(.top, Row.groups)
+                        }
                     }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .frame(height: listCap)
-                } else {
-                    accountList(panel, listCap: listCap)
+                    .padding(.horizontal, 8)
                 }
             }
             Footer()
@@ -38,40 +57,6 @@ struct FirstPage: View {
         .onKeyPress(.upArrow) { stepFocus(-1, panel: panel) }
     }
 
-    private func accountList(_ panel: PanelModel, listCap: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if !panel.inUse.isEmpty {
-                VStack(spacing: Row.spacing) {
-                    ForEach(panel.inUse) { AccountRow(row: $0, focus: $focus) }
-                }
-            }
-            if !panel.recent.isEmpty {
-                VStack(alignment: .leading, spacing: Row.spacing) {
-                    SectionTitle(text: "Used this week")
-                    ForEach(panel.recent) { AccountRow(row: $0, focus: $focus) }
-                }
-                .padding(.top, panel.inUse.isEmpty ? 0 : Row.groups)
-            }
-            if panel.unusedFoldLabel != nil {
-                UnusedAccounts(focus: $focus)
-                    .padding(.top, Row.spacing)
-            }
-            if let offer = panel.connectOffer {
-                ConnectNudge(offer: offer)
-                    .padding(.top, Row.groups)
-            }
-        }
-        .padding(.horizontal, 8)
-        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
-            guard !isSnapshot else { return }
-            if !overflow && height > listCap {
-                overflow = true
-            } else if overflow && height < listCap - 40 {
-                overflow = false
-            }
-        }
-    }
-
     private func focusableItems(_ panel: PanelModel) -> [PanelFocus] {
         var items: [PanelFocus] = []
         items.append(contentsOf: panel.inUse.filter(\.openable).map { .account($0.id) })
@@ -79,7 +64,7 @@ struct FirstPage: View {
         if panel.unusedFoldLabel != nil {
             items.append(.unusedFold)
         }
-        if panel.unusedOpen {
+        if ui.unusedOpen {
             items.append(contentsOf: panel.unused.filter(\.openable).map { .account($0.id) })
             if panel.hiddenFoldLabel != nil {
                 items.append(.hiddenFold)
@@ -91,7 +76,7 @@ struct FirstPage: View {
     private func stepFocus(_ delta: Int, panel: PanelModel) -> KeyPress.Result {
         let items = focusableItems(panel)
         guard !items.isEmpty else { return .ignored }
-        let anchor = focus ?? panel.openAccount.map(PanelFocus.account)
+        let anchor = focus ?? ui.openAccount.map(PanelFocus.account)
         if let current = anchor, let index = items.firstIndex(of: current) {
             let next = max(0, min(items.count - 1, index + delta))
             focus = items[next]
@@ -208,6 +193,7 @@ private struct ConnectNudge: View {
 
 private struct Footer: View {
     @Environment(Bridge.self) private var bridge
+    @Environment(UIState.self) private var ui
     @Environment(Updater.self) private var updater
     @Environment(\.closePanel) private var closePanel
 
@@ -281,7 +267,7 @@ private struct Footer: View {
                 .padding(.trailing, 4)
                 .transition(appears)
             }
-            Button { bridge.go(.settings) } label: { Image(systemName: "gearshape") }
+            Button { ui.go(.settings) } label: { Image(systemName: "gearshape") }
                 .buttonStyle(IconButton())
                 .keyboardShortcut(",", modifiers: .command)
                 .help("Settings")

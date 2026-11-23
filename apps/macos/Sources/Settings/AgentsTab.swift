@@ -69,26 +69,25 @@ private struct AgentRow: View {
 private struct AgentSnippets: View {
     var agent: AgentRowModel
     @State private var open = false
+    @State private var hover = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Row.spacing) {
             Button { withAnimation(spring) { open.toggle() } } label: {
-                Hover { hover in
-                    HStack(spacing: 8) {
-                        Text("\(agent.name) status line & guard")
-                            .font(.line)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(open ? 90 : 0))
-                    }
-                    .padding(Row.padding)
-                    .rowBackground(hover)
+                HStack(spacing: 8) {
+                    Text("\(agent.name) status line & guard")
+                        .font(.line)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(open ? 90 : 0))
                 }
+                .padding(Row.padding)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(RowSurfaceButtonStyle(hover: hover))
+            .onHover { over in withAnimation(.easeOut(duration: 0.10)) { hover = over } }
             .accessibilityHint(open ? "Folds them" : "Lists copyable JSON snippets")
 
             if open {

@@ -1,5 +1,6 @@
-//! App state, user actions, engine event handling, and side-effect queuing.
-//! Shared across every platform shell; OS shells render `view::AppSync` and run `Effect`s.
+//! Domain state, engine event handling, and side-effect queuing shared across every platform shell.
+//! Ephemeral UI chrome state (which row is open, folds, active page/tab) stays local to each shell
+//! so UI interactions never round-trip through FFI or JSON.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -8,27 +9,9 @@ use turnscope::alerts::{Alert, Kind as AlertKind, Notify, replaces};
 use turnscope::engine::{Engine, Event, Shown, Stopped, UsedMost};
 use turnscope::status::{Account, Agent, Connection, Status};
 
-use crate::launch::Opening;
 use crate::standing::{AccountStanding, Standing};
 use crate::view::{AppSync, build_sync};
 use crate::words::{self, Words};
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Page {
-    #[default]
-    Main,
-    Settings,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Tab {
-    #[default]
-    General,
-    Agents,
-    Accounts,
-}
 
 /// What the menu bar shows: every account in use, or only the most urgent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,9 +47,6 @@ pub struct AlertNote {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Effect {
-    OpenInitial {
-        opening: Opening,
-    },
     PostAlerts {
         alerts: Vec<AlertNote>,
     },
@@ -79,27 +59,12 @@ pub enum Effect {
     },
 }
 
-/// User and shell actions sent into `Core::apply`.
+/// Domain and lifecycle actions sent into `Core::apply`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Action {
-    PanelOpened {
-        opening: Option<Opening>,
-        account: Option<String>,
-    },
+    PanelOpened,
     PanelClosed,
-    Go {
-        page: Page,
-        tab: Option<Tab>,
-    },
-    SetTab {
-        tab: Tab,
-    },
-    ToggleAccount {
-        id: String,
-    },
-    ToggleUnused,
-    ToggleHidden,
     SetHidden {
         id: String,
         hidden: bool,
@@ -176,16 +141,8 @@ pub struct State {
     pub frozen: Option<i64>,
     pub from_disk_image: bool,
     pub preferences: Preferences,
-    pub opening: Option<Opening>,
-    pub clicked: Option<String>,
     /// Held until the first status arrives so notifications can name accounts and agents.
     pub alerts_waiting: Vec<Alert>,
-
-    pub page: Page,
-    pub tab: Tab,
-    pub open: Option<String>,
-    pub unused_open: bool,
-    pub hidden_shown: bool,
     /// The minute the open panel's words are as of: set as it opens, and each minute after.
     pub now: i64,
     pub panel_open: bool,
@@ -317,45 +274,12 @@ impl State {
         self.frozen.is_none() && (self.panel_open || self.urgent())
     }
 
-    pub fn reset(&mut self) {
-        self.page = Page::Main;
-        self.tab = Tab::General;
-        self.open = None;
-        self.unused_open = false;
-        self.hidden_shown = false;
-    }
-
-    pub fn apply_opening(&mut self, opening: Opening) {
-        if opening.account {
-            self.open = self.in_use().first().map(|a| a.id.clone());
-        }
-        if opening.unused {
-            self.unused_open = true;
-        }
-        if let Some(tab) = opening.settings {
-            self.page = Page::Settings;
-            self.tab = tab;
-        }
-    }
-
     pub fn mark_hidden(&mut self, account: &str, hidden: bool) {
         if let Some(status) = &mut self.status
             && let Some(found) = status.accounts.iter_mut().find(|a| a.id == account)
         {
             found.hidden = hidden;
         }
-        if hidden && self.open.as_deref() == Some(account) {
-            self.open = None;
-        }
-    }
-
-    pub fn open_in_place(&mut self, account: &str) {
-        let Some(found) = self.all().iter().find(|a| a.id == account && !a.hidden) else {
-            return;
-        };
-        self.unused_open = !self.counts(found) && !found.recent;
-        self.page = Page::Main;
-        self.open = Some(account.to_owned());
     }
 
     /// Shown accounts to ask what used them most, each with its deciding limit:
@@ -405,20 +329,12 @@ pub struct Core {
 
 impl Core {
     pub fn new(state: State, running_engine: bool) -> Core {
-        let mut core = Core {
+        Core {
             state,
             running_engine,
             effects: Vec::new(),
             animated: false,
-        };
-        // A fixed status is ready immediately, so honor `--open` on the first sync.
-        if !running_engine
-            && core.state.status.is_some()
-            && let Some(opening) = core.state.opening.take()
-        {
-            core.effects.push(Effect::OpenInitial { opening });
         }
-        core
     }
 
     /// Handle one `turnscope::engine::Event`. Returns engine calls to fire outside the lock
@@ -440,15 +356,6 @@ impl Core {
                     .map(|a| a.id.clone())
                     .collect();
                 self.state.take(*shown);
-                if let Some(opening) = self.state.opening.take() {
-                    self.effects.push(Effect::OpenInitial { opening });
-                }
-                if let Some(clicked) = self.state.clicked.take()
-                    && self.state.panel_open
-                    && self.state.page == Page::Main
-                {
-                    self.state.open_in_place(&clicked);
-                }
                 let identifiers: Vec<String> = self
                     .state
                     .all()
@@ -461,9 +368,7 @@ impl Core {
                         .push(Effect::RemoveNotifications { identifiers });
                 }
                 if self.state.panel_open {
-                    calls.used_most = self
-                        .state
-                        .asks(|a| self.state.open.as_deref() == Some(a.id.as_str()));
+                    calls.used_most = self.state.asks(|a| self.state.counts(a));
                 }
                 let mut told = std::mem::take(&mut self.state.alerts_waiting);
                 told.extend(alerts);
@@ -497,15 +402,14 @@ impl Core {
             } => {
                 let entry = (limit, sessions);
                 let changed = self.state.used.get(&account) != Some(&entry);
-                let shown =
-                    changed && self.state.panel_open && self.state.open.as_ref() == Some(&account);
-                if shown {
-                    self.animated = true;
-                }
                 if changed {
                     self.state.used.insert(account, entry);
                 }
-                (calls, shown)
+                let wake = changed && self.state.panel_open;
+                if wake {
+                    self.animated = true;
+                }
+                (calls, wake)
             }
             Event::Connected {
                 agent,
@@ -532,13 +436,12 @@ impl Core {
         }
     }
 
-    /// Apply a user or shell action. Returns engine calls to fire outside the lock.
+    /// Apply a domain or lifecycle action. Returns engine calls to fire outside the lock.
     pub fn apply(&mut self, action: Action, now_ms: i64) -> EngineCalls {
         let mut calls = EngineCalls::default();
         match action {
-            Action::PanelOpened { opening, account } => {
+            Action::PanelOpened => {
                 if !self.state.panel_open {
-                    self.state.reset();
                     self.state.panel_open = true;
                     self.state.now = turnscope::time::minute(now_ms);
                     if self.running_engine {
@@ -546,65 +449,9 @@ impl Core {
                         calls.ask_limits = true;
                     }
                 }
-                if let Some(opening) = opening {
-                    self.state.apply_opening(opening);
-                }
-                if let Some(account) = account {
-                    if self.state.status.is_none() {
-                        self.state.clicked = Some(account);
-                    } else {
-                        self.state.clicked = None;
-                        self.state.open_in_place(&account);
-                    }
-                }
             }
             Action::PanelClosed => {
                 self.state.panel_open = false;
-                self.state.clicked = None;
-                self.state.reset();
-            }
-            Action::Go { page, tab } => {
-                if let Some(tab) = tab {
-                    self.state.tab = tab;
-                }
-                self.state.page = page;
-            }
-            Action::SetTab { tab } => {
-                self.state.tab = tab;
-            }
-            Action::ToggleAccount { id } => {
-                if self.state.open.as_deref() == Some(id.as_str()) {
-                    self.state.open = None;
-                } else {
-                    self.state.open = Some(id.clone());
-                    if self.running_engine
-                        && let Some(limit) = self
-                            .state
-                            .all()
-                            .iter()
-                            .find(|a| a.id == id)
-                            .and_then(|a| a.deciding.clone())
-                    {
-                        calls.used_most.push((id, limit));
-                    }
-                }
-            }
-            Action::ToggleUnused => {
-                self.state.unused_open = !self.state.unused_open;
-                if !self.state.unused_open {
-                    if self
-                        .state
-                        .open
-                        .as_ref()
-                        .is_some_and(|open| self.state.unused().iter().any(|a| &a.id == open))
-                    {
-                        self.state.open = None;
-                    }
-                    self.state.hidden_shown = false;
-                }
-            }
-            Action::ToggleHidden => {
-                self.state.hidden_shown = !self.state.hidden_shown;
             }
             Action::SetHidden { id, hidden } => {
                 if !self.state.stopped() {
@@ -900,32 +747,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_notification_clicked_before_the_first_status_opens_its_account_with_what_used_it() {
+    fn while_the_panel_is_open_a_status_asks_what_used_in_use_and_missing_accounts() {
         let mut core = Core::new(State::default(), true);
-        core.apply(
-            Action::PanelOpened {
-                opening: None,
-                account: Some(CODEX.into()),
-            },
-            0,
-        );
+        core.apply(Action::PanelOpened, 0);
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
-        assert_eq!(core.state.open.as_deref(), Some(CODEX));
-        let asked: Vec<&str> = calls.used_most.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(asked, [CLAUDE, CODEX, OPENROUTER]);
-    }
-
-    #[test]
-    fn while_the_panel_is_open_a_status_asks_what_used_each_account_that_has_none() {
-        let mut core = Core::new(State::default(), true);
-        core.took(Event::Shown(Box::new(example()), Vec::new()));
-        core.state.panel_open = true;
-        core.state.open = Some(CLAUDE.into());
-        for (id, limit) in core.state.asks(|_| true) {
-            core.state.used.insert(id, (limit, Vec::new()));
-        }
         fn asked(calls: &EngineCalls) -> Vec<&str> {
             calls.used_most.iter().map(|(id, _)| id.as_str()).collect()
+        }
+        assert_eq!(asked(&calls), [CLAUDE, CODEX, OPENROUTER]);
+        for (id, limit) in core.state.asks(|_| true) {
+            core.state.used.insert(id, (limit, Vec::new()));
         }
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
         assert_eq!(asked(&calls), [CLAUDE]);
@@ -933,7 +764,7 @@ pub(crate) mod tests {
         changed.status.accounts[1].deciding = Some("primary".into());
         let (calls, _) = core.took(Event::Shown(Box::new(changed), Vec::new()));
         assert_eq!(asked(&calls), [CLAUDE, CODEX]);
-        core.state.panel_open = false;
+        core.apply(Action::PanelClosed, 0);
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
         assert!(calls.used_most.is_empty());
     }

@@ -7,7 +7,7 @@ use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{Account, Agent, Connection, Limit};
 
 use crate::standing::{AccountStanding, LimitStanding, Standing};
-use crate::state::{Effect, MenuShows, Page, State, Tab};
+use crate::state::{Effect, MenuShows, State};
 use crate::words::{self, Words};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -40,11 +40,6 @@ pub struct MenuBarSlot {
 #[serde(rename_all = "camelCase")]
 pub struct PanelModel {
     pub version: String,
-    pub page: Page,
-    pub tab: Tab,
-    pub open_account: Option<String>,
-    pub unused_open: bool,
-    pub hidden_shown: bool,
     pub has_status: bool,
     pub stopped: bool,
     pub from_disk_image: bool,
@@ -89,7 +84,7 @@ pub struct AccountRowModel {
     pub figure: String,
     pub figure_then: Option<String>,
     pub figure_spoken: String,
-    pub header_spoken: String,
+    pub collapsed_spoken: String,
     pub openable: bool,
     pub limits: Vec<LimitLineModel>,
     pub note: Option<String>,
@@ -336,11 +331,6 @@ pub fn build_panel(s: &State) -> PanelModel {
 
     PanelModel {
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        page: s.page,
-        tab: s.tab,
-        open_account: s.open.clone(),
-        unused_open: s.unused_open,
-        hidden_shown: s.hidden_shown,
         has_status,
         stopped: s.stopped(),
         from_disk_image: s.from_disk_image,
@@ -361,8 +351,6 @@ pub fn build_panel(s: &State) -> PanelModel {
 fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> AccountRowModel {
     let note = w.opened(a, headlined);
     let openable = !a.limits.is_empty() || note.is_some();
-    let open = openable && s.open.as_deref() == Some(a.id.as_str());
-    let lines = open && !a.limits.is_empty();
     let labelled = words::twinned(a, s.all());
     let called = words::called(a, labelled);
     let status = w.status(a);
@@ -377,11 +365,7 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
         ""
     };
     let figure_spoken = format!("{figure}{then_text}{left}");
-    let header_spoken = if lines {
-        called.clone()
-    } else {
-        format!("{called}, {status}, {figure_spoken}")
-    };
+    let collapsed_spoken = format!("{called}, {status}, {figure_spoken}");
 
     let limits = a.limits.iter().map(|l| build_limit_line(w, l)).collect();
     let sessions = s.used_most(a);
@@ -401,7 +385,7 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
         figure,
         figure_then,
         figure_spoken,
-        header_spoken,
+        collapsed_spoken,
         openable,
         limits,
         note,

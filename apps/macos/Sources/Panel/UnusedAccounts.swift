@@ -5,24 +5,28 @@ import SwiftUI
 
 struct UnusedAccounts: View {
     @Environment(Bridge.self) private var bridge
+    @Environment(UIState.self) private var ui
     var focus: FocusState<PanelFocus?>.Binding
 
     var body: some View {
         let panel = bridge.panel
+        let openAccount = ui.openAccount
         if let label = panel.unusedFoldLabel {
             VStack(alignment: .leading, spacing: Row.spacing) {
-                Fold(text: label, open: panel.unusedOpen, focus: focus, target: .unusedFold) {
-                    bridge.send(.toggleUnused)
+                Fold(text: label, open: ui.unusedOpen, focus: focus, target: .unusedFold) {
+                    ui.toggleUnused(panel: panel)
                 }
-                if panel.unusedOpen {
+                if ui.unusedOpen {
                     VStack(spacing: Row.spacing) {
-                        ForEach(panel.unused) { AccountRow(row: $0, focus: focus) }
+                        ForEach(panel.unused) {
+                            AccountRow(row: $0, isOpen: openAccount == $0.id, focus: focus)
+                        }
                         if let hiddenLabel = panel.hiddenFoldLabel {
-                            Fold(text: hiddenLabel, open: panel.hiddenShown, focus: focus, target: .hiddenFold) {
-                                bridge.send(.toggleHidden)
+                            Fold(text: hiddenLabel, open: ui.hiddenShown, focus: focus, target: .hiddenFold) {
+                                ui.toggleHidden()
                             }
                         }
-                        if !panel.hidden.isEmpty && (panel.hiddenShown || panel.unused.isEmpty) {
+                        if !panel.hidden.isEmpty && (ui.hiddenShown || panel.unused.isEmpty) {
                             ForEach(panel.hidden) { HiddenRow(account: $0) }
                                 .transition(appears)
                         }
@@ -40,29 +44,28 @@ private struct Fold: View {
     var focus: FocusState<PanelFocus?>.Binding
     var target: PanelFocus
     var toggle: () -> Void
+    @State private var hover = false
 
     var body: some View {
         let focused = focus.wrappedValue == target
-        Button { withAnimation(spring, toggle) } label: {
-            Hover { hover in
-                HStack(spacing: 8) {
-                    Text(text)
-                        .font(.line)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(open ? 90 : 0))
-                }
-                .padding(Row.padding)
-                .rowBackground(hover || focused)
+        Button(action: toggle) {
+            HStack(spacing: 8) {
+                Text(text)
+                    .font(.line)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(open ? 90 : 0))
             }
+            .padding(Row.padding)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowSurfaceButtonStyle(hover: hover, focused: focused))
+        .onHover { over in withAnimation(.easeOut(duration: 0.10)) { hover = over } }
         .focused(focus, equals: target)
         .onKeyPress(.return) {
-            withAnimation(spring, toggle)
+            toggle()
             return .handled
         }
         .accessibilityLabel(text)

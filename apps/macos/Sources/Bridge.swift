@@ -65,20 +65,17 @@ struct AlertNote: Decodable, Equatable {
 }
 
 enum Effect: Decodable, Equatable {
-    case openInitial(opening: Opening)
     case postAlerts(alerts: [AlertNote])
     case removeNotifications(identifiers: [String])
     case savePreferences(menuShows: MenuShows, dismissedConnect: [String])
 
     private enum CodingKeys: String, CodingKey {
-        case kind, opening, alerts, identifiers, menuShows, dismissedConnect
+        case kind, alerts, identifiers, menuShows, dismissedConnect
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decode(String.self, forKey: .kind) {
-        case "openInitial":
-            self = .openInitial(opening: try c.decode(Opening.self, forKey: .opening))
         case "postAlerts":
             self = .postAlerts(alerts: try c.decode([AlertNote].self, forKey: .alerts))
         case "removeNotifications":
@@ -154,7 +151,7 @@ struct AccountRowModel: Decodable, Equatable, Identifiable {
     var figure: String
     var figureThen: String?
     var figureSpoken: String
-    var headerSpoken: String
+    var collapsedSpoken: String
     var openable: Bool
     var limits: [LimitLineModel]
     var note: String?
@@ -264,11 +261,6 @@ struct SettingsModel: Decodable, Equatable {
 
 struct PanelModel: Decodable, Equatable {
     var version: String
-    var page: Page
-    var tab: SettingsTab
-    var openAccount: String?
-    var unusedOpen: Bool
-    var hiddenShown: Bool
     var hasStatus: Bool
     var stopped: Bool
     var fromDiskImage: Bool
@@ -285,9 +277,7 @@ struct PanelModel: Decodable, Equatable {
     var settings: SettingsModel
 
     static let empty = PanelModel(
-        version: "", page: .main, tab: .general, openAccount: nil,
-        unusedOpen: false, hiddenShown: false, hasStatus: false,
-        stopped: false, fromDiskImage: false,
+        version: "", hasStatus: false, stopped: false, fromDiskImage: false,
         waiting: WaitingModel(problem: nil, retries: false),
         verdict: nil, inUse: [], recent: [], unused: [], hidden: [],
         unusedFoldLabel: nil, hiddenFoldLabel: nil, connectOffer: nil,
@@ -307,7 +297,6 @@ struct AppSync: Decodable, Equatable {
 
 private struct StartConfig: Encodable {
     var fixture: String?
-    var opening: Opening?
     var data: String?
     var home: String?
     var fromDiskImage: Bool
@@ -317,7 +306,6 @@ private struct StartConfig: Encodable {
 
 private struct SnapshotConfig: Encodable {
     var fixture: String?
-    var opening: Opening?
     var data: String?
     var home: String?
 }
@@ -344,13 +332,8 @@ enum SnapshotResponse: Decodable {
 }
 
 enum AppAction: Encodable {
-    case panelOpened(opening: Opening? = nil, account: String? = nil)
+    case panelOpened
     case panelClosed
-    case go(page: Page, tab: SettingsTab? = nil)
-    case setTab(tab: SettingsTab)
-    case toggleAccount(id: String)
-    case toggleUnused
-    case toggleHidden
     case setHidden(id: String, hidden: Bool)
     case setConnected(id: String, connecting: Bool)
     case setNotify(notify: NotifySettings)
@@ -361,32 +344,16 @@ enum AppAction: Encodable {
     case tick
 
     private enum CodingKeys: String, CodingKey {
-        case kind, opening, account, page, tab, id, hidden, connecting, notify, shows, signInAccount
+        case kind, id, hidden, connecting, notify, shows, signInAccount
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .panelOpened(opening, account):
+        case .panelOpened:
             try c.encode("panelOpened", forKey: .kind)
-            try c.encodeIfPresent(opening, forKey: .opening)
-            try c.encodeIfPresent(account, forKey: .account)
         case .panelClosed:
             try c.encode("panelClosed", forKey: .kind)
-        case let .go(page, tab):
-            try c.encode("go", forKey: .kind)
-            try c.encode(page, forKey: .page)
-            try c.encodeIfPresent(tab, forKey: .tab)
-        case let .setTab(tab):
-            try c.encode("setTab", forKey: .kind)
-            try c.encode(tab, forKey: .tab)
-        case let .toggleAccount(id):
-            try c.encode("toggleAccount", forKey: .kind)
-            try c.encode(id, forKey: .id)
-        case .toggleUnused:
-            try c.encode("toggleUnused", forKey: .kind)
-        case .toggleHidden:
-            try c.encode("toggleHidden", forKey: .kind)
         case let .setHidden(id, hidden):
             try c.encode("setHidden", forKey: .kind)
             try c.encode(id, forKey: .id)
@@ -440,7 +407,6 @@ func parseLaunch(_ arguments: [String]) -> Launch {
 func snapshotPanel(_ launch: Launch) -> SnapshotResponse {
     let cfg = SnapshotConfig(
         fixture: launch.fixture,
-        opening: launch.opening,
         data: launch.data,
         home: launch.home
     )
@@ -461,6 +427,96 @@ private func rustWakeCallback(_ ctx: UnsafeMutableRawPointer?) {
     bridge.scheduleSync()
 }
 
+// MARK: - Local Ephemeral UI State (zero FFI/JSON on click)
+
+@MainActor
+@Observable
+final class UIState {
+    var page: Page = .main
+    var tab: SettingsTab = .general
+    var openAccount: String?
+    var unusedOpen = false
+    var hiddenShown = false
+    var pendingAccount: String?
+
+    func reset() {
+        page = .main
+        tab = .general
+        openAccount = nil
+        unusedOpen = false
+        hiddenShown = false
+        pendingAccount = nil
+    }
+
+    func apply(_ opening: Opening, panel: PanelModel) {
+        if opening.account {
+            openAccount = panel.inUse.first(where: \.openable)?.id
+        }
+        if opening.unused {
+            unusedOpen = true
+        }
+        if let tab = opening.settings {
+            page = .settings
+            self.tab = tab
+        }
+    }
+
+    func openInPlace(_ account: String, panel: PanelModel) {
+        if panel.unused.contains(where: { $0.id == account }) {
+            unusedOpen = true
+        } else if !panel.inUse.contains(where: { $0.id == account })
+            && !panel.recent.contains(where: { $0.id == account })
+        {
+            return
+        }
+        page = .main
+        openAccount = account
+    }
+
+    func toggleAccount(_ id: String) {
+        withAnimation(spring) {
+            openAccount = (openAccount == id) ? nil : id
+        }
+    }
+
+    func toggleUnused(panel: PanelModel) {
+        withAnimation(spring) {
+            unusedOpen.toggle()
+            if !unusedOpen {
+                if let open = openAccount, panel.unused.contains(where: { $0.id == open }) {
+                    openAccount = nil
+                }
+                hiddenShown = false
+            }
+        }
+    }
+
+    func toggleHidden() {
+        withAnimation(spring) {
+            hiddenShown.toggle()
+        }
+    }
+
+    func go(_ page: Page, tab: SettingsTab? = nil) {
+        withAnimation(spring) {
+            if let tab { self.tab = tab }
+            self.page = page
+        }
+    }
+
+    func setTab(_ tab: SettingsTab) {
+        withAnimation(spring) {
+            self.tab = tab
+        }
+    }
+
+    func didHide(_ id: String) {
+        if openAccount == id {
+            openAccount = nil
+        }
+    }
+}
+
 // MARK: - Observable App State Bridge
 
 @MainActor
@@ -469,12 +525,8 @@ final class Bridge {
     private(set) var panel: PanelModel = .empty
     private(set) var menuBar: MenuBarModel = .empty
     private(set) var counting = false
-    /// Direction for the page transition, set one tick ahead so the leaving page uses it too.
-    private(set) var forward = true
-    /// Visible height of the screen the panel opens on, for scroll caps.
+    /// Visible height of the screen the panel opens on, for overflow scroll caps.
     var screenHeight: CGFloat = 800
-    /// True while the panel window is visible on screen; resets animated panel height between opens.
-    var panelVisible = false
 
     let isLive: Bool
     var onSync: ((AppSync) -> Void)?
@@ -489,7 +541,6 @@ final class Bridge {
         self.isLive = launch.fixture == nil
         let cfg = StartConfig(
             fixture: launch.fixture,
-            opening: launch.opening,
             data: launch.data,
             home: launch.home,
             fromDiskImage: fromDiskImage,
@@ -535,15 +586,6 @@ final class Bridge {
               let sync = decodeSync(json)
         else { return }
         apply(sync)
-    }
-
-    func go(_ page: Page, tab: SettingsTab? = nil) {
-        forward = page == .settings
-        Task { @MainActor in
-            withAnimation(spring) {
-                self.send(.go(page: page, tab: tab))
-            }
-        }
     }
 
     func log(_ line: String) {
