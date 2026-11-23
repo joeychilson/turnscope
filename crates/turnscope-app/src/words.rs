@@ -5,7 +5,7 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 use turnscope::alerts::{Alert, Kind as AlertKind};
-use turnscope::engine::UsedMost;
+use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{
     Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, State, Unknown,
 };
@@ -255,7 +255,8 @@ impl Words {
             Some(_) => short_name(limit),
             None => (account.title.clone(), false),
         };
-        let with_alternate = |detail: String| match turnscope::status::alternate(all, account) {
+        let with_alternate = |detail: String| match turnscope::status::alternate(all, account, None)
+        {
             Some((other, other_limit)) => {
                 let room = format!(
                     "{} has {} left.",
@@ -756,12 +757,69 @@ pub fn hidden(count: usize) -> String {
     format!("{count} hidden")
 }
 
+pub const UNTITLED_SESSION: &str = "Untitled session";
+pub const READING_TEXT: &str = "Reading your agents' history…";
+pub const READING_HELP: &str = "Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.";
+pub const READING_SPOKEN: &str = "Reading your agents' history";
+pub const REFRESHING_TEXT: &str = "Refreshing limits…";
+pub const REFRESHING_SPOKEN: &str = "Refreshing limits";
+
 pub fn connection(agent: &Agent) -> Option<String> {
     match agent.connection {
         Connection::Connected => None,
         Connection::Available => Some("Isn't connected".into()),
         Connection::Outdated => Some("Uses another Turnscope".into()),
     }
+}
+
+pub fn connect_action(agent: &Agent) -> (&'static str, String) {
+    if agent.connection == Connection::Outdated {
+        (
+            "Reconnect",
+            format!("Points {} at this copy of Turnscope", agent.name),
+        )
+    } else {
+        (
+            "Connect",
+            format!(
+                "Adds Turnscope to {}'s MCP servers, so it can pace itself",
+                agent.name
+            ),
+        )
+    }
+}
+
+pub fn agents_title(from_disk_image: bool) -> &'static str {
+    if from_disk_image {
+        "Move Turnscope to Applications to connect agents"
+    } else {
+        "Let these agents check their limits"
+    }
+}
+
+pub fn agent_changing(to: Connection) -> &'static str {
+    if to == Connection::Connected {
+        "Connecting…"
+    } else {
+        "Disconnecting…"
+    }
+}
+
+pub fn stale_footer(problem: &Stopped) -> (String, String, String) {
+    let (said, then) = match problem {
+        Stopped::Failing(_) => ("Not up to date · trying again", " Trying again."),
+        Stopped::Newer { replaced: true } => ("Not up to date · start Turnscope again", ""),
+        Stopped::Newer { replaced: false } => ("Not up to date · update Turnscope", ""),
+    };
+    (
+        said.to_owned(),
+        problem.to_string(),
+        format!("Not up to date: {problem}.{then}"),
+    )
+}
+
+pub fn used_most_heading(limit: &Limit) -> String {
+    format!("Used most {}", of(limit))
 }
 
 pub fn via(account: &Account) -> Option<String> {

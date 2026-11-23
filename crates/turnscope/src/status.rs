@@ -638,10 +638,12 @@ pub fn in_use(accounts: &[Account], id: &str) -> bool {
 }
 
 /// Another non-hidden live account with clear headroom (>= 25% left and not
-/// running out or used up), preferring subscriptions over API keys.
+/// running out or used up), preferring accounts signed into `agent` when given,
+/// then subscriptions over API keys.
 pub fn alternate<'a>(
     accounts: &'a [Account],
     current: &Account,
+    agent: Option<&str>,
 ) -> Option<(&'a Account, &'a Limit)> {
     accounts
         .iter()
@@ -662,7 +664,9 @@ pub fn alternate<'a>(
             ok.then_some((rank, account, limit))
         })
         .max_by_key(|(rank, account, limit)| {
+            let same_agent = agent.is_some_and(|id| account.agents.iter().any(|a| a == id));
             (
+                same_agent,
                 account.kind != Kind::ApiKey,
                 limit.left_percent,
                 Reverse(*rank),

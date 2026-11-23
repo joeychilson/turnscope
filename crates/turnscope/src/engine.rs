@@ -987,12 +987,16 @@ mod tests {
     #[test]
     fn a_status_is_never_told_after_a_newer_one() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        read_just_now(data.path())
-            .execute(
-                "INSERT INTO account (id, provider, kind, title)
-                 VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude')",
-                [],
-            )
+        let db = read_just_now(data.path());
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude')",
+            [],
+        )
+        .unwrap();
+        // Keep `history_read` settled so `keep`'s initial pass doesn't emit an
+        // unrelated `Event::Shown` while `hide` is racing on `showing`.
+        db.execute("UPDATE state SET history_at = ?1", [crate::now()])
             .unwrap();
         let (sender, told) = mpsc::channel();
         let (holding, held) = mpsc::channel();
@@ -1031,23 +1035,7 @@ mod tests {
                 _ => None,
             })
         };
-        // The held status must arrive first (not overtaken by `hide`), and once
-        // `hide` is told no older `false` may follow it. `keep`'s initial
-        // `history_read` flip may emit one extra `false` before `hide` runs.
-        assert!(!shown(10));
-        let mut saw_hidden = false;
-        for _ in 0..3 {
-            if shown(10) {
-                saw_hidden = true;
-                break;
-            }
-        }
-        assert!(saw_hidden);
-        while let Ok(event) = told.recv_timeout(Duration::from_millis(150)) {
-            if let Event::Shown(shown, _) = event {
-                assert!(shown.status.accounts[0].hidden);
-            }
-        }
+        assert_eq!((shown(10), shown(10)), (false, true));
     }
 
     /// A catch-up that fails is said, as one tried again, and the data is

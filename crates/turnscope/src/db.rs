@@ -199,9 +199,12 @@ pub fn open(dir: &Path) -> Result<Connection> {
     let mut db = Connection::open(&path)?;
     db.busy_timeout(std::time::Duration::from_secs(10))?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
-    let id: i32 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let latest = REVISIONS.len() as i64;
+    // Read `user_version` before `application_id`: a concurrent creator commits
+    // both together, so reading `application_id` first could observe 0 followed
+    // by a committed `user_version > 0` and falsely reject Turnscope's own DB.
     let current = revision(&db)?;
+    let id: i32 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
     if (id != 0 || current > 0) && id != APPLICATION_ID {
         return Err(Error::Failed(format!(
             "{} isn't Turnscope's database",

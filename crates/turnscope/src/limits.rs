@@ -136,7 +136,7 @@ pub enum Ask {
     Scheduled,
     /// Panel opened or login file written: reads accounts due (>= 5 min) and failing ones.
     Opened,
-    /// Explicit user refresh (`⌘R`): reads every signed-in account immediately.
+    /// Explicit user refresh (`⌘R`): skips staleness (`DUE`/`IDLE`), still respects backoff and `CLAIM`.
     Force,
 }
 
@@ -146,7 +146,8 @@ pub enum Ask {
 ///
 /// `Ask::Opened` (panel opened / login file written) reads accounts read
 /// [`DUE`] ago or more and failing ones, unless backed off. `Ask::Force`
-/// (explicit user refresh) reads every signed-in account right away.
+/// (explicit user refresh) skips the staleness wait, while still respecting
+/// a provider's backoff and `CLAIM`.
 /// A read no provider answered leaves the account as it was: asked for as
 /// the Mac woke, before its network was back, it showed as unread for five
 /// minutes.
@@ -172,8 +173,8 @@ fn refresh_with(
         .iter()
         .any(|(id, schedule)| schedule.signed_in && due.contains(id.as_str()));
     let gap = match (ask, signed_in_due) {
-        (Ask::Opened | Ask::Force, _) => 0,
-        (Ask::Scheduled, true) => CLAIM,
+        (Ask::Opened, _) | (Ask::Force, true) => 0,
+        (Ask::Force, false) | (Ask::Scheduled, true) => CLAIM,
         (Ask::Scheduled, false) => DUE,
     };
     if !crate::db::claim(db, crate::db::Claim::Limits, now, gap, now)? {
@@ -238,10 +239,6 @@ struct Schedule {
 impl Schedule {
     /// Whether the account's limits are read at `now` for `ask`.
     fn due(&self, now: i64, ask: Ask) -> bool {
-        if ask == Ask::Force {
-            return true;
-        }
-        let asked = ask == Ask::Opened;
         // A wait longer than any is a clock set back since.
         if self
             .retry_at
@@ -258,6 +255,10 @@ impl Schedule {
         if self.checked_at.is_none() || self.reset_passed {
             return true;
         }
+        if ask == Ask::Force {
+            return ago(self.checked_at) >= CLAIM;
+        }
+        let asked = ask == Ask::Opened;
         if self.failing {
             return asked || ago(self.checked_at) >= DUE;
         }
@@ -1367,11 +1368,11 @@ mod tests {
         failed(&mut db, Problem::SignIn, at);
         failed(&mut db, Problem::SignIn, at + 5 * minute);
         assert_eq!(retry_at(&db), None);
-        // Waiting, it isn't read, even when opened: until its wait is out,
-        // unless forced, or unless the wait is longer than any (clock set back).
+        // Waiting, it isn't read, even when opened or forced: until its wait is
+        // out, or unless the wait is longer than any (clock set back).
         failed(&mut db, asks(3600), at);
         assert!(!due(&db, at + 5 * minute, Ask::Opened));
-        assert!(due(&db, at + 5 * minute, Ask::Force));
+        assert!(!due(&db, at + 5 * minute, Ask::Force));
         assert!(due(&db, at + 30 * minute, Ask::Scheduled));
         assert!(due(&db, at - 10 * minute, Ask::Scheduled));
     }
@@ -1397,10 +1398,11 @@ mod tests {
         let minute = crate::time::MINUTE;
         let at = 1_000 * crate::time::DAY;
         read_at(&mut db, at, 10.0, at + 300 * minute);
-        // Not in use, its limits stand 20 minutes, 5 when opened, or 0 when forced.
+        // Not in use, its limits stand 20 minutes, 5 when opened, or CLAIM when forced.
         assert!(!due(&db, at + 10 * minute, Ask::Scheduled));
         assert!(due(&db, at + IDLE, Ask::Scheduled));
         assert!(!due(&db, at + 2 * minute, Ask::Opened));
+        assert!(!due(&db, at + 10_000, Ask::Force));
         assert!(due(&db, at + 2 * minute, Ask::Force));
         assert!(due(&db, at + DUE, Ask::Opened));
         // Drawn on, it's in use: they stand 5.

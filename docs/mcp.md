@@ -151,8 +151,9 @@ The answer has three parts:
    for an API key, the spend this month across its keys and the month at
    that pace, to two figures. When called for a single account whose
    deciding limit is running out or used up, and another live account has
-   room, a final line names that account and suggests calling
-   `check_limits` with `all: true`.
+   room, a final line names that account (preferring one signed into the
+   calling agent, or naming which agent uses it otherwise) and suggests
+   calling `check_limits` with `all: true`.
 
 [cli.md](cli.md#status) says what "at this pace" and "of work" count.
 

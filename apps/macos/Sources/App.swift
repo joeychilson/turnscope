@@ -8,7 +8,7 @@ import SwiftUI
 @MainActor
 enum Main {
     static func main() {
-        let launch = parseLaunch(CommandLine.arguments)
+        let launch = Launch.parse(CommandLine.arguments)
         if let folder = launch.snapshot {
             exit(Snapshot.draw(launch, into: folder))
         }
@@ -58,7 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked)
-        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        // Open on mouse-down to match native macOS menu bar items.
+        item.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
         self.item = item
 
         panel = makePanel()
@@ -222,8 +223,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func statusItemClicked() {
         let event = NSApp.currentEvent
-        let isRightClick = event?.type == .rightMouseUp
-            || (event?.type == .leftMouseUp && event?.modifierFlags.contains(.control) == true)
+        let isRightClick = event?.type == .rightMouseDown
+            || (event?.type == .leftMouseDown && event?.modifierFlags.contains(.control) == true)
         if isRightClick {
             if panelOpen { close() }
             showStatusMenu()

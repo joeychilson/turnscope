@@ -136,14 +136,13 @@ removes the import, and the old file with it.
 
 ## Code
 
-Two Rust crates and native platform shells. `crates/turnscope` is the
+Two Rust crates and a native macOS shell. `crates/turnscope` is the
 engine, a library every front end uses, and the `turnscope` binary: the
-command line and the MCP server. `crates/turnscope-app` is the shared
-desktop app core (in-process engine coordination, state, wording, view
-models, and a small C ABI) compiled as both a Rust library and a static
-library. `apps/macos` is the thin SwiftUI + AppKit shell statically linked
-to `turnscope-app` ([app.md](app.md)); future Windows or Linux apps sit
-beside it under `apps/` and share `turnscope-app` and `assets/logos/`.
+command line and the MCP server. `crates/turnscope-app` is the app core
+(in-process engine coordination, state, wording, view models, and a small
+C ABI) compiled as both a Rust library and a static library. `apps/macos`
+is the thin SwiftUI + AppKit shell statically linked to `turnscope-app`
+([app.md](app.md)).
 
 ```
 crates/turnscope/src/            the engine, a module per job (ingest, limits, prices,
@@ -151,7 +150,7 @@ crates/turnscope/src/            the engine, a module per job (ingest, limits, p
                                  line (main.rs) and the MCP server (mcp.rs)
 crates/turnscope/src/agents/     one file per agent, and agents::ALL
 crates/turnscope/src/providers/  one file per provider, and providers::ALL
-crates/turnscope-app/src/        shared desktop app core (state, words, view, launch, C ABI)
+crates/turnscope-app/src/        app core (state, words, view, standing, C ABI)
 apps/macos/Sources/              native macOS SwiftUI + AppKit shell
 assets/logos/                    shared provider and agent SVG logos
 ```

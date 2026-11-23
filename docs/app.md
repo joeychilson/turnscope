@@ -148,7 +148,8 @@ offers Hide too. An account whose login expired goes on showing what was
 last read, as its agent renews the login when it runs.
 
 Tab comes to the rows once, and Up and Down move between them and the
-folds; ⌘R refreshes every signed-in account's limits right away. With Full
+folds; ⌘R refreshes signed-in accounts' limits without waiting for them to
+go stale, while still respecting a provider's backoff. With Full
 Keyboard Access on, Tab goes on to each row's Hide button and every other
 button. VoiceOver reads a row's header as one button: its title, line and
 figure, and whether it's open.

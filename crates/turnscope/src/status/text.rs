@@ -99,12 +99,8 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
     for account in accounts {
         out += &account.full_title();
         // Which agents draw on it, to choose where to work.
-        if let Some((last, rest)) = account.agents.split_last() {
-            let names: Vec<&str> = rest.iter().map(|agent| agents::name(agent)).collect();
-            out += &match names.is_empty() {
-                true => format!(" · via {}", agents::name(last)),
-                false => format!(" · via {} and {}", names.join(", "), agents::name(last)),
-            };
+        if let Some(via) = via(&account.agents) {
+            out += &format!(" · {via}");
         }
         for (on, mark) in [
             (Some(account.id.as_str()) == yours, "yours"),
@@ -544,9 +540,20 @@ pub fn line(account: &Account, now: i64) -> String {
     parts.join(" · ")
 }
 
+/// `via Codex` or `via Claude Code and OpenCode`.
+fn via(ids: &[String]) -> Option<String> {
+    let (last, rest) = ids.split_last()?;
+    let names: Vec<&str> = rest.iter().map(|agent| agents::name(agent)).collect();
+    Some(match names.is_empty() {
+        true => format!("via {}", agents::name(last)),
+        false => format!("via {} and {}", names.join(", "), agents::name(last)),
+    })
+}
+
 /// One-line hint when another live account has room while `current` is running
-/// out or used up.
-pub fn alternate_note(status: &Status, current: &Account) -> Option<String> {
+/// out or used up. Prefers an account `agent` is signed into; when the best
+/// alternate belongs to another agent, names which agent uses it.
+pub fn alternate_note(status: &Status, current: &Account, agent: Option<&str>) -> Option<String> {
     let tight = current.deciding_limit().is_some_and(|limit| {
         matches!(
             limit.outlook,
@@ -556,9 +563,15 @@ pub fn alternate_note(status: &Status, current: &Account) -> Option<String> {
     if !tight {
         return None;
     }
-    let (other, limit) = super::alternate(&status.accounts, current)?;
+    let (other, limit) = super::alternate(&status.accounts, current, agent)?;
+    let same_agent = agent.is_some_and(|id| other.agents.iter().any(|a| a == id));
+    let on = if agent.is_some() && !same_agent {
+        via(&other.agents).map_or(String::new(), |via| format!(", {via}"))
+    } else {
+        String::new()
+    };
     Some(format!(
-        "Other room: {} has {} left ({}). Call check_limits with all: true to compare.",
+        "Another account has room: {} has {} left ({}{on}). Call check_limits with all: true to compare.",
         other.full_title(),
         left(limit),
         limit.named(),
@@ -899,30 +912,43 @@ mod tests {
     fn alternate_note_recommends_live_account_with_room_when_tight() {
         let mut status: Status = serde_json::from_value(example()).unwrap();
         // In the fixture ChatGPT Pro is signed out and OpenRouter failed, so no live alternate.
-        assert_eq!(alternate_note(&status, &status.accounts[0]), None);
-        // Make both ChatGPT Pro (subscription, 97%) and OpenRouter (API key, 29%) live.
+        assert_eq!(
+            alternate_note(&status, &status.accounts[0], Some("claude-code")),
+            None
+        );
+        // Make both ChatGPT Pro (subscription, 97%, Codex) and OpenRouter (API key, 29%, OpenCode) live.
         status.accounts[1].state = State::Live { read_at: status.at };
         status.accounts[1].agents = vec!["codex".to_owned()];
         status.accounts[2].state = State::Live { read_at: status.at };
-        // Subscription is preferred over API key.
+        // When another agent holds it, say which agent uses it.
         assert_eq!(
-            alternate_note(&status, &status.accounts[0]).as_deref(),
+            alternate_note(&status, &status.accounts[0], Some("claude-code")).as_deref(),
             Some(
-                "Other room: ChatGPT Pro has 97% left (Monthly). Call check_limits with all: true to compare."
+                "Another account has room: ChatGPT Pro has 97% left (Monthly, via Codex). Call check_limits with all: true to compare."
             )
         );
-        // Hide ChatGPT Pro -> falls back to OpenRouter API key.
-        status.accounts[1].hidden = true;
+        // When an account is signed into the calling agent, prefer it over a higher-left account on another agent.
+        status.accounts[2].agents = vec!["claude-code".to_owned()];
         assert_eq!(
-            alternate_note(&status, &status.accounts[0]).as_deref(),
+            alternate_note(&status, &status.accounts[0], Some("claude-code")).as_deref(),
             Some(
-                "Other room: OpenRouter API key has $8.70 of $30.00 left (Key limit). Call check_limits with all: true to compare."
+                "Another account has room: OpenRouter API key has $8.70 of $30.00 left (Key limit). Call check_limits with all: true to compare."
+            )
+        );
+        // Without a caller agent, subscription is preferred over API key without a via suffix.
+        assert_eq!(
+            alternate_note(&status, &status.accounts[0], None).as_deref(),
+            Some(
+                "Another account has room: ChatGPT Pro has 97% left (Monthly). Call check_limits with all: true to compare."
             )
         );
         // When the current account lasts, no alternate is suggested.
         status.accounts[0].limits[0].outlook = Outlook::Lasts {
             left_at_reset: None,
         };
-        assert_eq!(alternate_note(&status, &status.accounts[0]), None);
+        assert_eq!(
+            alternate_note(&status, &status.accounts[0], Some("claude-code")),
+            None
+        );
     }
 }

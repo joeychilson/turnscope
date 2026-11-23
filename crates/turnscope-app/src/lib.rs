@@ -1,7 +1,6 @@
-//! Shared desktop app core for Turnscope: owns the in-process engine, state, wording,
-//! view model generation, and a small C ABI for native OS shells (`apps/macos`, etc.).
+//! Shared app core for Turnscope: owns the in-process engine, state, wording,
+//! view model generation, and the C ABI linked into `apps/macos`.
 
-pub mod launch;
 pub mod standing;
 pub mod state;
 pub mod view;
@@ -14,7 +13,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use turnscope::engine::{Engine, Shown};
 
-use crate::launch::Launch;
 use crate::state::{Action, Core, MenuShows, Preferences, State};
 use crate::view::PanelModel;
 
@@ -263,28 +261,6 @@ pub fn snapshot(config: SnapshotConfig) -> Result<PanelModel, (String, i32)> {
     Ok(view::build_panel(&state))
 }
 
-/// Parse process arguments into a JSON `Launch` object.
-///
-/// # Safety
-/// `argv` must be either null (when `argc <= 0`) or point to `argc` valid NUL-terminated UTF-8 C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn turnscope_app_parse_launch(
-    argc: i32,
-    argv: *const *const c_char,
-) -> *mut c_char {
-    let mut args = Vec::new();
-    if argc > 0 && !argv.is_null() {
-        // SAFETY: Caller passes standard `argc`/`argv`.
-        let slice = unsafe { std::slice::from_raw_parts(argv, argc as usize) };
-        for &ptr in slice {
-            if let Some(arg) = unsafe { read_c_str(ptr) } {
-                args.push(arg.to_owned());
-            }
-        }
-    }
-    serialize_c(&Launch::parse(&args))
-}
-
 /// Build a one-shot panel snapshot JSON for `--snapshot`.
 ///
 /// # Safety
@@ -370,8 +346,14 @@ pub unsafe extern "C" fn turnscope_app_action(
     let Some(text) = (unsafe { read_c_str(action_json) }) else {
         return std::ptr::null_mut();
     };
-    let Ok(action) = serde_json::from_str::<Action>(text) else {
-        return std::ptr::null_mut();
+    let action = match serde_json::from_str::<Action>(text) {
+        Ok(action) => action,
+        Err(error) => {
+            if let Some(data) = &app.data {
+                turnscope::engine::log(data, &format!("invalid action JSON: {error}"));
+            }
+            return std::ptr::null_mut();
+        }
     };
     let now = turnscope::now();
     let (calls, sync) = {
@@ -575,5 +557,433 @@ mod tests {
         assert!(report.contains(&format!("Turnscope {}", env!("CARGO_PKG_VERSION"))));
         assert!(report.contains("sample diagnostic line"), "{report}");
         assert!(diagnostics(None, None).contains("Mode: fixture"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn swift_models_match_rust_wire_contract() {
+        use crate::standing::Standing;
+        use crate::state::{AlertNote, Effect};
+        use crate::view::*;
+        use turnscope::alerts::Notify;
+
+        let full_row = AccountRowModel {
+            id: "anthropic:a".into(),
+            provider: "anthropic".into(),
+            title: "Claude Max".into(),
+            label: Some("me@example.com".into()),
+            called: "Claude Max (me@example.com)".into(),
+            standing: Standing::RunningOut,
+            status: "Runs out in 50m".into(),
+            figure: "50m".into(),
+            figure_then: Some("· 12%".into()),
+            figure_spoken: "50m left".into(),
+            collapsed_spoken: "Claude Max, Runs out in 50m, 50m left".into(),
+            openable: true,
+            limits: vec![
+                LimitLineModel {
+                    key: "five_hour".into(),
+                    name: "5 hours".into(),
+                    ahead: Some("Runs out in 50m".into()),
+                    window: Some("Resets 3:00 PM".into()),
+                    left: "12%".into(),
+                    size: None,
+                    spoken: "12% left".into(),
+                    left_percent: 12,
+                    time_left_fraction: Some(0.42),
+                    standing: Standing::RunningOut,
+                },
+                LimitLineModel {
+                    key: "credits".into(),
+                    name: "Credits".into(),
+                    ahead: None,
+                    window: None,
+                    left: "$0".into(),
+                    size: Some("of $30".into()),
+                    spoken: "$0 of $30 left".into(),
+                    left_percent: 0,
+                    time_left_fraction: None,
+                    standing: Standing::UsedUp,
+                },
+            ],
+            note: Some("As of 2:00 PM".into()),
+            used_most_heading: Some("Used most of 5 hours".into()),
+            used_most: vec![UsedMostModel {
+                id: "claude-code:0f6e-1234".into(),
+                session_id: "0f6e-1234".into(),
+                title: "Refactor bridge".into(),
+                detail: "34% · turnscope".into(),
+                project_path: Some("/tmp/turnscope".into()),
+            }],
+        };
+
+        let syncs = vec![
+            AppSync {
+                animated: true,
+                counting: true,
+                menu_bar: MenuBarModel {
+                    slots: vec![
+                        MenuBarSlot {
+                            provider: "anthropic".into(),
+                            standing: Standing::Lasts,
+                            figure: "88%".into(),
+                        },
+                        MenuBarSlot {
+                            provider: "openai".into(),
+                            standing: Standing::UsedUp,
+                            figure: "Back 4:00 PM".into(),
+                        },
+                    ],
+                    spoken: "Claude Max 88%".into(),
+                    out_of_date: true,
+                },
+                panel: PanelModel {
+                    version: "0.3.2".into(),
+                    has_status: true,
+                    stopped: false,
+                    from_disk_image: false,
+                    waiting: None,
+                    verdict: Some(VerdictModel {
+                        headline: "Claude Max runs out in 50m".into(),
+                        detail: "Back 3:00 PM.".into(),
+                        standing: Standing::RunningOut,
+                    }),
+                    in_use: vec![full_row],
+                    recent: vec![],
+                    unused: vec![],
+                    hidden: vec![HiddenAccountModel {
+                        id: "openai:b".into(),
+                        provider: "openai".into(),
+                        title: "ChatGPT Pro".into(),
+                        label: None,
+                        via: Some("Codex".into()),
+                        called: "ChatGPT Pro".into(),
+                    }],
+                    unused_fold_label: Some("1 hidden".into()),
+                    hidden_fold_label: Some("1 hidden".into()),
+                    connect_offer: Some(ConnectOfferModel {
+                        id: "claude-code".into(),
+                        name: "Claude Code".into(),
+                        note: Some("Uses another Turnscope".into()),
+                        configured: Some("/old/turnscope".into()),
+                        changing: false,
+                        outdated: true,
+                        verb: "Reconnect".into(),
+                        help: "Points Claude Code at this copy".into(),
+                    }),
+                    footer_note: Some(FooterNoteModel::Stale {
+                        text: "Not up to date".into(),
+                        help: "Offline".into(),
+                        spoken: "Not up to date: Offline".into(),
+                    }),
+                    settings: SettingsModel {
+                        menu_shows: MenuShows::All,
+                        notify: Some(Notify::default()),
+                        can_edit_notify: true,
+                        agents_empty: None,
+                        agents_title: "Let these agents check their limits".into(),
+                        agents: vec![AgentRowModel {
+                            id: "claude-code".into(),
+                            name: "Claude Code".into(),
+                            note: Some("Uses another Turnscope".into()),
+                            configured: Some("/old/turnscope".into()),
+                            changing: Some("Connecting…".into()),
+                            connected: true,
+                            enabled: false,
+                            snippets: vec![SnippetModel {
+                                title: "Status line".into(),
+                                detail: "Shows limits in Claude Code".into(),
+                                file: "~/.claude/settings.json".into(),
+                                json: r#"{"statusLine":{"command":"turnscope statusline"}}"#.into(),
+                            }],
+                        }],
+                        accounts_empty: None,
+                        subscriptions: vec![AccountSwitchModel {
+                            id: "anthropic:a".into(),
+                            provider: "anthropic".into(),
+                            title: "Claude Max".into(),
+                            label: Some("me@example.com".into()),
+                            via: Some("Claude Code".into()),
+                            called: "Claude Max (me@example.com)".into(),
+                            shown: true,
+                            enabled: true,
+                        }],
+                        api_keys: vec![],
+                    },
+                },
+                effects: vec![
+                    Effect::PostAlerts {
+                        alerts: vec![AlertNote {
+                            id: 7,
+                            account: "anthropic:a".into(),
+                            replaces: "turnscope-limit-anthropic:a".into(),
+                            sign_in: false,
+                            title: "Claude Max".into(),
+                            subtitle: "5 hours".into(),
+                            body: "Runs out in 50m".into(),
+                        }],
+                    },
+                    Effect::RemoveNotifications {
+                        identifiers: vec!["turnscope-sign-in-anthropic:a".into()],
+                    },
+                    Effect::SavePreferences {
+                        menu_shows: MenuShows::One,
+                        dismissed_connect: vec!["codex".into()],
+                    },
+                ],
+            },
+            AppSync {
+                animated: false,
+                counting: false,
+                menu_bar: MenuBarModel {
+                    slots: vec![],
+                    spoken: "Turnscope".into(),
+                    out_of_date: false,
+                },
+                panel: PanelModel {
+                    version: "0.3.2".into(),
+                    has_status: false,
+                    stopped: true,
+                    from_disk_image: true,
+                    waiting: Some(WaitingModel {
+                        problem: Some("database locked".into()),
+                        retries: true,
+                    }),
+                    verdict: None,
+                    in_use: vec![],
+                    recent: vec![],
+                    unused: vec![],
+                    hidden: vec![],
+                    unused_fold_label: None,
+                    hidden_fold_label: None,
+                    connect_offer: None,
+                    footer_note: Some(FooterNoteModel::Reading {
+                        text: "Reading…".into(),
+                        help: "First run".into(),
+                        spoken: "Reading".into(),
+                    }),
+                    settings: SettingsModel {
+                        menu_shows: MenuShows::One,
+                        notify: None,
+                        can_edit_notify: false,
+                        agents_empty: Some(EmptyMessage {
+                            headline: "No agents".into(),
+                            detail: "Install one".into(),
+                        }),
+                        agents_title: "Move Turnscope".into(),
+                        agents: vec![],
+                        accounts_empty: Some(EmptyMessage {
+                            headline: "No accounts".into(),
+                            detail: "Sign in".into(),
+                        }),
+                        subscriptions: vec![],
+                        api_keys: vec![],
+                    },
+                },
+                effects: vec![],
+            },
+            AppSync {
+                animated: true,
+                counting: false,
+                menu_bar: MenuBarModel {
+                    slots: vec![],
+                    spoken: "Turnscope".into(),
+                    out_of_date: false,
+                },
+                panel: PanelModel {
+                    version: "0.3.2".into(),
+                    has_status: true,
+                    stopped: false,
+                    from_disk_image: false,
+                    waiting: None,
+                    verdict: None,
+                    in_use: vec![],
+                    recent: vec![],
+                    unused: vec![],
+                    hidden: vec![],
+                    unused_fold_label: None,
+                    hidden_fold_label: None,
+                    connect_offer: None,
+                    footer_note: Some(FooterNoteModel::Refreshing {
+                        text: "Refreshing limits…".into(),
+                        spoken: "Refreshing limits".into(),
+                    }),
+                    settings: SettingsModel {
+                        menu_shows: MenuShows::All,
+                        notify: None,
+                        can_edit_notify: false,
+                        agents_empty: None,
+                        agents_title: String::new(),
+                        agents: vec![],
+                        accounts_empty: None,
+                        subscriptions: vec![],
+                        api_keys: vec![],
+                    },
+                },
+                effects: vec![],
+            },
+        ];
+
+        let snapshots = vec![
+            SnapshotOutput::Ok {
+                ok: Box::new(syncs[0].panel.clone()),
+            },
+            SnapshotOutput::Err {
+                error: "unreadable".into(),
+                code: 2,
+            },
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let syncs_path = dir.path().join("syncs.json");
+        let snaps_path = dir.path().join("snapshots.json");
+        std::fs::write(&syncs_path, serde_json::to_string(&syncs).unwrap()).unwrap();
+        std::fs::write(&snaps_path, serde_json::to_string(&snapshots).unwrap()).unwrap();
+
+        let driver = dir.path().join("main.swift");
+        std::fs::write(
+            &driver,
+            r#"
+import Foundation
+
+struct Out: Encodable {
+    var actions: [AppAction]
+    var start: StartConfig
+    var snapshot: SnapshotConfig
+}
+
+let args = CommandLine.arguments
+let decoder = JSONDecoder()
+let syncs = try decoder.decode([AppSync].self, from: Data(contentsOf: URL(fileURLWithPath: args[1])))
+precondition(syncs.count == 3)
+precondition(syncs[0].panel.inUse[0].usedMost[0].sessionId == "0f6e-1234")
+precondition(syncs[0].effects.count == 3)
+
+let snaps = try decoder.decode([SnapshotResponse].self, from: Data(contentsOf: URL(fileURLWithPath: args[2])))
+precondition(snaps.count == 2)
+
+precondition(Launch.parse(["Turnscope"]) == Launch())
+precondition(
+    Launch.parse(["Turnscope", "--fixture", "f.json", "--snapshot", "out", "--data", "d", "--home", "h", "--open", "account,unused"])
+        == Launch(fixture: "f.json", snapshot: "out", opening: Opening(account: true, unused: true, settings: nil), data: "d", home: "h")
+)
+precondition(Launch.parse(["Turnscope", "--fixture", "--open"]) == Launch(opening: Opening()))
+precondition(Opening.parse("settings").settings == .general)
+precondition(Opening.parse("agents").settings == .agents)
+precondition(Opening.parse("accounts").settings == .accounts)
+
+let out = Out(
+    actions: [
+        .panelOpened,
+        .panelClosed,
+        .setHidden(id: "anthropic:a", hidden: true),
+        .setConnected(id: "claude-code", connecting: true),
+        .setNotify(notify: NotifySettings(runningOut: true, usedUp: false, reset: true, signIn: false)),
+        .setMenuShows(shows: .all),
+        .setMenuShows(shows: .one),
+        .dismissConnect(id: "codex"),
+        .acknowledgeAlert(id: 7, signInAccount: nil),
+        .acknowledgeAlert(id: 8, signInAccount: "anthropic:a"),
+        .refreshNow,
+        .tick,
+    ],
+    start: StartConfig(
+        fixture: "f.json",
+        data: "/tmp/d",
+        home: "/tmp/h",
+        fromDiskImage: true,
+        menuShows: .one,
+        dismissedConnect: ["codex"]
+    ),
+    snapshot: SnapshotConfig(fixture: "f.json", data: "/tmp/d", home: "/tmp/h")
+)
+let data = try JSONEncoder().encode(out)
+print(String(data: data, encoding: .utf8)!)
+"#,
+        )
+        .unwrap();
+
+        let models =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/macos/Sources/Models.swift");
+        let bin = dir.path().join("contract");
+        let compile = std::process::Command::new("xcrun")
+            .args(["swiftc", "-swift-version", "6", "-warnings-as-errors"])
+            .arg(&models)
+            .arg(&driver)
+            .arg("-o")
+            .arg(&bin)
+            .output()
+            .expect("xcrun swiftc should run on macOS");
+        assert!(
+            compile.status.success(),
+            "swiftc failed:\n{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = std::process::Command::new(&bin)
+            .arg(&syncs_path)
+            .arg(&snaps_path)
+            .output()
+            .expect("contract binary should run");
+        assert!(
+            run.status.success(),
+            "Swift contract failed:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        #[derive(Deserialize)]
+        struct SwiftOut {
+            actions: Vec<Action>,
+            start: StartConfig,
+            snapshot: SnapshotConfig,
+        }
+        let parsed: SwiftOut = serde_json::from_slice(&run.stdout)
+            .expect("Rust should decode every Action/Config emitted by Swift");
+        assert_eq!(
+            parsed.actions,
+            vec![
+                Action::PanelOpened,
+                Action::PanelClosed,
+                Action::SetHidden {
+                    id: "anthropic:a".into(),
+                    hidden: true,
+                },
+                Action::SetConnected {
+                    id: "claude-code".into(),
+                    connecting: true,
+                },
+                Action::SetNotify {
+                    notify: Notify {
+                        running_out: true,
+                        used_up: false,
+                        reset: true,
+                        sign_in: false,
+                    },
+                },
+                Action::SetMenuShows {
+                    shows: MenuShows::All,
+                },
+                Action::SetMenuShows {
+                    shows: MenuShows::One,
+                },
+                Action::DismissConnect { id: "codex".into() },
+                Action::AcknowledgeAlert {
+                    id: 7,
+                    sign_in_account: None,
+                },
+                Action::AcknowledgeAlert {
+                    id: 8,
+                    sign_in_account: Some("anthropic:a".into()),
+                },
+                Action::RefreshNow,
+                Action::Tick,
+            ]
+        );
+        assert_eq!(parsed.start.menu_shows, MenuShows::One);
+        assert_eq!(parsed.start.dismissed_connect, vec!["codex"]);
+        assert_eq!(
+            parsed.snapshot.fixture.as_deref(),
+            Some(Path::new("f.json"))
+        );
     }
 }

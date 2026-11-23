@@ -6,9 +6,6 @@
 typedef struct TurnscopeApp TurnscopeApp;
 typedef void (*TurnscopeWakeFn)(void *ctx);
 
-/* Parse process arguments into a JSON `Launch` object. Free with `turnscope_app_free_string`. */
-char *turnscope_app_parse_launch(int32_t argc, const char *const *argv);
-
 /* Build a one-shot panel snapshot JSON for `--snapshot` (fixture or DB).
  * Returns JSON `{ "ok": PanelModel }` or `{ "error": "...", "code": 1|2 }`. */
 char *turnscope_app_snapshot(const char *config_json);

@@ -116,6 +116,7 @@ struct AccountRow: View {
                 .accessibilityLabel(lines ? row.called : row.collapsedSpoken)
                 .accessibilityHint(open ? "Closes it" : "Opens it")
                 .accessibilityAction(named: "Hide") { if !stopped { hide() } }
+                .help(row.label != nil ? row.called : "")
             } else {
                 RowSurface(active: hover)
             }
@@ -211,7 +212,6 @@ struct Bar: View {
                 }
             }
             .frame(height: 5)
-            .help(timeLeftFraction != nil ? "Tick marks time left in window" : "")
             .accessibilityHidden(true)
             .onAppear {
                 if !isSnapshot && !reduceMotion {
@@ -293,6 +293,11 @@ private struct UsedMostRow: View {
                         .font(.small)
                         .foregroundStyle(.secondary)
                         .transition(.opacity)
+                } else if hover {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .transition(.opacity)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -318,7 +323,7 @@ private struct UsedMostRow: View {
                 }
                 Button("Copy Project Path") { copy(path) }
             }
-            Button("Copy Session ID") { copy(used.session) }
+            Button("Copy Session ID") { copy(used.sessionId) }
         }
     }
 

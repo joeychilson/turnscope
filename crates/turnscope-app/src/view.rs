@@ -1,4 +1,4 @@
-//! Serializable view models rendered by every native platform shell.
+//! Serializable view models rendered by the native macOS shell.
 //! Every word, ranking, standing, and accessibility label is computed here once.
 
 use serde::Serialize;
@@ -110,7 +110,8 @@ pub struct LimitLineModel {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsedMostModel {
-    pub session: String,
+    pub id: String,
+    pub session_id: String,
     pub title: String,
     pub detail: String,
     pub project_path: Option<String>,
@@ -141,7 +142,11 @@ pub struct ConnectOfferModel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum FooterNoteModel {
     Stale {
         text: String,
@@ -308,15 +313,7 @@ pub fn build_panel(s: &State) -> PanelModel {
             .cloned()
             .or_else(|| words::connection(agent));
         let outdated = agent.connection == Connection::Outdated;
-        let verb = if outdated { "Reconnect" } else { "Connect" };
-        let help = if outdated {
-            format!("Points {} at this copy of Turnscope", agent.name)
-        } else {
-            format!(
-                "Adds Turnscope to {}'s MCP servers, so it can pace itself",
-                agent.name
-            )
-        };
+        let (verb, help) = words::connect_action(agent);
         ConnectOfferModel {
             id: agent.id.clone(),
             name: agent.name.clone(),
@@ -370,9 +367,7 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
     let limits = a.limits.iter().map(|l| build_limit_line(w, l)).collect();
     let sessions = s.used_most(a);
     let used_most = build_used_most(sessions);
-    let used_most_heading = a
-        .deciding_limit()
-        .map(|l| format!("Used most {}", words::of(l)));
+    let used_most_heading = a.deciding_limit().map(words::used_most_heading);
 
     AccountRowModel {
         id: a.id.clone(),
@@ -420,14 +415,24 @@ fn build_used_most(sessions: &[UsedMost]) -> Vec<UsedMostModel> {
     let agents = sessions.iter().any(|u| Some(u.agent.as_str()) != first);
     sessions
         .iter()
-        .map(|used| UsedMostModel {
-            session: used.session.clone(),
-            title: used
-                .title
-                .clone()
-                .unwrap_or_else(|| "Untitled session".to_owned()),
-            detail: words::used(used, agents),
-            project_path: used.project_path.clone(),
+        .map(|used| {
+            // Strip Turnscope's `<agent>:` key prefix so copying yields the
+            // agent's native session id (usable with `claude --resume`, etc.).
+            let session_id = used
+                .session
+                .split_once(':')
+                .map_or(used.session.as_str(), |(_, native)| native)
+                .to_owned();
+            UsedMostModel {
+                id: used.session.clone(),
+                session_id,
+                title: used
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| words::UNTITLED_SESSION.to_owned()),
+                detail: words::used(used, agents),
+                project_path: used.project_path.clone(),
+            }
         })
         .collect()
 }
@@ -436,27 +441,19 @@ fn build_footer_note(s: &State) -> Option<FooterNoteModel> {
     if s.status.is_some()
         && let Some(problem) = &s.problem
     {
-        let (said, then) = match problem {
-            Stopped::Failing(_) => ("Not up to date · trying again", " Trying again."),
-            Stopped::Newer { replaced: true } => ("Not up to date · start Turnscope again", ""),
-            Stopped::Newer { replaced: false } => ("Not up to date · update Turnscope", ""),
-        };
-        return Some(FooterNoteModel::Stale {
-            text: said.to_owned(),
-            help: problem.to_string(),
-            spoken: format!("Not up to date: {problem}.{then}"),
-        });
+        let (text, help, spoken) = words::stale_footer(problem);
+        return Some(FooterNoteModel::Stale { text, help, spoken });
     }
     if s.reading() && !s.all().is_empty() {
         return Some(FooterNoteModel::Reading {
-            text: "Reading your agents' history…".to_owned(),
-            help: "Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.".to_owned(),
-            spoken: "Reading your agents' history".to_owned(),
+            text: words::READING_TEXT.to_owned(),
+            help: words::READING_HELP.to_owned(),
+            spoken: words::READING_SPOKEN.to_owned(),
         });
     }
     s.refreshing.then(|| FooterNoteModel::Refreshing {
-        text: "Refreshing limits…".to_owned(),
-        spoken: "Refreshing limits".to_owned(),
+        text: words::REFRESHING_TEXT.to_owned(),
+        spoken: words::REFRESHING_SPOKEN.to_owned(),
     })
 }
 
@@ -466,12 +463,7 @@ fn build_settings(s: &State) -> SettingsModel {
         let (headline, detail, _) = words::welcome(&[], &s.agent_names(), false);
         EmptyMessage { headline, detail }
     });
-    let agents_title = if s.from_disk_image {
-        "Move Turnscope to Applications to connect agents"
-    } else {
-        "Let these agents check their limits"
-    }
-    .to_owned();
+    let agents_title = words::agents_title(s.from_disk_image).to_owned();
     let binary = crate::binary().to_string_lossy().into_owned();
     let agents = installed
         .iter()
@@ -549,13 +541,7 @@ fn build_agent_row(s: &State, agent: &Agent, binary: &str) -> AgentRowModel {
         name: agent.name.clone(),
         note,
         configured: agent.configured.clone(),
-        changing: changing.map(|to| {
-            if to == Connection::Connected {
-                "Connecting…".to_owned()
-            } else {
-                "Disconnecting…".to_owned()
-            }
-        }),
+        changing: changing.map(|to| words::agent_changing(to).to_owned()),
         connected: changing.unwrap_or(agent.connection) == Connection::Connected,
         enabled: changing.is_none() && !s.from_disk_image && !s.stopped(),
         snippets,
@@ -590,10 +576,25 @@ mod tests {
             build_panel(&state).footer_note,
             Some(FooterNoteModel::Refreshing { .. })
         ));
-        state.problem = Some(Stopped::Failing("offline".into()));
+        state.problem = Some(turnscope::engine::Stopped::Failing("offline".into()));
         assert!(matches!(
             build_panel(&state).footer_note,
             Some(FooterNoteModel::Stale { .. })
         ));
+    }
+
+    #[test]
+    fn used_most_strips_agent_prefix_from_copied_session_id() {
+        let built = build_used_most(&[UsedMost {
+            session: "claude-code:0f6e-1234".into(),
+            project: Some("turnscope".into()),
+            project_path: Some("/tmp/turnscope".into()),
+            title: None,
+            agent: "claude-code".into(),
+            share_percent: Some(40.0),
+        }]);
+        assert_eq!(built[0].id, "claude-code:0f6e-1234");
+        assert_eq!(built[0].session_id, "0f6e-1234");
+        assert_eq!(built[0].title, words::UNTITLED_SESSION);
     }
 }

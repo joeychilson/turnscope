@@ -1,4 +1,4 @@
-//! Domain state, engine event handling, and side-effect queuing shared across every platform shell.
+//! Domain state, engine event handling, and side-effect queuing for the app.
 //! Ephemeral UI chrome state (which row is open, folds, active page/tab) stays local to each shell
 //! so UI interactions never round-trip through FFI or JSON.
 
@@ -45,7 +45,11 @@ pub struct AlertNote {
 
 /// One-shot side effects the host shell executes after syncing state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Effect {
     PostAlerts {
         alerts: Vec<AlertNote>,
@@ -61,7 +65,11 @@ pub enum Effect {
 
 /// Domain and lifecycle actions sent into `Core::apply`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Action {
     PanelOpened,
     PanelClosed,

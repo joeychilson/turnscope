@@ -540,8 +540,9 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
         true => "Which account is yours isn't known, so here is every one.".to_owned(),
         false => status::verdict(first, status.at),
     };
+    let caller_agent = ask.caller.agent.map(|agent| agent.info().id);
     let alternate = (shown.len() == 1 && !unknown)
-        .then(|| status::alternate_note(&status, first))
+        .then(|| status::alternate_note(&status, first, caller_agent))
         .flatten()
         .map_or(String::new(), |note| format!("\n\n{note}"));
     Ok(format!(
@@ -914,10 +915,10 @@ mod tests {
         };
         let mine = check_limits(&ask, json!({})).unwrap();
         assert!(
-            mine.contains("Other room: ChatGPT Pro has 90% left (Weekly). Call check_limits with all: true to compare."),
+            mine.contains("Another account has room: ChatGPT Pro has 90% left (Weekly, via Codex). Call check_limits with all: true to compare."),
             "{mine}"
         );
         let all = check_limits(&ask, json!({ "all": true })).unwrap();
-        assert!(!all.contains("Other room:"), "{all}");
+        assert!(!all.contains("Another account has room:"), "{all}");
     }
 }

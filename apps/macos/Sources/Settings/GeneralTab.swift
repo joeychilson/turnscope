@@ -114,6 +114,7 @@ struct GeneralTab: View {
                 }
             }
             .contentShape(Rectangle())
+            .help("Right-click to copy diagnostics or reveal the log")
             .onTapGesture {
                 if NSEvent.modifierFlags.contains(.option) {
                     copyDiagnostics()
