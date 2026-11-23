@@ -240,15 +240,6 @@ struct EmptyMessage: Decodable, Equatable {
     var detail: String
 }
 
-struct SnippetModel: Decodable, Equatable, Identifiable {
-    var title: String
-    var detail: String
-    var file: String
-    var json: String
-
-    var id: String { title }
-}
-
 struct AgentRowModel: Decodable, Equatable, Identifiable {
     var id: String
     var name: String
@@ -257,7 +248,6 @@ struct AgentRowModel: Decodable, Equatable, Identifiable {
     var changing: String?
     var connected: Bool
     var enabled: Bool
-    var snippets: [SnippetModel]
 }
 
 struct AccountSwitchModel: Decodable, Equatable, Identifiable {

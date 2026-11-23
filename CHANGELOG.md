@@ -20,10 +20,8 @@
   ⌘2, ⌘3 or Left and Right switch Settings tabs. Clicking a session copies
   its project path (or title), and right-clicking offers Open Project in
   Finder, Copy Project Path and Copy Session ID.
-- **Settings → Agents shows copyable Claude Code snippets** for the status
-  line and pre-tool guard, without editing `~/.claude/settings.json`.
-  Hovering "Uses another Turnscope" shows the path the agent is configured
-  to run.
+- **Hovering "Uses another Turnscope" in Settings → Agents** shows the
+  path the agent is configured to run.
 - **Right-clicking the version in Settings → General** (or Option-clicking
   it) copies a diagnostics report or reveals `app.log` in Finder.
 - **Edge-case fixes:** older costs update when prices change, `app.log`

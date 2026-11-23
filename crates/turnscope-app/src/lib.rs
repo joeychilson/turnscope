@@ -702,12 +702,6 @@ mod tests {
                             changing: Some("Connecting…".into()),
                             connected: true,
                             enabled: false,
-                            snippets: vec![SnippetModel {
-                                title: "Status line".into(),
-                                detail: "Shows limits in Claude Code".into(),
-                                file: "~/.claude/settings.json".into(),
-                                json: r#"{"statusLine":{"command":"turnscope statusline"}}"#.into(),
-                            }],
                         }],
                         accounts_empty: None,
                         subscriptions: vec![AccountSwitchModel {

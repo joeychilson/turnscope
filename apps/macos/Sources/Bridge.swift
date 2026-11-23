@@ -51,7 +51,6 @@ final class UIState {
     var openAccount: String?
     var unusedOpen = false
     var hiddenShown = false
-    var openSnippets: Set<String> = []
     var pendingAccount: String?
     var focusNonce = 0
 
@@ -61,7 +60,6 @@ final class UIState {
         openAccount = nil
         unusedOpen = false
         hiddenShown = false
-        openSnippets = []
         pendingAccount = nil
     }
 
@@ -115,14 +113,6 @@ final class UIState {
     func toggleHidden() {
         withAnimation(spring) {
             hiddenShown.toggle()
-        }
-    }
-
-    func toggleSnippets(_ agent: String) {
-        withAnimation(spring) {
-            if !openSnippets.insert(agent).inserted {
-                openSnippets.remove(agent)
-            }
         }
     }
 

@@ -109,21 +109,6 @@ pub trait Agent: Sync {
     /// The command that `folder`'s configuration runs for Turnscope's MCP
     /// server, if any. Each of its folders keeps its own.
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
-
-    /// Optional config snippets beyond MCP (such as status line or hooks),
-    /// copied by the user into their own settings file.
-    fn snippets(&self, _binary: &str) -> Vec<Snippet> {
-        Vec::new()
-    }
-}
-
-/// A copyable config snippet an agent supports beyond MCP.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Snippet {
-    pub title: &'static str,
-    pub detail: &'static str,
-    pub file: &'static str,
-    pub json: String,
 }
 
 /// What Turnscope knows of an agent as a program.

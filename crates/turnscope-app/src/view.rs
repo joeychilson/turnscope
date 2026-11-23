@@ -171,15 +171,6 @@ pub struct EmptyMessage {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SnippetModel {
-    pub title: String,
-    pub detail: String,
-    pub file: String,
-    pub json: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AgentRowModel {
     pub id: String,
     pub name: String,
@@ -188,7 +179,6 @@ pub struct AgentRowModel {
     pub changing: Option<String>,
     pub connected: bool,
     pub enabled: bool,
-    pub snippets: Vec<SnippetModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -459,10 +449,9 @@ fn build_settings(s: &State) -> SettingsModel {
         EmptyMessage { headline, detail }
     });
     let agents_title = words::agents_title(s.from_disk_image).to_owned();
-    let binary = crate::binary().to_string_lossy().into_owned();
     let agents = installed
         .iter()
-        .map(|agent| build_agent_row(s, agent, &binary))
+        .map(|agent| build_agent_row(s, agent))
         .collect();
 
     let accounts_empty = s.all().is_empty().then(|| {
@@ -507,30 +496,12 @@ fn build_settings(s: &State) -> SettingsModel {
     }
 }
 
-fn build_agent_row(s: &State, agent: &Agent, binary: &str) -> AgentRowModel {
+fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
     let changing = s.changing_agents.get(&agent.id).copied();
     let note =
         s.agent_errors.get(&agent.id).cloned().or_else(|| {
             words::connection(agent).filter(|_| agent.connection != Connection::Available)
         });
-    let snippets = if s.from_disk_image {
-        Vec::new()
-    } else {
-        turnscope::agents::by_id(&agent.id)
-            .map(|found| {
-                found
-                    .snippets(binary)
-                    .into_iter()
-                    .map(|snippet| SnippetModel {
-                        title: snippet.title.to_owned(),
-                        detail: snippet.detail.to_owned(),
-                        file: snippet.file.to_owned(),
-                        json: snippet.json,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
     AgentRowModel {
         id: agent.id.clone(),
         name: agent.name.clone(),
@@ -539,7 +510,6 @@ fn build_agent_row(s: &State, agent: &Agent, binary: &str) -> AgentRowModel {
         changing: changing.map(|to| words::agent_changing(to).to_owned()),
         connected: changing.unwrap_or(agent.connection) == Connection::Connected,
         enabled: changing.is_none() && !s.from_disk_image && !s.stopped(),
-        snippets,
     }
 }
 

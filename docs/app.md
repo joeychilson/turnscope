@@ -180,7 +180,7 @@ agents and accounts are off, and so are the panel's Hide and Show.
 | Tab | Holds |
 |---|---|
 | General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version (right-click for Copy Diagnostics and Reveal Log in Finder, or Option-click to copy diagnostics), Check now and Check automatically |
-| Agents | Each installed agent, with a switch that connects or disconnects it, and under its name that it runs another copy of Turnscope (hover to see the configured path) or why connecting failed. For agents with hooks or a status line, a collapsed fold offers copyable JSON snippets without editing their settings files |
+| Agents | Each installed agent, with a switch that connects or disconnects it, and under its name that it runs another copy of Turnscope (hover to see the configured path) or why connecting failed |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 
 Where each setting is kept:

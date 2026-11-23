@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use super::{Agent, Credential, Info, Login, Read, Response, Secret, Snippet, Title, Tokens};
+use super::{Agent, Credential, Info, Login, Read, Response, Secret, Title, Tokens};
 use crate::{Error, Result};
 
 pub struct ClaudeCode;
@@ -485,50 +485,6 @@ impl Agent for ClaudeCode {
 
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String> {
         super::json_mcp_command(&settings(folder, home), "/mcpServers/turnscope/command")
-    }
-
-    fn snippets(&self, binary: &str) -> Vec<Snippet> {
-        let cmd = |args: &str| {
-            if binary
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"/-_.+".contains(&b))
-            {
-                format!("{binary} {args}")
-            } else {
-                format!("'{}' {args}", binary.replace('\'', "'\\''"))
-            }
-        };
-        let statusline = serde_json::json!({
-            "statusLine": {
-                "type": "command",
-                "command": cmd("statusline")
-            }
-        });
-        let guard = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [{
-                    "matcher": "Agent",
-                    "hooks": [{
-                        "type": "command",
-                        "command": cmd("guard --limit week --below 10")
-                    }]
-                }]
-            }
-        });
-        vec![
-            Snippet {
-                title: "Status line",
-                detail: "Shows your limits in Claude Code's footer",
-                file: "~/.claude/settings.json",
-                json: serde_json::to_string_pretty(&statusline).unwrap_or_default(),
-            },
-            Snippet {
-                title: "Subagent guard",
-                detail: "Stops subagents below 10% weekly",
-                file: "~/.claude/settings.json",
-                json: serde_json::to_string_pretty(&guard).unwrap_or_default(),
-            },
-        ]
     }
 }
 
