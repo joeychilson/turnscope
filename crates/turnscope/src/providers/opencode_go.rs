@@ -94,7 +94,10 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         let resets = super::reset(&window["resetsAt"])?;
         let starts = resets.zip(length).and_then(|(resets, length)| {
             let at = jiff::Timestamp::from_millisecond(resets).ok()?;
-            let start = at.to_zoned(TimeZone::UTC).checked_sub(length).ok()?;
+            let start = at
+                .to_zoned_datetime(TimeZone::UTC)
+                .checked_sub(length)
+                .ok()?;
             Some(start.timestamp().as_millisecond())
         });
         readings.push(Reading {

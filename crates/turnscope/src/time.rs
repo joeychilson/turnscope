@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, ToSpan, Zoned};
+use jiff::{Timestamp, ToSpan, ZonedDateTime};
 
 use crate::{Error, Result};
 
@@ -25,10 +25,10 @@ pub fn millis(text: &str) -> Option<i64> {
     text.parse::<Timestamp>().ok().map(|at| at.as_millisecond())
 }
 
-pub fn local(at: i64) -> Zoned {
+pub fn local(at: i64) -> ZonedDateTime {
     Timestamp::from_millisecond(at)
         .unwrap_or_default()
-        .to_zoned(TimeZone::system())
+        .to_zoned_datetime(TimeZone::system())
 }
 
 #[derive(Clone, Copy)]
@@ -46,7 +46,7 @@ pub fn start_of(period: Period, at: i64) -> i64 {
 pub fn period_date(period: Period, at: i64, zone: &TimeZone) -> Date {
     let day = Timestamp::from_millisecond(at)
         .unwrap_or_default()
-        .to_zoned(zone.clone())
+        .to_zoned_datetime(zone.clone())
         .date();
     start_date(period, day).0
 }
@@ -66,7 +66,7 @@ fn start_date(period: Period, day: Date) -> (Date, jiff::Span) {
 pub fn window(period: Period, at: i64, zone: &TimeZone) -> (i64, i64) {
     let day = Timestamp::from_millisecond(at)
         .unwrap_or_default()
-        .to_zoned(zone.clone())
+        .to_zoned_datetime(zone.clone())
         .date();
     let (start, span) = start_date(period, day);
     let end = start.checked_add(span).unwrap_or(start);
@@ -74,7 +74,7 @@ pub fn window(period: Period, at: i64, zone: &TimeZone) -> (i64, i64) {
 }
 
 fn start_of_day(day: Date, zone: &TimeZone) -> i64 {
-    day.to_zoned(zone.clone())
+    day.to_zoned_datetime(zone.clone())
         .map(|zoned| zoned.timestamp().as_millisecond())
         .unwrap_or_default()
 }
