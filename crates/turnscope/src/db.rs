@@ -171,6 +171,11 @@ CREATE TABLE failing (
 ALTER TABLE account ADD COLUMN checked_at INTEGER;
 ALTER TABLE account ADD COLUMN full_read_at INTEGER;
 UPDATE account SET full_read_at = read_at, checked_at = read_at;
+
+-- 0.3.1 kept an empty folder as a session's project, and the history read
+-- again after updating keeps a project (`ingest::read_again`): with none,
+-- it's worked out again.
+UPDATE session SET project = NULL WHERE project = '';
 "#,
 ];
 
@@ -310,9 +315,10 @@ fn import(tx: &Transaction) -> rusqlite::Result<()> {
     // 0.2 said to sign in again at the first refused login, and 0.3 at the
     // second in a row (`status`): one 0.2 said it of, 0.3 says it of too.
     // Before 0.2.0 a parent was a fork's or a continuation's too, and a
-    // session's title was kept whole. `chat_history.jsonl` was read for what
-    // was said, and no reader lists it now: a session it alone held would
-    // never be read again.
+    // session's title was kept whole. 0.2 kept an empty folder as a
+    // project, as revision 2 says of 0.3.1. `chat_history.jsonl` was read for
+    // what was said, and no reader lists it now: a session it alone held
+    // would never be read again.
     let parent = match has("session", "link")? {
         true => "iif(link IS 'subagent', parent, NULL)",
         false => "parent",
@@ -323,7 +329,7 @@ fn import(tx: &Transaction) -> rusqlite::Result<()> {
              SELECT id, path, agent, size, modified, inode, cursor, skipped, {failed}, {readers}
              FROM old.file WHERE NOT {chat};
          INSERT INTO session (id, agent, project, title, title_rank, parent)
-             SELECT id, agent, project, substr(title, 1, 200), title_rank, {parent} FROM old.session;
+             SELECT id, agent, nullif(project, ''), substr(title, 1, 200), title_rank, {parent} FROM old.session;
          INSERT INTO session_file (session, file)
              SELECT session, file FROM old.session_file WHERE file IN (SELECT id FROM main.file);
          INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
@@ -679,7 +685,7 @@ mod tests {
         INSERT INTO session (id, agent, folder, project, title, title_rank, parent, link) VALUES
             ('grok-build:s1', 'grok-build', '/home/.grok', '/work/app', 'Add a flag.', 0, NULL, NULL),
             ('grok-build:s2', 'grok-build', '/home/.grok', NULL, NULL, -1, 'grok-build:s1', 'subagent'),
-            ('grok-build:s3', 'grok-build', '/home/.grok', NULL, NULL, -1, 'grok-build:s1', 'fork');
+            ('grok-build:s3', 'grok-build', '/home/.grok', '', NULL, -1, 'grok-build:s1', 'fork');
         INSERT INTO session_file VALUES ('grok-build:s1', 1), ('grok-build:s1', 2);
         INSERT INTO response VALUES ('grok-build', 'r1', 'grok-build:s1', 0, 1, '/home/.grok', 1000,
             'xai', 'grok-5', 100, 0, 0, 0, 20, 0, 100, 0, 0, NULL, 0.5, 'xai:user-1');
@@ -716,8 +722,8 @@ mod tests {
             ["1|/home/.grok/sessions/a/s1/updates.jsonl|grok-build|10|1|1|9|0|NULL|0"]
         );
         assert_eq!(rows(&db, "SELECT * FROM session_file"), ["grok-build:s1|1"]);
-        // Only a subagent keeps a parent, and a title is cut to 200
-        // characters.
+        // Only a subagent keeps a parent, a title is cut to 200 characters,
+        // and an empty project is none.
         let cut = "é".repeat(150) + &"a".repeat(50);
         assert_eq!(
             rows(
@@ -845,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn a_database_of_the_revision_before_takes_the_new_columns() {
+    fn a_database_of_the_revision_before_is_brought_up_to_date() {
         let dir = tempfile::tempdir().unwrap();
         let db = Connection::open(dir.path().join(FILE)).unwrap();
         db.pragma_update(None, "application_id", APPLICATION_ID)
@@ -855,6 +861,12 @@ mod tests {
         db.execute(
             "INSERT INTO account (id, provider, kind, title, read_at)
              VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', 1234)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session (id, agent, project)
+             VALUES ('claude-code:a', 'claude-code', ''), ('claude-code:b', 'claude-code', '/work/web')",
             [],
         )
         .unwrap();
@@ -868,6 +880,10 @@ mod tests {
                 "SELECT id, read_at, full_read_at, checked_at FROM account"
             ),
             ["anthropic:a|1234|1234|1234"]
+        );
+        assert_eq!(
+            rows(&migrated, "SELECT id, project FROM session ORDER BY id"),
+            ["claude-code:a|NULL", "claude-code:b|/work/web"]
         );
     }
 }

@@ -144,30 +144,22 @@ impl Words {
     }
 
     fn short(&self, limit: &Limit) -> String {
-        let limit_name = name(limit);
+        let (named, plural) = short_name(limit);
+        let s = if plural { "" } else { "s" };
         match &limit.outlook {
-            // Its models can't be used until it's back, and with its limit's
-            // name too, "Claude and GPT weekly back Tue 2:40 AM" was cut short.
             Outlook::UsedUp { back } => format!(
-                "{} back {}",
-                limit.scope.as_ref().unwrap_or(&limit_name),
+                "{named} back {}",
                 back.as_ref().map_or("later".into(), |b| self.at(b))
             ),
-            Outlook::RunsOut { likely, .. } => {
-                format!(
-                    "{limit_name} {} out {}",
-                    if plural(limit) { "run" } else { "runs" },
-                    self.at(likely)
-                )
-            }
+            Outlook::RunsOut { likely, .. } => format!("{named} run{s} out {}", self.at(likely)),
             Outlook::Lasts { .. } | Outlook::Unknown { .. } => {
                 if let Some(window) = &limit.window {
-                    return format!("{limit_name} resets {}", self.at(&window.resets));
+                    return format!("{named} reset{s} {}", self.at(&window.resets));
                 }
                 if limit.money.is_none() {
-                    format!("{limit_name} lasts")
+                    format!("{named} last{s}")
                 } else {
-                    limit_name
+                    named
                 }
             }
         }
@@ -184,7 +176,7 @@ impl Words {
         }
         if let Some(limit) = account.deciding_limit() {
             return match limit.reset_since {
-                Some(reset) => format!("{} reset {}", name(limit), self.ago(reset)),
+                Some(reset) => format!("{} reset {}", short_name(limit).0, self.ago(reset)),
                 None => self.short(limit),
             };
         }
@@ -254,10 +246,8 @@ impl Words {
                 Standing::Lasts,
             );
         };
-        // A limit on some models, as a Google AI plan's pool, is named by its models: "Claude
-        // and GPT are used up". With its own name too, the headline ran to two lines.
         let (subject, plural) = match &limit.scope {
-            Some(models) => (models.clone(), models.contains(" and ")),
+            Some(_) => short_name(limit),
             None => (account.title.clone(), false),
         };
         match &limit.outlook {
@@ -628,6 +618,17 @@ fn spent(spend: &Spend) -> String {
         if spend.partial { "At least " } else { "" },
         dollars(spend.month_usd, false)
     )
+}
+
+/// What a line too short for [`name`] calls a limit, and whether that's
+/// plural. One on some models, as a Google AI plan's pool, goes by its
+/// models: with its own name too, a row's "Claude and GPT weekly resets Sat
+/// 12 PM" was cut short, and the headline ran to two lines.
+fn short_name(limit: &Limit) -> (String, bool) {
+    match &limit.scope {
+        Some(models) => (models.clone(), models.contains(" and ")),
+        None => (name(limit), plural(limit)),
+    }
 }
 
 pub fn name(limit: &Limit) -> String {
@@ -1068,6 +1069,12 @@ mod tests {
         };
         assert_eq!(name(&opus), "Opus weekly");
         assert_eq!(of(&opus), "of Opus weekly");
+        assert_eq!(w.short(&opus), "Opus resets Sun 12 AM");
+        let pool = Limit {
+            scope: Some("Claude and GPT".into()),
+            ..weekly(lasts(), 40)
+        };
+        assert_eq!(w.short(&pool), "Claude and GPT reset Sun 12 AM");
 
         let held = Limit {
             key: "key-1".into(),
