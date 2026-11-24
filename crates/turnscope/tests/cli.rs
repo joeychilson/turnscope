@@ -292,7 +292,7 @@ fn every_command_answers_as_its_snapshot_says() {
         (
             "status-hours",
             vec!["status", "--account", "claude", "--hours", "3"],
-            false,
+            true,
         ),
         // A line for each account.
         ("status-hours-every", vec!["status", "--hours", "3"], false),
@@ -497,6 +497,11 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             vec!["status", "--account", "guard", "--hours", "x"],
             2,
             "invalid value 'x'",
+        ),
+        (
+            vec!["status", "--hours=-1"],
+            2,
+            "give a number of hours, 0 or more",
         ),
     ] {
         let output = turnscope(data.path(), &args);
@@ -821,10 +826,11 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     );
 }
 
-/// OpenCode, signed in to no account: `check_limits` shows every account,
-/// led by the one with the most room.
+/// `check_limits` of every account leads with the one with the most room:
+/// for OpenCode, signed in to no account, after saying so; given hours, one
+/// they fit.
 #[test]
-fn check_limits_for_a_caller_whose_account_isnt_known_leads_with_most_room() {
+fn check_limits_of_every_account_leads_with_the_one_with_most_room() {
     let data = store();
     let answer = tools(
         &mut command_as("opencode", data.path(), &["mcp"]),
@@ -834,6 +840,25 @@ fn check_limits_for_a_caller_whose_account_isnt_known_leads_with_most_room() {
         answer[0].starts_with(
             "Which account is yours isn't known, so here is every one.\nMost room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left"
         ),
+        "{}",
+        answer[0]
+    );
+    // Claude Max by its Weekly alone, with 19h of work left: 5 fit it, and
+    // can't be told of ChatGPT Plus, with more left.
+    turnscope::db::open(data.path())
+        .unwrap()
+        .execute(
+            "DELETE FROM reading WHERE account = 'anthropic:acct-1:org-1' AND limit_key = 'five_hour'",
+            [],
+        )
+        .unwrap();
+    let answer = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("check_limits", r#"{"all":true,"hours":5}"#)],
+    );
+    assert!(
+        answer[0]
+            .contains("\n\nMost room: Claude Max (me@example.com), yours: Weekly has 56% left"),
         "{}",
         answer[0]
     );

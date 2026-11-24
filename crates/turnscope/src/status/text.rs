@@ -1079,6 +1079,10 @@ mod tests {
             room(Some(status.accounts[1].id.as_str()), Some("codex"))
                 .starts_with("Most room: ChatGPT Pro, yours: Monthly has 97% left")
         );
+        // Hidden, it isn't named.
+        status.accounts[1].hidden = true;
+        let room = most_room(&status, None, None, Some("claude-code")).unwrap();
+        assert!(room.starts_with("Most room: OpenRouter API key"), "{room}");
     }
 
     #[test]
