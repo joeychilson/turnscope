@@ -7,7 +7,6 @@ use super::{
     Unknown, Work,
 };
 use crate::agents;
-use crate::providers::Kind;
 use crate::time::{self, MINUTE};
 
 const UNDER: &str = "under 10m";
@@ -316,34 +315,48 @@ pub fn fits(accounts: &[&Account], hours: f64, now: i64) -> String {
 /// fit with a note after, OpenCode Go's rolling 5 hours at 4% left read as
 /// room for hours of work.
 pub fn fit(account: &Account, hours: f64, now: i64) -> String {
+    judge(account, hours, now).1
+}
+
+/// Whether hours of work fit an account, as `fit` says it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Fits {
+    No,
+    Untold,
+    Yes,
+}
+
+/// `fit`, and whether that says they fit.
+pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String) {
     let (more, fit, dont_fit) = match hours == 1.0 {
         true => ("1 more hour".to_owned(), "fits", "doesn't fit"),
         false => (format!("{hours} more hours"), "fit", "don't fit"),
     };
-    // A provider that sets an API key no limit reads it with none: nothing
-    // runs out. A plan read with none may still have limits it didn't say.
-    if account.limits.is_empty() {
-        match (account.state.why(), account.kind) {
-            (Some(why), _) => {
-                return format!(
-                    "Whether {more} of work {fit} can't be told: {}.",
-                    unread(why)
-                );
-            }
-            (None, Kind::ApiKey) => return format!("{more} of work {fit}: the key has no limit."),
-            (None, _) => {}
-        }
+    // No limit read: an account not read now says why. One read with none,
+    // as a key whose provider Turnscope doesn't ask, may still draw on
+    // credit or a spend cap.
+    if account.limits.is_empty()
+        && let Some(why) = account.state.why()
+    {
+        let why = unread(why);
+        return (
+            Fits::Untold,
+            format!("Whether {more} of work {fit} can't be told: {why}."),
+        );
     }
     if let Some((limit, _)) = used_up(account) {
-        return format!(
-            "{more} of work {dont_fit}: {} {} used up.",
-            limit.named(),
-            agree(limit, "is", "are")
+        let are = agree(limit, "is", "are");
+        return (
+            Fits::No,
+            format!(
+                "{more} of work {dont_fit}: {} {are} used up.",
+                limit.named()
+            ),
         );
     }
     let mut out: Option<(&Limit, f64)> = None;
     let mut after = Vec::new();
-    let mut untold = None;
+    let mut untold_why = None;
     for limit in account
         .limits
         .iter()
@@ -369,7 +382,7 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> String {
                     agree(limit, "it", "them")
                 ),
             };
-            untold = untold.or(Some(why));
+            untold_why = untold_why.or(Some(why));
             continue;
         };
         match ends(limit, work, hours, now) {
@@ -379,23 +392,29 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> String {
         }
     }
     if let Some((limit, at)) = out {
-        return format!(
-            "{more} of work {dont_fit}: {} {} out after {} of work.",
-            limit.named(),
-            agree(limit, "runs", "run"),
-            about(at)
+        let run = agree(limit, "runs", "run");
+        return (
+            Fits::No,
+            format!(
+                "{more} of work {dont_fit}: {} {run} out after {} of work.",
+                limit.named(),
+                about(at)
+            ),
         );
     }
     let after = after.join(", ");
-    match (untold, after.is_empty()) {
-        (Some(why), true) => format!("Whether {more} of work {fit} can't be told: {why}."),
-        (Some(why), false) => format!(
-            "Whether {more} of work {fit} can't be told: {why}. At your work rate they'd leave {after}."
+    let untold = |why: &str| format!("Whether {more} of work {fit} can't be told: {why}.");
+    match (untold_why, after.is_empty()) {
+        (Some(why), true) => (Fits::Untold, untold(&why)),
+        (Some(why), false) => (
+            Fits::Untold,
+            format!("{} At your work rate they'd leave {after}.", untold(&why)),
         ),
-        (None, true) => format!(
-            "Whether {more} of work {fit} can't be told: no limit on all its usage was read."
+        (None, true) => (Fits::Untold, untold("no limit on all its usage was read")),
+        (None, false) => (
+            Fits::Yes,
+            format!("{more} of work {fit} at your work rate, leaving {after}."),
         ),
-        (None, false) => format!("{more} of work {fit} at your work rate, leaving {after}."),
     }
 }
 
@@ -503,7 +522,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     let Some(limit) = account.deciding_limit() else {
         return match &account.spend {
             Some(spend) => format!(
-                "{title}: no limit; {} this month at list prices{}.",
+                "{title}: no limit of it was read; {} this month at list prices{}.",
                 crate::usage::dollars(spend.month_usd),
                 partial(spend)
             ),
@@ -613,10 +632,15 @@ pub fn alternate_note(status: &Status, current: &Account, agent: Option<&str>) -
     ))
 }
 
-/// The account with the most room, to choose where to work: `yours`
-/// marked so.
-pub fn most_room(status: &Status, yours: Option<&str>, agent: Option<&str>) -> Option<String> {
-    let (account, limit) = super::roomiest(&status.accounts, agent)?;
+/// The account with the most room, to choose where to work, given `hours`
+/// of it: `yours` marked so.
+pub fn most_room(
+    status: &Status,
+    hours: Option<f64>,
+    yours: Option<&str>,
+    agent: Option<&str>,
+) -> Option<String> {
+    let (account, limit) = super::roomiest(&status.accounts, agent, hours, status.at)?;
     let whose = match Some(account.id.as_str()) == yours {
         true => ", yours".to_owned(),
         false => elsewhere(account, agent),
@@ -1010,19 +1034,19 @@ mod tests {
     }
 
     #[test]
-    fn a_key_with_no_limit_fits_and_an_account_not_read_says_why() {
+    fn a_key_with_no_limit_read_isnt_said_to_fit_and_one_not_read_says_why() {
         let status: Status = serde_json::from_value(example()).unwrap();
         let mut key = status.accounts[5].clone();
         key.state = State::Live { read_at: status.at };
         assert_eq!(
             fit(&key, 3.0, status.at),
-            "3 more hours of work fit: the key has no limit."
+            "Whether 3 more hours of work fit can't be told: no limit on all its usage was read."
         );
         assert_eq!(
             verdict(&key, status.at),
-            "Anthropic API key: no limit; $0.00 this month at list prices."
+            "Anthropic API key: no limit of it was read; $0.00 this month at list prices."
         );
-        // Refused since, it's no longer said to fit.
+        // Its login refused since.
         key.state = State::AsOf {
             read_at: status.at,
             why: Stale::SignIn,
@@ -1038,7 +1062,7 @@ mod tests {
         let mut status: Status = serde_json::from_value(example()).unwrap();
         // Claude Max runs out, ChatGPT Pro is signed out and OpenRouter
         // couldn't be read.
-        assert_eq!(most_room(&status, None, Some("claude-code")), None);
+        assert_eq!(most_room(&status, None, None, Some("claude-code")), None);
         let read_at = status.at;
         for account in &mut status.accounts[1..3] {
             account.state = State::Live { read_at };
@@ -1046,7 +1070,7 @@ mod tests {
         status.accounts[1].agents = vec!["codex".to_owned()];
         // Claude Code's OpenRouter key has less room than ChatGPT Pro.
         status.accounts[2].agents.push("claude-code".to_owned());
-        let room = |yours, agent| most_room(&status, yours, agent).unwrap();
+        let room = |yours, agent| most_room(&status, None, yours, agent).unwrap();
         assert!(
             room(None, Some("claude-code"))
                 .starts_with("Most room: ChatGPT Pro, via Codex: Monthly has 97% left; it resets ")
@@ -1055,5 +1079,48 @@ mod tests {
             room(Some(status.accounts[1].id.as_str()), Some("codex"))
                 .starts_with("Most room: ChatGPT Pro, yours: Monthly has 97% left")
         );
+    }
+
+    #[test]
+    fn given_hours_most_room_is_an_account_they_fit() {
+        let mut status: Status = serde_json::from_value(example()).unwrap();
+        // Claude Max by its Weekly alone, 60% left at 3.8% an hour of work:
+        // 5 hours leave 41%. ChatGPT Pro read now, its Monthly 97% left.
+        let claude = &mut status.accounts[0];
+        claude.limits.retain(|limit| limit.key == "seven_day");
+        claude.deciding = Some("seven_day".to_owned());
+        claude.limits[0].work = Some(Work {
+            rate_per_hour: 3.8,
+            left_hours: Some(HoursLeft {
+                low: 12.0,
+                likely: 15.8,
+                high: 20.0,
+            }),
+        });
+        let chatgpt = &mut status.accounts[1];
+        chatgpt.state = State::Live { read_at: status.at };
+        chatgpt.agents = vec!["codex".to_owned()];
+        let room = |status: &Status, hours| most_room(status, hours, None, Some("claude-code"));
+        let claude = "Most room: Claude Max (me@example.com): Weekly has 60% left";
+        // With too little work measured on ChatGPT Pro, 5 hours fit only
+        // Claude Max.
+        assert!(
+            room(&status, None)
+                .unwrap()
+                .starts_with("Most room: ChatGPT Pro")
+        );
+        assert!(room(&status, Some(5.0)).unwrap().starts_with(claude));
+        // ChatGPT Pro runs out after 2h 20m of work.
+        status.accounts[1].limits[1].work = Some(Work {
+            rate_per_hour: 41.6,
+            left_hours: Some(HoursLeft {
+                low: 2.0,
+                likely: 2.3,
+                high: 3.0,
+            }),
+        });
+        assert!(room(&status, Some(5.0)).unwrap().starts_with(claude));
+        // 50 hours fit neither.
+        assert_eq!(room(&status, Some(50.0)), None);
     }
 }

@@ -659,15 +659,30 @@ pub fn alternate<'a>(
 }
 
 /// The live account with the most left of its deciding limit, and that
-/// limit: of those as roomy, one `agent` is signed in to first.
-fn roomiest<'a>(accounts: &'a [Account], agent: Option<&str>) -> Option<(&'a Account, &'a Limit)> {
-    roomy(accounts).min_by_key(|(account, limit)| {
-        Reverse((
-            limit.left_percent,
-            signed_in(account, agent),
-            account.kind != Kind::ApiKey,
-        ))
-    })
+/// limit: of those as roomy, one `agent` is signed in to first. Given
+/// `hours` of work, one they don't fit is left out, and one they fit comes
+/// before one that can't be told.
+fn roomiest<'a>(
+    accounts: &'a [Account],
+    agent: Option<&str>,
+    hours: Option<f64>,
+    now: i64,
+) -> Option<(&'a Account, &'a Limit)> {
+    roomy(accounts)
+        .map(|(account, limit)| {
+            let fits = hours.map(|hours| text::judge(account, hours, now).0);
+            (account, limit, fits)
+        })
+        .filter(|(_, _, fits)| *fits != Some(text::Fits::No))
+        .min_by_key(|(account, limit, fits)| {
+            Reverse((
+                *fits,
+                limit.left_percent,
+                signed_in(account, agent),
+                account.kind != Kind::ApiKey,
+            ))
+        })
+        .map(|(account, limit, _)| (account, limit))
 }
 
 /// The accounts shown and read now whose deciding limit has room: a

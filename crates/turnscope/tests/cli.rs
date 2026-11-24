@@ -289,7 +289,13 @@ fn every_command_answers_as_its_snapshot_says() {
     // has.
     for (name, args, as_json) in [
         ("status", vec!["status"], true),
-        ("status-hours", vec!["status", "--hours", "3"], false),
+        (
+            "status-hours",
+            vec!["status", "--account", "claude", "--hours", "3"],
+            false,
+        ),
+        // A line for each account.
+        ("status-hours-every", vec!["status", "--hours", "3"], false),
         ("usage", vec!["usage"], true),
         (
             "usage-model",
@@ -512,6 +518,8 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             ("explain_usage", r#"{"account":3}"#),
             ("explain_usage", r#"{"by":"hourly"}"#),
             ("explain_usage", r#"{"top":2.5}"#),
+            ("explain_usage", r#"{"top":21}"#),
+            ("check_limits", r#"{"hours":-1}"#),
         ],
     );
     assert_eq!(
@@ -523,8 +531,16 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             "account is text, not 3",
             "by is session, project, model, agent, account, day, week or month, not \"hourly\"",
             "top is a whole number from 1 to 20, not 2.5",
+            "top is a whole number from 1 to 20, not 21",
+            "hours is a number of 0 or more, not -1",
         ]
     );
+    // A null is an input not given.
+    let answers = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("check_limits", r#"{"all":null}"#), ("check_limits", "{}")],
+    );
+    assert_eq!(answers[0], answers[1]);
 }
 
 /// A command says so before it reads all of history: the first time, and
@@ -802,6 +818,24 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     assert_eq!(
         String::from_utf8_lossy(&line.stdout).trim(),
         "Claude Max · 5h 25%, out in 1h · weekly 56%"
+    );
+}
+
+/// OpenCode, signed in to no account: `check_limits` shows every account,
+/// led by the one with the most room.
+#[test]
+fn check_limits_for_a_caller_whose_account_isnt_known_leads_with_most_room() {
+    let data = store();
+    let answer = tools(
+        &mut command_as("opencode", data.path(), &["mcp"]),
+        &[("check_limits", "{}")],
+    );
+    assert!(
+        answer[0].starts_with(
+            "Which account is yours isn't known, so here is every one.\nMost room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left"
+        ),
+        "{}",
+        answer[0]
     );
 }
 

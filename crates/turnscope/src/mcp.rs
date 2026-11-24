@@ -590,7 +590,7 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     // first: its lines follow anyway.
     let every = input.account.is_none() && (input.all || mine.is_none());
     let room = every
-        .then(|| status::most_room(&status, yours, caller_agent))
+        .then(|| status::most_room(&status, input.hours, yours, caller_agent))
         .flatten();
     let unknown_line = "Which account is yours isn't known, so here is every one.";
     let head = match (unknown, room) {

@@ -145,27 +145,30 @@ The answer has three parts:
    means it can't be told: the answer names the limit, what's left of it
    and, unless its window rolls, where the clock's pace takes it by its
    reset, then what the others would leave. An account with no limit read
-   can't be told either, and says why, such as `its login was refused`.
-   An API key of a provider that sets keys no limit, such as Anthropic,
-   fits any hours.
+   can't be told either, and one not read now says why, such as `its login
+   was refused`.
 2. A one-sentence verdict on the first account: how much work is left
    before which limit runs out, and when that limit resets. When the
    deciding limit has no work rate measured, it says what's left of it
    instead. A used-up account says which limit is used up and when it's
-   back: of several, the last back. An API key with no limit says what it
-   cost this month.
+   back: of several, the last back. An API key with no limit read says
+   what it cost this month.
 
    When every account is shown, with `all` or because the caller's
    account isn't known, the line names instead the account with the most
    room, to choose where to work: of the live accounts an agent uses, the
    one whose deciding limit has the most left, with a quarter or more left
-   and neither running out nor used up. Of those as roomy, one the calling
-   agent uses comes first, then a subscription before an API key. It's
-   marked `yours` when it's the caller's, and otherwise names the agents
-   that use it when the calling agent doesn't. With none that roomy, the
-   line is the verdict on the first account, as without `all`. When the
-   caller's account isn't known and neither `account` nor `all` is given,
-   a line before it says every account is shown.
+   and neither running out nor used up. With `hours`, an account they
+   don't fit is left out, and one they fit comes before one that can't be
+   told. Of those as roomy, one the calling agent uses comes first, then a
+   subscription before an API key. It's marked `yours` when it's the
+   caller's, and otherwise names the agents that use it when the calling
+   agent doesn't. With none that roomy, the line is the verdict on the
+   first account, as without `all`.
+
+   When the caller's account isn't known and neither `account` nor `all`
+   is given, a line first says every account is shown. The account with
+   the most room follows it, and with none, nothing does.
 3. Each account, the caller's first and marked `yours`, with the agents
    that use it (`via OpenCode and Pi`), and `in use` and `hidden` where
    they apply. Then a note if its limits couldn't be read, a line per
