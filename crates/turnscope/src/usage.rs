@@ -5,13 +5,13 @@ use std::fmt::Write as _;
 
 use jiff::tz::TimeZone;
 use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::agents::{self, Tokens};
 use crate::time::{self, Period};
 use crate::{Error, Result};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum By {
     Day,

@@ -48,8 +48,8 @@ enum Command {
         /// Hidden accounts too
         #[arg(long)]
         all: bool,
-        /// Whether this many more hours of work fit the first account, at its work rate
-        #[arg(long)]
+        /// Whether this many more hours of work fit each account shown, at its work rate
+        #[arg(long, value_parser = hours)]
         hours: Option<f64>,
     },
     /// What was used and what it cost, by day, week, month, model, project, agent, account or session
@@ -329,22 +329,28 @@ fn cmd_status(
             .filter(|account| all || !account.hidden)
             .collect(),
     };
-    let fit = match (hours, shown.first()) {
-        (Some(hours), Some(first)) => Some(status::fit(first, hours, status.at)?),
-        _ => None,
-    };
     Ok(print(
         json,
-        || json!({ "accounts": shown, "fit": fit }),
         || {
-            let text = match shown.is_empty() {
-                true => status::none(&status, "`turnscope status --all` shows them"),
-                false => status::text(&status, &shown, None),
-            };
-            match &fit {
-                Some(fit) => format!("{fit}\n\n{text}"),
-                None => text,
-            }
+            let fit = hours.map(|hours| {
+                shown
+                    .iter()
+                    .map(|account| {
+                        let fit = status::fit(account, hours, status.at);
+                        json!({ "account": account.id, "fit": fit })
+                    })
+                    .collect::<Vec<_>>()
+            });
+            json!({ "accounts": shown, "fit": fit })
+        },
+        || match (shown.is_empty(), hours) {
+            (true, _) => status::none(&status, "`turnscope status --all` shows them"),
+            (false, None) => status::text(&status, &shown, None),
+            (false, Some(hours)) => format!(
+                "{}\n\n{}",
+                status::fits(&shown, hours, status.at),
+                status::text(&status, &shown, None)
+            ),
         },
     ))
 }
@@ -472,6 +478,14 @@ fn cmd_accounts(
             }
         },
     ))
+}
+
+/// `--hours`: of work, so zero or more.
+fn hours(text: &str) -> std::result::Result<f64, String> {
+    text.parse()
+        .ok()
+        .filter(|hours: &f64| hours.is_finite() && *hours >= 0.0)
+        .ok_or_else(|| "give a number of hours, 0 or more".to_owned())
 }
 
 /// `--top`'s rows: 0 would show only the row adding up the rest.

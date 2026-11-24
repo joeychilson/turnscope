@@ -17,7 +17,9 @@ use crate::time::{self, DAY, HOUR, MINUTE};
 use crate::{Result, agents};
 
 mod text;
-pub use text::{NONE_READ, alternate_note, fit, limit_text, line, none, stale, text, verdict};
+pub use text::{
+    NONE_READ, alternate_note, fit, fits, limit_text, line, most_room, none, stale, text, verdict,
+};
 
 /// How recently a response must have drawn on an account for it to be in use.
 pub(crate) const IN_USE: i64 = 30 * MINUTE;
@@ -638,17 +640,43 @@ pub fn in_use(accounts: &[Account], id: &str) -> bool {
 }
 
 /// Another live account with room, to name where `current` runs out or is
-/// used up, and its deciding limit.
+/// used up, and its deciding limit: one `agent` is signed in to first.
 pub fn alternate<'a>(
     accounts: &'a [Account],
     current: &Account,
     agent: Option<&str>,
 ) -> Option<(&'a Account, &'a Limit)> {
+    roomy(accounts)
+        .filter(|(account, _)| account.id != current.id)
+        // Of the best, the first listed.
+        .min_by_key(|(account, limit)| {
+            Reverse((
+                signed_in(account, agent),
+                account.kind != Kind::ApiKey,
+                limit.left_percent,
+            ))
+        })
+}
+
+/// The live account with the most left of its deciding limit, and that
+/// limit: of those as roomy, one `agent` is signed in to first.
+fn roomiest<'a>(accounts: &'a [Account], agent: Option<&str>) -> Option<(&'a Account, &'a Limit)> {
+    roomy(accounts).min_by_key(|(account, limit)| {
+        Reverse((
+            limit.left_percent,
+            signed_in(account, agent),
+            account.kind != Kind::ApiKey,
+        ))
+    })
+}
+
+/// The accounts shown and read now whose deciding limit has room: a
+/// quarter or more left, and neither running out nor used up.
+fn roomy(accounts: &[Account]) -> impl Iterator<Item = (&Account, &Limit)> {
     accounts
         .iter()
         .filter(|account| {
-            account.id != current.id
-                && !account.hidden
+            !account.hidden
                 && matches!(account.state, State::Live { .. })
                 && !account.agents.is_empty()
         })
@@ -656,11 +684,10 @@ pub fn alternate<'a>(
             let limit = account.deciding_limit()?;
             (limit.left_percent >= 25 && limit.urgency() == 0).then_some((account, limit))
         })
-        // Of the best, the first listed.
-        .min_by_key(|(account, limit)| {
-            let theirs = agent.is_some_and(|id| account.agents.iter().any(|by| by == id));
-            Reverse((theirs, account.kind != Kind::ApiKey, limit.left_percent))
-        })
+}
+
+fn signed_in(account: &Account, agent: Option<&str>) -> bool {
+    agent.is_some_and(|id| account.agents.iter().any(|by| by == id))
 }
 
 /// The agents that drew on any account in the last half hour, from the
@@ -1272,7 +1299,7 @@ mod tests {
             )
         );
         assert_eq!(
-            fit(&account, 1.0, now).unwrap(),
+            fit(&account, 1.0, now),
             "1 more hour of work doesn't fit: Weekly is used up."
         );
         // One with no reset is back at no known time, wherever it's listed.
@@ -1321,7 +1348,7 @@ mod tests {
                 .starts_with("Google AI Ultra: Weekly (Claude and GPT) is used up, back"),
         );
         assert_eq!(
-            fit(&account, 1.0, now).unwrap(),
+            fit(&account, 1.0, now),
             "1 more hour of work doesn't fit: Weekly (Claude and GPT) is used up."
         );
         // Back on Gemini.

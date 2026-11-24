@@ -82,11 +82,17 @@ way.
   in that session, so agents are told to read it as data, not as an
   instruction.
 - A tool call that fails answers with `isError: true` and one text block
-  that says why and, in most cases, how to fix the call. Arguments that
-  don't fit the schema fail the same way, not with a JSON-RPC error:
+  that says why and, in most cases, how to fix the call:
 
   ```
   no account is named nope; there are: Claude Max (me@example.com) (anthropic:acct-1:org-1), ChatGPT Plus (me@example.com) (openai:acct-2), OpenRouter API key (openrouter:api), SuperGrok (me@example.com) (xai:user-3)
+  ```
+
+  Arguments that don't fit the schema fail the same way, not with a
+  JSON-RPC error, and say what the input takes, as the schema does:
+
+  ```
+  hours is a number of 0 or more, not "two"
   ```
 
 - Each call first catches up: history, and limits and prices when they're
@@ -106,7 +112,8 @@ way.
 | [`check_limits`](#check_limits) | Check limits | See whether planned work fits, before costly work |
 | [`explain_usage`](#explain_usage) | Explain usage | Find out what used a limit or what something cost |
 
-Every input is optional. An input the schema doesn't list is an error.
+Every input is optional, and one given as `null` is taken as not given. An
+input the schema doesn't list is an error.
 
 The examples come from `crates/turnscope/tests/snapshots/mcp.json`:
 synthetic accounts and sessions, with the clock at Thu Oct 1 12:00 UTC.
@@ -135,15 +142,30 @@ The answer has three parts:
    the [pool](architecture.md#glossary) it last drew on. Work past a
    limit's reset counts in the windows after it. A limit with too little
    work measured, or a window that rolls, as OpenCode Go's 5 hours does,
-   means it can't be told: the answer names the limit and what's left of
-   it, then what the others would leave.
+   means it can't be told: the answer names the limit, what's left of it
+   and, unless its window rolls, where the clock's pace takes it by its
+   reset, then what the others would leave. An account with no limit read
+   can't be told either, and says why, such as `its login was refused`.
+   An API key of a provider that sets keys no limit, such as Anthropic,
+   fits any hours.
 2. A one-sentence verdict on the first account: how much work is left
    before which limit runs out, and when that limit resets. When the
    deciding limit has no work rate measured, it says what's left of it
    instead. A used-up account says which limit is used up and when it's
-   back: of several, the last back. When the caller's account isn't known
-   and neither `account` nor `all` is given, this line says every account
-   is shown instead.
+   back: of several, the last back. An API key with no limit says what it
+   cost this month.
+
+   When every account is shown, with `all` or because the caller's
+   account isn't known, the line names instead the account with the most
+   room, to choose where to work: of the live accounts an agent uses, the
+   one whose deciding limit has the most left, with a quarter or more left
+   and neither running out nor used up. Of those as roomy, one the calling
+   agent uses comes first, then a subscription before an API key. It's
+   marked `yours` when it's the caller's, and otherwise names the agents
+   that use it when the calling agent doesn't. With none that roomy, the
+   line is the verdict on the first account, as without `all`. When the
+   caller's account isn't known and neither `account` nor `all` is given,
+   a line before it says every account is shown.
 3. Each account, the caller's first and marked `yours`, with the agents
    that use it (`via OpenCode and Pi`), and `in use` and `hidden` where
    they apply. Then a note if its limits couldn't be read, a line per
@@ -165,11 +187,11 @@ Called with `{"all": true, "hours": 2}`:
 
 ```markdown
 - Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work.
-- ChatGPT Plus (me@example.com): Whether 2 more hours of work fit can't be told: Weekly has 80% left, and too little work on it has been measured.
-- OpenRouter API key: Whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, and too little work on them has been measured.
-- SuperGrok (me@example.com): Whether 2 more hours of work fit can't be told: no limit on all its usage was read.
+- ChatGPT Plus (me@example.com): Whether 2 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
+- OpenRouter API key: Whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
+- SuperGrok (me@example.com): Whether 2 more hours of work fit can't be told: its login was refused.
 
-Claude Max (me@example.com): about 40m of work left (20m–1h 10m) before 5 hours runs out; it resets 14:00 (in 2h).
+Most room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h).
 
 Claude Max (me@example.com) · via Claude Code · yours · in use
   5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (20m–1h 10m), at 40.9% an hour of work.
@@ -191,7 +213,7 @@ SuperGrok (me@example.com) · via Grok Build
 
 An agent calls it when you ask what used a limit or what something cost. It
 breaks down one account's usage in a limit's current window, or since a
-time, by session, project, model, agent, day, week or month; or, with
+time, by session, project, model, agent, account, day, week or month; or, with
 `all`, every account's
 together, as for "what did I spend across my agents".
 
@@ -202,7 +224,7 @@ together, as for "what did I spend across my agents".
 | `limit` | string | the limit that decides how the account stands | Text in a limit's name or key, any case, such as `week` or `5 hours`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
 | `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. A `since` at or after now is an error, as it is for the command line's `usage`. |
 | `until` | string | now | With `since`: up to when, in the same forms. Without `since`, the usage runs to now, and `until` is an error. |
-| `by` | `session`, `project`, `model`, `agent`, `day`, `week` or `month` | `session` | How to group the rows. |
+| `by` | `session`, `project`, `model`, `agent`, `account`, `day`, `week` or `month` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
 
 The answer:

@@ -3,10 +3,11 @@
 //! one sentence that leads an answer. The app says it in its own words.
 
 use super::{
-    Account, Horizon, HoursLeft, Limit, Moment, Outlook, Spread, Stale, State, Status, Unknown,
-    Work,
+    Account, Horizon, HoursLeft, Limit, Moment, Outlook, Spend, Spread, Stale, State, Status,
+    Unknown, Work,
 };
 use crate::agents;
+use crate::providers::Kind;
 use crate::time::{self, MINUTE};
 
 const UNDER: &str = "under 10m";
@@ -73,10 +74,11 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
     let names: Vec<&str> = account.agents.iter().map(|id| agents::name(id)).collect();
     let agents = names.join(" or ");
     Some(match why {
-        Stale::SignedOut => "no agent here is signed in to it now".to_owned(),
-        Stale::SignIn => format!("its login was refused; open {agents} to sign in again"),
+        Stale::SignedOut => unread(why).to_owned(),
+        Stale::SignIn => format!("{}; open {agents} to sign in again", unread(why)),
         Stale::Expired => format!(
-            "its login expired; it's read {}when {agents} runs",
+            "{}; it's read {}when {agents} runs",
+            unread(why),
             if read_at.is_some() { "again " } else { "" }
         ),
         Stale::ReadFailed => format!(
@@ -90,6 +92,16 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
             crate::limits::BACKED_OFF / MINUTE
         ),
     })
+}
+
+/// Why an account isn't read now, without what to do about it.
+fn unread(why: Stale) -> &'static str {
+    match why {
+        Stale::SignedOut => "no agent here is signed in to it now",
+        Stale::SignIn => "its login was refused",
+        Stale::Expired => "its login expired",
+        Stale::ReadFailed => "it couldn't be read",
+    }
 }
 
 /// The status of `accounts`, `yours` marked so.
@@ -124,11 +136,7 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
             out += &format!("  {}\n", limit_text(limit, now));
         }
         if let Some(spend) = &account.spend {
-            let partial = if spend.partial {
-                ", and some usage has no known price"
-            } else {
-                ""
-            };
+            let partial = partial(spend);
             let spent = crate::usage::dollars(spend.month_usd);
             // A pace that reads as what was spent says nothing more, as for
             // a key that spent nothing: "$0.00, on pace for about $0.00".
@@ -142,6 +150,13 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
         out += "\n";
     }
     out.trim_end().to_owned()
+}
+
+fn partial(spend: &Spend) -> &'static str {
+    match spend.partial {
+        true => ", and some usage has no known price",
+        false => "",
+    }
 }
 
 /// A forecast's two figures: whole dollars from $10, as $62 or $2,500, and
@@ -283,26 +298,47 @@ fn first_out(account: &Account) -> Option<(&Limit, HoursLeft)> {
         .min_by(|(_, a), (_, b)| a.likely.total_cmp(&b.likely))
 }
 
+/// Whether `hours` more of work fit each of `accounts`: one line, or a line
+/// each, named.
+pub fn fits(accounts: &[&Account], hours: f64, now: i64) -> String {
+    if let [account] = accounts {
+        return fit(account, hours, now);
+    }
+    let lines: Vec<String> = accounts
+        .iter()
+        .map(|account| format!("- {}: {}", account.full_title(), fit(account, hours, now)))
+        .collect();
+    lines.join("\n")
+}
+
 /// Whether `hours` more of work fit the limits `account` stands by, at the
 /// work rate so far. One with no work rate says it can't be told: said to
 /// fit with a note after, OpenCode Go's rolling 5 hours at 4% left read as
 /// room for hours of work.
-pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
-    if !(hours.is_finite() && hours >= 0.0) {
-        return Err(crate::Error::Usage(format!(
-            "{hours} isn't a number of hours: give one of zero or more"
-        )));
-    }
+pub fn fit(account: &Account, hours: f64, now: i64) -> String {
     let (more, fit, dont_fit) = match hours == 1.0 {
         true => ("1 more hour".to_owned(), "fits", "doesn't fit"),
         false => (format!("{hours} more hours"), "fit", "don't fit"),
     };
+    // A provider that sets an API key no limit reads it with none: nothing
+    // runs out. A plan read with none may still have limits it didn't say.
+    if account.limits.is_empty() {
+        if account.kind == Kind::ApiKey && !matches!(account.state, State::Unread { .. }) {
+            return format!("{more} of work {fit}: it has no limit.");
+        }
+        if let Some(why) = account.state.why() {
+            return format!(
+                "Whether {more} of work {fit} can't be told: {}.",
+                unread(why)
+            );
+        }
+    }
     if let Some((limit, _)) = used_up(account) {
-        return Ok(format!(
+        return format!(
             "{more} of work {dont_fit}: {} {} used up.",
             limit.named(),
             agree(limit, "is", "are")
-        ));
+        );
     }
     let mut out: Option<(&Limit, f64)> = None;
     let mut after = Vec::new();
@@ -316,22 +352,22 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
             let rolls = limit
                 .window
                 .is_some_and(|window| window.starts_at.is_none());
+            // Where the clock's pace takes it, to weigh until hours of work
+            // are measured; a window that rolls has no pace.
             let why = match rolls {
                 true => format!(
-                    "{} a window that rolls, so it isn't forecast",
+                    "{} {} {} left, and {} a window that rolls, so it isn't forecast",
+                    limit.named(),
+                    agree(limit, "has", "have"),
+                    left(limit),
                     agree(limit, "is", "are")
                 ),
                 false => format!(
-                    "too little work on {} has been measured",
+                    "{}, but too little work on {} has been measured",
+                    paced(limit, now),
                     agree(limit, "it", "them")
                 ),
             };
-            let why = format!(
-                "{} {} {} left, and {why}",
-                limit.named(),
-                agree(limit, "has", "have"),
-                left(limit)
-            );
             untold = untold.or(Some(why));
             continue;
         };
@@ -342,15 +378,15 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
         }
     }
     if let Some((limit, at)) = out {
-        return Ok(format!(
+        return format!(
             "{more} of work {dont_fit}: {} {} out after {} of work.",
             limit.named(),
             agree(limit, "runs", "run"),
             about(at)
-        ));
+        );
     }
     let after = after.join(", ");
-    Ok(match (untold, after.is_empty()) {
+    match (untold, after.is_empty()) {
         (Some(why), true) => format!("Whether {more} of work {fit} can't be told: {why}."),
         (Some(why), false) => format!(
             "Whether {more} of work {fit} can't be told: {why}. At your work rate they'd leave {after}."
@@ -359,7 +395,7 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> crate::Result<String> {
             "Whether {more} of work {fit} can't be told: no limit on all its usage was read."
         ),
         (None, false) => format!("{more} of work {fit} at your work rate, leaving {after}."),
-    })
+    }
 }
 
 /// Where `hours` more of work leave a limit.
@@ -464,8 +500,22 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     }
     // Until an hour of work is measured, the clock's pace says it.
     let Some(limit) = account.deciding_limit() else {
-        return format!("{title}: no limit of it was read.");
+        return match &account.spend {
+            Some(spend) => format!(
+                "{title}: no limit; {} this month at list prices{}.",
+                crate::usage::dollars(spend.month_usd),
+                partial(spend)
+            ),
+            None => format!("{title}: no limit of it was read."),
+        };
     };
+    format!("{title}: {}.", paced(limit, now))
+}
+
+/// What's left of `limit`, and where the clock's pace takes it by its
+/// reset: `Weekly has 80% left and lasts at this pace until it resets Tue
+/// 00:00 (in 4d 12h)`.
+fn paced(limit: &Limit, now: i64) -> String {
     let resets = limit.resets().map(|resets| time::ahead(resets, now));
     let ahead = match (&limit.outlook, resets) {
         (Outlook::RunsOut { likely, .. }, Some(resets)) => format!(
@@ -481,11 +531,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
         (_, None) => String::new(),
     };
     let has = agree(limit, "has", "have");
-    format!(
-        "{title}: {} {has} {} left{ahead}.",
-        limit.named(),
-        left(limit)
-    )
+    format!("{} {has} {} left{ahead}", limit.named(), left(limit))
 }
 
 /// `account` as one line, for an agent's status line: its title, the limits
@@ -557,18 +603,39 @@ pub fn alternate_note(status: &Status, current: &Account, agent: Option<&str>) -
         .deciding_limit()
         .filter(|limit| limit.urgency() > 0)?;
     let (other, limit) = super::alternate(&status.accounts, current, agent)?;
-    let on = match agent {
-        Some(id) if !other.agents.iter().any(|by| by == id) => {
-            via(&other.agents).map_or(String::new(), |via| format!(", {via}"))
-        }
-        _ => String::new(),
-    };
     Some(format!(
-        "Another account has room: {} has {} left ({}{on}).",
+        "Another account has room: {} has {} left ({}{}).",
         other.full_title(),
         left(limit),
         limit.named(),
+        elsewhere(other, agent)
     ))
+}
+
+/// The account with the most room, to choose where to work: `yours`
+/// marked so.
+pub fn most_room(status: &Status, yours: Option<&str>, agent: Option<&str>) -> Option<String> {
+    let (account, limit) = super::roomiest(&status.accounts, agent)?;
+    let whose = match Some(account.id.as_str()) == yours {
+        true => ", yours".to_owned(),
+        false => elsewhere(account, agent),
+    };
+    Some(format!(
+        "Most room: {}{whose}: {}.",
+        account.full_title(),
+        paced(limit, status.at)
+    ))
+}
+
+/// `, via Codex`: the agents that use `account`, where `agent` is known
+/// and doesn't.
+fn elsewhere(account: &Account, agent: Option<&str>) -> String {
+    match agent {
+        Some(_) if !super::signed_in(account, agent) => {
+            via(&account.agents).map_or(String::new(), |via| format!(", {via}"))
+        }
+        _ => String::new(),
+    }
 }
 
 /// A limit in a few words: `5h 86%`, `weekly 25%, out Sat 18:00`, `weekly
@@ -605,11 +672,11 @@ mod tests {
         account["limits"][0]["work"]["leftHours"]["likely"] = 0.5.into();
         let account: Account = serde_json::from_value(account).unwrap();
         assert_eq!(
-            fit(&account, 1.0, now).unwrap(),
+            fit(&account, 1.0, now),
             "1 more hour of work doesn't fit: 5 hours runs out after about 30m of work."
         );
         assert_eq!(
-            fit(&account, 2.0, now).unwrap(),
+            fit(&account, 2.0, now),
             "2 more hours of work don't fit: 5 hours runs out after about 30m of work."
         );
         // Its Weekly with 40 minutes of work left and 5 hours with 1h 15m:
@@ -620,7 +687,7 @@ mod tests {
             serde_json::json!({"low": 0.3, "likely": 0.67, "high": 1.5});
         let account: Account = serde_json::from_value(account).unwrap();
         assert_eq!(
-            fit(&account, 2.0, now).unwrap(),
+            fit(&account, 2.0, now),
             "2 more hours of work don't fit: Weekly runs out after about 40m of work."
         );
         let said = verdict(&account, now);
@@ -641,7 +708,7 @@ mod tests {
         account["deciding"] = "seven_day".into();
         let account: Account = serde_json::from_value(account).unwrap();
         assert_eq!(
-            fit(&account, 4.0, now).unwrap(),
+            fit(&account, 4.0, now),
             "4 more hours of work don't fit: 5 hours runs out after about 3h of work."
         );
         // Its slow end lasts the new window, as long as the one read.
@@ -657,7 +724,7 @@ mod tests {
         five["leftPercent"] = 100.into();
         five["work"] = serde_json::json!({"ratePerHour": 10.0, "leftHours": null});
         let lasting: Account = serde_json::from_value(account.clone()).unwrap();
-        let said = fit(&lasting, 6.0, now).unwrap();
+        let said = fit(&lasting, 6.0, now);
         // The new window resets after 5 hours of work, and the one after
         // has one hour's 10% used.
         assert!(said.contains("leaving about 90% of 5 hours"), "{said}");
@@ -680,7 +747,7 @@ mod tests {
         five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "rolling"});
         let rolling: Account = serde_json::from_value(account.clone()).unwrap();
         assert_eq!(
-            fit(&rolling, 1.0, now).unwrap(),
+            fit(&rolling, 1.0, now),
             "Whether 1 more hour of work fits can't be told: 5 hours has 28% left, and is a window that rolls, so it isn't forecast. At your work rate they'd leave about 59% of Weekly."
         );
         // Deciding the account, it's said over Weekly's hours of work.
@@ -718,16 +785,16 @@ mod tests {
             serde_json::from_value::<Account>(account).unwrap()
         };
         assert_eq!(
-            fit(&before, 6.0, now).unwrap(),
+            fit(&before, 6.0, now),
             "6 more hours of work don't fit: 5 hours runs out after about 4h 30m of work."
         );
         assert_eq!(
-            fit(&after_reset, 6.0, now).unwrap(),
+            fit(&after_reset, 6.0, now),
             "6 more hours of work don't fit: 5 hours runs out after about 4h of work."
         );
         // 2 hours fit: an hour and a half of it in the window after.
         assert_eq!(
-            fit(&before, 2.0, now).unwrap(),
+            fit(&before, 2.0, now),
             "2 more hours of work fit at your work rate, leaving about 62% of 5 hours."
         );
     }
@@ -763,7 +830,7 @@ mod tests {
             "OpenRouter API key: Credits are used up."
         );
         assert_eq!(
-            fit(&used_up, 1.0, now).unwrap(),
+            fit(&used_up, 1.0, now),
             "1 more hour of work doesn't fit: Credits are used up."
         );
     }
@@ -791,7 +858,7 @@ mod tests {
             "{verdict}"
         );
         assert_eq!(
-            fit(&few, 1.0, now).unwrap(),
+            fit(&few, 1.0, now),
             "1 more hour of work doesn't fit: 5 hours runs out after under 10m of work."
         );
         // A slow end of ten minutes or more is still said.
@@ -938,6 +1005,49 @@ mod tests {
         assert_eq!(
             alternate_note(&status, &status.accounts[0], Some("claude-code")),
             None
+        );
+    }
+
+    #[test]
+    fn a_key_with_no_limit_fits_and_an_account_not_read_says_why() {
+        let status: Status = serde_json::from_value(example()).unwrap();
+        let mut key = status.accounts[5].clone();
+        key.state = State::Live { read_at: status.at };
+        assert_eq!(
+            fit(&key, 3.0, status.at),
+            "3 more hours of work fit: it has no limit."
+        );
+        assert_eq!(
+            verdict(&key, status.at),
+            "Anthropic API key: no limit; $0.00 this month at list prices."
+        );
+        assert_eq!(
+            fit(&status.accounts[3], 1.0, status.at),
+            "Whether 1 more hour of work fits can't be told: its login was refused."
+        );
+    }
+
+    #[test]
+    fn most_room_is_the_live_account_with_the_most_left() {
+        let mut status: Status = serde_json::from_value(example()).unwrap();
+        // Claude Max runs out, ChatGPT Pro is signed out and OpenRouter
+        // couldn't be read.
+        assert_eq!(most_room(&status, None, Some("claude-code")), None);
+        let read_at = status.at;
+        for account in &mut status.accounts[1..3] {
+            account.state = State::Live { read_at };
+        }
+        status.accounts[1].agents = vec!["codex".to_owned()];
+        // Claude Code's OpenRouter key has less room than ChatGPT Pro.
+        status.accounts[2].agents.push("claude-code".to_owned());
+        let room = |yours, agent| most_room(&status, yours, agent).unwrap();
+        assert!(
+            room(None, Some("claude-code"))
+                .starts_with("Most room: ChatGPT Pro, via Codex: Monthly has 97% left; it resets ")
+        );
+        assert!(
+            room(Some(status.accounts[1].id.as_str()), Some("codex"))
+                .starts_with("Most room: ChatGPT Pro, yours: Monthly has 97% left")
         );
     }
 }

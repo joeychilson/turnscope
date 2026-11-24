@@ -289,11 +289,7 @@ fn every_command_answers_as_its_snapshot_says() {
     // has.
     for (name, args, as_json) in [
         ("status", vec!["status"], true),
-        (
-            "status-hours",
-            vec!["status", "--account", "claude", "--hours", "3"],
-            false,
-        ),
+        ("status-hours", vec!["status", "--hours", "3"], false),
         ("usage", vec!["usage"], true),
         (
             "usage-model",
@@ -480,14 +476,29 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    // Every account's usage has no limit, whose window would run to now.
+    // Every account's usage has no limit, whose window would run to now;
+    // the rest are said by the tool's input schema.
     let answers = tools(
         &mut command(data.path(), &["mcp"]),
-        &[("explain_usage", r#"{"all":true,"until":"yesterday"}"#)],
+        &[
+            ("explain_usage", r#"{"all":true,"until":"yesterday"}"#),
+            ("check_limits", r#"{"nope":1}"#),
+            ("check_limits", r#"{"all":"yes"}"#),
+            ("explain_usage", r#"{"account":3}"#),
+            ("explain_usage", r#"{"by":"hourly"}"#),
+            ("explain_usage", r#"{"top":2.5}"#),
+        ],
     );
     assert_eq!(
         answers,
-        ["until is with since: without since, the usage runs to now"]
+        [
+            "until is with since: without since, the usage runs to now",
+            "check_limits takes account, all or hours, not nope",
+            "all is true or false, not \"yes\"",
+            "account is text, not 3",
+            "by is session, project, model, agent, account, day, week or month, not \"hourly\"",
+            "top is a whole number from 1 to 20, not 2.5",
+        ]
     );
 }
 
@@ -1146,6 +1157,7 @@ fn an_mcp_session_answers_as_its_snapshot_says() {
         r#"{"jsonrpc":"2.0","id":8,"method":"prompts/list"}"#,
         r#"{"jsonrpc":"2.0","id":9,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
         r#"{"jsonrpc":"2.0","id":10,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-01-01"}}}"#,
+        r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"by":"account"}}}"#,
     ];
     let input = requests.join("\n") + "\n";
     let output = fed(&mut command(data.path(), &["mcp"]), input.as_bytes());

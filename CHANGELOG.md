@@ -8,6 +8,20 @@
   uses.
 - **`turnscope usage` says "1 response"**, not "1 responses", and tells
   its times by the minute they're in, as every other answer does.
+- **`check_limits` says why hours of work can't be told.** An API key with
+  no limit, such as Anthropic's, fits any hours and says what it cost this
+  month. An account not read says why, such as "its login was refused".
+  A limit with too little work measured says where the clock's pace takes
+  it by its reset.
+- **`check_limits` with `all` names the account with the most room**, to
+  choose where to work, in place of the verdict on yours.
+- **`explain_usage` groups by account**, as `turnscope usage --by account`
+  does.
+- **An MCP input that doesn't fit says what the input takes**, such as
+  `hours is a number of 0 or more, not "two"`. A `top` outside 1 to 20 is
+  refused instead of moved into range.
+- **`turnscope status --hours` says whether the hours fit each account
+  shown**, not only the first, and with `--json`, `fit` is a list of them.
 
 ## 0.4.0
 
