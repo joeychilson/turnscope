@@ -887,6 +887,7 @@ mod tests {
         for (by, rest_key, expected_rest) in [
             (By::Day, "1 earlier", "| 1 earlier day | $1.00 | 1 |"),
             (By::Week, "2 earlier", "| 2 earlier weeks | $1.00 | 1 |"),
+            (By::Month, "3 earlier", "| 3 earlier months | $1.00 | 1 |"),
         ] {
             let usage = Usage {
                 since: 0,
