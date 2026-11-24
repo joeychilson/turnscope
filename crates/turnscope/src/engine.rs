@@ -70,10 +70,11 @@ pub enum Event {
         limit: String,
         sessions: Vec<UsedMost>,
     },
-    /// A `connect` ended: None, or why it failed.
+    /// A `connect` ended, leaving the agent's connection `connection`: a
+    /// failed one can leave some of its folders changed.
     Connected {
         agent: String,
-        connecting: bool,
+        connection: crate::status::Connection,
         error: Option<String>,
     },
 }
@@ -260,7 +261,7 @@ impl Engine {
             };
             (inner.tell)(Event::Connected {
                 agent,
-                connecting,
+                connection: crate::connect::connection(found, &inner.home, &inner.binary).0,
                 error: done.err().map(|error| error.to_string()),
             });
             inner.give(Tell::WithAgents);
