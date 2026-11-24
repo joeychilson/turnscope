@@ -298,9 +298,15 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
     let (figure, figure_then) = words::row_figure(a);
     let figure_spoken = match a.deciding_limit() {
         Some(limit) => format!("{} left", words::left_of(limit)),
-        None => w.spoken_figure(a),
+        None if a.spend.is_some() => w.spoken_figure(a),
+        // Its status says why it has no figure.
+        None => String::new(),
     };
-    let collapsed_spoken = format!("{called}, {status}, {figure_spoken}");
+    let collapsed_spoken = if figure_spoken.is_empty() {
+        format!("{called}, {status}")
+    } else {
+        format!("{called}, {status}, {figure_spoken}")
+    };
 
     let limits = a.limits.iter().map(|l| build_limit_line(w, l)).collect();
     let sessions = s.used_most(a);
@@ -502,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn voiceover_says_what_a_row_with_no_figure_needs() {
+    fn voiceover_reads_a_row_with_no_figure_once() {
         let panel = build_panel(&State::fixed(example()));
         let opencode_go = panel
             .unused
@@ -510,7 +516,7 @@ mod tests {
             .find(|r| r.title == "OpenCode Go")
             .unwrap();
         assert_eq!(opencode_go.figure, "—");
-        assert_eq!(opencode_go.figure_spoken, "sign in again");
+        assert_eq!(opencode_go.collapsed_spoken, "OpenCode Go, Sign in again");
     }
 
     #[test]

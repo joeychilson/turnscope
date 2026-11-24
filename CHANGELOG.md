@@ -8,8 +8,8 @@
 - **Why a connect failed is no longer said once the agent's connection
   changes**, as when it's connected from the command line.
 - **VoiceOver tells apart two accounts with the same title in the menu
-  bar,** and says what an account with no figure needs, such as "sign in
-  again", instead of reading a dash.
+  bar,** and no longer reads a dash on a row with no figure, whose line
+  already says why, such as "Sign in again".
 
 ## 0.4.0
 
