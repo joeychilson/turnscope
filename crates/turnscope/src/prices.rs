@@ -153,8 +153,8 @@ pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
 /// model listed for the first time prices what was used of it before, and
 /// what had no price is priced again. Whether it was taken in.
 pub fn refresh(db: &mut Connection) -> Result<bool> {
-    let data = crate::db::dir(db).map(Path::to_path_buf);
-    refresh_from(db, || catalog(data.as_deref()))
+    let data = crate::db::dir(db).to_path_buf();
+    refresh_from(db, || catalog(&data))
 }
 
 fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> Result<bool> {
@@ -190,12 +190,10 @@ fn claim(db: &mut Connection, now: i64) -> Result<bool> {
 type Catalog = Vec<((String, String), (String, Option<String>))>;
 
 /// models.dev's catalog.
-fn catalog(data: Option<&Path>) -> Result<Catalog> {
+fn catalog(data: &Path) -> Result<Catalog> {
     let (status, json) = providers::get("https://models.dev/api.json", 60)?;
     let checked = check(status, &json);
-    if let Some(data) = data {
-        tell(data, checked.as_ref().err().map(ToString::to_string));
-    }
+    tell(data, checked.as_ref().err().map(ToString::to_string));
     checked
 }
 

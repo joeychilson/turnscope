@@ -248,9 +248,11 @@ pub fn read(dir: &Path) -> Option<Connection> {
     (id == APPLICATION_ID && revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
 }
 
-/// The data directory `db` is in: None for one in memory.
-pub fn dir(db: &Connection) -> Option<&Path> {
-    db.path().and_then(|file| Path::new(file).parent())
+/// The data directory `db` is in.
+pub fn dir(db: &Connection) -> &Path {
+    db.path()
+        .and_then(|file| Path::new(file).parent())
+        .expect("`open` opens a file in a directory")
 }
 
 /// Begin a write: a transaction that holds the write lock from its start,
