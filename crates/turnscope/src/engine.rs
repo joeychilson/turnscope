@@ -854,7 +854,7 @@ fn same(a: &Shown, b: &Shown) -> bool {
 }
 
 /// What the app shows of the data in `data` now, read once and only read:
-/// no database is made or taken in, no alert is raised and nothing is
+/// no database is made or migrated, no alert is raised and nothing is
 /// caught up. For a picture of the panel.
 pub fn shown(data: &Path, home: &Path, binary: &Path) -> Result<Shown> {
     let db = crate::db::read(data)

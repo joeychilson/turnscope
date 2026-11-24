@@ -11,6 +11,10 @@
 - **`doctor` says why models.dev's catalog was refused**, as when it
   answers with an error, and no longer lists unreadable lines of history
   files since deleted.
+- **Data from Turnscope 0.1 and 0.2 is no longer carried over.** Updating
+  straight from them starts anew: the agents' history is read again, but
+  past limits, alerts and settings aren't kept. `turnscope.sqlite`, which
+  0.3 and 0.4 copied, can be deleted.
 
 ## 0.4.0
 
