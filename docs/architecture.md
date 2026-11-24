@@ -60,7 +60,8 @@ formats correctly, and the forecast.
 | models.dev | Prices |
 
 Everything is kept in one SQLite file, `turnscope.db`, in the data
-directory. Times are UTC milliseconds and money is dollars. The schema is
+directory, whose write-ahead log is cut back to 16 MiB once checkpointed.
+Times are UTC milliseconds and money is dollars. The schema is
 `db::REVISIONS` in `crates/turnscope/src/db.rs`:
 
 | Table | Holds |
@@ -275,7 +276,8 @@ It's in the engine crate, so an app for another platform only draws.
   command and says why.
 - What goes wrong is added to `app.log` in the data directory, which
   `turnscope doctor` shows: an app is started from its icon, where no one
-  reads its standard error.
+  reads its standard error. Why the data isn't kept current is added once
+  each time it changes, not at each try.
 
 ## Status
 
@@ -344,7 +346,7 @@ over. A response with none of these has an unknown cost, never zero, and
 
 models.dev's catalog is `https://models.dev/api.json`, read as [Catching
 up](#catching-up) says. A catalog with fewer than 1,000 priced models is
-refused. A price that changed is kept from then on beside the one before,
+refused, and why is added to `app.log`. A price that changed is kept from then on beside the one before,
 so each response keeps the price in force when it ran. Usage from before a
 model was first priced takes that first price, and usage with no known
 price is priced again each time the catalog is taken in.

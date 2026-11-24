@@ -7,6 +7,7 @@
 //! charges.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use rusqlite::{Connection, params};
 use serde::Deserialize;
@@ -151,7 +152,11 @@ pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
 /// model listed for the first time prices what was used of it before, and
 /// what had no price is priced again. Whether it was taken in.
 pub fn refresh(db: &mut Connection) -> Result<bool> {
-    refresh_from(db, catalog)
+    let data = db
+        .path()
+        .and_then(|file| Path::new(file).parent())
+        .map(Path::to_path_buf);
+    refresh_from(db, || catalog(data.as_deref()))
 }
 
 fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> Result<bool> {
@@ -186,12 +191,22 @@ fn claim(db: &mut Connection, now: i64) -> Result<bool> {
 
 type Catalog = Vec<((String, String), (String, Option<String>))>;
 
-fn catalog() -> Result<Catalog> {
+/// models.dev's catalog. One it answered with but that's refused is added
+/// to `app.log` in `data`, which `doctor` shows, as prices then go stale.
+fn catalog(data: Option<&Path>) -> Result<Catalog> {
     let (status, json) = providers::get("https://models.dev/api.json", 60)?;
+    let checked = check(status, &json);
+    if let (Err(error), Some(data)) = (&checked, data) {
+        crate::engine::log(data, &error.to_string());
+    }
+    checked
+}
+
+fn check(status: u16, json: &[u8]) -> Result<Catalog> {
     if status != 200 {
         return Err(Error::Failed(format!("models.dev answered {status}")));
     }
-    let catalog = parse_catalog(&json)?;
+    let catalog = parse_catalog(json)?;
     // A catalog cut short would leave most usage unpriced.
     if catalog.len() < 1000 {
         return Err(Error::Failed(format!(

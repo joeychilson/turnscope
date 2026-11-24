@@ -19,6 +19,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::alerts::{self, Alert, Settings};
+use crate::limits::Ask;
 use crate::status::{self, Agent, Status};
 use crate::{Error, Result, agents, usage};
 
@@ -129,7 +130,7 @@ enum Wake {
     /// Limits were asked for: the panel opened (`Engine::ask_limits`), or
     /// an agent wrote a login (`agents::login_file`).
     Asked,
-    /// Explicit user refresh (`Engine::refresh_now`): bypass cooldown and backoff.
+    /// The person asked for the limits (`Engine::refresh_now`).
     Force,
     /// The engine is shutting down (`Drop for Engine`).
     Stop,
@@ -195,14 +196,14 @@ impl Engine {
     /// Leave an account out of the panel, the menu bar and alerts, or show
     /// it again.
     pub fn hide(&self, account: String, hidden: bool) {
-        self.change("hiding an account", move |showing| {
+        self.change("hiding an account", Some(Tell::Always), move |showing| {
             status::hide(&showing.db, &account, hidden)
         });
     }
 
     /// Keep which notifications are sent.
     pub fn save_settings(&self, settings: Settings) {
-        self.change("saving the settings", move |showing| {
+        self.change("saving the settings", Some(Tell::Always), move |showing| {
             alerts::save_settings(&showing.db, &settings)
         });
     }
@@ -212,17 +213,8 @@ impl Engine {
         if ids.is_empty() {
             return;
         }
-        Engine::ask(&self.requests, move |inner| {
-            if inner.newer().is_some() {
-                return;
-            }
-            let done = match inner.showing().as_mut() {
-                Some(showing) => alerts::acknowledge(&mut showing.db, &ids),
-                None => return,
-            };
-            if let Err(error) = done {
-                inner.failed("acknowledging alerts", error);
-            }
+        self.change("acknowledging alerts", None, move |showing| {
+            alerts::acknowledge(&mut showing.db, &ids)
         });
     }
 
@@ -288,16 +280,17 @@ impl Engine {
         }
     }
 
-    /// Run `change` on the open data, then tell the status again, changed
-    /// or not.
+    /// Run `change` on the open data, unless a newer Turnscope wrote, then
+    /// tell the status as `then` says.
     fn change(
         &self,
         name: &'static str,
-        change: impl FnOnce(&Showing) -> Result<()> + Send + 'static,
+        then: Option<Tell>,
+        change: impl FnOnce(&mut Showing) -> Result<()> + Send + 'static,
     ) {
         Engine::ask(&self.requests, move |inner| {
             if inner.newer().is_none() {
-                let done = match inner.showing().as_ref() {
+                let done = match inner.showing().as_mut() {
                     Some(showing) => change(showing),
                     None => return,
                 };
@@ -305,7 +298,9 @@ impl Engine {
                     inner.failed(name, error);
                 }
             }
-            inner.give(Tell::Always);
+            if let Some(tell) = then {
+                inner.give(tell);
+            }
         });
     }
 
@@ -444,11 +439,9 @@ impl Inner {
     }
 
     fn stopped(&self, error: Error) -> bool {
-        let why = error.to_string();
-        log(&self.data, &why);
         let stopped = match error {
             Error::Newer { replaced } => Stopped::Newer { replaced },
-            _ => Stopped::Failing(why),
+            error => Stopped::Failing(error.to_string()),
         };
         let newer = matches!(stopped, Stopped::Newer { .. });
         self.kept(Some(stopped));
@@ -464,6 +457,9 @@ impl Inner {
         }
     }
 
+    /// Tell whether the data is kept current, when that changed, and log
+    /// why it isn't: logged each time, a database that couldn't be opened
+    /// added a line every 5 s.
     fn kept(&self, now: Option<Stopped>) {
         let mut said = locked(&self.kept);
         let done = matches!(&*said, Kept::Stopped(Stopped::Newer { .. }));
@@ -474,6 +470,9 @@ impl Inner {
         if !done && *said != next {
             *said = next;
             drop(said);
+            if let Some(stopped) = &now {
+                log(&self.data, &stopped.to_string());
+            }
             (self.tell)(Event::Kept(now));
         }
     }
@@ -631,33 +630,30 @@ fn keep(
     let mut pushed = None;
     // The limits before history: on a first launch that reads all of it (12 s
     // for a made-up 5,000 files), the app showed no account until it ended.
-    if crate::online()
-        && read_limits(&mut db, home, data, crate::limits::Ask::Scheduled)?
-        && !told(Caught::Limits)
+    if crate::online() && read_limits(&mut db, home, data, Ask::Scheduled)? && !told(Caught::Limits)
     {
         return Ok(());
     }
     // Limits asked for and not read yet, and when they last were.
-    let (mut asked, mut asked_at, mut forced) = (false, None::<Instant>, false);
+    let (mut asked, mut asked_at) = (None::<Ask>, None::<Instant>);
+    let due = |asked: Option<Ask>, at: Option<Instant>| match asked {
+        Some(Ask::Force) => true,
+        Some(_) => at.is_none_or(|at| at.elapsed() >= ASKED),
+        None => false,
+    };
     loop {
         if ended.load(Ordering::Acquire) {
             return Ok(());
         }
         watch(&mut watcher);
-        let was_forced = std::mem::take(&mut forced);
+        let reading = asked.filter(|_| due(asked, asked_at));
         let mut read_asked = false;
-        if was_forced {
-            (asked, asked_at) = (false, Some(Instant::now()));
-            if crate::online() {
-                read_asked = read_limits(&mut db, home, data, crate::limits::Ask::Force)?;
-            }
-        } else if asked && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
-            (asked, asked_at) = (false, Some(Instant::now()));
+        if let Some(ask) = reading {
+            (asked, asked_at) = (None, Some(Instant::now()));
             // Offline, the catch-up still takes in limits agents wrote.
-            if crate::online() {
-                read_asked = read_limits(&mut db, home, data, crate::limits::Ask::Opened)?;
-            }
+            read_asked = crate::online() && read_limits(&mut db, home, data, ask)?;
         }
+        let forced = reading == Some(Ask::Force);
         let caught = match crate::catch_up(&mut db, home, None) {
             Ok(read) => {
                 let now = (
@@ -666,20 +662,14 @@ fn keep(
                 );
                 let new = read || read_asked || pushed != Some(now);
                 pushed = Some(now);
-                Caught::Read {
-                    new,
-                    forced: was_forced,
-                }
+                Caught::Read { new, forced }
             }
             Err(error) => {
                 // Once a newer Turnscope has written here, this one writes
                 // nothing more, so it stops, and the app says why. Going on,
                 // it showed what it read before as current.
                 crate::db::writing(&db)?;
-                Caught::Failed {
-                    error,
-                    forced: was_forced,
-                }
+                Caught::Failed { error, forced }
             }
         };
         if !told(caught) {
@@ -699,12 +689,11 @@ fn keep(
             };
             match changes.recv_timeout(wait) {
                 Ok(Wake::Stop) => return Ok(()),
-                Ok(Wake::Force) => {
-                    forced = true;
-                    break;
-                }
+                Ok(Wake::Force) => asked = Some(Ask::Force),
                 Ok(wake) => {
-                    asked |= wake == Wake::Asked;
+                    if wake == Wake::Asked {
+                        asked.get_or_insert(Ask::Opened);
+                    }
                     let first = *first.get_or_insert_with(Instant::now);
                     settled |= first.elapsed() >= Duration::from_secs(1);
                 }
@@ -714,7 +703,7 @@ fn keep(
                     return Err(Error::Failed("the agents' folders can't be watched".into()));
                 }
             }
-            if asked && asked_at.is_none_or(|at| at.elapsed() >= ASKED) {
+            if due(asked, asked_at) {
                 break;
             }
         }
@@ -724,12 +713,7 @@ fn keep(
 /// Read the limits due (`limits::refresh`), or asked for; whether any were.
 /// A failure is logged, and counts as a read so the status is told again,
 /// unless a newer Turnscope wrote.
-fn read_limits(
-    db: &mut Connection,
-    home: &Path,
-    data: &Path,
-    ask: crate::limits::Ask,
-) -> Result<bool> {
+fn read_limits(db: &mut Connection, home: &Path, data: &Path, ask: Ask) -> Result<bool> {
     match crate::limits::refresh(db, home, ask) {
         Err(error @ Error::Newer { .. }) => Err(error),
         Err(error) => {
@@ -938,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn data_a_newer_turnscope_wrote_is_said_and_not_tried_again() {
+    fn data_a_newer_turnscope_wrote_is_said() {
         for newer in NEWER {
             let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
             crate::db::open(data.path())
@@ -1077,12 +1061,30 @@ mod tests {
         assert_eq!(kept(20), None);
     }
 
+    /// The same failure, tried again, is logged once.
     #[test]
-    fn the_log_starts_over_once_it_is_full() {
+    fn a_failure_tried_again_is_logged_once() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(data.path().join("turnscope.db"), "not a database").unwrap();
+        let (_engine, told) = start(data.path(), home.path());
+        assert!(matches!(stopped(&told, 10), Stopped::Failing(_)));
+        // Past the second try.
+        std::thread::sleep(AGAIN + Duration::from_secs(1));
+        let logged = std::fs::read_to_string(data.path().join("app.log")).unwrap();
+        assert_eq!(logged.lines().count(), 1, "{logged}");
+    }
+
+    #[test]
+    fn a_full_log_moves_to_app_log_1_and_starts_over() {
         let data = tempfile::tempdir().unwrap();
         let path = data.path().join("app.log");
-        std::fs::write(&path, vec![b'x'; LOG_SIZE as usize + 1]).unwrap();
+        let full = "x".repeat(LOG_SIZE as usize + 1);
+        std::fs::write(&path, &full).unwrap();
         log(data.path(), "it failed\nat once");
+        assert_eq!(
+            std::fs::read_to_string(data.path().join("app.log.1")).unwrap(),
+            full
+        );
         let logged = std::fs::read_to_string(&path).unwrap();
         // One line, the time first.
         assert_eq!(logged.lines().count(), 1, "{logged}");
@@ -1347,21 +1349,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!running(data.path()));
-    }
-
-    #[test]
-    fn log_rotates_past_limit_into_backup_file() {
-        let data = tempfile::tempdir().unwrap();
-        let path = data.path().join("app.log");
-        let existing = "x".repeat(LOG_SIZE as usize + 1);
-        std::fs::write(&path, &existing).unwrap();
-        log(data.path(), "after rotate");
-        assert_eq!(
-            std::fs::read_to_string(data.path().join("app.log.1")).unwrap(),
-            existing
-        );
-        let fresh = std::fs::read_to_string(&path).unwrap();
-        assert!(fresh.trim_end().ends_with(" after rotate"), "{fresh}");
     }
 
     #[test]

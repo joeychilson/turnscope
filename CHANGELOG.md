@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.1
+
+- **The data directory no longer keeps hundreds of MB of write-ahead
+  log.** `turnscope.db-wal` is cut back to 16 MB once SQLite checkpoints
+  it; before, one large write left it that size while the app ran.
+- **`app.log` says once why the data can't be kept current**, not at
+  every try: a database that couldn't be opened added a line every 5
+  seconds and pushed out what was logged before.
+- **`doctor` says why models.dev's catalog was refused**, as when it
+  answers with an error, and no longer lists unreadable lines of history
+  files since deleted.
+
 ## 0.4.0
 
 - **The macOS app is now native SwiftUI and AppKit**, under half the size
