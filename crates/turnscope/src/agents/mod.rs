@@ -824,6 +824,12 @@ fn credential(login: &Login) -> Option<(&'static str, bool, Option<i64>, &str)> 
 mod tests {
     use super::*;
 
+    /// A fingerprint names a key's account and limits where they're kept.
+    #[test]
+    fn a_fingerprint_is_the_first_16_hex_digits_of_its_sha256() {
+        assert_eq!(Secret::new("work").fingerprint(), "00e13ed7af55b276");
+    }
+
     #[test]
     fn a_title_is_kept_on_one_line_and_cut_at_200_characters() {
         let mut session = Session::default();

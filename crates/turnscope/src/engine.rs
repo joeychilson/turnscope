@@ -1173,7 +1173,8 @@ mod tests {
     }
 
     /// Limits asked for, as when the panel opens, are read at once, not
-    /// after the gap between catch-ups.
+    /// after the gap between catch-ups; Refresh Limits reads them again at
+    /// once, though they were read under `ASKED` ago.
     #[test]
     fn limits_asked_for_are_read_at_once() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -1203,6 +1204,14 @@ mod tests {
             answered - asked < Duration::from_secs(1),
             "{:?}",
             answered - asked
+        );
+        let forced = Instant::now();
+        locked(&wake).as_ref().unwrap().send(Wake::Force).unwrap();
+        let answered = told.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            answered - forced < Duration::from_secs(1),
+            "{:?}",
+            answered - forced
         );
     }
 
