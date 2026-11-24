@@ -80,7 +80,6 @@ jobs:
   # packed, and the bundle checked to run. Its tests run with the engine's,
   # above. A tag's release builds and checks its own, signed.
   app:
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: macos-26
     timeout-minutes: 45
     steps:
@@ -99,6 +98,8 @@ jobs:
           path: target/sparkle
           key: sparkle-${{ hashFiles('scripts/sparkle.sh') }}
       - name: Build the release, signed ad hoc
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: scripts/app.sh --release && scripts/sign-release.sh
       - name: Check the built app runs
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: scripts/check-app.sh
