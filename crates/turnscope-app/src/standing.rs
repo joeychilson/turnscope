@@ -1,10 +1,9 @@
 //! How a limit or an account stands, which sets its color.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use turnscope::status::{Account, Limit, Outlook};
 
-/// How a limit stands, from calmest to most urgent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Standing {
     Lasts,

@@ -1,13 +1,11 @@
 #ifndef TURNSCOPE_APP_H
 #define TURNSCOPE_APP_H
 
-#include <stdint.h>
-
 typedef struct TurnscopeApp TurnscopeApp;
 typedef void (*TurnscopeWakeFn)(void *ctx);
 
 /* Build a one-shot panel snapshot JSON for `--snapshot` (fixture or DB).
- * Returns JSON `{ "ok": PanelModel }` or `{ "error": "...", "code": 1|2 }`. */
+ * Returns JSON `{ "ok": { "panel": PanelModel } }` or `{ "err": { "error": "...", "code": 1|2 } }`. */
 char *turnscope_app_snapshot(const char *config_json);
 
 /* Start a live or fixture app core. `wake` may be invoked from any thread.

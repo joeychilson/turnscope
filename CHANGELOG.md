@@ -40,6 +40,14 @@
   refused instead of moved into range.
 - **`turnscope status --hours` says whether the hours fit each account
   shown**, not only the first, and with `--json`, `fit` is a list of them.
+- **Refresh Limits no longer spins forever while Turnscope can't read its
+  data**, and is greyed out in the right-click menu while a newer
+  Turnscope has written to the data.
+- **Why a connect failed is no longer said once the agent's connection
+  changes**, as when it's connected from the command line.
+- **VoiceOver tells apart two accounts with the same title in the menu
+  bar,** and no longer reads a dash on a row with no figure, whose line
+  already says why, such as "Sign in again".
 
 ## 0.4.0
 

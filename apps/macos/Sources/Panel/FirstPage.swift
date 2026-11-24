@@ -206,45 +206,22 @@ private struct Footer: View {
     var body: some View {
         HStack(spacing: 2) {
             if let note = bridge.panel.footerNote {
-                switch note {
-                case let .stale(text, help, spoken):
-                    Text(text)
+                HStack(spacing: 6) {
+                    if note.busy {
+                        Spinner()
+                    }
+                    Text(note.text)
                         .font(.small)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .help(help)
-                        .accessibilityLabel(spoken)
-                        .padding(.leading, 12)
-                        .transition(appears)
-                case let .reading(text, help, spoken):
-                    HStack(spacing: 6) {
-                        Spinner()
-                        Text(text)
-                            .font(.small)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .help(help)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(spoken)
-                    .padding(.leading, 12)
-                    .transition(appears)
-                case let .refreshing(text, spoken):
-                    HStack(spacing: 6) {
-                        Spinner()
-                        Text(text)
-                            .font(.small)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(spoken)
-                    .padding(.leading, 12)
-                    .transition(appears)
                 }
+                .help(note.help ?? "")
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(note.spoken)
+                .padding(.leading, 12)
+                .id(note.text)
+                .transition(appears)
             }
             Spacer()
             Button("Close", action: closePanel)

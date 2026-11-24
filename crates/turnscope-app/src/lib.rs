@@ -10,10 +10,11 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use turnscope::engine::{Engine, Shown};
 
-use crate::state::{Action, Core, MenuShows, Preferences, State};
+use crate::state::{Action, Call, Core, MenuShows, Preferences, State};
 use crate::view::PanelModel;
 
 /// Resolves the bundled `Helpers/turnscope` (or sibling binary under `target/`)
@@ -28,7 +29,7 @@ pub fn binary() -> PathBuf {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartConfig {
     pub fixture: Option<PathBuf>,
@@ -42,7 +43,7 @@ pub struct StartConfig {
     pub dismissed_connect: Vec<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotConfig {
     pub fixture: Option<PathBuf>,
@@ -51,9 +52,9 @@ pub struct SnapshotConfig {
 }
 
 #[derive(Serialize)]
-#[serde(untagged)]
+#[serde(rename_all = "camelCase")]
 enum SnapshotOutput {
-    Ok { ok: Box<PanelModel> },
+    Ok { panel: Box<PanelModel> },
     Err { error: String, code: i32 },
 }
 
@@ -69,7 +70,6 @@ struct Wake {
 // SAFETY: `ctx` is an opaque host pointer kept valid until `turnscope_app_stop` returns;
 // `TurnscopeApp::drop` clears the mutex-guarded `Wake` so no callback runs after stop.
 unsafe impl Send for Wake {}
-unsafe impl Sync for Wake {}
 
 impl Wake {
     fn trigger(self) {
@@ -77,7 +77,6 @@ impl Wake {
     }
 }
 
-/// Opaque handle exposed over C ABI.
 pub struct TurnscopeApp {
     core: Arc<Mutex<Core>>,
     wake: Arc<Mutex<Option<Wake>>>,
@@ -90,7 +89,6 @@ impl Drop for TurnscopeApp {
         if let Ok(mut guard) = self.wake.lock() {
             *guard = None;
         }
-        self.engine = None;
     }
 }
 
@@ -109,10 +107,31 @@ fn install_panic_hook(data: PathBuf) {
 }
 
 fn read_fixture(path: &Path) -> Result<Shown, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("Turnscope: {} can't be read: {error}", path.display()))?;
-    serde_json::from_str(&text)
+    std::fs::read_to_string(path)
+        .and_then(|text| Ok(serde_json::from_str(&text)?))
         .map_err(|error| format!("Turnscope: {} can't be read: {error}", path.display()))
+}
+
+/// # Safety
+/// `json` must be null or a valid NUL-terminated C string.
+unsafe fn read_config<T: DeserializeOwned>(json: *const c_char) -> Result<T, String> {
+    let text = unsafe { read_c_str(json) }.ok_or("Turnscope: no config")?;
+    serde_json::from_str(text).map_err(|error| format!("Turnscope: invalid config: {error}"))
+}
+
+fn send(engine: Option<&Engine>, calls: Vec<Call>) {
+    let Some(engine) = engine else { return };
+    for call in calls {
+        match call {
+            Call::UsedMost { account, limit } => engine.used_most(account, limit),
+            Call::AskLimits => engine.ask_limits(),
+            Call::RefreshNow => engine.refresh_now(),
+            Call::Hide { account, hidden } => engine.hide(account, hidden),
+            Call::Connect { agent, connecting } => engine.connect(agent, connecting),
+            Call::SaveSettings(settings) => engine.save_settings(settings),
+            Call::Acknowledge(id) => engine.acknowledge(vec![id]),
+        }
+    }
 }
 
 fn lock_core(core: &Mutex<Core>) -> std::sync::MutexGuard<'_, Core> {
@@ -145,7 +164,6 @@ unsafe fn read_c_str<'a>(ptr: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(ptr) }.to_str().ok()
 }
 
-/// Start the app core from a parsed `StartConfig`.
 pub fn start(
     config: StartConfig,
     wake: Option<WakeFn>,
@@ -153,25 +171,20 @@ pub fn start(
 ) -> Result<TurnscopeApp, String> {
     turnscope::db::started();
     let (home, data) = turnscope::places(config.home, config.data);
-    let fixed = match config.fixture.as_deref() {
-        Some(path) => Some(read_fixture(path)?),
-        None => None,
-    };
-    let runs_engine = fixed.is_none();
-    let mut state = match fixed {
-        Some(shown) => State::fixed(shown),
+    let runs_engine = config.fixture.is_none();
+    let mut state = match config.fixture.as_deref() {
+        Some(path) => State::fixed(read_fixture(path)?),
         None => State {
             preferences: Preferences {
                 menu_shows: config.menu_shows,
                 dismissed_connect: config.dismissed_connect.into_iter().collect(),
-                kept: true,
             },
             ..State::default()
         },
     };
     state.from_disk_image = config.from_disk_image;
 
-    let core = Arc::new(Mutex::new(Core::new(state, runs_engine)));
+    let core = Arc::new(Mutex::new(Core::new(state)));
     let wake = Arc::new(Mutex::new(wake.map(|cb| Wake { ctx, cb })));
 
     let engine = if runs_engine {
@@ -183,7 +196,7 @@ pub fn start(
         let started = Engine::start(data.clone(), home.clone(), binary(), move |event| {
             let (calls, should_wake) = lock_core(&core_for_cb).took(event);
             if let Some(held) = weak.upgrade() {
-                calls.send(held.get());
+                send(held.get(), calls);
             }
             if should_wake
                 && let Ok(guard) = wake_for_cb.lock()
@@ -265,11 +278,13 @@ pub fn snapshot(config: SnapshotConfig) -> Result<PanelModel, (String, i32)> {
 /// `config_json` must be null or a valid NUL-terminated UTF-8 C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn turnscope_app_snapshot(config_json: *const c_char) -> *mut c_char {
-    let config = unsafe { read_c_str(config_json) }
-        .and_then(|s| serde_json::from_str::<SnapshotConfig>(s).ok())
-        .unwrap_or_default();
-    let output = match snapshot(config) {
-        Ok(ok) => SnapshotOutput::Ok { ok: Box::new(ok) },
+    let panel = unsafe { read_config(config_json) }
+        .map_err(|error| (error, 2))
+        .and_then(snapshot);
+    let output = match panel {
+        Ok(panel) => SnapshotOutput::Ok {
+            panel: Box::new(panel),
+        },
         Err((error, code)) => SnapshotOutput::Err { error, code },
     };
     serialize_c(&output)
@@ -287,22 +302,7 @@ pub unsafe extern "C" fn turnscope_app_start(
     wake: Option<WakeFn>,
     error_out: *mut *mut c_char,
 ) -> *mut TurnscopeApp {
-    let config = match unsafe { read_c_str(config_json) } {
-        Some(s) => match serde_json::from_str::<StartConfig>(s) {
-            Ok(config) => config,
-            Err(err) => {
-                if !error_out.is_null() {
-                    // SAFETY: Caller owns `error_out`.
-                    unsafe {
-                        *error_out = into_c_string(format!("Turnscope: invalid config: {err}"))
-                    };
-                }
-                return std::ptr::null_mut();
-            }
-        },
-        None => StartConfig::default(),
-    };
-    match start(config, wake, ctx) {
+    match unsafe { read_config(config_json) }.and_then(|config| start(config, wake, ctx)) {
         Ok(app) => Box::into_raw(Box::new(app)),
         Err(err) => {
             if !error_out.is_null() {
@@ -360,7 +360,7 @@ pub unsafe extern "C" fn turnscope_app_action(
         let sync = core.sync();
         (calls, sync)
     };
-    calls.send(app.engine.as_ref().and_then(|cell| cell.get()));
+    send(app.engine.as_ref().and_then(|cell| cell.get()), calls);
     serialize_c(&sync)
 }
 
@@ -386,14 +386,13 @@ pub unsafe extern "C" fn turnscope_app_log(app: *mut TurnscopeApp, line: *const 
 /// `config_json` must be null or a valid NUL-terminated UTF-8 C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn turnscope_app_diagnostics(config_json: *const c_char) -> *mut c_char {
-    let config = unsafe { read_c_str(config_json) }
-        .and_then(|s| serde_json::from_str::<SnapshotConfig>(s).ok())
-        .unwrap_or_default();
-    let report = if config.fixture.is_some() {
-        diagnostics(None, None)
-    } else {
-        let (home, data) = turnscope::places(config.home, config.data);
-        diagnostics(Some(&data), Some(&home))
+    let report = match unsafe { read_config::<SnapshotConfig>(config_json) } {
+        Ok(config) if config.fixture.is_some() => diagnostics(None, None),
+        Ok(config) => {
+            let (home, data) = turnscope::places(config.home, config.data);
+            diagnostics(Some(&data), Some(&home))
+        }
+        Err(error) => error,
     };
     into_c_string(report)
 }
@@ -471,6 +470,7 @@ mod tests {
             sync["panel"]["verdict"]["headline"],
             "Claude Max runs out in\u{a0}50m"
         );
+        assert_eq!(sync["panel"]["verdict"]["standing"], "runningOut");
         assert_eq!(sync["menuBar"]["slots"].as_array().unwrap().len(), 1);
 
         let hide_action =
@@ -585,8 +585,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn swift_models_match_rust_wire_contract() {
         use crate::standing::Standing;
-        use crate::state::{AlertNote, Effect};
+        use crate::state::Effect;
         use crate::view::*;
+        use crate::words::AlertNote;
         use turnscope::alerts::Notify;
 
         let full_row = AccountRowModel {
@@ -672,13 +673,14 @@ mod tests {
                     in_use: vec![full_row],
                     recent: vec![],
                     unused: vec![],
-                    hidden: vec![HiddenAccountModel {
+                    hidden: vec![AccountModel {
                         id: "openai:b".into(),
                         provider: "openai".into(),
                         title: "ChatGPT Pro".into(),
                         label: Some("work@example.com".into()),
                         via: Some("Codex".into()),
                         called: "ChatGPT Pro".into(),
+                        shown: false,
                     }],
                     unused_fold_label: Some("1 hidden".into()),
                     hidden_fold_label: Some("1 hidden".into()),
@@ -691,10 +693,11 @@ mod tests {
                         verb: "Reconnect".into(),
                         help: "Points Claude Code at this copy".into(),
                     }),
-                    footer_note: Some(FooterNoteModel::Stale {
+                    footer_note: Some(FooterNoteModel {
                         text: "Not up to date".into(),
-                        help: "Offline".into(),
+                        help: Some("Offline".into()),
                         spoken: "Not up to date: Offline".into(),
+                        busy: false,
                     }),
                     settings: SettingsModel {
                         menu_shows: MenuShows::All,
@@ -717,7 +720,7 @@ mod tests {
                             enabled: false,
                         }],
                         accounts_empty: None,
-                        subscriptions: vec![AccountSwitchModel {
+                        subscriptions: vec![AccountModel {
                             id: "anthropic:a".into(),
                             provider: "anthropic".into(),
                             title: "Claude Max".into(),
@@ -725,7 +728,6 @@ mod tests {
                             via: Some("Claude Code".into()),
                             called: "Claude Max (me@example.com)".into(),
                             shown: true,
-                            enabled: true,
                         }],
                         api_keys: vec![],
                     },
@@ -775,10 +777,11 @@ mod tests {
                     unused_fold_label: None,
                     hidden_fold_label: None,
                     connect_offer: None,
-                    footer_note: Some(FooterNoteModel::Reading {
+                    footer_note: Some(FooterNoteModel {
                         text: "Reading…".into(),
-                        help: "First run".into(),
+                        help: Some("First run".into()),
                         spoken: "Reading".into(),
+                        busy: true,
                     }),
                     settings: SettingsModel {
                         menu_shows: MenuShows::One,
@@ -821,9 +824,11 @@ mod tests {
                     unused_fold_label: None,
                     hidden_fold_label: None,
                     connect_offer: None,
-                    footer_note: Some(FooterNoteModel::Refreshing {
+                    footer_note: Some(FooterNoteModel {
                         text: "Refreshing limits…".into(),
+                        help: None,
                         spoken: "Refreshing limits".into(),
+                        busy: true,
                     }),
                     settings: SettingsModel {
                         menu_shows: MenuShows::All,
@@ -843,7 +848,7 @@ mod tests {
 
         let snapshots = vec![
             SnapshotOutput::Ok {
-                ok: Box::new(syncs[0].panel.clone()),
+                panel: Box::new(syncs[0].panel.clone()),
             },
             SnapshotOutput::Err {
                 error: "unreadable".into(),
@@ -894,22 +899,26 @@ precondition(p0.unusedFoldLabel == "1 hidden")
 precondition(p0.hiddenFoldLabel == "1 hidden")
 precondition(p0.connectOffer?.note == "Uses another Turnscope")
 precondition(p0.connectOffer?.configured == "/old/turnscope")
-precondition(p0.footerNote == .stale(text: "Not up to date", help: "Offline", spoken: "Not up to date: Offline"))
+precondition(p0.footerNote == FooterNoteModel(text: "Not up to date", help: "Offline", spoken: "Not up to date: Offline", busy: false))
 precondition(p0.settings.notify == NotifySettings(runningOut: true, usedUp: false, reset: true, signIn: false))
 precondition(p0.settings.agents[0].note == "Uses another Turnscope")
 precondition(p0.settings.agents[0].configured == "/old/turnscope")
 precondition(p0.settings.agents[0].changing == "Connecting…")
 precondition(p0.settings.subscriptions[0].label == "me@example.com")
 precondition(p0.settings.subscriptions[0].via == "Claude Code")
-precondition(syncs[0].effects.count == 3)
+precondition(syncs[0].effects == [
+    .postAlerts(alerts: [AlertNote(id: 7, account: "anthropic:a", replaces: "turnscope-limit-anthropic:a", signIn: false, title: "Claude Max", subtitle: "5 hours", body: "Runs out in 50m")]),
+    .removeNotifications(identifiers: ["turnscope-sign-in-anthropic:a"]),
+    .savePreferences(menuShows: .one, dismissedConnect: ["codex"]),
+])
 
 let p1 = syncs[1].panel
 precondition(p1.waiting?.problem == "database locked")
-precondition(p1.footerNote == .reading(text: "Reading…", help: "First run", spoken: "Reading"))
+precondition(p1.footerNote == FooterNoteModel(text: "Reading…", help: "First run", spoken: "Reading", busy: true))
 precondition(p1.settings.agentsEmpty == EmptyMessage(headline: "No agents", detail: "Install one"))
 precondition(p1.settings.accountsEmpty == EmptyMessage(headline: "No accounts", detail: "Sign in"))
 
-precondition(syncs[2].panel.footerNote == .refreshing(text: "Refreshing limits…", spoken: "Refreshing limits"))
+precondition(syncs[2].panel.footerNote == FooterNoteModel(text: "Refreshing limits…", help: nil, spoken: "Refreshing limits", busy: true))
 
 let snaps = try decoder.decode([SnapshotResponse].self, from: Data(contentsOf: URL(fileURLWithPath: args[2])))
 precondition(snaps.count == 2)

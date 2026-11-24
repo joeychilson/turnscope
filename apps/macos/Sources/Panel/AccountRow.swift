@@ -57,7 +57,7 @@ struct AccountRow: View {
                                 .fixedSize()
                                 .transition(quickFade)
                                 .allowsHitTesting(false)
-                                .accessibilityHidden(row.openable)
+                                .accessibilityHidden(row.openable || row.figureSpoken.isEmpty)
                                 .accessibilityLabel(row.figureSpoken)
                         }
                     }
