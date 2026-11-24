@@ -1023,6 +1023,12 @@ mod tests {
             alternate_note(&status, &status.accounts[0], None).as_deref(),
             Some("Another account has room: ChatGPT Pro has 97% left (Monthly).")
         );
+        // With under a quarter left, OpenRouter has no room.
+        status.accounts[2].limits[0].left_percent = 24;
+        assert_eq!(
+            alternate_note(&status, &status.accounts[0], Some("claude-code")).as_deref(),
+            Some("Another account has room: ChatGPT Pro has 97% left (Monthly, via Codex).")
+        );
         // When the current account lasts, no alternate is suggested.
         status.accounts[0].limits[0].outlook = Outlook::Lasts {
             left_at_reset: None,

@@ -80,9 +80,9 @@ Times are UTC milliseconds and money is dollars. The schema is
 
 `db::open` creates or migrates the database. Each revision is one script: a
 shipped script is never edited, and a change is a new script at the end.
-Before creating its tables in a file that has none of Turnscope's yet,
-`db::open` checks the file's SQLite application id, so it never writes
-into another program's database.
+`db::open` refuses a file whose SQLite application id is another
+program's, or that has none but has a `user_version`. A file with neither,
+such as a new one, gets Turnscope's tables, whatever else it holds.
 
 - **History is read incrementally.** Each file keeps its reader's cursor,
   so only what was appended is read, and an unchanged file is only

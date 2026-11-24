@@ -268,7 +268,7 @@ impl Limit {
     }
 
     pub fn is_key(&self) -> bool {
-        self.key.starts_with("key-")
+        crate::providers::key_limit_fingerprint(&self.key).is_some()
     }
 
     /// When its window resets, unless it already has since it was read.
@@ -523,7 +523,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             agents.push(agent.clone());
         }
         if let Some(key) = key {
-            let agents = keys.entry(format!("key-{key}")).or_default();
+            let agents = keys.entry(crate::providers::key_limit(&key)).or_default();
             if !agents.contains(&agent) {
                 agents.push(agent);
             }
@@ -946,7 +946,7 @@ fn work(
     // that rose Weekly (Opus) 8 points after 3h of Sonnet read as 2% an hour.
     let counted = (
         crate::usage::models(scope.as_deref()),
-        crate::usage::key(key),
+        crate::providers::key_limit_fingerprint(key).map(str::to_owned),
     );
     let slots = match slots.entry(counted) {
         Entry::Occupied(slots) => slots.into_mut(),

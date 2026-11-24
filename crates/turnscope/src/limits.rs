@@ -172,7 +172,9 @@ fn refresh_with(
     // One asked for waits out another process's read, then reads what that
     // didn't ask, as Refresh Limits does: asked again at once, a login
     // refused once would count as refused twice.
-    let lock = Path::new(db.path().unwrap_or_default()).with_file_name("limits.lock");
+    let lock = crate::db::dir(db)
+        .unwrap_or(Path::new(""))
+        .join("limits.lock");
     let (_reading, waited) = match crate::db::lock_within(&lock, Duration::ZERO)? {
         Some(reading) => (reading, false),
         None if ask == Ask::Scheduled => return Ok(false),
@@ -554,7 +556,7 @@ fn record(
         }
     }
     tx.commit()?;
-    if let Some(data) = db.path().and_then(|file| Path::new(file).parent()) {
+    if let Some(data) = crate::db::dir(db) {
         for line in logged {
             crate::engine::log(data, &line);
         }

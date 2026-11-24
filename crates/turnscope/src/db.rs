@@ -179,7 +179,7 @@ UPDATE session SET project = NULL WHERE project = '';
 "#,
 ];
 
-/// "TRNS", in the header, so a file that isn't Turnscope's is never written.
+/// "TRNS", in the header, so a file with another program's is never written.
 const APPLICATION_ID: i32 = 0x5452_4E53;
 
 /// Open the database in `dir`, creating or migrating it.
@@ -246,6 +246,11 @@ pub fn read(dir: &Path) -> Option<Connection> {
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .ok()?;
     (id == APPLICATION_ID && revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
+}
+
+/// The data directory `db` is in: None for one in memory.
+pub fn dir(db: &Connection) -> Option<&Path> {
+    db.path().and_then(|file| Path::new(file).parent())
 }
 
 /// Begin a write: a transaction that holds the write lock from its start,

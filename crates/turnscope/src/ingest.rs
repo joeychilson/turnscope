@@ -156,7 +156,9 @@ pub fn lock(db: &Connection) -> Result<std::fs::File> {
 }
 
 fn lock_path(db: &Connection) -> PathBuf {
-    Path::new(db.path().unwrap_or_default()).with_file_name("ingest.lock")
+    crate::db::dir(db)
+        .unwrap_or(Path::new(""))
+        .join("ingest.lock")
 }
 
 /// How long a command waits for `ingest.lock` before it says so: the app

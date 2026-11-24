@@ -504,7 +504,9 @@ pub fn query(
         agent: None,
         account: Some(account.id.clone()),
         models: models(limit.and_then(|limit| limit.scope.as_deref())),
-        key: key(limit.map_or("", |limit| &limit.key)),
+        key: limit
+            .and_then(|limit| crate::providers::key_limit_fingerprint(&limit.key))
+            .map(str::to_owned),
     }
 }
 
@@ -547,10 +549,6 @@ pub fn models(scope: Option<&str>) -> Vec<String> {
         .flat_map(|scope| scope.split(" and "))
         .map(|model| model.trim().to_lowercase().replace(' ', "-"))
         .collect()
-}
-
-pub fn key(limit_key: &str) -> Option<String> {
-    limit_key.strip_prefix("key-").map(str::to_owned)
 }
 
 /// Whether a response `r` counts toward a limit on `models` or one `key`'s,

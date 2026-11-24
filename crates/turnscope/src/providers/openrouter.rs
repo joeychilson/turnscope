@@ -42,7 +42,7 @@ impl Provider for OpenRouter {
 
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
         let key = super::ask(KEY, credential, &[], by)?;
-        let name = format!("key-{}", credential.secret.fingerprint());
+        let name = super::key_limit(&credential.secret.fingerprint());
         let own = own_limit(&key, &name, now).ok_or_else(|| Problem::not_understood(KEY))?;
         Ok(Vec::from_iter(own).into())
     }
