@@ -143,7 +143,8 @@ pub enum Ask {
     /// As they come due: every [`DUE`] in use, every `IDLE` not.
     Scheduled,
     /// The panel opened, or an agent wrote a login: those read [`DUE`] ago
-    /// or more, and those whose read failed.
+    /// or more, and those whose read failed, unless asked in the last
+    /// `CLAIM`.
     Opened,
     /// Refresh Limits: every one not asked of its provider in the last
     /// `CLAIM`.
@@ -151,9 +152,9 @@ pub enum Ask {
 }
 
 /// Read the limits of each account that's due (`Schedule::due`), and the
-/// agents' logins, when no other process is reading them, and, unless they
-/// were asked for, none claimed doing so in the last `CLAIM`, or the last
-/// [`DUE`] with no account due; whether it did.
+/// agents' logins, when no other process is reading them (one asked for
+/// waits for it), and, unless they were asked for, none claimed doing so in
+/// the last `CLAIM`, or the last [`DUE`] with no account due; whether it did.
 ///
 /// A read asked for that no provider answered leaves the account as it
 /// was: asked for as the Mac woke, before its network was back, it showed
@@ -169,6 +170,16 @@ fn refresh_with(
     providers: &[&'static dyn Provider],
     ask: Ask,
 ) -> Result<bool> {
+    // One asked for waits for another process's read, then reads what that
+    // left due.
+    let wait = match ask {
+        Ask::Scheduled => Duration::ZERO,
+        Ask::Opened | Ask::Force => Duration::from_millis(CLAIM as u64),
+    };
+    let lock = Path::new(db.path().unwrap_or_default()).with_file_name("limits.lock");
+    let Some(_reading) = crate::db::lock_within(&lock, wait)? else {
+        return Ok(false);
+    };
     let now = now();
     let schedules = schedules(db, now)?;
     let due: HashSet<&str> = schedules
@@ -183,10 +194,6 @@ fn refresh_with(
         (Ask::Opened, _) | (Ask::Force, true) => 0,
         (Ask::Force, false) | (Ask::Scheduled, true) => CLAIM,
         (Ask::Scheduled, false) => DUE,
-    };
-    let lock = Path::new(db.path().unwrap_or_default()).with_file_name("limits.lock");
-    let Some(_reading) = crate::db::lock_within(&lock, Duration::ZERO)? else {
-        return Ok(false);
     };
     if !crate::db::claim(db, crate::db::Claim::Limits, now, gap, now)? {
         return Ok(false);
@@ -270,7 +277,7 @@ impl Schedule {
         }
         let asked = ask == Ask::Opened;
         if self.failing {
-            return asked || ago(self.checked_at) >= DUE;
+            return ago(self.checked_at) >= if asked { CLAIM } else { DUE };
         }
         let stands = if self.in_use || asked { DUE } else { IDLE };
         ago(self.read_at) >= stands || ago(self.full_read_at) >= IDLE
@@ -1202,7 +1209,7 @@ mod tests {
         let began = Instant::now();
         let limits = read(&mut held, now());
         // One after another, they'd take 900 ms.
-        assert!(began.elapsed() < Duration::from_millis(900));
+        assert!(began.elapsed() < Duration::from_millis(600));
         assert_eq!(
             keys(&limits),
             ["credits", "key-slow a", "key-slow b", "key-slow c"]
@@ -1580,27 +1587,44 @@ mod tests {
     }
 
     /// A read asked for takes no notice of another process's claim, but
-    /// never runs beside its read: both refused, they'd count as two
-    /// refusals in a row, and ask to sign in again.
+    /// waits out its read, then asks no provider that read just asked: both
+    /// refused, they'd count as two refusals in a row, and ask to sign in
+    /// again.
     #[test]
-    fn no_read_asks_a_provider_beside_another_processs() {
-        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut db = crate::db::open(data.path()).unwrap();
-        let fake: &'static Fake = Box::leak(Box::default());
-        let folder = home.path().join(".fake");
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::write(folder.join("login"), r#"{"fake": "key"}"#).unwrap();
-        let mut refresh = |ask| {
-            refresh_with(&mut db, home.path(), &[&FakeAgent::default()], &[fake], ask).unwrap()
-        };
-        let reading = crate::db::lock(&data.path().join("limits.lock")).unwrap();
-        for ask in [Ask::Scheduled, Ask::Opened, Ask::Force] {
-            assert!(!refresh(ask));
+    fn a_read_asked_for_waits_out_another_processs() {
+        // Refresh Limits beside a read, and an agent writing a login beside
+        // one refused.
+        for (key, ask) in [("slow key", Ask::Force), ("slow refused key", Ask::Opened)] {
+            let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let fake: &'static Fake = Box::leak(Box::default());
+            let folder = home.path().join(".fake");
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join("login"), format!(r#"{{"fake": "{key}"}}"#)).unwrap();
+            let refresh = |db: &mut Connection, ask| {
+                refresh_with(db, home.path(), &[&FakeAgent::default()], &[fake], ask).unwrap()
+            };
+            let open = || crate::db::open(data.path()).unwrap();
+            let (mut other, mut db) = (open(), open());
+            // Read an hour ago, so both reads find it due.
+            assert!(refresh(&mut db, Ask::Opened));
+            db.execute_batch(
+                "UPDATE account SET read_at = read_at - 3600000,
+                     full_read_at = full_read_at - 3600000, checked_at = checked_at - 3600000;
+                 UPDATE state SET limits_at = limits_at - 3600000",
+            )
+            .unwrap();
+            std::thread::scope(|scope| {
+                scope.spawn(|| refresh(&mut other, Ask::Scheduled));
+                std::thread::sleep(Duration::from_millis(100));
+                let asked = Instant::now();
+                refresh(&mut db, ask);
+                // The other's read takes 300 ms.
+                assert!(asked.elapsed() >= Duration::from_millis(150));
+            });
+            let asked = fake.asked.lock().unwrap();
+            let reads = asked.iter().filter(|asked| *asked == key).count();
+            assert_eq!(reads, 2, "{asked:?}");
         }
-        assert!(fake.asked.lock().unwrap().is_empty());
-        drop(reading);
-        assert!(refresh(Ask::Opened));
-        assert!(!fake.asked.lock().unwrap().is_empty());
     }
 
     #[test]
