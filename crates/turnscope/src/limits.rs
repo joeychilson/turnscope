@@ -143,8 +143,7 @@ pub enum Ask {
     /// As they come due: every [`DUE`] in use, every `IDLE` not.
     Scheduled,
     /// The panel opened, or an agent wrote a login: those read [`DUE`] ago
-    /// or more, and those whose read failed, unless asked in the last
-    /// `CLAIM`.
+    /// or more, and those whose read failed.
     Opened,
     /// Refresh Limits: every one not asked of its provider in the last
     /// `CLAIM`.
@@ -170,28 +169,33 @@ fn refresh_with(
     providers: &[&'static dyn Provider],
     ask: Ask,
 ) -> Result<bool> {
-    // One asked for waits for another process's read, then reads what that
-    // left due.
-    let wait = match ask {
-        Ask::Scheduled => Duration::ZERO,
-        Ask::Opened | Ask::Force => Duration::from_millis(CLAIM as u64),
-    };
+    // One asked for waits out another process's read, then reads what that
+    // didn't ask, as Refresh Limits does: asked again at once, a login
+    // refused once would count as refused twice.
     let lock = Path::new(db.path().unwrap_or_default()).with_file_name("limits.lock");
-    let Some(_reading) = crate::db::lock_within(&lock, wait)? else {
-        return Ok(false);
+    let (_reading, waited) = match crate::db::lock_within(&lock, Duration::ZERO)? {
+        Some(reading) => (reading, false),
+        None if ask == Ask::Scheduled => return Ok(false),
+        None => match crate::db::lock_within(&lock, Duration::from_millis(CLAIM as u64))? {
+            Some(reading) => (reading, true),
+            None => return Ok(false),
+        },
     };
+    let rule = if waited { Ask::Force } else { ask };
     let now = now();
     let schedules = schedules(db, now)?;
     let due: HashSet<&str> = schedules
         .iter()
-        .filter(|(_, schedule)| schedule.due(now, ask))
+        .filter(|(_, schedule)| schedule.due(now, rule))
         .map(|(id, _)| id.as_str())
         .collect();
     let signed_in_due = schedules
         .iter()
         .any(|(id, schedule)| schedule.signed_in && due.contains(id.as_str()));
+    // One that waited isn't held off by the claim of the read it waited for.
     let gap = match (ask, signed_in_due) {
         (Ask::Opened, _) | (Ask::Force, true) => 0,
+        (Ask::Force, false) if waited => 0,
         (Ask::Force, false) | (Ask::Scheduled, true) => CLAIM,
         (Ask::Scheduled, false) => DUE,
     };
@@ -277,7 +281,7 @@ impl Schedule {
         }
         let asked = ask == Ask::Opened;
         if self.failing {
-            return ago(self.checked_at) >= if asked { CLAIM } else { DUE };
+            return asked || ago(self.checked_at) >= DUE;
         }
         let stands = if self.in_use || asked { DUE } else { IDLE };
         ago(self.read_at) >= stands || ago(self.full_read_at) >= IDLE
@@ -1285,6 +1289,9 @@ mod tests {
             failed(&mut db, Problem::SignIn, minutes(5)),
             Some(Stale::ReadFailed)
         );
+        // Asked for as the agent writes the login it renewed, it's read at
+        // once.
+        assert!(due(&db, minutes(5) + 1_000, Ask::Opened));
         assert_eq!(
             failed(&mut db, Problem::SignIn, minutes(10)),
             Some(Stale::SignIn)
@@ -1587,9 +1594,9 @@ mod tests {
     }
 
     /// A read asked for takes no notice of another process's claim, but
-    /// waits out its read, then asks no provider that read just asked: both
-    /// refused, they'd count as two refusals in a row, and ask to sign in
-    /// again.
+    /// waits out its read, then asks only what that didn't: both refused,
+    /// they'd count as two refusals in a row, and ask to sign in again. One
+    /// as limits come due gives way at once.
     #[test]
     fn a_read_asked_for_waits_out_another_processs() {
         // Refresh Limits beside a read, and an agent writing a login beside
@@ -1597,11 +1604,16 @@ mod tests {
         for (key, ask) in [("slow key", Ask::Force), ("slow refused key", Ask::Opened)] {
             let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
             let fake: &'static Fake = Box::leak(Box::default());
+            let too: &'static Fake = Box::leak(Box::new(Fake {
+                info: &FAKE_TOO,
+                ..Fake::default()
+            }));
             let folder = home.path().join(".fake");
             std::fs::create_dir(&folder).unwrap();
-            std::fs::write(folder.join("login"), format!(r#"{{"fake": "{key}"}}"#)).unwrap();
+            let login = |logins: &str| std::fs::write(folder.join("login"), logins).unwrap();
+            login(&format!(r#"{{"fake": "{key}"}}"#));
             let refresh = |db: &mut Connection, ask| {
-                refresh_with(db, home.path(), &[&FakeAgent::default()], &[fake], ask).unwrap()
+                refresh_with(db, home.path(), &[&FakeAgent::default()], &[fake, too], ask).unwrap()
             };
             let open = || crate::db::open(data.path()).unwrap();
             let (mut other, mut db) = (open(), open());
@@ -1616,14 +1628,19 @@ mod tests {
             std::thread::scope(|scope| {
                 scope.spawn(|| refresh(&mut other, Ask::Scheduled));
                 std::thread::sleep(Duration::from_millis(100));
+                // A login to another account, written during the other read.
+                login(&format!(r#"{{"fake": "{key}", "fake-too": "key"}}"#));
                 let asked = Instant::now();
+                assert!(!refresh(&mut open(), Ask::Scheduled));
+                assert!(asked.elapsed() < Duration::from_millis(100));
                 refresh(&mut db, ask);
-                // The other's read takes 300 ms.
-                assert!(asked.elapsed() >= Duration::from_millis(150));
             });
-            let asked = fake.asked.lock().unwrap();
-            let reads = asked.iter().filter(|asked| *asked == key).count();
-            assert_eq!(reads, 2, "{asked:?}");
+            // Fake by the other read, fake-too by this one.
+            for (provider, key, reads) in [(fake, key, 2), (too, "key", 1)] {
+                let asked = provider.asked.lock().unwrap();
+                let count = asked.iter().filter(|asked| *asked == key).count();
+                assert_eq!(count, reads, "{asked:?}");
+            }
         }
     }
 
