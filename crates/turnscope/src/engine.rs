@@ -832,11 +832,10 @@ impl Showing {
             Some(limit),
             None,
             usage::By::Session,
-            3,
             now,
         )?;
         let mut sessions = Vec::new();
-        for (at, row) in used.rows.iter().enumerate() {
+        for (at, row) in used.rows.iter().enumerate().take(3) {
             let (project_path, agent) = usage::brief(&self.db, &row.key)?;
             let project = project_path
                 .as_deref()

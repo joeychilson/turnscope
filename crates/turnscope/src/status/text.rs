@@ -47,7 +47,7 @@ fn agree<'a>(limit: &Limit, one: &'a str, many: &'a str) -> &'a str {
 }
 
 /// Why there's no account to show or name, before any is known.
-pub(super) const NONE_READ: &str =
+pub const NONE_READ: &str =
     "No account's limits have been read yet: no agent here is signed in to one Turnscope reads.";
 
 /// What's said where no account is shown: none is known yet, or every one
@@ -550,28 +550,21 @@ fn via(ids: &[String]) -> Option<String> {
     })
 }
 
-/// One-line hint when another live account has room while `current` is running
-/// out or used up. Prefers an account `agent` is signed into; when the best
-/// alternate belongs to another agent, names which agent uses it.
+/// Another account with room, where `current` runs out or is used up: with
+/// the agents that use it when `agent` doesn't.
 pub fn alternate_note(status: &Status, current: &Account, agent: Option<&str>) -> Option<String> {
-    let tight = current.deciding_limit().is_some_and(|limit| {
-        matches!(
-            limit.outlook,
-            Outlook::UsedUp { .. } | Outlook::RunsOut { .. }
-        )
-    });
-    if !tight {
-        return None;
-    }
+    current
+        .deciding_limit()
+        .filter(|limit| limit.urgency() > 0)?;
     let (other, limit) = super::alternate(&status.accounts, current, agent)?;
-    let same_agent = agent.is_some_and(|id| other.agents.iter().any(|a| a == id));
-    let on = if agent.is_some() && !same_agent {
-        via(&other.agents).map_or(String::new(), |via| format!(", {via}"))
-    } else {
-        String::new()
+    let on = match agent {
+        Some(id) if !other.agents.iter().any(|by| by == id) => {
+            via(&other.agents).map_or(String::new(), |via| format!(", {via}"))
+        }
+        _ => String::new(),
     };
     Some(format!(
-        "Another account has room: {} has {} left ({}{on}). Call check_limits with all: true to compare.",
+        "Another account has room: {} has {} left ({}{on}).",
         other.full_title(),
         left(limit),
         limit.named(),
@@ -923,24 +916,20 @@ mod tests {
         // When another agent holds it, say which agent uses it.
         assert_eq!(
             alternate_note(&status, &status.accounts[0], Some("claude-code")).as_deref(),
-            Some(
-                "Another account has room: ChatGPT Pro has 97% left (Monthly, via Codex). Call check_limits with all: true to compare."
-            )
+            Some("Another account has room: ChatGPT Pro has 97% left (Monthly, via Codex).")
         );
         // When an account is signed into the calling agent, prefer it over a higher-left account on another agent.
         status.accounts[2].agents = vec!["claude-code".to_owned()];
         assert_eq!(
             alternate_note(&status, &status.accounts[0], Some("claude-code")).as_deref(),
             Some(
-                "Another account has room: OpenRouter API key has $8.70 of $30.00 left (Key limit). Call check_limits with all: true to compare."
+                "Another account has room: OpenRouter API key has $8.70 of $30.00 left (Key limit)."
             )
         );
         // Without a caller agent, subscription is preferred over API key without a via suffix.
         assert_eq!(
             alternate_note(&status, &status.accounts[0], None).as_deref(),
-            Some(
-                "Another account has room: ChatGPT Pro has 97% left (Monthly). Call check_limits with all: true to compare."
-            )
+            Some("Another account has room: ChatGPT Pro has 97% left (Monthly).")
         );
         // When the current account lasts, no alternate is suggested.
         status.accounts[0].limits[0].outlook = Outlook::Lasts {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1
+
+- **`turnscope usage --until` past now counts to now**, as `explain_usage`
+  does, so the heading no longer names an end that hasn't come. A `--since`
+  at or after `--until` or now is refused with the words `explain_usage`
+  uses.
+- **`turnscope usage` says "1 response"**, not "1 responses", and tells
+  its times by the minute they're in, as every other answer does.
+
 ## 0.4.0
 
 - **The macOS app is now native SwiftUI and AppKit**, under half the size

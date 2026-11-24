@@ -439,7 +439,7 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "no agent is claude; agents are claude-code, ",
         ),
-        // As `explain_usage` says of a `since` ahead of now.
+        // As `explain_usage` says of a `since` at or after now.
         (
             vec![
                 "usage",
@@ -451,13 +451,13 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
                 "now",
             ],
             2,
-            "--since is now or later",
+            "since is at or after until, or now",
         ),
         // With no --until, until now.
         (
             vec!["usage", "--since", "now"],
             2,
-            "--since is now or later",
+            "since is at or after until, or now",
         ),
         (vec!["usage", "--since", "last tuesday"], 2, "24h, 7d or 4w"),
         (
@@ -766,6 +766,49 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     assert_eq!(
         String::from_utf8_lossy(&line.stdout).trim(),
         "Claude Max · 5h 25%, out in 1h · weekly 56%"
+    );
+}
+
+/// Claude's 5 hours runs out within the hour: `check_limits` for it alone
+/// names an account with room. With every account shown, it doesn't, as
+/// `mcp.json`'s snapshot holds.
+#[test]
+fn check_limits_names_an_account_with_room_when_one_runs_out() {
+    let data = store();
+    let answer = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("check_limits", r#"{"account":"claude"}"#)],
+    );
+    assert!(
+        answer[0].ends_with(
+            "\n\nAnother account has room: ChatGPT Plus (me@example.com) has 80% left (Weekly, via Codex). Call check_limits with all: true to compare."
+        ),
+        "{}",
+        answer[0]
+    );
+}
+
+/// `usage` tells its times by the minute they're in, and an `--until` past
+/// now counts to now, as `explain_usage`'s does.
+#[test]
+fn usage_runs_to_now_at_the_latest() {
+    let data = store();
+    let output = turnscope(
+        data.path(),
+        &[
+            "usage",
+            "--agent",
+            "grok-build",
+            "--since",
+            "2026-09-28T23:59:40Z",
+            "--until",
+            "2030-01-01",
+        ],
+    );
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        said.starts_with("Mon Sep 28 23:59 to Thu Oct 1 12:00: 1 response, $0.02\n"),
+        "{said}"
     );
 }
 

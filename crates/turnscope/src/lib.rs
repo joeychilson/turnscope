@@ -251,3 +251,43 @@ pub fn doctor(
     }
     Ok(notes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Eleven files that can't be read, one more than doctor names.
+    #[test]
+    fn doctor_names_a_file_that_cant_be_read_until_its_deleted() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let folder = home.path().join(".claude/projects/-work-a");
+        std::fs::create_dir_all(&folder).unwrap();
+        let locked: Vec<PathBuf> = (0..11)
+            .map(|n| folder.join(format!("s{n:02}.jsonl")))
+            .collect();
+        for file in &locked {
+            std::fs::write(file, "{}\n").unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let mut db = db::open(data.path()).unwrap();
+        let mut notes = || {
+            ingest::ingest(&mut db, home.path(), None).unwrap();
+            doctor(&db, data.path(), home.path(), now())
+                .unwrap()
+                .join("\n")
+        };
+        assert!(notes().contains("s00.jsonl"));
+        // The ten it named are deleted, and don't hide the last.
+        for file in &locked[..10] {
+            std::fs::remove_file(file).unwrap();
+        }
+        let named = notes();
+        assert!(
+            named.contains("s10.jsonl") && !named.contains("s00.jsonl"),
+            "{named}"
+        );
+        std::fs::remove_file(&locked[10]).unwrap();
+        assert!(!notes().contains("s10.jsonl"));
+    }
+}
