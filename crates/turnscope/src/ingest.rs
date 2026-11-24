@@ -52,12 +52,6 @@ const SELECT_RESPONSE: &str = concat!(
     response_columns!(),
     " FROM response WHERE agent = ?1 AND id = ?2"
 );
-const INSERT_RESPONSE_NEW: &str = concat!(
-    "INSERT INTO response (agent, folder, file, cost, account, ",
-    response_columns!(),
-    ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
-     ON CONFLICT (agent, id) DO NOTHING"
-);
 const REPLACE_RESPONSE: &str = concat!(
     "INSERT OR REPLACE INTO response (agent, folder, file, cost, account, ",
     response_columns!(),
@@ -378,7 +372,6 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
         })?;
     }
     if wrote {
-        // Statistics for the query planner, where tables changed enough.
         db.execute_batch("PRAGMA optimize")?;
     }
     // `history_at` is when the first read finished. Only whether it has is
@@ -472,30 +465,40 @@ fn write(
         holds.execute(params![id, file])?;
     }
 
-    let mut insert_new = tx.prepare_cached(INSERT_RESPONSE_NEW)?;
     let mut known = tx.prepare_cached(SELECT_RESPONSE)?;
-    let mut replace = tx.prepare_cached(REPLACE_RESPONSE)?;
+    let mut store = tx.prepare_cached(REPLACE_RESPONSE)?;
     for (_, mut response) in read.responses {
+        if let Some(was) = known
+            .query_row(params![agent, response.id], stored)
+            .optional()?
+        {
+            response.merge(was);
+        }
         let (cost, account) = derived.of(agent, folder, &response);
-        let inserted = execute_response(
-            &mut insert_new,
+        let tokens = &response.tokens;
+        store.execute(params![
             agent,
             folder,
             file,
             cost,
             account,
-            &response,
-        )?;
-        if inserted == 0 {
-            if let Some(stored) = known
-                .query_row(params![agent, response.id], stored)
-                .optional()?
-            {
-                response.merge(stored);
-            }
-            let (cost, account) = derived.of(agent, folder, &response);
-            execute_response(&mut replace, agent, folder, file, cost, account, &response)?;
-        }
+            response.session,
+            response.copy,
+            response.at,
+            response.provider,
+            response.model,
+            tokens.input as i64,
+            tokens.cache_read as i64,
+            tokens.cache_write_5m as i64,
+            tokens.cache_write_1h as i64,
+            tokens.output as i64,
+            tokens.reasoning as i64,
+            response.prompt as i64,
+            response.web_searches as i64,
+            response.priority,
+            response.cost,
+            response.id,
+        ])?;
     }
     if read.limits.is_empty() {
         return Ok(());
@@ -515,41 +518,6 @@ fn write(
         }
     }
     Ok(())
-}
-
-fn execute_response(
-    stmt: &mut rusqlite::CachedStatement<'_>,
-    agent: &str,
-    folder: &str,
-    file: i64,
-    cost: Option<f64>,
-    account: Option<&str>,
-    response: &Response,
-) -> rusqlite::Result<usize> {
-    let tokens = &response.tokens;
-    stmt.execute(params![
-        agent,
-        folder,
-        file,
-        cost,
-        account,
-        response.session,
-        response.copy,
-        response.at,
-        response.provider,
-        response.model,
-        tokens.input as i64,
-        tokens.cache_read as i64,
-        tokens.cache_write_5m as i64,
-        tokens.cache_write_1h as i64,
-        tokens.output as i64,
-        tokens.reasoning as i64,
-        response.prompt as i64,
-        response.web_searches as i64,
-        response.priority,
-        response.cost,
-        response.id,
-    ])
 }
 
 /// A response as stored, its columns in `response_columns!`'s order.
@@ -975,6 +943,26 @@ mod tests {
         assert_eq!(
             rows(&db, "SELECT id, output FROM response ORDER BY id"),
             ["msg_1:req_1|900", "msg_2:req_2|40"]
+        );
+    }
+
+    #[test]
+    fn a_response_another_file_reports_later_stays_at_its_most() {
+        let (_dir, home, mut db, folder) = store();
+        let reply = |session: &str, output: u64| {
+            let line = serde_json::json!({"type": "assistant", "sessionId": session, "requestId": "req_1",
+                "timestamp": "2026-09-30T09:00:05Z", "message": {"id": "msg_1", "model": "claude-opus-5",
+                    "role": "assistant", "content": [], "usage": {"input_tokens": 100, "output_tokens": output}}});
+            format!("{line}\n")
+        };
+        std::fs::write(folder.join("s1.jsonl"), reply("s1", 900)).unwrap();
+        ingest(&mut db, home.path(), None).unwrap();
+        // As a continuation copies its session's history.
+        std::fs::write(folder.join("s2.jsonl"), reply("s2", 16)).unwrap();
+        ingest(&mut db, home.path(), None).unwrap();
+        assert_eq!(
+            rows(&db, "SELECT session, output FROM response"),
+            ["claude-code:s1|900"]
         );
     }
 

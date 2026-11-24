@@ -1174,9 +1174,9 @@ mod tests {
     #[test]
     fn a_rollout_gives_the_last_limits_codex_wrote() {
         let dir = tempfile::tempdir().unwrap();
-        let limits = |ordinal: i64, primary: f64, secondary: f64| {
+        let limits = |ordinal: i64, id: &str, name: Option<&str>, primary: f64, secondary: f64| {
             let window = |used: f64, minutes: i64| json!({"used_percent": used, "window_minutes": minutes, "resets_at": 1_790_870_000});
-            let limits = json!({"limit_id": "codex", "plan_type": "plus",
+            let limits = json!({"limit_id": id, "limit_name": name, "plan_type": "plus",
                 "primary": window(primary, 300), "secondary": window(secondary, 10080)});
             line(
                 ordinal,
@@ -1193,24 +1193,23 @@ mod tests {
                     "session_meta",
                     json!({"id": "t1", "model_provider": "openai"}),
                 ),
-                limits(1, 15.0, 4.0),
-                limits(2, 22.5, 6.0),
+                limits(1, "codex", None, 15.0, 4.0),
+                limits(2, "codex", None, 22.5, 6.0),
+                limits(3, "codex_spark", Some("Spark"), 40.0, 10.0),
+                // Not the plan's own, nor named for its models.
+                limits(4, "other", None, 99.0, 99.0),
             ],
         );
         let read = Codex.read(&file, "").unwrap();
-        let [limits] = read.limits.as_slice() else {
-            panic!("one snapshot");
-        };
+        assert!(read.limits.iter().all(|limits| limits.provider == "openai"));
         assert_eq!(
-            (limits.provider.as_str(), limits.at),
-            (
-                "openai",
-                crate::time::millis("2026-09-30T09:00:02Z").unwrap()
-            )
+            read.limits[0].at,
+            crate::time::millis("2026-09-30T09:00:02Z").unwrap()
         );
-        let readings: Vec<_> = limits
-            .readings
+        let readings: Vec<_> = read
+            .limits
             .iter()
+            .flat_map(|limits| &limits.readings)
             .map(|reading| {
                 (
                     reading.key.as_str(),
@@ -1225,6 +1224,8 @@ mod tests {
             [
                 ("primary_window", "5 hours", None, 22.5),
                 ("secondary_window", "Weekly", None, 6.0),
+                ("primary_window:Spark", "5 hours", Some("Spark"), 40.0),
+                ("secondary_window:Spark", "Weekly", Some("Spark"), 10.0),
             ]
         );
     }
