@@ -292,8 +292,10 @@ fn every_command_answers_as_its_snapshot_says() {
         (
             "status-hours",
             vec!["status", "--account", "claude", "--hours", "3"],
-            false,
+            true,
         ),
+        // A line for each account.
+        ("status-hours-every", vec!["status", "--hours", "3"], false),
         ("usage", vec!["usage"], true),
         (
             "usage-model",
@@ -496,6 +498,11 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "invalid value 'x'",
         ),
+        (
+            vec!["status", "--hours=-1"],
+            2,
+            "give a number of hours, 0 or more",
+        ),
     ] {
         let output = turnscope(data.path(), &args);
         assert_eq!(output.status.code(), Some(code), "{args:?}");
@@ -505,15 +512,40 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    // Every account's usage has no limit, whose window would run to now.
+    // Every account's usage has no limit, whose window would run to now;
+    // the rest are said by the tool's input schema.
     let answers = tools(
         &mut command(data.path(), &["mcp"]),
-        &[("explain_usage", r#"{"all":true,"until":"yesterday"}"#)],
+        &[
+            ("explain_usage", r#"{"all":true,"until":"yesterday"}"#),
+            ("check_limits", r#"{"nope":1}"#),
+            ("check_limits", r#"{"all":"yes"}"#),
+            ("explain_usage", r#"{"account":3}"#),
+            ("explain_usage", r#"{"by":"hourly"}"#),
+            ("explain_usage", r#"{"top":2.5}"#),
+            ("explain_usage", r#"{"top":21}"#),
+            ("check_limits", r#"{"hours":-1}"#),
+        ],
     );
     assert_eq!(
         answers,
-        ["until is with since: without since, the usage runs to now"]
+        [
+            "until is with since: without since, the usage runs to now",
+            "check_limits takes account, all or hours, not nope",
+            "all is true or false, not \"yes\"",
+            "account is text, not 3",
+            "by is session, project, model, agent, account, day, week or month, not \"hourly\"",
+            "top is a whole number from 1 to 20, not 2.5",
+            "top is a whole number from 1 to 20, not 21",
+            "hours is a number of 0 or more, not -1",
+        ]
     );
+    // A null is an input not given.
+    let answers = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("check_limits", r#"{"all":null}"#), ("check_limits", "{}")],
+    );
+    assert_eq!(answers[0], answers[1]);
 }
 
 /// A command says so before it reads all of history: the first time, and
@@ -791,6 +823,44 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     assert_eq!(
         String::from_utf8_lossy(&line.stdout).trim(),
         "Claude Max · 5h 25%, out in 1h · weekly 56%"
+    );
+}
+
+/// `check_limits` of every account leads with the one with the most room:
+/// for OpenCode, signed in to no account, after saying so; given hours, one
+/// they fit.
+#[test]
+fn check_limits_of_every_account_leads_with_the_one_with_most_room() {
+    let data = store();
+    let answer = tools(
+        &mut command_as("opencode", data.path(), &["mcp"]),
+        &[("check_limits", "{}")],
+    );
+    assert!(
+        answer[0].starts_with(
+            "Which account is yours isn't known, so here is every one.\nMost room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left"
+        ),
+        "{}",
+        answer[0]
+    );
+    // Claude Max by its Weekly alone, with 19h of work left: 5 fit it, and
+    // can't be told of ChatGPT Plus, with more left.
+    turnscope::db::open(data.path())
+        .unwrap()
+        .execute(
+            "DELETE FROM reading WHERE account = 'anthropic:acct-1:org-1' AND limit_key = 'five_hour'",
+            [],
+        )
+        .unwrap();
+    let answer = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("check_limits", r#"{"all":true,"hours":5}"#)],
+    );
+    assert!(
+        answer[0]
+            .contains("\n\nMost room: Claude Max (me@example.com), yours: Weekly has 56% left"),
+        "{}",
+        answer[0]
     );
 }
 
@@ -1181,6 +1251,7 @@ fn an_mcp_session_answers_as_its_snapshot_says() {
         r#"{"jsonrpc":"2.0","id":8,"method":"prompts/list"}"#,
         r#"{"jsonrpc":"2.0","id":9,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
         r#"{"jsonrpc":"2.0","id":10,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-01-01"}}}"#,
+        r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"explain_usage","arguments":{"all":true,"by":"account"}}}"#,
     ];
     let input = requests.join("\n") + "\n";
     let output = fed(&mut command(data.path(), &["mcp"]), input.as_bytes());

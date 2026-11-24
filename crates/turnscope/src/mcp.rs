@@ -90,7 +90,7 @@ static TOOLS: &[Tool] = &[
         name: "explain_usage",
         title: "Explain usage",
         description: "What used a limit, or what an account's usage cost: by session (default), project, \
-            model, agent, day, week or month, each row with its cost at list prices and its approximate share of the limit, over \
+            model, agent, account, day, week or month, each row with its cost at list prices and its approximate share of the limit, over \
             the limit's current window or since a time; with all, every account's usage together. Call it when \
             the person asks what used a limit or what something cost.",
         input: r#"{"type": "object", "properties": {
@@ -99,7 +99,7 @@ static TOOLS: &[Tool] = &[
             "limit": {"type": "string", "description": "Part of a limit's name, such as week or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: the one that decides the account."},
             "since": {"type": "string", "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, an RFC 3339 time, or now."},
             "until": {"type": "string", "description": "Up to when, in the same forms as since, with since. Default: now."},
-            "by": {"type": "string", "enum": ["session", "project", "model", "agent", "day", "week", "month"], "description": "Default session."},
+            "by": {"type": "string", "enum": ["session", "project", "model", "agent", "account", "day", "week", "month"], "description": "Default session."},
             "top": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Rows, default 5; the rest are added up."}
         }, "additionalProperties": false}"#,
         answer: explain_usage,
@@ -426,6 +426,10 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
         false => json!({ "content": [{ "type": "text", "text": text }] }),
         true => json!({ "content": [{ "type": "text", "text": text }], "isError": true }),
     };
+    let arguments = match fitted(tool, arguments) {
+        Ok(arguments) => arguments,
+        Err(why) => return answer(why, true),
+    };
     let db = match &mut server.db {
         Some(db) => db,
         None => match turnscope::db::open(&server.data) {
@@ -480,6 +484,61 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
     }
 }
 
+/// `arguments` with nulls taken as not given, or why they don't fit
+/// `tool`'s schema, said by the schema: serde says "invalid type: string
+/// \"two\", expected f64".
+fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
+    let Value::Object(mut given) = arguments else {
+        return Err(format!("arguments are an object, not {arguments}"));
+    };
+    given.retain(|_, value| !value.is_null());
+    let schema: Value = serde_json::from_str(tool.input).unwrap_or_default();
+    let properties = &schema["properties"];
+    for (name, value) in &given {
+        let property = &properties[name];
+        if property.is_null() {
+            let names: Vec<&str> = properties
+                .as_object()
+                .iter()
+                .flat_map(|properties| properties.keys().map(String::as_str))
+                .collect();
+            return Err(format!("{} takes {}, not {name}", tool.name, or(&names)));
+        }
+        let (min, max) = (property["minimum"].as_f64(), property["maximum"].as_f64());
+        let within = |n: f64| min.is_none_or(|min| n >= min) && max.is_none_or(|max| n <= max);
+        let bounded = |kind: &str| match (min, max) {
+            (Some(min), Some(max)) => format!("{kind} from {min} to {max}"),
+            (Some(min), None) => format!("{kind} of {min} or more"),
+            _ => kind.to_owned(),
+        };
+        let (fits, kind) = match (property["type"].as_str(), property["enum"].as_array()) {
+            (Some("number"), _) => (value.as_f64().is_some_and(within), bounded("a number")),
+            (Some("integer"), _) => (
+                value.as_i64().is_some_and(|n| within(n as f64)),
+                bounded("a whole number"),
+            ),
+            (Some("boolean"), _) => (value.is_boolean(), "true or false".to_owned()),
+            (_, Some(options)) => {
+                let names: Vec<&str> = options.iter().filter_map(Value::as_str).collect();
+                (options.contains(value), or(&names))
+            }
+            _ => (value.is_string(), "text".to_owned()),
+        };
+        if !fits {
+            return Err(format!("{name} is {kind}, not {value}"));
+        }
+    }
+    Ok(Value::Object(given))
+}
+
+/// `a, b or c`.
+fn or(names: &[&str]) -> String {
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => names.concat(),
+    }
+}
+
 fn input<T: for<'a> Deserialize<'a>>(arguments: Value) -> Result<T> {
     serde_json::from_value(arguments)
         .map_err(|error| Error::Usage(format!("arguments that don't fit: {error}")))
@@ -518,23 +577,28 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
         ));
     };
     // Whether the hours fit each account shown, so one call compares them.
-    let fit = match (input.hours, shown.len()) {
-        (None, _) => String::new(),
-        (Some(hours), 1) => format!("{}\n", status::fit(first, hours, status.at)?),
-        (Some(hours), _) => {
-            let mut lines = String::new();
-            for account in &shown {
-                let fit = status::fit(account, hours, status.at)?;
-                lines += &format!("- {}: {fit}\n", account.full_title());
-            }
-            lines + "\n"
+    let fit = match input.hours {
+        None => String::new(),
+        Some(hours) => {
+            let fits = status::fits(&shown, hours, status.at);
+            let apart = if shown.len() > 1 { "\n" } else { "" };
+            format!("{fits}\n{apart}")
         }
     };
-    let head = match unknown {
-        true => "Which account is yours isn't known, so here is every one.".to_owned(),
-        false => status::verdict(first, status.at),
-    };
     let caller_agent = ask.caller.agent.map(|agent| agent.info().id);
+    // Of every account, the one to work on leads, not the verdict on the
+    // first: its lines follow anyway.
+    let every = input.account.is_none() && (input.all || mine.is_none());
+    let room = every
+        .then(|| status::most_room(&status, input.hours, yours, caller_agent))
+        .flatten();
+    let unknown_line = "Which account is yours isn't known, so here is every one.";
+    let head = match (unknown, room) {
+        (true, Some(room)) => format!("{unknown_line}\n{room}"),
+        (true, None) => unknown_line.to_owned(),
+        (false, Some(room)) => room,
+        (false, None) => status::verdict(first, status.at),
+    };
     let alternate = (shown.len() == 1 && !unknown)
         .then(|| status::alternate_note(&status, first, caller_agent))
         .flatten()
@@ -576,7 +640,7 @@ fn usage_asked<'a>(
         limit: Option<String>,
         since: Option<String>,
         until: Option<String>,
-        by: Option<String>,
+        by: Option<By>,
         top: Option<usize>,
     }
     let input: Input = input(arguments)?;
@@ -616,28 +680,14 @@ fn usage_asked<'a>(
         (None | Some("window"), None) => None,
         (Some(since), until) => Some(time::between(since, until, now)?),
     };
-    let by = match input.by.as_deref() {
-        None | Some("session") => By::Session,
-        Some("project") => By::Project,
-        Some("model") => By::Model,
-        Some("agent") => By::Agent,
-        Some("day") => By::Day,
-        Some("week") => By::Week,
-        Some("month") => By::Month,
-        Some(other) => {
-            return Err(Error::Usage(format!(
-                "by is session, project, model, agent, day, week or month, not {other}"
-            )));
-        }
-    };
     Ok(UsageAsked {
         lead,
         account,
         limit,
         between,
         until_given: input.until.is_some(),
-        by,
-        top: input.top.unwrap_or(5).clamp(1, 20),
+        by: input.by.unwrap_or(By::Session),
+        top: input.top.unwrap_or(5),
     })
 }
 
