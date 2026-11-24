@@ -36,6 +36,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
@@ -237,9 +238,9 @@ impl Message<'_> {
 /// The input and output counts are required, so a new format shows in
 /// `doctor` as lines skipped. A gateway may leave out the cache counts or
 /// their split (not measured), which are then 0. Each of `iterations` is one
-/// too, read for its counts.
+/// too, read for its counts: its own `iterations` is passed over.
 #[derive(Deserialize)]
-struct Usage<'a> {
+struct Usage<'a, Calls = Vec<Usage<'a, IgnoredAny>>> {
     input_tokens: u64,
     #[serde(default)]
     cache_read_input_tokens: u64,
@@ -249,8 +250,7 @@ struct Usage<'a> {
     cache_creation_input_tokens: u64,
     cache_creation: Option<CacheCreation>,
     output_tokens: u64,
-    #[serde(borrow)]
-    iterations: Option<Vec<Usage<'a>>>,
+    iterations: Option<Calls>,
     #[serde(default, deserialize_with = "super::lenient")]
     output_tokens_details: Option<OutputDetails>,
     #[serde(default, deserialize_with = "super::lenient")]
@@ -266,7 +266,7 @@ struct CacheCreation {
     ephemeral_1h_input_tokens: u64,
 }
 
-impl Usage<'_> {
+impl<Calls> Usage<'_, Calls> {
     /// Its tokens, but for reasoning. Cache writes without a split that
     /// splits any are taken as kept for 5 minutes, the cache's default.
     fn tokens(&self) -> Tokens {
@@ -578,13 +578,12 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
         read.skipped += 1;
         return;
     };
-    let calls = usage
-        .iterations
-        .as_deref()
-        .filter(|calls| !calls.is_empty())
-        .unwrap_or(std::slice::from_ref(usage));
+    let calls: Vec<Tokens> = match usage.iterations.as_deref() {
+        Some(calls) if !calls.is_empty() => calls.iter().map(Usage::tokens).collect(),
+        _ => vec![usage.tokens()],
+    };
     let (mut tokens, mut prompt) = (Tokens::default(), 0);
-    for call in calls.iter().map(Usage::tokens) {
+    for call in calls {
         prompt =
             prompt.max(call.input + call.cache_read + call.cache_write_5m + call.cache_write_1h);
         tokens = tokens.zip(call, |a, b| a + b);
@@ -733,6 +732,7 @@ mod tests {
         odd["speed"] = json!(1);
         odd["server_tool_use"] = json!("none");
         odd["output_tokens_details"] = json!([]);
+        odd["iterations"] = json!([{}]);
         counted["iterations"] = json!([usage(1000, 10), odd]);
         let file = log(
             dir.path(),

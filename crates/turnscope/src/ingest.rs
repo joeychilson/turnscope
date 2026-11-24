@@ -955,14 +955,20 @@ mod tests {
                     "role": "assistant", "content": [], "usage": {"input_tokens": 100, "output_tokens": output}}});
             format!("{line}\n")
         };
+        db.execute(
+            r#"INSERT INTO price VALUES ('anthropic', 'claude-opus-5', 0, '{"input":5,"output":25}', NULL)"#,
+            [],
+        )
+        .unwrap();
         std::fs::write(folder.join("s1.jsonl"), reply("s1", 900)).unwrap();
         ingest(&mut db, home.path(), None).unwrap();
         // As a continuation copies its session's history.
         std::fs::write(folder.join("s2.jsonl"), reply("s2", 16)).unwrap();
         ingest(&mut db, home.path(), None).unwrap();
+        // 100 input tokens at $5 a million, and 900 output at $25.
         assert_eq!(
-            rows(&db, "SELECT session, output FROM response"),
-            ["claude-code:s1|900"]
+            rows(&db, "SELECT session, output, cost FROM response"),
+            ["claude-code:s1|900|0.023"]
         );
     }
 
