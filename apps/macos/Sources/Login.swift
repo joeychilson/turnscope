@@ -8,7 +8,7 @@ import ServiceManagement
 @MainActor
 @Observable
 final class Login {
-    enum Status: Equatable {
+    enum Status {
         case off, on, needsApproval
 
         var isOn: Bool { self != .off }

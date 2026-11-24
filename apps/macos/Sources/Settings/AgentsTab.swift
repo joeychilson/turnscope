@@ -1,5 +1,3 @@
-// Settings → Agents: installed agents and MCP connection switches.
-
 import SwiftUI
 
 struct AgentsTab: View {
@@ -8,7 +6,7 @@ struct AgentsTab: View {
     var body: some View {
         let settings = bridge.panel.settings
         if let empty = settings.agentsEmpty {
-            EmptyTabMessage(message: empty)
+            Message(headline: empty.headline, detail: empty.detail)
         } else {
             SettingGroup(title: settings.agentsTitle) {
                 ForEach(settings.agents) { AgentRow(agent: $0) }
@@ -24,18 +22,7 @@ private struct AgentRow: View {
     var body: some View {
         HStack(spacing: Row.gap) {
             Logo(agent: agent.id, size: Row.logo)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(agent.name).font(.name)
-                if let note = agent.note {
-                    Text(note)
-                        .font(.small)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .help(agent.configured.map { "Configured to run \($0)" } ?? "")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            AgentLabel(name: agent.name, note: agent.note, configured: agent.configured)
             if let changing = agent.changing {
                 Text(changing)
                     .font(.small)
@@ -57,5 +44,27 @@ private struct AgentRow: View {
         }
         .padding(Row.padding)
         .frame(minHeight: Row.setting)
+    }
+}
+
+/// An agent's name, and why it isn't connected, with the path it's configured to run on hover.
+struct AgentLabel: View {
+    var name: String
+    var note: String?
+    var configured: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(name).font(.name)
+            if let note {
+                Text(note)
+                    .font(.small)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .help(configured.map { "Configured to run \($0)" } ?? "")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

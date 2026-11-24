@@ -9,37 +9,28 @@ struct Logo: View {
     var size: CGFloat
 
     init(provider: String, size: CGFloat) {
-        image = Logo.image("providers/\(provider)", fallback: "key.fill")
+        image = Logo.svg("providers/\(provider)") ?? Logo.symbol("key.fill")
         self.size = size
     }
 
     init(agent: String, size: CGFloat) {
-        image = Logo.image("agents/\(agent)", fallback: "terminal.fill")
+        image = Logo.svg("agents/\(agent)") ?? Logo.symbol("terminal.fill")
         self.size = size
     }
 
-    @MainActor private static var cache: [String: NSImage] = [:]
+    @MainActor private static var svgs: [String: NSImage?] = [:]
 
-    @MainActor static func providerImage(_ provider: String) -> NSImage? {
-        let key = "providers/\(provider)"
-        if let cached = cache[key] { return cached }
-        guard let url = Bundle.main.resourceURL?.appending(path: "logos/\(key).svg"),
-              let image = NSImage(contentsOf: url)
-        else { return nil }
-        image.isTemplate = true
-        cache[key] = image
+    /// `logos/<path>.svg`, read once, or nil if there's none.
+    @MainActor static func svg(_ path: String) -> NSImage? {
+        if let image = svgs[path] { return image }
+        let image = Bundle.main.resourceURL
+            .flatMap { NSImage(contentsOf: $0.appending(path: "logos/\(path).svg")) }
+        svgs.updateValue(image, forKey: path)
         return image
     }
 
-    @MainActor private static func image(_ path: String, fallback: String) -> NSImage {
-        if let cached = cache[path] { return cached }
-        let loaded = Bundle.main.resourceURL
-            .flatMap { NSImage(contentsOf: $0.appending(path: "logos/\(path).svg")) }
-            ?? NSImage(systemSymbolName: fallback, accessibilityDescription: nil)
-            ?? NSImage()
-        loaded.isTemplate = true
-        cache[path] = loaded
-        return loaded
+    private static func symbol(_ name: String) -> NSImage {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil) ?? NSImage()
     }
 
     var body: some View {

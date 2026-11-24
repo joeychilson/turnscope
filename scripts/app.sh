@@ -43,10 +43,6 @@ swift_files=()
 while IFS= read -r file; do
   swift_files+=("$file")
 done < <(find apps/macos/Sources -name '*.swift' | sort)
-if [ "${#swift_files[@]}" -eq 0 ]; then
-  echo "app.sh: no Swift sources under apps/macos/Sources" >&2
-  exit 1
-fi
 
 scripts/sparkle.sh
 

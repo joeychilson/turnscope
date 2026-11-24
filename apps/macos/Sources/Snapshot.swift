@@ -37,11 +37,7 @@ enum Snapshot {
         for dark in [false, true] {
             let background = dark ? Color(hex: 0x1E1E1E) : Color.white
             let view = Panel()
-                .environment(bridge)
-                .environment(ui)
-                .environment(updater)
-                .environment(notifier)
-                .environment(login)
+                .environment(bridge, ui, updater, notifier, login)
                 .environment(\.isSnapshot, true)
                 .panelFrame(background)
                 .padding(1)

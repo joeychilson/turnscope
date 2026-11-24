@@ -1,5 +1,3 @@
-// Settings → Accounts: subscriptions and API keys with switches to show or hide each.
-
 import SwiftUI
 
 struct AccountsTab: View {
@@ -8,7 +6,7 @@ struct AccountsTab: View {
     var body: some View {
         let settings = bridge.panel.settings
         if let empty = settings.accountsEmpty {
-            EmptyTabMessage(message: empty)
+            Message(headline: empty.headline, detail: empty.detail)
         } else {
             VStack(alignment: .leading, spacing: 14) {
                 if !settings.subscriptions.isEmpty {

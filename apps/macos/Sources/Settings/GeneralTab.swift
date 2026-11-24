@@ -1,5 +1,3 @@
-// Settings → General: menu bar display, open at login, notification toggles, and updates.
-
 import AppKit
 import SwiftUI
 
