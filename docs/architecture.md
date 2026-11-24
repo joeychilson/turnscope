@@ -45,7 +45,7 @@ formats correctly, and the forecast.
 | Response | The usage of a model call as the agent records it: tokens, cost, and the account it drew on. Some cover several calls: Grok Build records one per model per turn, Claude Code one with its calls listed in `iterations`, and Codex one for each growth of its running total beyond its records. |
 | Reading | A limit as its provider reported it at one time. |
 | Sign-in | What an agent folder held for a provider from a given time. It says which account a response drew on. |
-| In use | An account a response drew on in the last 30 minutes, or whose limit rose between its last two readings in that time, as use elsewhere makes it. |
+| In use | An account a response drew on in the last 30 minutes, or one of whose limits rose at its last reading in that time from the reading before it in its window (or in the day before, with no window start), as use elsewhere makes it. |
 | Catch-up | Bringing the database up to date: prices and limits as they come due, and what's new in the agents' history ([Catching up](#catching-up)). |
 | Data directory | Where Turnscope keeps its database, its locks and `app.log`: `~/Library/Application Support/com.joeychilson.turnscope`, or `--data`. |
 | Engine | The `turnscope` crate: it reads history, logins, limits and prices, and works out what every front end shows. The command line, the MCP server and each app run it. |
