@@ -323,14 +323,15 @@ pub fn fit(account: &Account, hours: f64, now: i64) -> String {
     // A provider that sets an API key no limit reads it with none: nothing
     // runs out. A plan read with none may still have limits it didn't say.
     if account.limits.is_empty() {
-        if account.kind == Kind::ApiKey && !matches!(account.state, State::Unread { .. }) {
-            return format!("{more} of work {fit}: it has no limit.");
-        }
-        if let Some(why) = account.state.why() {
-            return format!(
-                "Whether {more} of work {fit} can't be told: {}.",
-                unread(why)
-            );
+        match (account.state.why(), account.kind) {
+            (Some(why), _) => {
+                return format!(
+                    "Whether {more} of work {fit} can't be told: {}.",
+                    unread(why)
+                );
+            }
+            (None, Kind::ApiKey) => return format!("{more} of work {fit}: the key has no limit."),
+            (None, _) => {}
         }
     }
     if let Some((limit, _)) = used_up(account) {
@@ -1015,14 +1016,19 @@ mod tests {
         key.state = State::Live { read_at: status.at };
         assert_eq!(
             fit(&key, 3.0, status.at),
-            "3 more hours of work fit: it has no limit."
+            "3 more hours of work fit: the key has no limit."
         );
         assert_eq!(
             verdict(&key, status.at),
             "Anthropic API key: no limit; $0.00 this month at list prices."
         );
+        // Refused since, it's no longer said to fit.
+        key.state = State::AsOf {
+            read_at: status.at,
+            why: Stale::SignIn,
+        };
         assert_eq!(
-            fit(&status.accounts[3], 1.0, status.at),
+            fit(&key, 1.0, status.at),
             "Whether 1 more hour of work fits can't be told: its login was refused."
         );
     }
