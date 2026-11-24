@@ -300,9 +300,18 @@ fn every_command_answers_as_its_snapshot_says() {
             vec!["usage", "--since", "2026-09-29", "--by", "model"],
             false,
         ),
+        // The rest added up.
         (
             "usage-account",
-            vec!["usage", "--since", "2026-09-29", "--by", "account"],
+            vec![
+                "usage",
+                "--since",
+                "2026-09-29",
+                "--by",
+                "account",
+                "--top",
+                "3",
+            ],
             false,
         ),
         // Every agent's session, each with its title.
@@ -315,6 +324,22 @@ fn every_command_answers_as_its_snapshot_says() {
             "usage-limit",
             vec!["usage", "--account", "claude", "--limit", "week"],
             true,
+        ),
+        // The earlier days added up, each with its share.
+        (
+            "usage-limit-day",
+            vec![
+                "usage",
+                "--account",
+                "claude",
+                "--limit",
+                "week",
+                "--by",
+                "day",
+                "--top",
+                "1",
+            ],
+            false,
         ),
         ("accounts", vec!["accounts"], true),
         ("connect", vec!["connect"], true),
@@ -769,23 +794,33 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     );
 }
 
-/// Claude's 5 hours runs out within the hour: `check_limits` for it alone
-/// names an account with room. With every account shown, it doesn't, as
-/// `mcp.json`'s snapshot holds.
+/// Claude's 5 hours runs out within the hour, then is used up:
+/// `check_limits` for it alone, named or as the caller's own, names an
+/// account with room. With every account shown, it doesn't, as `mcp.json`'s
+/// snapshot holds.
 #[test]
-fn check_limits_names_an_account_with_room_when_one_runs_out() {
+fn check_limits_names_an_account_with_room_when_one_runs_out_or_is_used_up() {
     let data = store();
+    let room = "\n\nAnother account has room: ChatGPT Plus (me@example.com) has 80% left (Weekly, via Codex). Call check_limits with all: true to compare.";
     let answer = tools(
         &mut command(data.path(), &["mcp"]),
         &[("check_limits", r#"{"account":"claude"}"#)],
     );
-    assert!(
-        answer[0].ends_with(
-            "\n\nAnother account has room: ChatGPT Plus (me@example.com) has 80% left (Weekly, via Codex). Call check_limits with all: true to compare."
-        ),
-        "{}",
-        answer[0]
+    assert!(answer[0].ends_with(room), "{}", answer[0]);
+    turnscope::db::open(data.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+             VALUES ('anthropic:acct-1:org-1', 'five_hour', ?1, '5 hours', 100, ?1 - 3 * ?2, ?1 + 2 * ?2)",
+            [NOW, HOUR],
+        )
+        .unwrap();
+    let answer = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("check_limits", "{}")],
     );
+    assert!(answer[0].contains("5 hours is used up"), "{}", answer[0]);
+    assert!(answer[0].ends_with(room), "{}", answer[0]);
 }
 
 /// `usage` tells its times by the minute they're in, and an `--until` past
