@@ -171,10 +171,11 @@ tokens cost on each provider's API. A response with no known price is
 counted as unpriced, not free.
 
 `--since` and `--until` take a [time form](#time-forms), and `--since`
-must be earlier. `--account` must match one account. `--until` and
-`--agent` don't go with `--limit`. Grouped by time, `--top` shows the
-latest rows, with the earlier ones added up in a first row; otherwise the
-rows that cost most, with the rest added up in a last row.
+must be earlier. An `--until` past now counts to now. `--account` must
+match one account. `--until` and `--agent` don't go with `--limit`.
+Grouped by time, `--top` shows the latest rows, with the earlier ones
+added up in a first row; otherwise the rows that cost most, with the rest
+added up in a last row.
 
 ```console
 $ turnscope usage --since 2026-09-29 --by model

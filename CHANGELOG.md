@@ -20,6 +20,12 @@
   reads them** waits for that read instead of asking each provider again
   at once. A login refused once could then count as refused twice and ask
   you to sign in again.
+- **`turnscope usage --until` past now counts to now**, as `explain_usage`
+  does, so the heading no longer names an end that hasn't come. A `--since`
+  at or after `--until` or now is refused with the words `explain_usage`
+  uses.
+- **`turnscope usage` says "1 response"**, not "1 responses", and tells
+  its times by the minute they're in, as every other answer does.
 
 ## 0.4.0
 
