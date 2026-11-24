@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1
+
+- **Refresh Limits no longer spins forever while Turnscope can't read its
+  data**, and is greyed out in the right-click menu while a newer
+  Turnscope has written to the data.
+- **Why a connect failed is no longer said once the agent's connection
+  changes**, as when it's connected from the command line.
+- **VoiceOver tells apart two accounts with the same title in the menu
+  bar,** and says what an account with no figure needs, such as "sign in
+  again", instead of reading a dash.
+
 ## 0.4.0
 
 - **The macOS app is now native SwiftUI and AppKit**, under half the size

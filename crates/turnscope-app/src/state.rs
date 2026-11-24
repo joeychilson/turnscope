@@ -5,13 +5,13 @@
 use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
-use turnscope::alerts::{Alert, Kind as AlertKind, Notify, replaces};
-use turnscope::engine::{Engine, Event, Shown, Stopped, UsedMost};
+use turnscope::alerts::{Alert, Notify, Settings, replaces};
+use turnscope::engine::{Event, Shown, Stopped, UsedMost};
 use turnscope::status::{Account, Agent, Connection, Status};
 
 use crate::standing::{AccountStanding, Standing};
 use crate::view::{AppSync, build_sync};
-use crate::words::{self, Words};
+use crate::words::{self, AlertNote, Words};
 
 /// What the menu bar shows: every account in use, or only the most urgent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,30 +26,11 @@ pub enum MenuShows {
 pub struct Preferences {
     pub menu_shows: MenuShows,
     pub dismissed_connect: BTreeSet<String>,
-    /// Whether changes persist to the OS defaults: false on `--fixture`.
-    pub kept: bool,
 }
 
-/// A notification ready to post through the host OS.
+/// What the shell does once, after it next syncs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AlertNote {
-    pub id: i64,
-    pub account: String,
-    pub replaces: String,
-    pub sign_in: bool,
-    pub title: String,
-    pub subtitle: String,
-    pub body: String,
-}
-
-/// One-shot side effects the host shell executes after syncing state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Effect {
     PostAlerts {
         alerts: Vec<AlertNote>,
@@ -63,7 +44,6 @@ pub enum Effect {
     },
 }
 
-/// Domain and lifecycle actions sent into `Core::apply`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(
     tag = "kind",
@@ -98,42 +78,16 @@ pub enum Action {
     Tick,
 }
 
-/// Engine requests produced while handling an event or action, sent outside the state lock.
-#[derive(Default)]
-pub struct EngineCalls {
-    pub used_most: Vec<(String, String)>,
-    pub ask_limits: bool,
-    pub refresh_now: bool,
-    pub hide: Option<(String, bool)>,
-    pub connect: Option<(String, bool)>,
-    pub save_settings: Option<turnscope::alerts::Settings>,
-    pub acknowledge: Vec<i64>,
-}
-
-impl EngineCalls {
-    pub fn send(self, engine: Option<&Engine>) {
-        let Some(engine) = engine else { return };
-        for (account, limit) in self.used_most {
-            engine.used_most(account, limit);
-        }
-        if self.refresh_now {
-            engine.refresh_now();
-        } else if self.ask_limits {
-            engine.ask_limits();
-        }
-        if let Some((account, hidden)) = self.hide {
-            engine.hide(account, hidden);
-        }
-        if let Some((agent, connecting)) = self.connect {
-            engine.connect(agent, connecting);
-        }
-        if let Some(settings) = self.save_settings {
-            engine.save_settings(settings);
-        }
-        if !self.acknowledge.is_empty() {
-            engine.acknowledge(self.acknowledge);
-        }
-    }
+/// A request to the engine, sent once the core's lock is let go.
+#[derive(Debug, PartialEq)]
+pub enum Call {
+    UsedMost { account: String, limit: String },
+    AskLimits,
+    RefreshNow,
+    Hide { account: String, hidden: bool },
+    Connect { agent: String, connecting: bool },
+    SaveSettings(Settings),
+    Acknowledge(i64),
 }
 
 #[derive(Default)]
@@ -143,9 +97,11 @@ pub struct State {
     pub problem: Option<Stopped>,
     pub refreshing: bool,
     pub changing_agents: HashMap<String, Connection>,
-    pub agent_errors: HashMap<String, String>,
+    /// Why a connect failed, with the agent's connection then: it's said until that changes.
+    pub agent_errors: HashMap<String, (Connection, String)>,
     pub used: HashMap<String, (String, Vec<UsedMost>)>,
-    /// A fixed status's time (`--fixture`, `--snapshot`), which its words are as of.
+    /// A fixed status's time (`--fixture`, `--snapshot`), which its words are as of. With
+    /// one, there's no engine, and nothing changed is kept.
     pub frozen: Option<i64>,
     pub from_disk_image: bool,
     pub preferences: Preferences,
@@ -167,8 +123,18 @@ impl State {
     }
 
     pub fn take(&mut self, shown: Shown) {
+        self.agent_errors.retain(|id, (then, _)| {
+            shown
+                .agents
+                .iter()
+                .any(|a| &a.id == id && a.connection == *then)
+        });
         self.status = Some(shown.status);
         self.agents = shown.agents;
+    }
+
+    fn live(&self) -> bool {
+        self.frozen.is_none()
     }
 
     pub fn all(&self) -> &[Account] {
@@ -237,7 +203,7 @@ impl State {
         matches!(self.problem, Some(Stopped::Newer { .. }))
     }
 
-    pub fn verdict(&self, words: &Words) -> (String, String, Standing) {
+    pub fn verdict(&self, words: &Words) -> (String, String) {
         if self.all().is_empty() {
             words::welcome(&self.installed(), &self.agent_names(), self.reading())
         } else {
@@ -279,7 +245,7 @@ impl State {
     }
 
     pub fn counting(&self) -> bool {
-        self.frozen.is_none() && (self.panel_open || self.urgent())
+        self.live() && (self.panel_open || self.urgent())
     }
 
     pub fn mark_hidden(&mut self, account: &str, hidden: bool) {
@@ -292,83 +258,58 @@ impl State {
 
     /// Shown accounts to ask what used them most, each with its deciding limit:
     /// those `again` picks, and those with no answer for that limit yet.
-    pub fn asks(&self, again: impl Fn(&Account) -> bool) -> Vec<(String, String)> {
+    pub fn asks(&self, again: impl Fn(&Account) -> bool) -> Vec<Call> {
         self.all()
             .iter()
             .filter(|a| !a.hidden)
             .filter_map(|a| {
                 let limit = a.deciding.as_ref()?;
                 let have = self.used.get(&a.id).is_some_and(|(of, _)| of == limit);
-                (again(a) || !have).then(|| (a.id.clone(), limit.clone()))
-            })
-            .collect()
-    }
-
-    fn format_alerts(&self, alerts: Vec<Alert>) -> Vec<AlertNote> {
-        if alerts.is_empty() {
-            return Vec::new();
-        }
-        let words = self.words_now();
-        alerts
-            .into_iter()
-            .map(|alert| {
-                let note = words.note(&alert, self.all());
-                AlertNote {
-                    id: alert.id,
-                    account: alert.account,
-                    replaces: alert.replaces,
-                    sign_in: alert.kind == AlertKind::SignIn,
-                    title: note.title,
-                    subtitle: note.subtitle,
-                    body: note.body,
-                }
+                (again(a) || !have).then(|| Call::UsedMost {
+                    account: a.id.clone(),
+                    limit: limit.clone(),
+                })
             })
             .collect()
     }
 }
 
-/// Platform-agnostic coordinator owning `State` and pending OS side effects.
 pub struct Core {
     pub state: State,
-    pub running_engine: bool,
     effects: Vec<Effect>,
     animated: bool,
 }
 
 impl Core {
-    pub fn new(state: State, running_engine: bool) -> Core {
+    pub fn new(state: State) -> Core {
         Core {
             state,
-            running_engine,
             effects: Vec::new(),
             animated: false,
         }
     }
 
-    /// Handle one `turnscope::engine::Event`. Returns engine calls to fire outside the lock
-    /// and whether the UI shell should be woken.
-    pub fn took(&mut self, event: Event) -> (EngineCalls, bool) {
-        let mut calls = EngineCalls::default();
+    /// Returns the calls to send the engine, and whether to wake the shell.
+    pub fn took(&mut self, event: Event) -> (Vec<Call>, bool) {
+        let mut calls = Vec::new();
         match event {
             Event::Shown(shown, alerts) => {
                 self.state.refreshing = false;
                 if self.state.panel_open {
                     self.animated = true;
                 }
-                let first = self.state.status.is_none();
-                let refused: Vec<String> = self
-                    .state
-                    .all()
-                    .iter()
-                    .filter(|a| a.refused())
-                    .map(|a| a.id.clone())
-                    .collect();
+                let before = self.state.status.take();
                 self.state.take(*shown);
+                let was_refused = |id: &str| {
+                    before
+                        .as_ref()
+                        .is_none_or(|b| b.accounts.iter().any(|a| a.id == id && a.refused()))
+                };
                 let identifiers: Vec<String> = self
                     .state
                     .all()
                     .iter()
-                    .filter(|a| !a.refused() && (first || refused.contains(&a.id)))
+                    .filter(|a| !a.refused() && was_refused(&a.id))
                     .map(|a| replaces(&a.id, None))
                     .collect();
                 if !identifiers.is_empty() {
@@ -376,28 +317,18 @@ impl Core {
                         .push(Effect::RemoveNotifications { identifiers });
                 }
                 if self.state.panel_open {
-                    calls.used_most = self.state.asks(|a| self.state.counts(a));
+                    calls = self.state.asks(|a| self.state.counts(a));
                 }
                 let mut told = std::mem::take(&mut self.state.alerts_waiting);
                 told.extend(alerts);
-                let notes = self.state.format_alerts(told);
-                if !notes.is_empty() {
-                    self.effects.push(Effect::PostAlerts { alerts: notes });
-                }
+                self.post(told);
                 (calls, true)
             }
             Event::Pending(alerts) if self.state.status.is_none() => {
                 self.state.alerts_waiting.extend(alerts);
                 (calls, false)
             }
-            Event::Pending(alerts) => {
-                let notes = self.state.format_alerts(alerts);
-                let wake = !notes.is_empty();
-                if wake {
-                    self.effects.push(Effect::PostAlerts { alerts: notes });
-                }
-                (calls, wake)
-            }
+            Event::Pending(alerts) => (calls, self.post(alerts)),
             Event::Kept(stopped) => {
                 self.state.refreshing = false;
                 self.state.problem = stopped;
@@ -425,12 +356,14 @@ impl Core {
                 error,
             } => {
                 self.state.changing_agents.remove(&agent);
-                match error {
-                    Some(error) => {
-                        self.state.agent_errors.insert(agent, error);
-                    }
-                    None => {
-                        if let Some(shown) = self.state.agents.iter_mut().find(|a| a.id == agent) {
+                if let Some(shown) = self.state.agents.iter_mut().find(|a| a.id == agent) {
+                    match error {
+                        Some(error) => {
+                            self.state
+                                .agent_errors
+                                .insert(agent, (shown.connection, error));
+                        }
+                        None => {
                             shown.connection = if connecting {
                                 Connection::Connected
                             } else {
@@ -444,18 +377,16 @@ impl Core {
         }
     }
 
-    /// Apply a domain or lifecycle action. Returns engine calls to fire outside the lock.
-    pub fn apply(&mut self, action: Action, now_ms: i64) -> EngineCalls {
-        let mut calls = EngineCalls::default();
+    /// Returns the calls to send the engine.
+    pub fn apply(&mut self, action: Action, now_ms: i64) -> Vec<Call> {
+        let mut calls = Vec::new();
         match action {
             Action::PanelOpened => {
                 if !self.state.panel_open {
                     self.state.panel_open = true;
                     self.state.now = turnscope::time::minute(now_ms);
-                    if self.running_engine {
-                        calls.used_most = self.state.asks(|_| true);
-                        calls.ask_limits = true;
-                    }
+                    calls = self.state.asks(|_| true);
+                    calls.push(Call::AskLimits);
                 }
             }
             Action::PanelClosed => {
@@ -464,13 +395,14 @@ impl Core {
             Action::SetHidden { id, hidden } => {
                 if !self.state.stopped() {
                     self.state.mark_hidden(&id, hidden);
-                    if self.running_engine {
-                        calls.hide = Some((id, hidden));
-                    }
+                    calls.push(Call::Hide {
+                        account: id,
+                        hidden,
+                    });
                 }
             }
             Action::SetConnected { id, connecting } => {
-                if self.running_engine
+                if self.state.live()
                     && !self.state.stopped()
                     && !self.state.from_disk_image
                     && !self.state.changing_agents.contains_key(&id)
@@ -482,7 +414,10 @@ impl Core {
                     };
                     self.state.changing_agents.insert(id.clone(), to);
                     self.state.agent_errors.remove(&id);
-                    calls.connect = Some((id, connecting));
+                    calls.push(Call::Connect {
+                        agent: id,
+                        connecting,
+                    });
                 }
             }
             Action::SetNotify { notify } => {
@@ -490,9 +425,7 @@ impl Core {
                     && let Some(status) = &mut self.state.status
                 {
                     status.settings.notify = notify;
-                    if self.running_engine {
-                        calls.save_settings = Some(status.settings);
-                    }
+                    calls.push(Call::SaveSettings(status.settings));
                 }
             }
             Action::SetMenuShows { shows } => {
@@ -510,9 +443,7 @@ impl Core {
                 id,
                 sign_in_account,
             } => {
-                if self.running_engine {
-                    calls.acknowledge.push(id);
-                }
+                calls.push(Call::Acknowledge(id));
                 // The account may have been read again while the notification was posted.
                 if let Some(account) = sign_in_account
                     && self
@@ -526,10 +457,15 @@ impl Core {
                     });
                 }
             }
+            // Without a status, the engine has nothing to refresh, and wouldn't say when it's done.
             Action::RefreshNow => {
-                if self.running_engine && !self.state.stopped() && !self.state.refreshing {
+                if self.state.live()
+                    && self.state.status.is_some()
+                    && !self.state.stopped()
+                    && !self.state.refreshing
+                {
                     self.state.refreshing = true;
-                    calls.refresh_now = true;
+                    calls.push(Call::RefreshNow);
                 }
             }
             Action::Tick => {
@@ -541,8 +477,22 @@ impl Core {
         calls
     }
 
+    /// Posts notifications for `alerts`, if any; whether there were.
+    fn post(&mut self, alerts: Vec<Alert>) -> bool {
+        if alerts.is_empty() {
+            return false;
+        }
+        let words = self.state.words_now();
+        let alerts = alerts
+            .into_iter()
+            .map(|alert| words.note(alert, self.state.all()))
+            .collect();
+        self.effects.push(Effect::PostAlerts { alerts });
+        true
+    }
+
     fn save_preferences(&mut self) {
-        if !self.state.preferences.kept {
+        if !self.state.live() {
             return;
         }
         self.effects.push(Effect::SavePreferences {
@@ -568,6 +518,7 @@ impl Core {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use turnscope::alerts::Kind as AlertKind;
 
     const CLAUDE: &str = "anthropic:acct-1:org-1";
     const CODEX: &str = "openai:acct-2";
@@ -669,14 +620,13 @@ pub(crate) mod tests {
                 "Turnscope reads Claude Code, Codex, OpenCode, Pi, Grok Build and Antigravity. \
                  Sign in to one, and its limits show up."
                     .into(),
-                Standing::Lasts
             )
         );
     }
 
     #[test]
     fn alerts_told_before_the_first_status_wait_for_it() {
-        let mut core = Core::new(State::default(), true);
+        let mut core = Core::new(State::default());
         let alert = Alert {
             id: 1,
             kind: AlertKind::SignIn,
@@ -704,17 +654,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_connect_that_ends_shows_at_once_and_one_that_fails_says_why() {
+    fn a_connect_that_ends_shows_at_once_and_one_that_fails_says_why_until_it_connects() {
         let mut state = shown(example());
         state.panel_open = true;
-        let mut core = Core::new(state, true);
-        let codex = |core: &Core| {
-            core.state
+        let mut core = Core::new(state);
+        let codex = |core: &mut Core| {
+            core.sync()
+                .panel
+                .settings
                 .agents
-                .iter()
+                .into_iter()
                 .find(|a| a.id == "codex")
                 .unwrap()
-                .connection
         };
         let calls = core.apply(
             Action::SetConnected {
@@ -723,15 +674,21 @@ pub(crate) mod tests {
             },
             0,
         );
-        assert_eq!(calls.connect, Some(("codex".into(), true)));
+        assert_eq!(
+            calls,
+            [Call::Connect {
+                agent: "codex".into(),
+                connecting: true
+            }]
+        );
         let (_, wake) = core.took(Event::Connected {
             agent: "codex".into(),
             connecting: true,
             error: None,
         });
         assert!(wake);
-        assert!(core.state.changing_agents.is_empty());
-        assert_eq!(codex(&core), Connection::Connected);
+        let connected = codex(&mut core);
+        assert!(connected.connected && connected.changing.is_none());
 
         core.apply(
             Action::SetConnected {
@@ -746,25 +703,45 @@ pub(crate) mod tests {
             error: Some("Codex couldn't be run.".into()),
         });
         assert!(wake);
-        assert!(core.state.changing_agents.is_empty());
+        let failed = codex(&mut core);
+        assert!(failed.connected && failed.changing.is_none());
+        assert_eq!(failed.note.as_deref(), Some("Codex couldn't be run."));
+
+        let read = |connection| {
+            let mut shown = example();
+            shown.agents[1].connection = connection;
+            Event::Shown(Box::new(shown), Vec::new())
+        };
+        core.took(read(Connection::Connected));
         assert_eq!(
-            core.state.agent_errors.get("codex").map(String::as_str),
+            codex(&mut core).note.as_deref(),
             Some("Codex couldn't be run.")
         );
-        assert_eq!(codex(&core), Connection::Connected);
+        // Disconnected another way, the failure is old news.
+        core.took(read(Connection::Available));
+        let disconnected = codex(&mut core);
+        assert!(!disconnected.connected && disconnected.note.is_none());
     }
 
     #[test]
     fn while_the_panel_is_open_a_status_asks_what_used_in_use_and_missing_accounts() {
-        let mut core = Core::new(State::default(), true);
+        let mut core = Core::new(State::default());
         core.apply(Action::PanelOpened, 0);
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
-        fn asked(calls: &EngineCalls) -> Vec<&str> {
-            calls.used_most.iter().map(|(id, _)| id.as_str()).collect()
+        fn asked(calls: &[Call]) -> Vec<&str> {
+            calls
+                .iter()
+                .filter_map(|call| match call {
+                    Call::UsedMost { account, .. } => Some(account.as_str()),
+                    _ => None,
+                })
+                .collect()
         }
         assert_eq!(asked(&calls), [CLAUDE, CODEX, OPENROUTER]);
-        for (id, limit) in core.state.asks(|_| true) {
-            core.state.used.insert(id, (limit, Vec::new()));
+        for call in core.state.asks(|_| true) {
+            if let Call::UsedMost { account, limit } = call {
+                core.state.used.insert(account, (limit, Vec::new()));
+            }
         }
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
         assert_eq!(asked(&calls), [CLAUDE]);
@@ -774,12 +751,12 @@ pub(crate) mod tests {
         assert_eq!(asked(&calls), [CLAUDE, CODEX]);
         core.apply(Action::PanelClosed, 0);
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
-        assert!(calls.used_most.is_empty());
+        assert!(calls.is_empty());
     }
 
     #[test]
     fn a_sign_in_notification_goes_on_the_first_status_and_once_its_account_is_read_again() {
-        let mut core = Core::new(State::default(), true);
+        let mut core = Core::new(State::default());
         core.took(Event::Shown(Box::new(example()), Vec::new()));
         let removed = |sync: AppSync| -> Vec<String> {
             sync.effects
@@ -811,33 +788,56 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn fixture_changes_do_not_emit_save_preferences() {
-        let mut core = Core::new(State::fixed(example()), false);
-        core.apply(
-            Action::SetMenuShows {
-                shows: MenuShows::One,
-            },
-            0,
+    fn preferences_are_saved_except_on_a_fixture() {
+        let changed = |state: State| {
+            let mut core = Core::new(state);
+            core.apply(
+                Action::SetMenuShows {
+                    shows: MenuShows::One,
+                },
+                0,
+            );
+            core.apply(Action::DismissConnect { id: "codex".into() }, 0);
+            core.sync().effects
+        };
+        assert_eq!(
+            changed(shown(example())),
+            [
+                Effect::SavePreferences {
+                    menu_shows: MenuShows::One,
+                    dismissed_connect: vec![],
+                },
+                Effect::SavePreferences {
+                    menu_shows: MenuShows::One,
+                    dismissed_connect: vec!["codex".into()],
+                },
+            ]
         );
-        core.apply(Action::DismissConnect { id: "codex".into() }, 0);
-        let sync = core.sync();
-        assert!(
-            !sync
-                .effects
-                .iter()
-                .any(|e| matches!(e, Effect::SavePreferences { .. }))
-        );
+        assert_eq!(changed(State::fixed(example())), []);
     }
 
     #[test]
-    fn refresh_now_sets_refreshing_until_shown_arrives() {
-        let mut core = Core::new(shown(example()), true);
-        let calls = core.apply(Action::RefreshNow, 0);
-        assert!(calls.refresh_now);
-        assert!(core.state.refreshing);
-        // Second call while already refreshing is coalesced.
-        assert!(!core.apply(Action::RefreshNow, 0).refresh_now);
+    fn the_minute_is_counted_while_the_panel_is_open_or_an_account_shown_runs_out() {
+        let mut state = shown(example());
+        assert!(state.counting());
+        state.mark_hidden(CLAUDE, true);
+        assert!(!state.counting());
+        state.panel_open = true;
+        assert!(state.counting());
+    }
+
+    #[test]
+    fn refreshing_is_said_until_the_status_comes_and_only_once_there_is_one() {
+        let refreshing = |core: &mut Core| core.sync().panel.footer_note.map(|n| n.text);
+        let mut core = Core::new(shown(example()));
+        assert_eq!(core.apply(Action::RefreshNow, 0), [Call::RefreshNow]);
+        assert_eq!(refreshing(&mut core).as_deref(), Some("Refreshing limits…"));
+        assert_eq!(core.apply(Action::RefreshNow, 0), []);
         core.took(Event::Shown(Box::new(example()), Vec::new()));
-        assert!(!core.state.refreshing);
+        assert_eq!(refreshing(&mut core), None);
+
+        let mut unopened = Core::new(State::default());
+        assert_eq!(unopened.apply(Action::RefreshNow, 0), []);
+        assert_eq!(refreshing(&mut unopened), None);
     }
 }

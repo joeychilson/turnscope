@@ -1,5 +1,4 @@
-//! Serializable view models rendered by the native macOS shell.
-//! Every word, ranking, standing, and accessibility label is computed here once.
+//! What the macOS shell draws, built from `State`.
 
 use serde::Serialize;
 use turnscope::alerts::Notify;
@@ -47,7 +46,7 @@ pub struct PanelModel {
     pub in_use: Vec<AccountRowModel>,
     pub recent: Vec<AccountRowModel>,
     pub unused: Vec<AccountRowModel>,
-    pub hidden: Vec<HiddenAccountModel>,
+    pub hidden: Vec<AccountModel>,
     pub unused_fold_label: Option<String>,
     pub hidden_fold_label: Option<String>,
     pub connect_offer: Option<ConnectOfferModel>,
@@ -116,15 +115,17 @@ pub struct UsedMostModel {
     pub project_path: Option<String>,
 }
 
+/// An account by name, as Settings and the hidden fold list it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HiddenAccountModel {
+pub struct AccountModel {
     pub id: String,
     pub provider: String,
     pub title: String,
     pub label: Option<String>,
     pub via: Option<String>,
     pub called: String,
+    pub shown: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -140,26 +141,13 @@ pub struct ConnectOfferModel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum FooterNoteModel {
-    Stale {
-        text: String,
-        help: String,
-        spoken: String,
-    },
-    Reading {
-        text: String,
-        help: String,
-        spoken: String,
-    },
-    Refreshing {
-        text: String,
-        spoken: String,
-    },
+#[serde(rename_all = "camelCase")]
+pub struct FooterNoteModel {
+    pub text: String,
+    pub help: Option<String>,
+    pub spoken: String,
+    /// Whether a spinner goes before it.
+    pub busy: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -183,19 +171,6 @@ pub struct AgentRowModel {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AccountSwitchModel {
-    pub id: String,
-    pub provider: String,
-    pub title: String,
-    pub label: Option<String>,
-    pub via: Option<String>,
-    pub called: String,
-    pub shown: bool,
-    pub enabled: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SettingsModel {
     pub menu_shows: MenuShows,
     pub notify: Option<Notify>,
@@ -204,8 +179,8 @@ pub struct SettingsModel {
     pub agents_title: String,
     pub agents: Vec<AgentRowModel>,
     pub accounts_empty: Option<EmptyMessage>,
-    pub subscriptions: Vec<AccountSwitchModel>,
-    pub api_keys: Vec<AccountSwitchModel>,
+    pub subscriptions: Vec<AccountModel>,
+    pub api_keys: Vec<AccountModel>,
 }
 
 pub fn build_sync(s: &State, animated: bool, effects: Vec<Effect>) -> AppSync {
@@ -231,7 +206,7 @@ pub fn build_menu_bar(s: &State) -> MenuBarModel {
                 figure: words.figure(a),
             })
             .collect(),
-        spoken: words.spoken_item(&shown, out_of_date),
+        spoken: words.spoken_item(&shown, s.all(), out_of_date),
         out_of_date,
     }
 }
@@ -240,9 +215,7 @@ pub fn build_panel(s: &State) -> PanelModel {
     let has_status = s.status.is_some();
     let w = s.words();
     let in_use_accounts = s.in_use();
-    let recent_accounts = s.recent();
-    let unused_accounts = s.unused();
-    let hidden_accounts = s.hidden();
+    let headlined = in_use_accounts.first().copied();
 
     let waiting = (!has_status).then(|| WaitingModel {
         problem: s.problem.as_ref().map(ToString::to_string),
@@ -250,38 +223,24 @@ pub fn build_panel(s: &State) -> PanelModel {
     });
 
     let verdict = has_status.then(|| {
-        let (headline, detail, standing) = s.verdict(&w);
+        let (headline, detail) = s.verdict(&w);
         VerdictModel {
             headline,
             detail,
-            standing,
+            standing: headlined.map_or(Standing::Lasts, AccountStanding::standing),
         }
     });
 
-    let in_use: Vec<AccountRowModel> = in_use_accounts
-        .iter()
-        .enumerate()
-        .map(|(i, a)| build_account_row(s, &w, a, i == 0))
-        .collect();
-    let recent: Vec<AccountRowModel> = recent_accounts
-        .iter()
-        .map(|a| build_account_row(s, &w, a, false))
-        .collect();
-    let unused: Vec<AccountRowModel> = unused_accounts
-        .iter()
-        .map(|a| build_account_row(s, &w, a, false))
-        .collect();
-    let hidden: Vec<HiddenAccountModel> = hidden_accounts
-        .iter()
-        .map(|a| HiddenAccountModel {
-            id: a.id.clone(),
-            provider: a.provider.clone(),
-            title: a.title.clone(),
-            label: a.label.clone(),
-            via: words::via(a),
-            called: words::called(a, true),
-        })
-        .collect();
+    let rows = |accounts: Vec<&Account>| -> Vec<AccountRowModel> {
+        accounts
+            .into_iter()
+            .map(|a| build_account_row(s, &w, a, headlined.is_some_and(|h| h.id == a.id)))
+            .collect()
+    };
+    let in_use = rows(in_use_accounts);
+    let recent = rows(s.recent());
+    let unused = rows(s.unused());
+    let hidden: Vec<AccountModel> = s.hidden().into_iter().map(account).collect();
 
     let beside = !in_use.is_empty() || !recent.is_empty();
     let unused_fold_label = if unused.is_empty() && hidden.is_empty() {
@@ -298,7 +257,7 @@ pub fn build_panel(s: &State) -> PanelModel {
         let note = s
             .agent_errors
             .get(&agent.id)
-            .cloned()
+            .map(|(_, error)| error.clone())
             .or_else(|| words::connection(agent));
         let (verb, help) = words::connect_action(agent);
         ConnectOfferModel {
@@ -337,16 +296,10 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
     let called = words::called(a, labelled);
     let status = w.status(a);
     let (figure, figure_then) = words::row_figure(a);
-    let then_text = figure_then
-        .as_deref()
-        .map(|t| format!(" {t}"))
-        .unwrap_or_default();
-    let left = if a.deciding_limit().is_some() {
-        " left"
-    } else {
-        ""
+    let figure_spoken = match a.deciding_limit() {
+        Some(limit) => format!("{} left", words::left_of(limit)),
+        None => w.spoken_figure(a),
     };
-    let figure_spoken = format!("{figure}{then_text}{left}");
     let collapsed_spoken = format!("{called}, {status}, {figure_spoken}");
 
     let limits = a.limits.iter().map(|l| build_limit_line(w, l)).collect();
@@ -427,25 +380,33 @@ fn build_footer_note(s: &State) -> Option<FooterNoteModel> {
         && let Some(problem) = &s.problem
     {
         let (text, help, spoken) = words::stale_footer(problem);
-        return Some(FooterNoteModel::Stale { text, help, spoken });
-    }
-    if s.reading() && !s.all().is_empty() {
-        return Some(FooterNoteModel::Reading {
-            text: words::READING_TEXT.to_owned(),
-            help: words::READING_HELP.to_owned(),
-            spoken: words::READING_SPOKEN.to_owned(),
+        return Some(FooterNoteModel {
+            text,
+            help: Some(help),
+            spoken,
+            busy: false,
         });
     }
-    s.refreshing.then(|| FooterNoteModel::Refreshing {
+    if s.reading() && !s.all().is_empty() {
+        return Some(FooterNoteModel {
+            text: words::READING_TEXT.to_owned(),
+            help: Some(words::READING_HELP.to_owned()),
+            spoken: words::READING_SPOKEN.to_owned(),
+            busy: true,
+        });
+    }
+    s.refreshing.then(|| FooterNoteModel {
         text: words::REFRESHING_TEXT.to_owned(),
+        help: None,
         spoken: words::REFRESHING_SPOKEN.to_owned(),
+        busy: true,
     })
 }
 
 fn build_settings(s: &State) -> SettingsModel {
     let installed = s.installed();
     let agents_empty = installed.is_empty().then(|| {
-        let (headline, detail, _) = words::welcome(&[], &s.agent_names(), false);
+        let (headline, detail) = words::welcome(&[], &s.agent_names(), false);
         EmptyMessage { headline, detail }
     });
     let agents_title = words::agents_title(s.from_disk_image).to_owned();
@@ -455,32 +416,13 @@ fn build_settings(s: &State) -> SettingsModel {
         .collect();
 
     let accounts_empty = s.all().is_empty().then(|| {
-        let (headline, detail, _) = words::welcome(&installed, &s.agent_names(), s.reading());
+        let (headline, detail) = words::welcome(&installed, &s.agent_names(), s.reading());
         EmptyMessage { headline, detail }
     });
-    let enabled = !s.stopped();
-    let account_switch = |a: &Account| AccountSwitchModel {
-        id: a.id.clone(),
-        provider: a.provider.clone(),
-        title: a.title.clone(),
-        label: a.label.clone(),
-        via: words::via(a),
-        called: words::called(a, true),
-        shown: !a.hidden,
-        enabled,
-    };
-    let subscriptions = s
+    let (api_keys, subscriptions) = s
         .all()
         .iter()
-        .filter(|a| a.kind != turnscope::providers::Kind::ApiKey)
-        .map(account_switch)
-        .collect();
-    let api_keys = s
-        .all()
-        .iter()
-        .filter(|a| a.kind == turnscope::providers::Kind::ApiKey)
-        .map(account_switch)
-        .collect();
+        .partition::<Vec<_>, _>(|a| a.kind == turnscope::providers::Kind::ApiKey);
 
     let notify = s.status.as_ref().map(|status| status.settings.notify);
     SettingsModel {
@@ -491,17 +433,30 @@ fn build_settings(s: &State) -> SettingsModel {
         agents_title,
         agents,
         accounts_empty,
-        subscriptions,
-        api_keys,
+        subscriptions: subscriptions.into_iter().map(account).collect(),
+        api_keys: api_keys.into_iter().map(account).collect(),
+    }
+}
+
+fn account(a: &Account) -> AccountModel {
+    AccountModel {
+        id: a.id.clone(),
+        provider: a.provider.clone(),
+        title: a.title.clone(),
+        label: a.label.clone(),
+        via: words::via(a),
+        called: words::called(a, true),
+        shown: !a.hidden,
     }
 }
 
 fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
     let changing = s.changing_agents.get(&agent.id).copied();
-    let note =
-        s.agent_errors.get(&agent.id).cloned().or_else(|| {
-            words::connection(agent).filter(|_| agent.connection != Connection::Available)
-        });
+    let note = s
+        .agent_errors
+        .get(&agent.id)
+        .map(|(_, error)| error.clone())
+        .or_else(|| words::connection(agent).filter(|_| agent.connection != Connection::Available));
     AgentRowModel {
         id: agent.id.clone(),
         name: agent.name.clone(),
@@ -537,15 +492,25 @@ mod tests {
     fn footer_shows_refreshing_only_when_no_problem_or_initial_read() {
         let mut state = State::fixed(example());
         state.refreshing = true;
-        assert!(matches!(
-            build_panel(&state).footer_note,
-            Some(FooterNoteModel::Refreshing { .. })
-        ));
+        let said = |state: &State| build_panel(state).footer_note.map(|n| n.text);
+        assert_eq!(said(&state).as_deref(), Some(words::REFRESHING_TEXT));
         state.problem = Some(turnscope::engine::Stopped::Failing("offline".into()));
-        assert!(matches!(
-            build_panel(&state).footer_note,
-            Some(FooterNoteModel::Stale { .. })
-        ));
+        assert_eq!(
+            said(&state).as_deref(),
+            Some("Not up to date · trying again")
+        );
+    }
+
+    #[test]
+    fn voiceover_says_what_a_row_with_no_figure_needs() {
+        let panel = build_panel(&State::fixed(example()));
+        let opencode_go = panel
+            .unused
+            .iter()
+            .find(|r| r.title == "OpenCode Go")
+            .unwrap();
+        assert_eq!(opencode_go.figure, "—");
+        assert_eq!(opencode_go.figure_spoken, "sign in again");
     }
 
     #[test]

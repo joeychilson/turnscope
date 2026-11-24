@@ -4,16 +4,24 @@
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ZonedDateTime};
+use serde::Serialize;
 use turnscope::alerts::{Alert, Kind as AlertKind};
 use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{
     Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, State, Unknown,
 };
+use turnscope::usage::counted;
 
 use crate::standing::{LimitStanding, Standing};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Note {
+/// A notification, as the shell posts it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertNote {
+    pub id: i64,
+    pub account: String,
+    pub replaces: String,
+    pub sign_in: bool,
     pub title: String,
     pub subtitle: String,
     pub body: String,
@@ -214,42 +222,38 @@ impl Words {
         }
     }
 
-    /// The one thing to know, in large type, and the detail behind it.
+    /// The one thing to know about the first account in use, in large type, and the detail
+    /// behind it.
     pub fn verdict(
         &self,
         in_use: &[&Account],
         hidden_in_use: bool,
         all: &[Account],
-    ) -> (String, String, Standing) {
+    ) -> (String, String) {
         let Some(account) = in_use.first() else {
             let detail = if hidden_in_use {
                 "Only accounts you hid are in use."
             } else {
                 ""
             };
-            return ("Nothing in use".into(), detail.into(), Standing::Lasts);
+            return ("Nothing in use".into(), detail.into());
         };
         let Some(limit) = account.deciding_limit() else {
             if account.refused() {
                 return (
                     format!("Sign in to {} again", account.title),
                     sign_in(account),
-                    Standing::Lasts,
                 );
             }
             if let Some(spend) = &account.spend {
                 let detail =
                     pace(spend).unwrap_or_else(|| format!("Your {} has no limit.", account.title));
-                return ("You can keep going".into(), detail, Standing::Lasts);
+                return ("You can keep going".into(), detail);
             }
             let detail = self
                 .trouble(account)
                 .unwrap_or("They aren't read yet.".into());
-            return (
-                format!("{}'s limits are unknown", account.title),
-                detail,
-                Standing::Lasts,
-            );
+            return (format!("{}'s limits are unknown", account.title), detail);
         };
         let (subject, plural) = match &limit.scope {
             Some(_) => short_name(limit),
@@ -279,11 +283,7 @@ impl Words {
                         format!("Back {}.", self.at(b))
                     });
                 let is = if plural { "are" } else { "is" };
-                (
-                    format!("{subject} {is} used up"),
-                    with_alternate(after),
-                    Standing::UsedUp,
-                )
+                (format!("{subject} {is} used up"), with_alternate(after))
             }
             Outlook::RunsOut { likely, .. } => {
                 let when = match likely.horizon {
@@ -296,18 +296,13 @@ impl Words {
                     .window
                     .as_ref()
                     .map_or(String::new(), |w| format!("Back {}.", self.at(&w.resets)));
-                (headline, with_alternate(back), Standing::RunningOut)
+                (headline, with_alternate(back))
             }
             Outlook::Unknown { reason } => (
                 "You can keep going".into(),
                 unforecast(limit, account, *reason),
-                Standing::Lasts,
             ),
-            Outlook::Lasts { .. } => (
-                "You can keep going".into(),
-                self.lasting(limit, account),
-                Standing::Lasts,
-            ),
+            Outlook::Lasts { .. } => ("You can keep going".into(), self.lasting(limit, account)),
         }
     }
 
@@ -430,13 +425,13 @@ impl Words {
         }
     }
 
-    pub fn spoken_item(&self, accounts: &[&Account], out_of_date: bool) -> String {
+    pub fn spoken_item(&self, accounts: &[&Account], all: &[Account], out_of_date: bool) -> String {
         let said = if accounts.is_empty() {
             "Turnscope".to_owned()
         } else {
             accounts
                 .iter()
-                .map(|a| format!("{}, {}", a.title, self.spoken_figure(a)))
+                .map(|a| format!("{}, {}", called(a, twinned(a, all)), self.spoken_figure(a)))
                 .collect::<Vec<_>>()
                 .join("; ")
         };
@@ -447,7 +442,7 @@ impl Words {
         }
     }
 
-    fn spoken_figure(&self, account: &Account) -> String {
+    pub fn spoken_figure(&self, account: &Account) -> String {
         let Some(limit) = account.deciding_limit() else {
             if account.refused() {
                 return "sign in again".into();
@@ -467,7 +462,7 @@ impl Words {
     }
 
     fn spoken(&self, at: i64) -> String {
-        let minutes = (((at - self.now).max(0) + 30_000) / 60_000) as usize;
+        let minutes = (((at - self.now).max(0) + 30_000) / 60_000) as u64;
         let (hours, rest) = (minutes / 60, minutes % 60);
         if hours == 0 {
             return counted(rest, "minute");
@@ -479,7 +474,7 @@ impl Words {
         }
     }
 
-    pub fn note(&self, alert: &Alert, accounts: &[Account]) -> Note {
+    pub fn note(&self, alert: Alert, accounts: &[Account]) -> AlertNote {
         let account = accounts.iter().find(|a| a.id == alert.account);
         let title = account.map_or_else(
             || alert.account_title.clone(),
@@ -523,7 +518,11 @@ impl Words {
                 limit.map_or(String::new(), |l| format!("{} left.", left_of(l))),
             ),
         };
-        Note {
+        AlertNote {
+            id: alert.id,
+            account: alert.account,
+            replaces: alert.replaces,
+            sign_in: alert.kind == AlertKind::SignIn,
             title,
             subtitle,
             body,
@@ -548,10 +547,6 @@ fn fmt_weekday(z: &ZonedDateTime, full: bool) -> String {
 fn fmt_month_day(z: &ZonedDateTime, full: bool) -> String {
     z.strftime(if full { "%B %-d" } else { "%b %-d" })
         .to_string()
-}
-
-fn counted(count: usize, word: &str) -> String {
-    format!("{count} {word}{}", if count == 1 { "" } else { "s" })
 }
 
 fn dollars(value: f64, down: bool) -> String {
@@ -713,12 +708,11 @@ fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
     }
 }
 
-pub fn welcome(agents: &[&Agent], reads: &[&str], reading: bool) -> (String, String, Standing) {
+pub fn welcome(agents: &[&Agent], reads: &[&str], reading: bool) -> (String, String) {
     if reading {
         return (
             "Getting your limits".into(),
             "They show up in a moment.".into(),
-            Standing::Lasts,
         );
     }
     if agents.is_empty() {
@@ -728,7 +722,6 @@ pub fn welcome(agents: &[&Agent], reads: &[&str], reading: bool) -> (String, Str
                 "Turnscope reads {}. Sign in to one, and its limits show up.",
                 list(reads, "and")
             ),
-            Standing::Lasts,
         );
     }
     let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
@@ -738,13 +731,12 @@ pub fn welcome(agents: &[&Agent], reads: &[&str], reading: bool) -> (String, Str
             "Once {} is signed in, its limits show up.",
             list(&names, "or")
         ),
-        Standing::Lasts,
     )
 }
 
 pub fn unused(count: usize, beside_others: bool) -> String {
     counted(
-        count,
+        count as u64,
         if beside_others {
             "more account"
         } else {
@@ -1223,8 +1215,7 @@ mod tests {
             w.verdict(&[&out], false, &[]),
             (
                 "Claude Max runs out in\u{a0}2h".into(),
-                "Back in 3h.".into(),
-                Standing::RunningOut
+                "Back in 3h.".into()
             )
         );
         let this_week = account(vec![Limit {
@@ -1235,8 +1226,7 @@ mod tests {
             w.verdict(&[&this_week], false, &[]),
             (
                 "Claude Max runs out Saturday\u{a0}morning".into(),
-                "Back Sun 12 AM.".into(),
-                Standing::RunningOut
+                "Back Sun 12 AM.".into()
             )
         );
         let monthly = Account {
@@ -1252,8 +1242,7 @@ mod tests {
             w.verdict(&[&monthly], false, &[]),
             (
                 "OpenCode Go runs out Oct\u{a0}8".into(),
-                "Back Oct 30.".into(),
-                Standing::RunningOut
+                "Back Oct 30.".into()
             )
         );
 
@@ -1269,11 +1258,7 @@ mod tests {
                 false,
                 &[]
             ),
-            (
-                "Claude Max is used up".into(),
-                "Back Sat 9 AM.".into(),
-                Standing::UsedUp
-            )
+            ("Claude Max is used up".into(), "Back Sat 9 AM.".into())
         );
         assert_eq!(
             w.verdict(&[&used(moment("2026-09-30T15:00:00Z", Soon))], false, &[])
@@ -1283,7 +1268,7 @@ mod tests {
 
         assert_eq!(
             w.verdict(&[], false, &[]),
-            ("Nothing in use".into(), String::new(), Standing::Lasts)
+            ("Nothing in use".into(), String::new())
         );
         assert_eq!(
             w.verdict(&[], true, &[]).1,
@@ -1300,8 +1285,7 @@ mod tests {
             w.verdict(&[&unread], false, &[]),
             (
                 "Claude Max's limits are unknown".into(),
-                "It couldn't be read yet.".into(),
-                Standing::Lasts
+                "It couldn't be read yet.".into()
             )
         );
         let signed_out = Account {
@@ -1425,7 +1409,7 @@ mod tests {
             }]);
             assert_eq!(
                 w.verdict(&[&unknown], false, &[]),
-                ("You can keep going".into(), said.into(), Standing::Lasts)
+                ("You can keep going".into(), said.into())
             );
         }
 
@@ -1477,11 +1461,7 @@ mod tests {
         };
         assert_eq!(
             w.verdict(&[&claude], false, &[]),
-            (
-                "Claude and GPT are used up".into(),
-                "Back Sat 9 AM.".into(),
-                Standing::UsedUp
-            )
+            ("Claude and GPT are used up".into(), "Back Sat 9 AM.".into())
         );
         assert_eq!(w.status(&claude), "Claude and GPT back Sat 9 AM");
     }
@@ -1529,6 +1509,10 @@ mod tests {
 
         let all = [mine.clone(), twin.clone(), other.clone()];
         let row = |a: &Account| called(a, twinned(a, &all));
+        assert_eq!(
+            w.spoken_item(&[&mine, &twin], &all, false),
+            "Claude Max (me@example.com), runs out in 2 hours; Claude Max (work@example.com), 90% left"
+        );
         assert_eq!(row(&mine), "Claude Max (me@example.com)");
         assert_eq!(row(&twin), "Claude Max (work@example.com)");
         assert_eq!(row(&other), "ChatGPT Pro");
@@ -1606,14 +1590,14 @@ mod tests {
 
         let claude = account(vec![limit(runs_out())]);
         assert_eq!(
-            w.spoken_item(&[&claude, &keys], false),
+            w.spoken_item(&[&claude, &keys], &[], false),
             "Claude Max, runs out in 2 hours; OpenRouter API key, $84 this month"
         );
         assert_eq!(
-            w.spoken_item(&[&claude], true),
+            w.spoken_item(&[&claude], &[], true),
             "Claude Max, runs out in 2 hours, not up to date"
         );
-        assert_eq!(w.spoken_item(&[], false), "Turnscope");
+        assert_eq!(w.spoken_item(&[], &[], false), "Turnscope");
     }
 
     #[test]
@@ -1725,36 +1709,45 @@ mod tests {
                 ..account(vec![])
             },
         ];
+        let said = |note: AlertNote| (note.title, note.subtitle, note.body);
         assert_eq!(
-            w.note(&make_alert(AlertKind::RunningOut), &accounts),
-            Note {
+            w.note(make_alert(AlertKind::RunningOut), &accounts),
+            AlertNote {
+                id: 1,
+                account: "anthropic:a".into(),
+                replaces: "limit:anthropic:a:five_hour".into(),
+                sign_in: false,
                 title: "Claude Max".into(),
                 subtitle: "5 hours runs out 2 PM".into(),
                 body: "Back 3 PM.".into()
             }
         );
-        let used_note = w.note(&make_alert(AlertKind::UsedUp), &accounts);
+        let used_note = w.note(make_alert(AlertKind::UsedUp), &accounts);
         assert_eq!(
             (used_note.subtitle.as_str(), used_note.body.as_str()),
             ("5 hours is used up", "Back 3 PM.")
         );
-        let reset = w.note(&make_alert(AlertKind::Reset), &accounts);
+        let reset = w.note(make_alert(AlertKind::Reset), &accounts);
         assert_eq!(
             (reset.subtitle.as_str(), reset.body.as_str()),
             ("5 hours is back", "20% left.")
         );
-        let sign_in = w.note(&make_alert(AlertKind::SignIn), &accounts);
+        let sign_in = w.note(make_alert(AlertKind::SignIn), &accounts);
         assert_eq!(
-            (sign_in.subtitle.as_str(), sign_in.body.as_str()),
-            ("Sign in again", "Open Claude Code to sign in.")
+            (
+                sign_in.subtitle.as_str(),
+                sign_in.body.as_str(),
+                sign_in.sign_in
+            ),
+            ("Sign in again", "Open Claude Code to sign in.", true)
         );
         assert_eq!(
-            w.note(&make_alert(AlertKind::UsedUp), &[]).title,
+            w.note(make_alert(AlertKind::UsedUp), &[]).title,
             "Claude Max (me@example.com)"
         );
         accounts[1].in_use = true;
         assert_eq!(
-            w.note(&make_alert(AlertKind::UsedUp), &accounts).title,
+            w.note(make_alert(AlertKind::UsedUp), &accounts).title,
             "Claude Max (me@example.com)"
         );
         accounts[1].in_use = false;
@@ -1763,7 +1756,7 @@ mod tests {
             runs_out: Some(moment("2026-10-02T09:00:00Z", ThisWeek)),
             ..make_alert(AlertKind::RunningOut)
         };
-        let note = w.note(&days, &accounts);
+        let note = w.note(days, &accounts);
         assert_eq!(
             (note.subtitle.as_str(), note.body.as_str()),
             ("5 hours runs out Friday 9 AM", "Back Saturday 12 AM.")
@@ -1782,27 +1775,27 @@ mod tests {
             ..make_alert(kind)
         };
         assert_eq!(
-            w.note(
-                &credit_alert(AlertKind::UsedUp),
+            said(w.note(
+                credit_alert(AlertKind::UsedUp),
                 std::slice::from_ref(&key_empty)
-            ),
-            Note {
-                title: "OpenRouter API key".into(),
-                subtitle: "Credits are used up".into(),
-                body: String::new()
-            }
+            )),
+            (
+                "OpenRouter API key".into(),
+                "Credits are used up".into(),
+                String::new()
+            )
         );
         let key_refilled = api_key(
             vec![credits(50, 20.0, 10.0, unknown(Unknown::NoReset))],
             None,
         );
         assert_eq!(
-            w.note(&credit_alert(AlertKind::Reset), &[key_refilled]),
-            Note {
-                title: "OpenRouter API key".into(),
-                subtitle: "Credits are back".into(),
-                body: "$10 of $20 left.".into()
-            }
+            said(w.note(credit_alert(AlertKind::Reset), &[key_refilled])),
+            (
+                "OpenRouter API key".into(),
+                "Credits are back".into(),
+                "$10 of $20 left.".into()
+            )
         );
     }
 

@@ -236,10 +236,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func showStatusMenu() {
         guard let item else { return }
         let menu = NSMenu()
+        // Left on, the menu enables every item whose target answers its action.
+        menu.autoenablesItems = false
         if bridge.isLive {
             let refresh = NSMenuItem(title: "Refresh Limits", action: #selector(menuRefreshLimits), keyEquivalent: "r")
             refresh.target = self
-            refresh.isEnabled = !bridge.panel.stopped
+            refresh.isEnabled = bridge.panel.hasStatus && !bridge.panel.stopped
             menu.addItem(refresh)
             menu.addItem(.separator())
         }
