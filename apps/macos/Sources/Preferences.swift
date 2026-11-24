@@ -1,5 +1,5 @@
-// The app's own preferences, kept in UserDefaults under the keys 0.2 and 0.3 used,
-// so existing installs carry over seamlessly.
+// The app's own preferences, in UserDefaults. Their keys stay as they are, or an
+// install loses what was set.
 
 import Foundation
 
@@ -16,7 +16,6 @@ struct Preferences {
         let dismissed = (defaults.string(forKey: dismissedConnectKey) ?? "")
             .split(separator: ",")
             .map(String.init)
-            .filter { !$0.isEmpty }
         return Preferences(menuShows: shows, dismissedConnect: dismissed)
     }
 

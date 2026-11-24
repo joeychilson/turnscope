@@ -1,6 +1,5 @@
-// Swift bridge to `libturnscope_app.a` (`crates/turnscope-app`).
-// Owns the opaque Rust `TurnscopeApp` handle, decodes `AppSync` view models,
-// forwards domain actions synchronously, and holds ephemeral Swift UI state.
+// The handle to `libturnscope_app.a` (`crates/turnscope-app`), and the panel's state that
+// stays in Swift.
 
 import Foundation
 import Observation
@@ -15,23 +14,18 @@ private func takeRustString(_ ptr: UnsafeMutablePointer<CChar>?) -> String? {
     return String(cString: ptr)
 }
 
+/// These models are strings, numbers and flags, which JSONEncoder can't fail on.
+private func json(_ value: some Encodable) -> String {
+    String(decoding: try! JSONEncoder().encode(value), as: UTF8.self)
+}
+
 func snapshotPanel(_ launch: Launch) -> SnapshotResponse {
-    let cfg = SnapshotConfig(
-        fixture: launch.fixture,
-        data: launch.data,
-        home: launch.home
-    )
+    let config = json(SnapshotConfig(fixture: launch.fixture, data: launch.data, home: launch.home))
+    let answer = config.withCString { takeRustString(turnscope_app_snapshot($0)) } ?? ""
     do {
-        let encoded = try JSONEncoder().encode(cfg)
-        guard let cfgText = String(data: encoded, encoding: .utf8),
-              let json = cfgText.withCString({ takeRustString(turnscope_app_snapshot($0)) }),
-              let data = json.data(using: .utf8)
-        else {
-            return .err(error: "Turnscope: snapshot returned empty response", code: 1)
-        }
-        return try JSONDecoder().decode(SnapshotResponse.self, from: data)
+        return try JSONDecoder().decode(SnapshotResponse.self, from: Data(answer.utf8))
     } catch {
-        return .err(error: "Turnscope: snapshot couldn't be decoded: \(error)", code: 1)
+        return .err(error: "Turnscope: the snapshot can't be read: \(error)", code: 1)
     }
 }
 
@@ -116,9 +110,8 @@ final class UIState {
         }
     }
 
-    func go(_ page: Page, tab: SettingsTab? = nil) {
+    func go(_ page: Page) {
         withAnimation(spring) {
-            if let tab { self.tab = tab }
             self.page = page
         }
     }
@@ -142,8 +135,6 @@ final class UIState {
 @Observable
 final class Bridge {
     private(set) var panel: PanelModel = .empty
-    private(set) var menuBar: MenuBarModel = .empty
-    private(set) var counting = false
     /// Visible height of the screen the panel opens on, for overflow scroll caps.
     var screenHeight: CGFloat = 800
 
@@ -153,35 +144,23 @@ final class Bridge {
     private var handle: OpaquePointer?
     private let location: SnapshotConfig
     private nonisolated let wakePending = OSAllocatedUnfairLock(initialState: false)
-    private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
     /// Initialize for live or `--fixture` mode. Exits with code 2 if `--fixture` can't be read.
     init(launch: Launch, fromDiskImage: Bool, preferences: Preferences) {
         self.isLive = launch.fixture == nil
         self.location = SnapshotConfig(fixture: launch.fixture, data: launch.data, home: launch.home)
-        let cfg = StartConfig(
+        let config = json(StartConfig(
             fixture: launch.fixture,
             data: launch.data,
             home: launch.home,
             fromDiskImage: fromDiskImage,
             menuShows: preferences.menuShows,
             dismissedConnect: preferences.dismissedConnect
-        )
-        let cfgText: String
-        do {
-            let encoded = try encoder.encode(cfg)
-            guard let text = String(data: encoded, encoding: .utf8) else {
-                fatalError("StartConfig encoded to non-UTF8 bytes")
-            }
-            cfgText = text
-        } catch {
-            fatalError("Failed to encode StartConfig: \(error)")
-        }
-
+        ))
         var errorPtr: UnsafeMutablePointer<CChar>?
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let started = cfgText.withCString { ptr in
+        let started = config.withCString { ptr in
             turnscope_app_start(ptr, ctx, rustWakeCallback, &errorPtr)
         }
         guard let started else {
@@ -211,23 +190,11 @@ final class Bridge {
 
     func send(_ action: AppAction) {
         guard let handle else { return }
-        let text: String
-        do {
-            let data = try encoder.encode(action)
-            guard let utf8 = String(data: data, encoding: .utf8) else {
-                reportError("AppAction encoded to non-UTF8 bytes")
-                return
-            }
-            text = utf8
-        } catch {
-            reportError("failed to encode AppAction: \(error)")
-            return
-        }
-        guard let json = text.withCString({ takeRustString(turnscope_app_action(handle, $0)) }) else {
+        guard let answer = json(action).withCString({ takeRustString(turnscope_app_action(handle, $0)) }) else {
             reportError("turnscope_app_action returned null")
             return
         }
-        guard let sync = decodeSync(json) else { return }
+        guard let sync = decodeSync(answer) else { return }
         apply(sync)
     }
 
@@ -239,12 +206,9 @@ final class Bridge {
     /// Computes the diagnostics report off the main thread because `doctor` checks
     /// Keychain logins and scans SQLite.
     func diagnostics() async -> String {
-        let fallback = "Turnscope \(panel.version)\n"
-        guard let encoded = try? encoder.encode(location),
-              let cfgText = String(data: encoded, encoding: .utf8)
-        else { return fallback }
+        let config = json(location)
         return await Task.detached(priority: .userInitiated) {
-            cfgText.withCString { takeRustString(turnscope_app_diagnostics($0)) } ?? fallback
+            config.withCString { takeRustString(turnscope_app_diagnostics($0)) } ?? ""
         }.value
     }
 
@@ -253,12 +217,6 @@ final class Bridge {
               let path = takeRustString(turnscope_app_log_path(handle))
         else { return nil }
         return URL(fileURLWithPath: path)
-    }
-
-    func stop() {
-        guard let handle else { return }
-        self.handle = nil
-        turnscope_app_stop(handle)
     }
 
     nonisolated func scheduleSync() {
@@ -283,12 +241,8 @@ final class Bridge {
     }
 
     private func decodeSync(_ json: String) -> AppSync? {
-        guard let data = json.data(using: .utf8) else {
-            reportError("AppSync JSON was not valid UTF-8")
-            return nil
-        }
         do {
-            return try decoder.decode(AppSync.self, from: data)
+            return try decoder.decode(AppSync.self, from: Data(json.utf8))
         } catch {
             reportError("failed to decode AppSync: \(error)")
             return nil
@@ -303,8 +257,6 @@ final class Bridge {
     private func apply(_ sync: AppSync) {
         let update = {
             if self.panel != sync.panel { self.panel = sync.panel }
-            if self.menuBar != sync.menuBar { self.menuBar = sync.menuBar }
-            if self.counting != sync.counting { self.counting = sync.counting }
         }
         if sync.animated {
             withAnimation(spring, update)

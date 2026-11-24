@@ -1,6 +1,3 @@
-// One account as a row, expanded in place on click, Space, or Return,
-// plus shared account title/name views and limit progress bars.
-
 import AppKit
 import SwiftUI
 
@@ -102,8 +99,7 @@ struct AccountRow: View {
         }
         .padding(Row.padding)
         .background {
-            // Full-bleed native Button covers 100% of the padded row (zero dead zones,
-            // instant mouse-down press shading, and reliable rapid clicking).
+            // A button behind the whole padded row, so all of it opens the row.
             if row.openable {
                 Button(action: toggle) {
                     Color.clear
@@ -190,7 +186,7 @@ private struct LimitLine: View {
 
 struct Bar: View {
     var leftPercent: UInt8
-    var timeLeftFraction: Double? = nil
+    var timeLeftFraction: Double?
     var standing: Standing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
@@ -356,7 +352,6 @@ struct AccountTitle: View {
                 .font(.name)
                 .foregroundStyle(titleStyle)
                 .lineLimit(1)
-                .truncationMode(.tail)
                 .layoutPriority(1)
                 .help(title)
             if let label {
@@ -386,7 +381,6 @@ struct AccountName: View {
                     .font(.small)
                     .foregroundStyle(subtitleStyle)
                     .lineLimit(1)
-                    .truncationMode(.tail)
             }
         }
     }

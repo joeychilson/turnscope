@@ -42,7 +42,7 @@ final class MenuBarItem {
             let figure = slot.figure as NSString
             let width = ceil(figure.size(withAttributes: measureAttrs).width)
             return Part(
-                logo: Logo.providerImage(slot.provider),
+                logo: Logo.svg("providers/\(slot.provider)"),
                 figure: figure,
                 standing: slot.standing,
                 width: width

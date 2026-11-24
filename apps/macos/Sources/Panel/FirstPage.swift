@@ -38,8 +38,8 @@ struct FirstPage: View {
                             }
                             .padding(.top, panel.inUse.isEmpty ? 0 : Row.groups)
                         }
-                        if panel.unusedFoldLabel != nil {
-                            UnusedAccounts(focus: $focus)
+                        if let label = panel.unusedFoldLabel {
+                            UnusedAccounts(label: label, focus: $focus)
                                 .padding(.top, Row.spacing)
                         }
                         if let offer = panel.connectOffer {
@@ -56,8 +56,7 @@ struct FirstPage: View {
         .focusable()
         .focusEffectDisabled()
         .focused($focus, equals: .page)
-        .onAppear { focus = .page }
-        .onChange(of: ui.focusNonce) { _, _ in focus = .page }
+        .onChange(of: ui.focusNonce, initial: true) { focus = .page }
         .onKeyPress(.downArrow) { stepFocus(1, panel: panel) }
         .onKeyPress(.upArrow) { stepFocus(-1, panel: panel) }
     }
@@ -97,30 +96,22 @@ struct Waiting: View {
     var model: WaitingModel?
 
     var body: some View {
-        VStack(spacing: 8) {
-            if let problem = model?.problem {
-                Text("Turnscope can't read its data")
-                    .font(.system(size: 13, weight: .semibold))
-                Text(problem)
-                    .font(.line)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                if model?.retries == true {
-                    Text("It tries again on its own.")
-                        .font(.small)
-                        .foregroundStyle(.tertiary)
-                }
-            } else {
+        if let problem = model?.problem {
+            Message(
+                headline: "Turnscope can't read its data",
+                detail: problem,
+                footnote: model?.retries == true ? "It tries again on its own." : nil
+            )
+        } else {
+            VStack(spacing: 8) {
                 Spinner()
                 Text("Reading your agents' history…")
                     .font(.line)
                     .foregroundStyle(.secondary)
             }
+            .padding(24)
+            .frame(maxWidth: .infinity, minHeight: 140)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, minHeight: 140)
     }
 }
 
@@ -154,18 +145,7 @@ private struct ConnectNudge: View {
     var body: some View {
         HStack(spacing: Row.gap) {
             Logo(agent: offer.id, size: Row.logo)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(offer.name).font(.name)
-                if let note = offer.note {
-                    Text(note)
-                        .font(.small)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .help(offer.configured.map { "Configured to run \($0)" } ?? "")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            AgentLabel(name: offer.name, note: offer.note, configured: offer.configured)
             if offer.changing {
                 Spinner()
                     .accessibilityElement()
@@ -214,7 +194,6 @@ private struct Footer: View {
                         .font(.small)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .truncationMode(.tail)
                 }
                 .help(note.help ?? "")
                 .accessibilityElement(children: .combine)
@@ -226,9 +205,7 @@ private struct Footer: View {
             Spacer()
             Button("Close", action: closePanel)
                 .keyboardShortcut(.cancelAction)
-                .frame(width: 0, height: 0)
-                .opacity(0)
-                .accessibilityHidden(true)
+                .hiddenShortcut()
             if bridge.isLive && !bridge.panel.stopped {
                 Button("Refresh Limits") {
                     withAnimation(spring) {
@@ -236,9 +213,7 @@ private struct Footer: View {
                     }
                 }
                 .keyboardShortcut("r", modifiers: .command)
-                .frame(width: 0, height: 0)
-                .opacity(0)
-                .accessibilityHidden(true)
+                .hiddenShortcut()
             }
             if updater.waiting {
                 Button("Update available") {
