@@ -491,7 +491,6 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
     let Value::Object(mut given) = arguments else {
         return Err(format!("arguments are an object, not {arguments}"));
     };
-    given.retain(|_, value| !value.is_null());
     let schema: Value = serde_json::from_str(tool.input).unwrap_or_default();
     let properties = &schema["properties"];
     for (name, value) in &given {
@@ -503,6 +502,9 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
                 .flat_map(|properties| properties.keys().map(String::as_str))
                 .collect();
             return Err(format!("{} takes {}, not {name}", tool.name, or(&names)));
+        }
+        if value.is_null() {
+            continue;
         }
         let (min, max) = (property["minimum"].as_f64(), property["maximum"].as_f64());
         let within = |n: f64| min.is_none_or(|min| n >= min) && max.is_none_or(|max| n <= max);
@@ -528,6 +530,7 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
             return Err(format!("{name} is {kind}, not {value}"));
         }
     }
+    given.retain(|_, value| !value.is_null());
     Ok(Value::Object(given))
 }
 

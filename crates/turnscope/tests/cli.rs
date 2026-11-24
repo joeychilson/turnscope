@@ -518,7 +518,7 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
         &mut command(data.path(), &["mcp"]),
         &[
             ("explain_usage", r#"{"all":true,"until":"yesterday"}"#),
-            ("check_limits", r#"{"nope":1}"#),
+            ("check_limits", r#"{"nope":null}"#),
             ("check_limits", r#"{"all":"yes"}"#),
             ("explain_usage", r#"{"account":3}"#),
             ("explain_usage", r#"{"by":"hourly"}"#),
