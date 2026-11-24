@@ -84,12 +84,6 @@ Before creating its tables in a file that has none of Turnscope's yet,
 `db::open` checks the file's SQLite application id, so it never writes
 into another program's database.
 
-Turnscope 0.1 and 0.2 kept `turnscope.sqlite`, with six revisions of their
-own. A new `turnscope.db` takes in all of it once, by its columns' names
-(`db::import`), and leaves it as it was. `serve.lock`, `serve.log`
-and `serve.sock`, which their `serve` kept beside it, are removed then. A later release
-removes the import, and the old file with it.
-
 - **History is read incrementally.** Each file keeps its reader's cursor,
   so only what was appended is read, and an unchanged file is only
   stat'ed. A file that was replaced or cut short is read from the start.
