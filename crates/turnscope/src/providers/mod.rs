@@ -143,6 +143,15 @@ pub struct Limits {
     pub readings: Vec<Reading>,
 }
 
+impl From<Vec<Reading>> for Limits {
+    fn from(readings: Vec<Reading>) -> Limits {
+        Limits {
+            plan: None,
+            readings,
+        }
+    }
+}
+
 pub struct Reading {
     pub key: String,
     pub name: String,
@@ -202,26 +211,21 @@ impl Problem {
     }
 }
 
-fn api_account(provider: &str) -> Account {
-    Account {
-        id: format!("{provider}:api"),
-        kind: Kind::ApiKey,
-        label: None,
-    }
-}
-
 fn account(
     provider: &str,
     credential: &Credential,
     identity: impl FnOnce() -> Option<(String, Option<String>)>,
 ) -> Option<Account> {
-    if credential.key {
-        return Some(api_account(provider));
-    }
-    let (id, label) = identity()?;
+    let (id, kind, label) = match credential.key {
+        true => ("api".to_owned(), Kind::ApiKey, None),
+        false => {
+            let (id, label) = identity()?;
+            (id, Kind::Subscription, label)
+        }
+    };
     Some(Account {
         id: format!("{provider}:{id}"),
-        kind: Kind::Subscription,
+        kind,
         label,
     })
 }
@@ -336,7 +340,6 @@ impl Answered {
     }
 }
 
-/// GET `url`, giving up after `seconds`.
 pub fn get(url: &str, seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
     curl(url, &[], &[], Duration::from_secs(seconds.into()))
         .map(|answered| (answered.status, answered.body))
@@ -403,12 +406,9 @@ fn curl(
     write.map_err(|error| error.to_string())?;
     let last = stderr.trim().rsplit('\n').next().unwrap_or_default();
     let (status, after) = last.split_once(' ').unwrap_or((last, ""));
-    let after = after.trim();
     Ok(Answered {
         status: status.parse().map_err(|_| format!("status {status:?}"))?,
-        retry_after: (!after.is_empty())
-            .then(|| retry_after(after, crate::now()))
-            .flatten(),
+        retry_after: retry_after(after, crate::now()),
         body: output.stdout,
     })
 }
@@ -478,10 +478,8 @@ pub fn words(key: &str) -> String {
     out
 }
 
-/// A limit `used` percent of a window `length` ms long that resets at
-/// `resets`, named for its length: keyed `key`, or `key:scope` for one on
-/// some models. Of one answer or an agent's history (`agents::InBand`), the
-/// key is the same.
+/// [`windowed`], keyed `key`, or `key:scope` for one on some models. Of one
+/// answer or an agent's history (`agents::InBand`), the key is the same.
 pub fn window(
     key: &str,
     scope: Option<&str>,
@@ -489,10 +487,28 @@ pub fn window(
     length: i64,
     resets: Option<i64>,
 ) -> Reading {
+    windowed(
+        scope.map_or(key.to_owned(), |scope| format!("{key}:{scope}")),
+        scope.map(str::to_owned),
+        used,
+        length,
+        resets,
+    )
+}
+
+/// A limit `used` percent of a window `length` ms long that resets at
+/// `resets`, named for its length.
+fn windowed(
+    key: String,
+    scope: Option<String>,
+    used: f64,
+    length: i64,
+    resets: Option<i64>,
+) -> Reading {
     Reading {
-        key: scope.map_or(key.to_owned(), |scope| format!("{key}:{scope}")),
+        key,
         name: window_name(length),
-        scope: scope.map(str::to_owned),
+        scope,
         used,
         size: None,
         starts: resets.and_then(|resets| resets.checked_sub(length)),

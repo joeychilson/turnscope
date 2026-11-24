@@ -222,16 +222,18 @@ time, and answers after. The panel says the history is being read.
 
 ### Locks
 
-Three files in the data directory keep processes apart:
+Four files in the data directory keep processes apart:
 
 - `turnscope.lock` while the database is created or migrated.
 - `ingest.lock` while history is read, so a first run isn't read twice at
   once.
+- `limits.lock` while limits are read, so no two processes ask a provider
+  at once, and one refused login isn't counted as two.
 - `app.lock`, while an app keeps the data current. A second app shows what
   the first writes, and takes over once it's gone.
 
-Limits and prices are claimed with one `UPDATE` of `state`, so no two
-processes ask a provider at once.
+Prices, and limits as they come due, are claimed with one `UPDATE` of
+`state`, so a process doesn't read again what another just read.
 
 SQLite lets one connection write at a time, and another waits up to 10 s
 for its turn. History is written a second at a time, with 110 ms between,

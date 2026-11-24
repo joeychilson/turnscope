@@ -231,11 +231,7 @@ fn token(answered: &Answered, now: i64) -> Result<Option<(Secret, i64)>, Problem
         }
         (400 | 401, Some("invalid_grant")) => Err(Problem::SignIn),
         (400 | 401, Some("invalid_client" | "unauthorized_client")) => Ok(None),
-        (status, _) => Err(Problem::Unavailable {
-            why: format!("{TOKEN}: answered {status}"),
-            retry_after: answered.retry_after,
-            answered: true,
-        }),
+        _ => Err(answered.unavailable(TOKEN)),
     }
 }
 
@@ -348,23 +344,17 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
             let resets = super::reset(&bucket["resetTime"])?;
             // The Gemini pool's: `gemini-5h`, `gemini-weekly`.
             let own = id.strip_prefix("gemini-") == Some(window);
-            readings.push(Reading {
-                key: if own {
-                    window.to_owned()
-                } else {
-                    format!("{window}:{id}")
-                },
-                name: super::window_name(length),
-                scope: match group_scope {
-                    Some(group) => Some(group.to_owned()),
-                    None if own => Some("Gemini".to_owned()),
-                    None => Some(super::words(id)),
-                },
-                used: ((1.0 - left) * 100.0).clamp(0.0, 100.0),
-                size: None,
-                starts: resets.and_then(|resets| resets.checked_sub(length)),
-                resets,
-            });
+            let key = match own {
+                true => window.to_owned(),
+                false => format!("{window}:{id}"),
+            };
+            let scope = match group_scope {
+                Some(group) => group.to_owned(),
+                None if own => "Gemini".to_owned(),
+                None => super::words(id),
+            };
+            let used = ((1.0 - left) * 100.0).clamp(0.0, 100.0);
+            readings.push(super::windowed(key, Some(scope), used, length, resets));
         }
     }
     Some(readings)
