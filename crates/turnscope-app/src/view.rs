@@ -296,12 +296,7 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
     let called = words::called(a, labelled);
     let status = w.status(a);
     let (figure, figure_then) = words::row_figure(a);
-    let figure_spoken = match a.deciding_limit() {
-        Some(limit) => format!("{} left", words::left_of(limit)),
-        None if a.spend.is_some() => w.spoken_figure(a),
-        // Its status says why it has no figure.
-        None => String::new(),
-    };
+    let figure_spoken = words::row_figure_spoken(a);
     let collapsed_spoken = if figure_spoken.is_empty() {
         format!("{called}, {status}")
     } else {
@@ -495,28 +490,78 @@ mod tests {
     }
 
     #[test]
-    fn footer_shows_refreshing_only_when_no_problem_or_initial_read() {
+    fn the_footer_says_why_the_status_is_old_before_what_is_read() {
         let mut state = State::fixed(example());
+        let note = |state: &State| build_panel(state).footer_note;
         state.refreshing = true;
-        let said = |state: &State| build_panel(state).footer_note.map(|n| n.text);
-        assert_eq!(said(&state).as_deref(), Some(words::REFRESHING_TEXT));
-        state.problem = Some(turnscope::engine::Stopped::Failing("offline".into()));
         assert_eq!(
-            said(&state).as_deref(),
-            Some("Not up to date · trying again")
+            note(&state),
+            Some(FooterNoteModel {
+                text: "Refreshing limits…".into(),
+                help: None,
+                spoken: "Refreshing limits".into(),
+                busy: true,
+            })
+        );
+        state.status.as_mut().unwrap().history_read = false;
+        assert_eq!(
+            note(&state),
+            Some(FooterNoteModel {
+                text: "Reading your agents' history…".into(),
+                help: Some(
+                    "Turnscope reads your agents' history once, when it first runs. \
+                     Limits show up as soon as they are read."
+                        .into()
+                ),
+                spoken: "Reading your agents' history".into(),
+                busy: true,
+            })
+        );
+        state.problem = Some(Stopped::Failing("Offline".into()));
+        assert_eq!(
+            note(&state),
+            Some(FooterNoteModel {
+                text: "Not up to date · trying again".into(),
+                help: Some("Offline".into()),
+                spoken: "Not up to date: Offline. Trying again.".into(),
+                busy: false,
+            })
         );
     }
 
     #[test]
-    fn voiceover_reads_a_row_with_no_figure_once() {
-        let panel = build_panel(&State::fixed(example()));
-        let opencode_go = panel
-            .unused
+    fn voiceover_reads_a_rows_figure_as_it_shows_and_why_it_has_none_once() {
+        let mut shown = example();
+        let key = shown
+            .status
+            .accounts
             .iter()
-            .find(|r| r.title == "OpenCode Go")
+            .position(|a| a.id == "anthropic:api")
             .unwrap();
-        assert_eq!(opencode_go.figure, "—");
-        assert_eq!(opencode_go.collapsed_spoken, "OpenCode Go, Sign in again");
+        shown.status.accounts[key].state = turnscope::status::State::Unread {
+            why: turnscope::status::Stale::SignIn,
+        };
+        let spoken = |shown: &turnscope::engine::Shown, title: &str| {
+            let panel = build_panel(&State::fixed(shown.clone()));
+            let row = panel.unused.into_iter().find(|r| r.title == title).unwrap();
+            (row.figure, row.collapsed_spoken)
+        };
+        assert_eq!(
+            spoken(&shown, "OpenCode Go"),
+            ("—".into(), "OpenCode Go, Sign in again".into())
+        );
+        assert_eq!(
+            spoken(&shown, "Anthropic API key"),
+            (
+                "$0".into(),
+                "Anthropic API key, Sign in again, $0 this month".into()
+            )
+        );
+        shown.status.accounts[key].spend.as_mut().unwrap().partial = true;
+        assert_eq!(
+            spoken(&shown, "Anthropic API key"),
+            ("—".into(), "Anthropic API key, Sign in again".into())
+        );
     }
 
     #[test]

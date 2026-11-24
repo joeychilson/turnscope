@@ -654,73 +654,55 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_connect_that_ends_shows_at_once_and_one_that_fails_says_why_until_it_connects() {
+    fn a_connect_that_ends_shows_at_once_and_one_that_fails_says_why_until_it_changes() {
         let mut state = shown(example());
         state.panel_open = true;
         let mut core = Core::new(state);
-        let codex = |core: &mut Core| {
-            core.sync()
-                .panel
-                .settings
-                .agents
-                .into_iter()
-                .find(|a| a.id == "codex")
-                .unwrap()
-        };
-        let calls = core.apply(
-            Action::SetConnected {
+        fn codex(core: &mut Core) -> (bool, Option<String>) {
+            let agents = core.sync().panel.settings.agents;
+            let row = agents.into_iter().find(|a| a.id == "codex").unwrap();
+            assert!(row.changing.is_none());
+            (row.connected, row.note)
+        }
+        fn connect(core: &mut Core, connecting: bool, error: Option<&str>) {
+            let action = Action::SetConnected {
                 id: "codex".into(),
-                connecting: true,
-            },
-            0,
-        );
-        assert_eq!(
-            calls,
-            [Call::Connect {
+                connecting,
+            };
+            let asked = Call::Connect {
                 agent: "codex".into(),
-                connecting: true
-            }]
-        );
-        let (_, wake) = core.took(Event::Connected {
-            agent: "codex".into(),
-            connecting: true,
-            error: None,
-        });
-        assert!(wake);
-        let connected = codex(&mut core);
-        assert!(connected.connected && connected.changing.is_none());
-
-        core.apply(
-            Action::SetConnected {
-                id: "codex".into(),
-                connecting: false,
-            },
-            0,
-        );
-        let (_, wake) = core.took(Event::Connected {
-            agent: "codex".into(),
-            connecting: false,
-            error: Some("Codex couldn't be run.".into()),
-        });
-        assert!(wake);
-        let failed = codex(&mut core);
-        assert!(failed.connected && failed.changing.is_none());
-        assert_eq!(failed.note.as_deref(), Some("Codex couldn't be run."));
-
-        let read = |connection| {
+                connecting,
+            };
+            assert_eq!(core.apply(action, 0), [asked]);
+            let (_, wake) = core.took(Event::Connected {
+                agent: "codex".into(),
+                connecting,
+                error: error.map(Into::into),
+            });
+            assert!(wake);
+        }
+        fn read(core: &mut Core, connection: Connection) {
             let mut shown = example();
             shown.agents[1].connection = connection;
-            Event::Shown(Box::new(shown), Vec::new())
-        };
-        core.took(read(Connection::Connected));
-        assert_eq!(
-            codex(&mut core).note.as_deref(),
-            Some("Codex couldn't be run.")
-        );
-        // Disconnected another way, the failure is old news.
-        core.took(read(Connection::Available));
-        let disconnected = codex(&mut core);
-        assert!(!disconnected.connected && disconnected.note.is_none());
+            core.took(Event::Shown(Box::new(shown), Vec::new()));
+        }
+        let failed = Some("Codex couldn't be run.".to_owned());
+
+        // From the example's Outdated, then from Connected.
+        connect(&mut core, true, failed.as_deref());
+        assert_eq!(codex(&mut core), (false, failed.clone()));
+        read(&mut core, Connection::Outdated);
+        assert_eq!(codex(&mut core), (false, failed.clone()));
+        read(&mut core, Connection::Connected);
+        assert_eq!(codex(&mut core), (true, None));
+        connect(&mut core, false, failed.as_deref());
+        read(&mut core, Connection::Connected);
+        assert_eq!(codex(&mut core), (true, failed));
+        read(&mut core, Connection::Available);
+        assert_eq!(codex(&mut core), (false, None));
+
+        connect(&mut core, true, None);
+        assert_eq!(codex(&mut core), (true, None));
     }
 
     #[test]

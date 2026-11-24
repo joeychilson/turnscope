@@ -442,7 +442,7 @@ impl Words {
         }
     }
 
-    pub fn spoken_figure(&self, account: &Account) -> String {
+    fn spoken_figure(&self, account: &Account) -> String {
         let Some(limit) = account.deciding_limit() else {
             if account.refused() {
                 return "sign in again".into();
@@ -692,6 +692,18 @@ pub fn row_figure(account: &Account) -> (String, Option<String>) {
         );
     }
     ("—".into(), None)
+}
+
+/// What a row's figure says to VoiceOver: nothing for a "—", whose line says why.
+pub fn row_figure_spoken(account: &Account) -> String {
+    if let Some(limit) = account.deciding_limit() {
+        return format!("{} left", left_of(limit));
+    }
+    account
+        .spend
+        .as_ref()
+        .filter(|spend| !unknown(spend))
+        .map_or(String::new(), spent)
 }
 
 fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
