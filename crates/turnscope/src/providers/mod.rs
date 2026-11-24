@@ -478,7 +478,7 @@ pub fn words(key: &str) -> String {
     out
 }
 
-/// [`windowed`], keyed `key`, or `key:scope` for one on some models. Of one
+/// `windowed`, keyed `key`, or `key:scope` for one on some models. Of one
 /// answer or an agent's history (`agents::InBand`), the key is the same.
 pub fn window(
     key: &str,

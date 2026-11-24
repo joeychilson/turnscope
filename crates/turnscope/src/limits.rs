@@ -140,13 +140,13 @@ struct Gathered {
 /// is left (`backoff`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
-    /// As they come due: every [`DUE`] in use, every [`IDLE`] not.
+    /// As they come due: every [`DUE`] in use, every `IDLE` not.
     Scheduled,
     /// The panel opened, or an agent wrote a login: those read [`DUE`] ago
     /// or more, and those whose read failed.
     Opened,
     /// Refresh Limits: every one not asked of its provider in the last
-    /// [`CLAIM`].
+    /// `CLAIM`.
     Force,
 }
 
