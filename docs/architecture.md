@@ -199,7 +199,7 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due, and not while an app runs. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, history only while an app runs. |
-| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits more than 5 minutes old, and those whose read failed, right away, at most every 30 s (`limits::refresh`). |
+| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits more than 5 minutes old, and those whose read failed, right away, at most every 30 s (`limits::refresh`); while another process reads them, it waits for that read, then reads those it didn't ask. |
 
 While an app runs, the other processes rarely find anything new to read.
 
@@ -217,16 +217,19 @@ time, and answers after. The panel says the history is being read.
 
 ### Locks
 
-Three files in the data directory keep processes apart:
+Four files in the data directory keep processes apart:
 
 - `turnscope.lock` while the database is created or migrated.
 - `ingest.lock` while history is read, so a first run isn't read twice at
   once.
+- `limits.lock` while limits are read, so no two processes ask a provider
+  at once, and one refused login isn't counted as two. A read asked for
+  waits for it; one as limits come due gives way.
 - `app.lock`, while an app keeps the data current. A second app shows what
   the first writes, and takes over once it's gone.
 
-Limits and prices are claimed with one `UPDATE` of `state`, so no two
-processes ask a provider at once.
+Prices, and limits as they come due, are claimed with one `UPDATE` of
+`state`, so a process doesn't read again what another just read.
 
 SQLite lets one connection write at a time, and another waits up to 10 s
 for its turn. History is written a second at a time, with 110 ms between,

@@ -81,15 +81,9 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         }
         let length = window["length_seconds"].as_i64()? * 1000;
         let resets = super::reset(&window["resets_at"])?;
-        readings.push(Reading {
-            key: window["id"].as_str()?.to_owned(),
-            name: super::window_name(length),
-            scope: None,
-            used: window["used_percent"].as_f64()?,
-            size: None,
-            starts: resets.map(|resets| resets - length),
-            resets,
-        });
+        let key = window["id"].as_str()?.to_owned();
+        let used = window["used_percent"].as_f64()?;
+        readings.push(super::windowed(key, None, used, length, resets));
     }
     Some(readings)
 }
@@ -158,8 +152,8 @@ A failure is a `Problem`:
   for anything else, `Problem::unavailable(why)`.
 
 The helpers in `src/providers/mod.rs` make requests (`ask`, `asked`,
-`post_form`) and read answers (`absent`, `reset`, `window`, `window_name`,
-`words`).
+`post_form`) and read answers (`absent`, `reset`, `window`, `windowed`,
+`window_name`, `words`).
 
 How Turnscope calls it, as each account's limits come due
 (`limits::Schedule`), or less often while it answers but is unavailable

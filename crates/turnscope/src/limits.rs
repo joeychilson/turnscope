@@ -65,6 +65,13 @@ struct Read {
 }
 
 impl Read {
+    fn of(limits: Limits) -> Read {
+        Read {
+            limits: Some(limits),
+            problem: None,
+        }
+    }
+
     fn failed(problem: Problem) -> Read {
         Read {
             limits: None,
@@ -129,28 +136,28 @@ struct Gathered {
     unreadable: Vec<(Read, Held)>,
 }
 
-/// How urgently a limit refresh is being requested.
+/// Why limits are read. Whatever the ask, a provider that asked to be left
+/// is left (`backoff`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
-    /// Background schedule: active accounts every 5 min, idle every 20 min.
+    /// As they come due: every [`DUE`] in use, every `IDLE` not.
     Scheduled,
-    /// Panel opened or login file written: reads accounts due (>= 5 min) and failing ones.
+    /// The panel opened, or an agent wrote a login: those read [`DUE`] ago
+    /// or more, and those whose read failed.
     Opened,
-    /// Explicit user refresh (`⌘R`): skips staleness (`DUE`/`IDLE`), still respects backoff and `CLAIM`.
+    /// Refresh Limits: every one not asked of its provider in the last
+    /// `CLAIM`.
     Force,
 }
 
 /// Read the limits of each account that's due (`Schedule::due`), and the
-/// agents' logins, when no process has claimed doing so in the last
-/// `CLAIM`, or the last [`DUE`] with no account due; whether it did.
+/// agents' logins, when no other process is reading them (one asked for
+/// waits for it), and, unless they were asked for, none claimed doing so in
+/// the last `CLAIM`, or the last [`DUE`] with no account due; whether it did.
 ///
-/// `Ask::Opened` (panel opened / login file written) reads accounts read
-/// [`DUE`] ago or more and failing ones, unless backed off. `Ask::Force`
-/// (explicit user refresh) skips the staleness wait, while still respecting
-/// a provider's backoff and `CLAIM`.
-/// A read no provider answered leaves the account as it was: asked for as
-/// the Mac woke, before its network was back, it showed as unread for five
-/// minutes.
+/// A read asked for that no provider answered leaves the account as it
+/// was: asked for as the Mac woke, before its network was back, it showed
+/// as unread for five minutes.
 pub fn refresh(db: &mut Connection, home: &Path, ask: Ask) -> Result<bool> {
     refresh_with(db, home, agents::ALL, providers::ALL, ask)
 }
@@ -162,18 +169,33 @@ fn refresh_with(
     providers: &[&'static dyn Provider],
     ask: Ask,
 ) -> Result<bool> {
+    // One asked for waits out another process's read, then reads what that
+    // didn't ask, as Refresh Limits does: asked again at once, a login
+    // refused once would count as refused twice.
+    let lock = Path::new(db.path().unwrap_or_default()).with_file_name("limits.lock");
+    let (_reading, waited) = match crate::db::lock_within(&lock, Duration::ZERO)? {
+        Some(reading) => (reading, false),
+        None if ask == Ask::Scheduled => return Ok(false),
+        None => match crate::db::lock_within(&lock, Duration::from_millis(CLAIM as u64))? {
+            Some(reading) => (reading, true),
+            None => return Ok(false),
+        },
+    };
+    let rule = if waited { Ask::Force } else { ask };
     let now = now();
     let schedules = schedules(db, now)?;
     let due: HashSet<&str> = schedules
         .iter()
-        .filter(|(_, schedule)| schedule.due(now, ask))
+        .filter(|(_, schedule)| schedule.due(now, rule))
         .map(|(id, _)| id.as_str())
         .collect();
     let signed_in_due = schedules
         .iter()
         .any(|(id, schedule)| schedule.signed_in && due.contains(id.as_str()));
+    // One that waited isn't held off by the claim of the read it waited for.
     let gap = match (ask, signed_in_due) {
         (Ask::Opened, _) | (Ask::Force, true) => 0,
+        (Ask::Force, false) if waited => 0,
         (Ask::Force, false) | (Ask::Scheduled, true) => CLAIM,
         (Ask::Scheduled, false) => DUE,
     };
@@ -237,7 +259,6 @@ struct Schedule {
 }
 
 impl Schedule {
-    /// Whether the account's limits are read at `now` for `ask`.
     fn due(&self, now: i64, ask: Ask) -> bool {
         // A wait longer than any is a clock set back since.
         if self
@@ -267,7 +288,6 @@ impl Schedule {
     }
 }
 
-/// Every account's [`Schedule`] at `now`, by id.
 fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
     // In SQL, over working out the status: this is asked at every catch-up.
     let mut rows = db.prepare_cached(
@@ -471,11 +491,7 @@ fn record(
     now: i64,
 ) -> Result<()> {
     let tx = crate::db::write(db)?;
-    let existing: HashSet<String> = tx
-        .prepare("SELECT id FROM account")?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    let one = same_plan(&tx, &answers, &existing)?;
+    let one = same_plan(&tx, &answers)?;
     for (other, first) in &one {
         merge(&tx, other, first)?;
     }
@@ -571,7 +587,6 @@ pub fn held_in(agent: &dyn Agent, folder: &Path, home: &Path) -> Result<Vec<(Str
         .collect())
 }
 
-/// Write `readings` of `account`, as taken at `at`.
 fn write_readings<'a>(
     tx: &Transaction,
     account: &str,
@@ -650,7 +665,6 @@ pub fn record_in_band(
     Ok(true)
 }
 
-/// How `account.problem` names `problem`.
 fn problem_name(problem: &Problem) -> &'static str {
     match problem {
         Problem::SignIn => "signIn",
@@ -795,11 +809,7 @@ fn title(held: &Held, read: &Read) -> String {
 /// An account not read now, or whose login was refused, counts by the mark
 /// of its last read, so a key swapped for a new one to the same plan keeps
 /// its account. Other failures don't merge: `merge` can't be undone.
-fn same_plan(
-    tx: &Transaction,
-    answers: &[(Read, Held)],
-    existing: &HashSet<String>,
-) -> Result<BTreeMap<String, String>> {
+fn same_plan(tx: &Transaction, answers: &[(Read, Held)]) -> Result<BTreeMap<String, String>> {
     let mut plans: BTreeMap<(&str, i64), Vec<String>> = BTreeMap::new();
     let mut marked: BTreeMap<&str, &'static dyn Provider> = BTreeMap::new();
     for (read, held) in answers {
@@ -837,6 +847,10 @@ fn same_plan(
             }
         }
     }
+    let existing: HashSet<String> = tx
+        .prepare("SELECT id FROM account")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     let mut one = BTreeMap::new();
     for ids in plans.values().filter(|ids| ids.len() > 1) {
         let first = ids
@@ -870,10 +884,7 @@ fn stored_limits(tx: &Transaction, account: &str) -> Result<Option<Limits>> {
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    Ok((!readings.is_empty()).then_some(Limits {
-        plan: None,
-        readings,
-    }))
+    Ok((!readings.is_empty()).then(|| readings.into()))
 }
 
 /// Make `other` part of `first`. The plan stays shown unless both were
@@ -921,10 +932,7 @@ fn read(held: &mut Held, now: i64) -> Read {
     if fresh.is_empty() {
         Read::failed(Problem::Expired)
     } else if !provider.info().key_limits && fresh.iter().all(|credential| credential.key) {
-        Read {
-            limits: Some(Limits::default()),
-            problem: None,
-        }
+        Read::of(Limits::default())
     } else if held.account.kind == Kind::Subscription {
         plan(provider, &fresh, now, by)
     } else {
@@ -937,23 +945,14 @@ fn read(held: &mut Held, now: i64) -> Read {
 /// or not understood ends the read: the next would most likely fare the
 /// same.
 fn plan(provider: &dyn Provider, logins: &[&Credential], now: i64, by: Instant) -> Read {
-    let mut problem = None;
     for login in logins {
         match provider.limits(login, now, by) {
-            Ok(limits) => {
-                return Read {
-                    limits: Some(limits),
-                    problem: None,
-                };
-            }
-            Err(Problem::SignIn) => problem = Some(Problem::SignIn),
+            Ok(limits) => return Read::of(limits),
+            Err(Problem::SignIn) => {}
             Err(other) => return Read::failed(other),
         }
     }
-    Read {
-        limits: None,
-        problem,
-    }
+    Read::failed(Problem::SignIn)
 }
 
 /// Why a read that panicked failed.
@@ -1014,10 +1013,7 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
     match shared {
         // None asked, or no key had access to them.
         Ok(readings) if readings.is_empty() => {}
-        shared => add(shared.map(|readings| Limits {
-            plan: None,
-            readings,
-        })),
+        shared => add(shared.map(Limits::from)),
     }
     Read { limits, problem }
 }
@@ -1122,10 +1118,7 @@ mod tests {
                     retry_after: Some(600_000),
                     answered: true,
                 }),
-                key => Ok(Limits {
-                    plan: None,
-                    readings: vec![limit(&format!("key-{key}"))],
-                }),
+                key => Ok(vec![limit(&format!("key-{key}"))].into()),
             }
         }
 
@@ -1219,6 +1212,7 @@ mod tests {
         let (provider, mut held) = fake(Kind::ApiKey, &["slow a", "slow b", "slow c"]);
         let began = Instant::now();
         let limits = read(&mut held, now());
+        // One after another, they'd take 900 ms.
         assert!(began.elapsed() < Duration::from_millis(600));
         assert_eq!(
             keys(&limits),
@@ -1295,6 +1289,9 @@ mod tests {
             failed(&mut db, Problem::SignIn, minutes(5)),
             Some(Stale::ReadFailed)
         );
+        // Asked for as the agent writes the login it renewed, it's read at
+        // once.
+        assert!(due(&db, minutes(5) + 1_000, Ask::Opened));
         assert_eq!(
             failed(&mut db, Problem::SignIn, minutes(10)),
             Some(Stale::SignIn)
@@ -1468,13 +1465,7 @@ mod tests {
         let minute = crate::time::MINUTE;
         let at = 1_000 * crate::time::DAY;
         let (_, held) = fake(Kind::Subscription, &[]);
-        let read = Read {
-            limits: Some(Limits {
-                plan: None,
-                readings: vec![limit("five"), limit("seven:Opus")],
-            }),
-            problem: None,
-        };
+        let read = Read::of(vec![limit("five"), limit("seven:Opus")].into());
         record(&mut db, signed_in(), vec![(read, held)], at).unwrap();
         failed(&mut db, Problem::unavailable("down"), at + 5 * minute);
         let now = at + 10 * minute;
@@ -1518,14 +1509,7 @@ mod tests {
         let at = 1_000 * crate::time::DAY;
         let read = |db: &mut Connection, at: i64, used: f64| {
             let (_, held) = fake(Kind::Subscription, &[]);
-            let limits = Limits {
-                plan: None,
-                readings: in_band(at, used).readings,
-            };
-            let read = Read {
-                limits: Some(limits),
-                problem: None,
-            };
+            let read = Read::of(in_band(at, used).readings.into());
             record(db, signed_in(), vec![(read, held)], at).unwrap();
         };
         // Read with the clock an hour ahead, then set right.
@@ -1609,6 +1593,57 @@ mod tests {
         assert_eq!(problem.as_deref(), Some("unavailable"));
     }
 
+    /// A read asked for takes no notice of another process's claim, but
+    /// waits out its read, then asks only what that didn't: both refused,
+    /// they'd count as two refusals in a row, and ask to sign in again. One
+    /// as limits come due gives way at once.
+    #[test]
+    fn a_read_asked_for_waits_out_another_processs() {
+        // Refresh Limits beside a read, and an agent writing a login beside
+        // one refused.
+        for (key, ask) in [("slow key", Ask::Force), ("slow refused key", Ask::Opened)] {
+            let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let fake: &'static Fake = Box::leak(Box::default());
+            let too: &'static Fake = Box::leak(Box::new(Fake {
+                info: &FAKE_TOO,
+                ..Fake::default()
+            }));
+            let folder = home.path().join(".fake");
+            std::fs::create_dir(&folder).unwrap();
+            let login = |logins: &str| std::fs::write(folder.join("login"), logins).unwrap();
+            login(&format!(r#"{{"fake": "{key}"}}"#));
+            let refresh = |db: &mut Connection, ask| {
+                refresh_with(db, home.path(), &[&FakeAgent::default()], &[fake, too], ask).unwrap()
+            };
+            let open = || crate::db::open(data.path()).unwrap();
+            let (mut other, mut db) = (open(), open());
+            // Read an hour ago, so both reads find it due.
+            assert!(refresh(&mut db, Ask::Opened));
+            db.execute_batch(
+                "UPDATE account SET read_at = read_at - 3600000,
+                     full_read_at = full_read_at - 3600000, checked_at = checked_at - 3600000;
+                 UPDATE state SET limits_at = limits_at - 3600000",
+            )
+            .unwrap();
+            std::thread::scope(|scope| {
+                scope.spawn(|| refresh(&mut other, Ask::Scheduled));
+                std::thread::sleep(Duration::from_millis(100));
+                // A login to another account, written during the other read.
+                login(&format!(r#"{{"fake": "{key}", "fake-too": "key"}}"#));
+                let asked = Instant::now();
+                assert!(!refresh(&mut open(), Ask::Scheduled));
+                assert!(asked.elapsed() < Duration::from_millis(100));
+                refresh(&mut db, ask);
+            });
+            // Fake by the other read, fake-too by this one.
+            for (provider, key, reads) in [(fake, key, 2), (too, "key", 1)] {
+                let asked = provider.asked.lock().unwrap();
+                let count = asked.iter().filter(|asked| *asked == key).count();
+                assert_eq!(count, reads, "{asked:?}");
+            }
+        }
+    }
+
     #[test]
     fn a_read_that_fails_differently_from_the_last_is_logged() {
         let dir = tempfile::tempdir().unwrap();
@@ -1654,16 +1689,13 @@ mod tests {
     }
 
     fn monthly(resets: i64) -> Read {
-        Read {
-            limits: Some(Limits {
-                plan: None,
-                readings: vec![Reading {
-                    resets: Some(resets),
-                    ..limit("monthly")
-                }],
-            }),
-            problem: None,
-        }
+        Read::of(
+            vec![Reading {
+                resets: Some(resets),
+                ..limit("monthly")
+            }]
+            .into(),
+        )
     }
 
     #[test]
