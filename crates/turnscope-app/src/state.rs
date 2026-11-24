@@ -352,24 +352,14 @@ impl Core {
             }
             Event::Connected {
                 agent,
-                connecting,
+                connection,
                 error,
             } => {
                 self.state.changing_agents.remove(&agent);
                 if let Some(shown) = self.state.agents.iter_mut().find(|a| a.id == agent) {
-                    match error {
-                        Some(error) => {
-                            self.state
-                                .agent_errors
-                                .insert(agent, (shown.connection, error));
-                        }
-                        None => {
-                            shown.connection = if connecting {
-                                Connection::Connected
-                            } else {
-                                Connection::Available
-                            };
-                        }
+                    shown.connection = connection;
+                    if let Some(error) = error {
+                        self.state.agent_errors.insert(agent, (connection, error));
                     }
                 }
                 (calls, self.state.panel_open)
@@ -664,7 +654,7 @@ pub(crate) mod tests {
             assert!(row.changing.is_none());
             (row.connected, row.note)
         }
-        fn connect(core: &mut Core, connecting: bool, error: Option<&str>) {
+        fn connect(core: &mut Core, connecting: bool, connection: Connection, error: Option<&str>) {
             let action = Action::SetConnected {
                 id: "codex".into(),
                 connecting,
@@ -676,7 +666,7 @@ pub(crate) mod tests {
             assert_eq!(core.apply(action, 0), [asked]);
             let (_, wake) = core.took(Event::Connected {
                 agent: "codex".into(),
-                connecting,
+                connection,
                 error: error.map(Into::into),
             });
             assert!(wake);
@@ -688,20 +678,21 @@ pub(crate) mod tests {
         }
         let failed = Some("Codex couldn't be run.".to_owned());
 
-        // From the example's Outdated, then from Connected.
-        connect(&mut core, true, failed.as_deref());
+        // From the example's Outdated.
+        connect(&mut core, true, Connection::Outdated, failed.as_deref());
         assert_eq!(codex(&mut core), (false, failed.clone()));
         read(&mut core, Connection::Outdated);
         assert_eq!(codex(&mut core), (false, failed.clone()));
         read(&mut core, Connection::Connected);
         assert_eq!(codex(&mut core), (true, None));
-        connect(&mut core, false, failed.as_deref());
-        read(&mut core, Connection::Connected);
-        assert_eq!(codex(&mut core), (true, failed));
+        // A disconnect that failed after removing it from one of its folders.
+        connect(&mut core, false, Connection::Available, failed.as_deref());
         read(&mut core, Connection::Available);
-        assert_eq!(codex(&mut core), (false, None));
+        assert_eq!(codex(&mut core), (false, failed));
+        read(&mut core, Connection::Connected);
+        assert_eq!(codex(&mut core), (true, None));
 
-        connect(&mut core, true, None);
+        connect(&mut core, true, Connection::Connected, None);
         assert_eq!(codex(&mut core), (true, None));
     }
 
