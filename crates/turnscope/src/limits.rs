@@ -169,9 +169,9 @@ fn refresh_with(
     providers: &[&'static dyn Provider],
     ask: Ask,
 ) -> Result<bool> {
-    // One asked for waits out another process's read, then reads what that
-    // didn't ask, as Refresh Limits does: asked again at once, a login
-    // refused once would count as refused twice.
+    // One asked for waits out another process's read, then skips what that
+    // just asked: asked again at once, a login refused once would count as
+    // refused twice.
     let lock = Path::new(db.path().unwrap_or_default()).with_file_name("limits.lock");
     let (_reading, waited) = match crate::db::lock_within(&lock, Duration::ZERO)? {
         Some(reading) => (reading, false),
@@ -181,12 +181,13 @@ fn refresh_with(
             None => return Ok(false),
         },
     };
-    let rule = if waited { Ask::Force } else { ask };
     let now = now();
     let schedules = schedules(db, now)?;
     let due: HashSet<&str> = schedules
         .iter()
-        .filter(|(_, schedule)| schedule.due(now, rule))
+        .filter(|(_, schedule)| {
+            schedule.due(now, ask) && (!waited || schedule.due(now, Ask::Force))
+        })
         .map(|(id, _)| id.as_str())
         .collect();
     let signed_in_due = schedules
@@ -1599,8 +1600,9 @@ mod tests {
     /// as limits come due gives way at once.
     #[test]
     fn a_read_asked_for_waits_out_another_processs() {
-        // Refresh Limits beside a read, and an agent writing a login beside
-        // one refused.
+        // Refresh Limits beside a read, with a login to fake-too written
+        // during it; and an agent writing a login beside a read refused, with
+        // fake-too read a minute ago, too recently for it.
         for (key, ask) in [("slow key", Ask::Force), ("slow refused key", Ask::Opened)] {
             let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
             let fake: &'static Fake = Box::leak(Box::default());
@@ -1611,31 +1613,38 @@ mod tests {
             let folder = home.path().join(".fake");
             std::fs::create_dir(&folder).unwrap();
             let login = |logins: &str| std::fs::write(folder.join("login"), logins).unwrap();
-            login(&format!(r#"{{"fake": "{key}"}}"#));
+            let logins = format!(r#"{{"fake": "{key}", "fake-too": "key"}}"#);
+            login(&match ask {
+                Ask::Opened => logins.clone(),
+                _ => format!(r#"{{"fake": "{key}"}}"#),
+            });
             let refresh = |db: &mut Connection, ask| {
                 refresh_with(db, home.path(), &[&FakeAgent::default()], &[fake, too], ask).unwrap()
             };
             let open = || crate::db::open(data.path()).unwrap();
             let (mut other, mut db) = (open(), open());
-            // Read an hour ago, so both reads find it due.
+            // Fake read an hour ago, so both reads find it due.
             assert!(refresh(&mut db, Ask::Opened));
             db.execute_batch(
                 "UPDATE account SET read_at = read_at - 3600000,
-                     full_read_at = full_read_at - 3600000, checked_at = checked_at - 3600000;
+                     full_read_at = full_read_at - 3600000, checked_at = checked_at - 3600000
+                     WHERE id LIKE 'fake:%';
+                 UPDATE account SET read_at = read_at - 60000,
+                     full_read_at = full_read_at - 60000, checked_at = checked_at - 60000
+                     WHERE id LIKE 'fake-too:%';
                  UPDATE state SET limits_at = limits_at - 3600000",
             )
             .unwrap();
             std::thread::scope(|scope| {
                 scope.spawn(|| refresh(&mut other, Ask::Scheduled));
                 std::thread::sleep(Duration::from_millis(100));
-                // A login to another account, written during the other read.
-                login(&format!(r#"{{"fake": "{key}", "fake-too": "key"}}"#));
+                login(&logins);
                 let asked = Instant::now();
                 assert!(!refresh(&mut open(), Ask::Scheduled));
                 assert!(asked.elapsed() < Duration::from_millis(100));
-                refresh(&mut db, ask);
+                assert!(refresh(&mut db, ask));
             });
-            // Fake by the other read, fake-too by this one.
+            // Fake by the other read; fake-too once, by this one or before.
             for (provider, key, reads) in [(fake, key, 2), (too, "key", 1)] {
                 let asked = provider.asked.lock().unwrap();
                 let count = asked.iter().filter(|asked| *asked == key).count();
