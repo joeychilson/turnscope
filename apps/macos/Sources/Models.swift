@@ -136,6 +136,7 @@ struct MenuBarModel: Decodable, Equatable {
 }
 
 struct WaitingModel: Decodable, Equatable {
+    var reading: String
     var problem: String?
     var retries: Bool
 }
@@ -252,6 +253,7 @@ struct PanelModel: Decodable, Equatable {
     var version: String
     var hasStatus: Bool
     var stopped: Bool
+    var canRefresh: Bool
     var waiting: WaitingModel?
     var verdict: VerdictModel?
     var inUse: [AccountRowModel]
@@ -265,8 +267,8 @@ struct PanelModel: Decodable, Equatable {
     var settings: SettingsModel
 
     static let empty = PanelModel(
-        version: "", hasStatus: false, stopped: false,
-        waiting: WaitingModel(problem: nil, retries: false),
+        version: "", hasStatus: false, stopped: false, canRefresh: false,
+        waiting: WaitingModel(reading: "", problem: nil, retries: false),
         verdict: nil, inUse: [], recent: [], unused: [], hidden: [],
         unusedFoldLabel: nil, hiddenFoldLabel: nil, connectOffer: nil,
         footerNote: nil, settings: .empty
@@ -314,43 +316,4 @@ enum AppAction: Encodable {
     case acknowledgeAlert(id: Int64, signInAccount: String?)
     case refreshNow
     case tick
-
-    private enum CodingKeys: String, CodingKey {
-        case kind, id, hidden, connecting, notify, shows, signInAccount
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .panelOpened:
-            try c.encode("panelOpened", forKey: .kind)
-        case .panelClosed:
-            try c.encode("panelClosed", forKey: .kind)
-        case let .setHidden(id, hidden):
-            try c.encode("setHidden", forKey: .kind)
-            try c.encode(id, forKey: .id)
-            try c.encode(hidden, forKey: .hidden)
-        case let .setConnected(id, connecting):
-            try c.encode("setConnected", forKey: .kind)
-            try c.encode(id, forKey: .id)
-            try c.encode(connecting, forKey: .connecting)
-        case let .setNotify(notify):
-            try c.encode("setNotify", forKey: .kind)
-            try c.encode(notify, forKey: .notify)
-        case let .setMenuShows(shows):
-            try c.encode("setMenuShows", forKey: .kind)
-            try c.encode(shows, forKey: .shows)
-        case let .dismissConnect(id):
-            try c.encode("dismissConnect", forKey: .kind)
-            try c.encode(id, forKey: .id)
-        case let .acknowledgeAlert(id, signInAccount):
-            try c.encode("acknowledgeAlert", forKey: .kind)
-            try c.encode(id, forKey: .id)
-            try c.encodeIfPresent(signInAccount, forKey: .signInAccount)
-        case .refreshNow:
-            try c.encode("refreshNow", forKey: .kind)
-        case .tick:
-            try c.encode("tick", forKey: .kind)
-        }
-    }
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **"Refreshing limits…" shows until the limits are read.** Hiding an
+  account, changing a setting or connecting an agent meanwhile ended it
+  early, and ⌘R could start another refresh.
+- **Copy Diagnostics lists each line of `app.log` once.** The latest were
+  in doctor's notes, then again after them.
+
 ## 0.4.1
 
 - **The data directory no longer keeps hundreds of MB of write-ahead

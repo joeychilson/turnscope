@@ -26,7 +26,7 @@ struct UnusedAccounts: View {
                             ui.toggleHidden()
                         }
                     }
-                    if !panel.hidden.isEmpty && (ui.hiddenShown || panel.unused.isEmpty) {
+                    if !panel.hidden.isEmpty && (ui.hiddenShown || panel.hiddenFoldLabel == nil) {
                         ForEach(panel.hidden) { HiddenRow(account: $0) }
                             .transition(appears)
                     }

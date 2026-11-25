@@ -34,11 +34,11 @@ struct SettingsPage: View {
 
             OverflowScroll(maxHeight: max(200, bridge.screenHeight - 140)) {
                 Group {
-                    switch ui.tab {
-                    case .general: GeneralTab()
-                    case _ where !panel.hasStatus: Waiting(model: panel.waiting)
-                    case .agents: AgentsTab()
-                    case .accounts: AccountsTab()
+                    switch (ui.tab, panel.waiting) {
+                    case (.general, _): GeneralTab()
+                    case let (_, waiting?): Waiting(model: waiting)
+                    case (.agents, nil): AgentsTab()
+                    case (.accounts, nil): AccountsTab()
                     }
                 }
                 .padding(.horizontal, 8)

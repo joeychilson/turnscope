@@ -52,7 +52,7 @@ compile_swift() {
   if [ "$mode" = release ]; then
     opt_flags=(-O -whole-module-optimization)
   else
-    opt_flags=(-Onone -g -D DEBUG)
+    opt_flags=(-Onone -g)
   fi
   xcrun swiftc \
     -swift-version 6 \

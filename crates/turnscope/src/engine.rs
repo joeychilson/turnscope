@@ -78,6 +78,9 @@ pub enum Event {
         connection: crate::status::Connection,
         error: Option<String>,
     },
+    /// A refresh asked for (`Engine::refresh_now`) ended, told after its
+    /// status.
+    Refreshed,
 }
 
 /// Why the data isn't kept current.
@@ -271,13 +274,17 @@ impl Engine {
     }
 
     /// Ask for a limit read skipping staleness (`DUE`/`IDLE`), while still
-    /// respecting provider backoff and `CLAIM`, and always emit `Shown` when done.
+    /// respecting provider backoff and `CLAIM`: told as the status, changed
+    /// or not, then `Event::Refreshed`.
     pub fn refresh_now(&self) {
         let sent = locked(&self.inner.wake)
             .as_ref()
             .is_some_and(|wake| wake.send(Wake::Force).is_ok());
         if !sent {
-            Engine::ask(&self.requests, |inner| inner.give(Tell::Always));
+            Engine::ask(&self.requests, |inner| {
+                inner.give(Tell::Always);
+                (inner.tell)(Event::Refreshed);
+            });
         }
     }
 
@@ -435,6 +442,9 @@ impl Inner {
             } else {
                 Tell::IfChanged
             });
+        }
+        if always {
+            (self.tell)(Event::Refreshed);
         }
         !self.ended() && self.newer().is_none()
     }
@@ -1361,7 +1371,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_now_emits_shown_even_when_nothing_changed() {
+    fn refresh_now_tells_the_status_even_when_nothing_changed_then_that_it_ended() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         drop(read_just_now(data.path()));
         let (engine, told) = start(data.path(), home.path());
@@ -1372,8 +1382,12 @@ mod tests {
             _ => None,
         });
         engine.refresh_now();
-        next(&told, 10, |event| {
-            matches!(event, Event::Shown(_, _)).then_some(())
-        });
+        let refreshed = |event| match event {
+            Event::Shown(..) => Some(false),
+            Event::Refreshed => Some(true),
+            _ => None,
+        };
+        assert!(!next(&told, 10, refreshed));
+        assert!(next(&told, 10, refreshed));
     }
 }
