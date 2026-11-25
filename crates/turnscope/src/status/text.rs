@@ -205,6 +205,9 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             }
             None => "No use shows in its reading yet.".to_owned(),
         },
+        Outlook::RunsOut { likely, soonest } if soonest.at == likely.at => {
+            format!("At this pace it runs out {}.", time::ahead(likely.at, now))
+        }
         Outlook::RunsOut { likely, soonest } => {
             // Today's day said where the likely time says one, as "13:30"
             // beside "Sat 18:00" would read as Saturday's.
@@ -1004,6 +1007,25 @@ mod tests {
             line.ends_with(". Under 10m of work left, at 25% an hour of work."),
             "{line}"
         );
+    }
+
+    #[test]
+    fn a_run_out_as_soon_as_it_likely_is_says_its_time_once() {
+        let example = example();
+        let now = example["at"].as_i64().unwrap();
+        // Claude Max's 5 hours, its soonest rounded to its likely time, as
+        // near the end of a window.
+        let mut account = example["accounts"][0].clone();
+        let outlook = &mut account["limits"][0]["outlook"];
+        outlook["soonest"] = outlook["likely"].clone();
+        let likely = outlook["likely"]["at"].as_i64().unwrap();
+        let account: Account = serde_json::from_value(account).unwrap();
+        let line = limit_text(&account.limits[0], now);
+        let once = format!(
+            "At this pace it runs out {}. About",
+            time::ahead(likely, now)
+        );
+        assert!(line.contains(&once), "{line}");
     }
 
     #[test]
