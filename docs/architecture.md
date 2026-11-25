@@ -145,7 +145,7 @@ crates/turnscope/src/            the engine, a module per job (ingest, limits, p
                                  line (main.rs) and the MCP server (mcp.rs)
 crates/turnscope/src/agents/     one file per agent, and agents::ALL
 crates/turnscope/src/providers/  one file per provider, and providers::ALL
-crates/turnscope-app/src/        app core (state, words, view, standing, C ABI)
+crates/turnscope-app/src/        app core (state, words, view, C ABI)
 apps/macos/Sources/              native macOS SwiftUI + AppKit shell
 assets/logos/                    shared provider and agent SVG logos
 ```

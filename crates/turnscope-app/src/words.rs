@@ -8,11 +8,10 @@ use serde::Serialize;
 use turnscope::alerts::{Alert, Kind as AlertKind};
 use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{
-    Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, State, Unknown, list,
+    Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, Standing, State,
+    Unknown, list,
 };
 use turnscope::usage::counted;
-
-use crate::standing::{LimitStanding, Standing};
 
 /// A notification, as the shell posts it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -226,11 +225,11 @@ impl Words {
     /// behind it.
     pub fn verdict(
         &self,
-        in_use: &[&Account],
+        first: Option<&Account>,
         hidden_in_use: bool,
         all: &[Account],
     ) -> (String, String) {
-        let Some(account) = in_use.first() else {
+        let Some(account) = first else {
             let detail = if hidden_in_use {
                 "Only accounts you hid are in use."
             } else {
@@ -335,7 +334,7 @@ impl Words {
         let used_up = others
             .iter()
             .filter(|l| l.standing() == Standing::UsedUp)
-            .max_by_key(|l| back_at(l));
+            .max_by_key(|l| l.back());
         let Some(other) =
             used_up.or_else(|| others.iter().find(|l| l.standing() != Standing::Lasts))
         else {
@@ -579,7 +578,7 @@ pub fn left(limit: &Limit) -> String {
 }
 
 /// What's left, and of how much where that's money: "$10 of $20", "60%".
-pub fn left_of(limit: &Limit) -> String {
+fn left_of(limit: &Limit) -> String {
     match size(limit) {
         Some(size) => format!("{} {size}", left(limit)),
         None => left(limit),
@@ -694,10 +693,15 @@ pub fn row_figure(account: &Account) -> (String, Option<String>) {
     ("—".into(), None)
 }
 
+/// What a limit's figure says to VoiceOver.
+pub fn left_spoken(limit: &Limit) -> String {
+    format!("{} left", left_of(limit))
+}
+
 /// What a row's figure says to VoiceOver: nothing for a "—", whose line says why.
 pub fn row_figure_spoken(account: &Account) -> String {
     if let Some(limit) = account.deciding_limit() {
-        return format!("{} left", left_of(limit));
+        return left_spoken(limit);
     }
     account
         .spend
@@ -826,10 +830,6 @@ pub fn used_most_heading(limit: &Limit) -> String {
     format!("Used most {}", of(limit))
 }
 
-pub fn via(account: &Account) -> Option<String> {
-    (!account.agents.is_empty()).then(|| format!("via {}", agents(&account.agents)))
-}
-
 pub fn used(used: &UsedMost, agents: bool) -> String {
     [
         used.share_percent.map(turnscope::usage::share),
@@ -892,13 +892,6 @@ fn refilled(account: &Account) -> bool {
         .deciding_limit()
         .and_then(|l| l.reset_since)
         .is_some()
-}
-
-fn back_at(limit: &Limit) -> i64 {
-    match &limit.outlook {
-        Outlook::UsedUp { back: Some(b) } => b.at,
-        _ => i64::MAX,
-    }
 }
 
 fn unbroken(phrase: &str) -> String {
@@ -1215,7 +1208,7 @@ mod tests {
         let w = words();
         let out = account(vec![limit(runs_out())]);
         assert_eq!(
-            w.verdict(&[&out], false, &[]),
+            w.verdict(Some(&out), false, &[]),
             (
                 "Claude Max runs out in\u{a0}2h".into(),
                 "Back in 3h.".into()
@@ -1226,7 +1219,7 @@ mod tests {
             ..limit(runs_out_at(moment("2026-10-03T06:00:00Z", ThisWeek)))
         }]);
         assert_eq!(
-            w.verdict(&[&this_week], false, &[]),
+            w.verdict(Some(&this_week), false, &[]),
             (
                 "Claude Max runs out Saturday\u{a0}morning".into(),
                 "Back Sun 12 AM.".into()
@@ -1242,7 +1235,7 @@ mod tests {
             }])
         };
         assert_eq!(
-            w.verdict(&[&monthly], false, &[]),
+            w.verdict(Some(&monthly), false, &[]),
             (
                 "OpenCode Go runs out Oct\u{a0}8".into(),
                 "Back Oct 30.".into()
@@ -1257,24 +1250,28 @@ mod tests {
         };
         assert_eq!(
             w.verdict(
-                &[&used(moment("2026-10-03T09:00:00Z", ThisWeek))],
+                Some(&used(moment("2026-10-03T09:00:00Z", ThisWeek))),
                 false,
                 &[]
             ),
             ("Claude Max is used up".into(), "Back Sat 9 AM.".into())
         );
         assert_eq!(
-            w.verdict(&[&used(moment("2026-09-30T15:00:00Z", Soon))], false, &[])
-                .1,
+            w.verdict(
+                Some(&used(moment("2026-09-30T15:00:00Z", Soon))),
+                false,
+                &[]
+            )
+            .1,
             "Back in 3h."
         );
 
         assert_eq!(
-            w.verdict(&[], false, &[]),
+            w.verdict(None, false, &[]),
             ("Nothing in use".into(), String::new())
         );
         assert_eq!(
-            w.verdict(&[], true, &[]).1,
+            w.verdict(None, true, &[]).1,
             "Only accounts you hid are in use."
         );
 
@@ -1285,7 +1282,7 @@ mod tests {
             ..account(vec![])
         };
         assert_eq!(
-            w.verdict(&[&unread], false, &[]),
+            w.verdict(Some(&unread), false, &[]),
             (
                 "Claude Max's limits are unknown".into(),
                 "It couldn't be read yet.".into()
@@ -1298,7 +1295,7 @@ mod tests {
             ..account(vec![])
         };
         assert_eq!(
-            w.verdict(&[&signed_out], false, &[]).1,
+            w.verdict(Some(&signed_out), false, &[]).1,
             "No agent here is signed in to it."
         );
 
@@ -1314,7 +1311,8 @@ mod tests {
             }])
         };
         assert_eq!(
-            w.verdict(&[&out], false, &[out.clone(), backup.clone()]).1,
+            w.verdict(Some(&out), false, &[out.clone(), backup.clone()])
+                .1,
             "Back in 3h. ChatGPT Pro has 97% left."
         );
         // Signed-out backup is not suggested.
@@ -1328,7 +1326,7 @@ mod tests {
             ..backup
         };
         assert_eq!(
-            w.verdict(&[&out], false, &[out.clone(), signed_out_backup])
+            w.verdict(Some(&out), false, &[out.clone(), signed_out_backup])
                 .1,
             "Back in 3h."
         );
@@ -1339,7 +1337,7 @@ mod tests {
         let w = words();
         let week = weekly(lasts(), 60);
         assert_eq!(
-            w.verdict(&[&account(vec![week.clone()])], false, &[]).1,
+            w.verdict(Some(&account(vec![week.clone()])), false, &[]).1,
             "At this pace, no Claude Max limit runs out."
         );
         let opus = Limit {
@@ -1349,20 +1347,28 @@ mod tests {
             ..weekly(used_up(Some(moment("2026-10-03T09:00:00Z", ThisWeek))), 0)
         };
         assert_eq!(
-            w.verdict(&[&account(vec![week.clone(), opus])], false, &[])
+            w.verdict(Some(&account(vec![week.clone(), opus])), false, &[])
                 .1,
             "At this pace, Claude Max's weekly lasts until it resets. Opus weekly is used up, back Sat 9 AM."
         );
         let money = credits(29, 30.0, 8.7, unknown(Unknown::NoReset));
         assert_eq!(
-            w.verdict(&[&account(vec![week.clone(), money.clone()])], false, &[])
-                .1,
+            w.verdict(
+                Some(&account(vec![week.clone(), money.clone()])),
+                false,
+                &[]
+            )
+            .1,
             "At this pace, Claude Max's weekly lasts until it resets."
         );
         let spent_credits = credits(0, 30.0, 0.0, used_up(None));
         assert_eq!(
-            w.verdict(&[&account(vec![week.clone(), spent_credits])], false, &[])
-                .1,
+            w.verdict(
+                Some(&account(vec![week.clone(), spent_credits])),
+                false,
+                &[]
+            )
+            .1,
             "At this pace, Claude Max's weekly lasts until it resets. Credits are used up."
         );
         let held = Limit {
@@ -1373,12 +1379,12 @@ mod tests {
             ..limit(lasts())
         };
         assert_eq!(
-            w.verdict(&[&api_key(vec![held, money.clone()], None)], false, &[])
+            w.verdict(Some(&api_key(vec![held, money.clone()], None)), false, &[])
                 .1,
             "At this pace, Pi's key lasts until it resets."
         );
         assert_eq!(
-            w.verdict(&[&api_key(vec![money], None)], false, &[]).1,
+            w.verdict(Some(&api_key(vec![money], None)), false, &[]).1,
             "OpenRouter API key has $8.70 of $30 left; it doesn't reset."
         );
         let stale = Account {
@@ -1390,7 +1396,7 @@ mod tests {
             ..account(vec![week.clone()])
         };
         assert_eq!(
-            w.verdict(&[&stale], false, &[]).1,
+            w.verdict(Some(&stale), false, &[]).1,
             "As last read, no Claude Max limit runs out."
         );
         for (reason, said) in [
@@ -1413,7 +1419,7 @@ mod tests {
                 ..limit(unknown(reason))
             }]);
             assert_eq!(
-                w.verdict(&[&unknown], false, &[]),
+                w.verdict(Some(&unknown), false, &[]),
                 ("You can keep going".into(), said.into())
             );
         }
@@ -1447,15 +1453,15 @@ mod tests {
         let base = "At this pace, Google AI Pro's Gemini weekly lasts until it resets.";
         let back = plan(five(used_up(Some(moment("2026-09-30T13:00:00Z", Soon)))));
         assert_eq!(
-            w.verdict(&[&back], false, &[]).1,
+            w.verdict(Some(&back), false, &[]).1,
             format!("{base} Claude and GPT weekly is used up, back Sat 9 AM.")
         );
         assert_eq!(
-            w.verdict(&[&plan(five(used_up(None)))], false, &[]).1,
+            w.verdict(Some(&plan(five(used_up(None)))), false, &[]).1,
             format!("{base} Claude and GPT 5 hours is used up.")
         );
         assert_eq!(
-            w.verdict(&[&plan(five(runs_out()))], false, &[]).1,
+            w.verdict(Some(&plan(five(runs_out()))), false, &[]).1,
             format!("{base} Claude and GPT weekly is used up, back Sat 9 AM.")
         );
 
@@ -1465,7 +1471,7 @@ mod tests {
             ..back
         };
         assert_eq!(
-            w.verdict(&[&claude], false, &[]),
+            w.verdict(Some(&claude), false, &[]),
             ("Claude and GPT are used up".into(), "Back Sat 9 AM.".into())
         );
         assert_eq!(w.status(&claude), "Claude and GPT back Sat 9 AM");
@@ -1493,7 +1499,8 @@ mod tests {
             ..account(vec![limit(runs_out())])
         };
         assert_eq!(
-            w.verdict(&[&mine, &twin], false, &[]).0,
+            w.verdict(Some(&mine), false, &[mine.clone(), twin.clone()])
+                .0,
             "Claude Max runs out in\u{a0}2h"
         );
         assert_eq!(

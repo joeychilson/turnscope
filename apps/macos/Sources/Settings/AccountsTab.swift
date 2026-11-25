@@ -5,8 +5,9 @@ struct AccountsTab: View {
 
     var body: some View {
         let settings = bridge.panel.settings
-        if let empty = settings.accountsEmpty {
-            Message(headline: empty.headline, detail: empty.detail)
+        // With no account, the headline says why, as the panel's does.
+        if settings.subscriptions.isEmpty && settings.apiKeys.isEmpty, let verdict = bridge.panel.verdict {
+            Message(headline: verdict.headline, detail: verdict.detail)
         } else {
             VStack(alignment: .leading, spacing: 14) {
                 if !settings.subscriptions.isEmpty {

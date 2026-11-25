@@ -3,8 +3,8 @@
 //! one sentence that leads an answer. The app says it in its own words.
 
 use super::{
-    Account, Horizon, HoursLeft, Limit, Moment, Outlook, Spend, Spread, Stale, State, Status,
-    Unknown, Work,
+    Account, Horizon, HoursLeft, Limit, Moment, Outlook, Spend, Spread, Stale, Standing, State,
+    Status, Unknown, Work,
 };
 use crate::agents;
 use crate::time::{self, MINUTE};
@@ -687,7 +687,7 @@ pub fn line(account: &Account, now: i64) -> String {
 }
 
 /// `via Codex` or `via Claude Code and OpenCode`.
-fn via(ids: &[String]) -> Option<String> {
+pub fn via(ids: &[String]) -> Option<String> {
     let names: Vec<&str> = ids.iter().map(|id| agents::name(id)).collect();
     (!names.is_empty()).then(|| format!("via {}", list(&names, "and")))
 }
@@ -707,7 +707,7 @@ pub fn list(names: &[&str], last: &str) -> String {
 pub fn alternate_note(status: &Status, current: &Account, agent: Option<&str>) -> Option<String> {
     current
         .deciding_limit()
-        .filter(|limit| limit.urgency() > 0)?;
+        .filter(|limit| limit.standing() != Standing::Lasts)?;
     let (other, limit) = super::alternate(&status.accounts, current, agent)?;
     Some(format!(
         "Another account has room: {} has {} left ({}{}).",
