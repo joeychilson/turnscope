@@ -19,7 +19,7 @@ use crate::{Result, agents};
 mod text;
 pub use text::{
     NONE_READ, alternate_note, fit, fits, limit_text, line, list, most_room, none, stale, text,
-    verdict,
+    verdict, via,
 };
 
 /// How recently a response must have drawn on an account for it to be in use.
@@ -65,6 +65,15 @@ pub struct Agent {
     pub configured: Option<String>,
     /// Its responses drew on an account in the last half hour.
     pub in_use: bool,
+}
+
+/// How a limit or an account stands, which sets its color in the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Standing {
+    Lasts,
+    RunningOut,
+    UsedUp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +171,12 @@ impl Account {
         self.limits
             .iter()
             .find(|limit| Some(&limit.key) == self.deciding.as_ref())
+    }
+
+    /// How its deciding limit stands.
+    pub fn standing(&self) -> Standing {
+        self.deciding_limit()
+            .map_or(Standing::Lasts, Limit::standing)
     }
 
     /// Whether it stands by `limit`, for whether it can be used and how
@@ -356,18 +371,18 @@ impl Limit {
                 .is_some_and(|scope| holds(&format!("{scope} {}", self.name)))
     }
 
-    fn urgency(&self) -> u8 {
+    pub fn standing(&self) -> Standing {
         match self.outlook {
-            Outlook::UsedUp { .. } => 2,
-            Outlook::RunsOut { .. } => 1,
-            _ => 0,
+            Outlook::UsedUp { .. } => Standing::UsedUp,
+            Outlook::RunsOut { .. } => Standing::RunningOut,
+            Outlook::Lasts { .. } | Outlook::Unknown { .. } => Standing::Lasts,
         }
     }
 
     /// When it's back, if it's used up. One with no reset, as credits, is
     /// back at no time that's known, so it counts as later than any: its
     /// account is never said to be back at a time it may still be used up.
-    fn back(&self) -> Option<i64> {
+    pub fn back(&self) -> Option<i64> {
         match self.outlook {
             Outlook::UsedUp { back } => Some(back.map_or(i64::MAX, |back| back.at)),
             _ => None,
@@ -729,7 +744,8 @@ fn roomy(accounts: &[Account]) -> impl Iterator<Item = (&Account, &Limit)> {
         .filter(|account| !account.hidden && matches!(account.state, State::Live { .. }))
         .filter_map(|account| {
             let limit = account.deciding_limit()?;
-            (limit.left_percent >= 25 && limit.urgency() == 0).then_some((account, limit))
+            (limit.left_percent >= 25 && limit.standing() == Standing::Lasts)
+                .then_some((account, limit))
         })
 }
 
@@ -1065,7 +1081,7 @@ fn outlook(window: &Window, now: i64) -> Outlook {
             };
         }
         // The fast end runs out first, as every band's fast end is over 1.
-        let (soonest, latest) = forecast::runs_out(&projection, band, window.resets);
+        let (soonest, latest) = forecast::runs_out(&projection, band);
         // A pace can't tell the minute a week runs out.
         let shown = |at: i64| {
             let step = if at - now <= DAY { 10 * MINUTE } else { HOUR };
@@ -1120,7 +1136,7 @@ fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
             };
             (
                 !limit.whole(),
-                Reverse(limit.urgency()),
+                Reverse(limit.standing()),
                 Reverse(limit.back()),
                 limit.runs_out().unwrap_or(i64::MAX),
                 least,
@@ -1188,7 +1204,7 @@ fn rank(accounts: &mut [Account], history_read: bool) {
         let urgent = deciding.filter(|_| in_use);
         (
             group,
-            Reverse(urgent.map_or(0, Limit::urgency)),
+            Reverse(urgent.map_or(Standing::Lasts, Limit::standing)),
             urgent.and_then(Limit::runs_out).unwrap_or(i64::MAX),
             if in_use { left } else { -left },
             account.id.clone(),

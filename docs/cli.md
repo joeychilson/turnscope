@@ -401,7 +401,8 @@ SuperGrok · sign in again
 A limit running out ends with `out` and when: a countdown within 3 hours,
 else a clock time. A used-up limit says `used up, back` and when. Limits
 from an earlier read end with `as of` and the time. An account never read
-says `login expired` when that's why, and `not read yet` otherwise. An API key with no limits shows its spend this month.
+says `login expired` when that's why, `signed out` when no agent here is
+signed in to it, and `not read yet` otherwise. An API key with no limits shows its spend this month.
 
 In Claude Code's `settings.json`:
 

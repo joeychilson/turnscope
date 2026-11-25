@@ -71,7 +71,7 @@ Times are UTC milliseconds and money is dollars. The schema is
 | `session_file` | Which files tell of each session |
 | `response` | One row per response: tokens, prompt size, the cost the agent recorded, its cost, its account, and the file that last reported it |
 | `account` | Each account: provider, kind, title, label, whether it's hidden, its last reading, the last read of all its limits that worked, when its provider was last asked, and what went wrong then |
-| `failing` | Each account whose last read failed: how many reads in a row failed that way, what the last met, and when it's read next |
+| `failing` | Each account whose last read failed: how many reads in a row failed that way, what the last met, and when its provider asked to be asked again |
 | `reading` | Each limit at each read: name, scope, percent used, size in dollars, the window's start and reset |
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
 | `alert` | Each alert raised, what it says, and whether the app acknowledged it |
@@ -145,7 +145,7 @@ crates/turnscope/src/            the engine, a module per job (ingest, limits, p
                                  line (main.rs) and the MCP server (mcp.rs)
 crates/turnscope/src/agents/     one file per agent, and agents::ALL
 crates/turnscope/src/providers/  one file per provider, and providers::ALL
-crates/turnscope-app/src/        app core (state, words, view, standing, C ABI)
+crates/turnscope-app/src/        app core (state, words, view, C ABI)
 apps/macos/Sources/              native macOS SwiftUI + AppKit shell
 assets/logos/                    shared provider and agent SVG logos
 ```
@@ -159,7 +159,7 @@ Each kind of extension lives in one place.
 | An agent | `crates/turnscope/src/agents/<agent>.rs`, implementing `Agent` | A line in `agents::ALL` ([adding-an-agent.md](adding-an-agent.md)) |
 | A provider | `crates/turnscope/src/providers/<provider>.rs`, implementing `Provider` | A line in `providers::ALL` ([adding-a-provider.md](adding-a-provider.md)) |
 | An MCP tool | A function `fn(&Ask, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
-| A CLI command | A variant of `main::Command` | Its arm in `main::answer`, and whether it catches up first |
+| A CLI command | A variant of `main::Command` | Its arm in `main`'s `match cli.command`, and whether it catches up first (`caught_up`) |
 | Something an app shows or asks | An `engine::Event`, or a method of `engine::Engine` | Its handling in `crates/turnscope-app/src/state.rs` and `view.rs` |
 | A database change | A new script at the end of `db::REVISIONS` | |
 

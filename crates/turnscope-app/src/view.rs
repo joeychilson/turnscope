@@ -3,9 +3,8 @@
 use serde::Serialize;
 use turnscope::alerts::Notify;
 use turnscope::engine::{Stopped, UsedMost};
-use turnscope::status::{Account, Agent, Connection, Limit};
+use turnscope::status::{Account, Agent, Connection, Limit, Standing};
 
-use crate::standing::{AccountStanding, LimitStanding, Standing};
 use crate::state::{Effect, MenuShows, State};
 use crate::words::{self, Words};
 
@@ -181,7 +180,6 @@ pub struct SettingsModel {
     pub agents_empty: Option<EmptyMessage>,
     pub agents_title: String,
     pub agents: Vec<AgentRowModel>,
-    pub accounts_empty: Option<EmptyMessage>,
     pub subscriptions: Vec<AccountModel>,
     pub api_keys: Vec<AccountModel>,
 }
@@ -231,7 +229,7 @@ pub fn build_panel(s: &State) -> PanelModel {
         VerdictModel {
             headline,
             detail,
-            standing: headlined.map_or(Standing::Lasts, AccountStanding::standing),
+            standing: headlined.map_or(Standing::Lasts, Account::standing),
         }
     });
 
@@ -344,7 +342,7 @@ fn build_limit_line(w: &Words, limit: &Limit) -> LimitLineModel {
         window: w.window(limit),
         left: words::left(limit),
         size: words::size(limit),
-        spoken: format!("{} left", words::left_of(limit)),
+        spoken: words::left_spoken(limit),
         left_percent: limit.left_percent,
         time_left_fraction,
         standing: limit.standing(),
@@ -418,10 +416,6 @@ fn build_settings(s: &State) -> SettingsModel {
         .map(|agent| build_agent_row(s, agent))
         .collect();
 
-    let accounts_empty = s.all().is_empty().then(|| {
-        let (headline, detail) = words::welcome(&installed, &s.agent_names(), s.reading());
-        EmptyMessage { headline, detail }
-    });
     let (api_keys, subscriptions) = s
         .all()
         .iter()
@@ -435,7 +429,6 @@ fn build_settings(s: &State) -> SettingsModel {
         agents_empty,
         agents_title,
         agents,
-        accounts_empty,
         subscriptions: subscriptions.into_iter().map(account).collect(),
         api_keys: api_keys.into_iter().map(account).collect(),
     }
@@ -447,7 +440,7 @@ fn account(a: &Account) -> AccountModel {
         provider: a.provider.clone(),
         title: a.title.clone(),
         label: a.label.clone(),
-        via: words::via(a),
+        via: turnscope::status::via(&a.agents),
         called: words::called(a, true),
         shown: !a.hidden,
     }

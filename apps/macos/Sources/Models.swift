@@ -238,14 +238,13 @@ struct SettingsModel: Decodable, Equatable {
     var agentsEmpty: EmptyMessage?
     var agentsTitle: String
     var agents: [AgentRowModel]
-    var accountsEmpty: EmptyMessage?
     var subscriptions: [AccountModel]
     var apiKeys: [AccountModel]
 
     static let empty = SettingsModel(
         menuShows: .all, notify: nil, canEditNotify: false,
         agentsEmpty: nil, agentsTitle: "", agents: [],
-        accountsEmpty: nil, subscriptions: [], apiKeys: []
+        subscriptions: [], apiKeys: []
     )
 }
 

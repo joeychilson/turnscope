@@ -53,7 +53,8 @@ does.
   through FFI or JSON.
 - **`Core::took`** handles engine events on the engine thread, updates
   `State`, queues one-shot `Effect`s (alerts to post, sign-in alerts to
-  clear, preference saves), and invokes the host's wake callback. The
+  clear), and invokes the host's wake callback. `Core::apply`, for what
+  the person does, queues preference saves. The
   status is kept until a newer one arrives, even while the data can't be
   kept current, so the panel never goes empty.
 - **`State` and `view.rs`** (in `crates/turnscope-app`) split the accounts
@@ -165,8 +166,8 @@ grows and shrinks inside it without the window resizing, and a Settings
 tab taller than the screen scrolls under its title. A click outside the
 panel closes it; so does switching apps. Escape closes it from its
 first page, and goes back from Settings. The panel always opens on its
-first page with nothing open; `--open` and a clicked notification then set
-what's open.
+first page with nothing open; `--open`, a clicked notification and the
+menu's Settings… then set what's open.
 
 ## Settings
 
@@ -257,8 +258,8 @@ fails, the Mac beeps.
 
 `scripts/app.sh` copies every SVG in `assets/logos/` into
 `Contents/Resources/logos/` ([its README](../assets/logos/README.md)). The
-panel tints the one-color logos like text, and the menu bar item like its
-figures. An account or agent with no logo gets an SF Symbol in the panel
+panel tints the one-color logos like text. The menu bar item draws them
+in its text color, whatever color its figures are. An account or agent with no logo gets an SF Symbol in the panel
 (a key or a terminal) and none in the menu bar.
 
 ## Launch arguments

@@ -113,12 +113,6 @@ struct TurnUsage<'a> {
     models: Option<HashMap<Cow<'a, str>, &'a RawValue>>,
 }
 
-#[derive(Deserialize)]
-struct TextContent<'a> {
-    #[serde(borrow)]
-    text: Option<Cow<'a, str>>,
-}
-
 impl<'a> Line<'a> {
     fn update(self) -> Option<(Option<i64>, Update<'a>)> {
         Some((self.timestamp, self.params?.update?))
@@ -138,22 +132,13 @@ impl<'a> Update<'a> {
     }
 }
 
-/// What the person typed: their query, or the text without what Grok Build
-/// added.
-fn typed(text: &str) -> String {
-    match super::inner(text, "user_query") {
-        Some(query) => query.trim().to_owned(),
-        None => super::without_tags(text, INJECTED),
-    }
-}
-
 impl Agent for GrokBuild {
     fn info(&self) -> &'static Info {
         &INFO
     }
 
     fn folders(&self, home: &Path) -> Vec<PathBuf> {
-        super::own_and_found(home, ".grok", ".grok-", "auth.json")
+        super::own_and_found(home, ".grok", "auth.json")
     }
 
     fn files(&self, folder: &Path) -> Vec<PathBuf> {
@@ -233,7 +218,11 @@ fn summary(summary: &Value, facts: &mut Session) {
 }
 
 fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> Result<()> {
-    let mut subagents = Subagents::new(file.ancestors().nth(2), file.ancestors().nth(3));
+    let mut subagents = Subagents {
+        own_dir: file.ancestors().nth(2),
+        folders: None,
+        turns: HashMap::new(),
+    };
     cursor.offset = super::try_lines(file, cursor.offset, |bytes| {
         let Ok(line) = serde_json::from_slice::<Line<'_>>(bytes) else {
             read.skipped += 1;
@@ -261,10 +250,10 @@ fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> 
             Some("user_message_chunk") if !cursor.titled => {
                 if let Some(text) = update
                     .content
-                    .and_then(|raw| serde_json::from_str::<TextContent<'_>>(raw.get()).ok())
+                    .and_then(|raw| serde_json::from_str::<super::Text<'_>>(raw.get()).ok())
                     .and_then(|content| content.text)
                 {
-                    let text = typed(&text);
+                    let text = super::typed_in(&text, "user_query", INJECTED);
                     if !text.is_empty() {
                         read.session(session).title(Title::Prompt, &text);
                         cursor.titled = true;
@@ -324,21 +313,11 @@ type Turn = (i64, Vec<(String, Used)>);
 /// end in it.
 struct Subagents<'a> {
     own_dir: Option<&'a Path>,
-    sessions: Option<&'a Path>,
     folders: Option<Vec<PathBuf>>,
     turns: HashMap<String, Vec<Turn>>,
 }
 
-impl<'a> Subagents<'a> {
-    fn new(own_dir: Option<&'a Path>, sessions: Option<&'a Path>) -> Subagents<'a> {
-        Subagents {
-            own_dir,
-            sessions,
-            folders: None,
-            turns: HashMap::new(),
-        }
-    }
-
+impl Subagents<'_> {
     /// What the turns of `subagents` that ended after `after` and no later
     /// than `until` used, model by model. Fails when a subagent's updates
     /// are there and can't be read, so its parent's turn is read again later
@@ -372,7 +351,7 @@ impl<'a> Subagents<'a> {
         let updates = match sibling {
             Some(updates) => updates,
             None => {
-                let sessions = self.sessions;
+                let sessions = self.own_dir.and_then(Path::parent);
                 let folders = self
                     .folders
                     .get_or_insert_with(|| sessions.into_iter().flat_map(super::entries).collect());
@@ -711,7 +690,11 @@ mod tests {
     #[test]
     fn a_message_with_no_query_loses_what_grok_build_added() {
         assert_eq!(
-            typed("<rules>Be brief.</rules><git_status>clean</git_status>Speed up the build."),
+            super::super::typed_in(
+                "<rules>Be brief.</rules><git_status>clean</git_status>Speed up the build.",
+                "user_query",
+                super::INJECTED
+            ),
             "Speed up the build."
         );
     }

@@ -30,13 +30,13 @@ const CLAIM: i64 = 30 * 1000;
 pub const BACKED_OFF: i64 = 30 * crate::time::MINUTE;
 
 /// How long an account waits after `reads` reads in a row its provider
-/// answered busy or not understood: [`DUE`], doubled with each, or as long as
-/// the provider asked, up to [`BACKED_OFF`]. Only an answer is backed off:
-/// backed off too, a provider out of reach for 36 minutes was first read
-/// again at minute 65 (measured 2026-11-18).
-fn backoff(reads: i64, retry_after: Option<i64>) -> i64 {
-    let doubled = DUE.saturating_mul(1_i64 << (reads - 1).clamp(0, 8));
-    doubled.max(retry_after.unwrap_or(0)).min(BACKED_OFF)
+/// answered busy or not understood: [`DUE`], doubled with each, up to
+/// [`BACKED_OFF`]. Only an answer is backed off: backed off too, a provider
+/// out of reach for 36 minutes was first read again at minute 65 (measured
+/// 2026-11-18).
+fn backoff(reads: i64) -> i64 {
+    DUE.saturating_mul(1_i64 << (reads - 1).clamp(0, 8))
+        .min(BACKED_OFF)
 }
 
 /// Whether `problem` came with an answer, and how long it asked to be left:
@@ -253,8 +253,10 @@ struct Schedule {
     checked_at: Option<i64>,
     /// Its last read failed (`failing`).
     failing: bool,
-    /// When its provider asked to be asked again (`backoff`).
+    /// When its provider asked to be asked again.
     retry_at: Option<i64>,
+    /// Until when it's backed off (`backoff`).
+    backed_off: Option<i64>,
     /// In use, as `status::Account::in_use` has it.
     in_use: bool,
     /// A limit's window reset after the provider was last asked.
@@ -263,11 +265,10 @@ struct Schedule {
 
 impl Schedule {
     fn due(&self, now: i64, ask: Ask) -> bool {
-        // A wait longer than any is a clock set back since.
-        if self
-            .retry_at
-            .is_some_and(|at| now < at && at <= now + BACKED_OFF)
-        {
+        // A wait longer than any is a clock set back since. Refresh Limits
+        // waits only for the provider.
+        let waits = |until: Option<i64>| until.is_some_and(|at| now < at && at <= now + BACKED_OFF);
+        if waits(self.retry_at) || (ask != Ask::Force && waits(self.backed_off)) {
             return false;
         }
         // Long ago for a time ahead of now by more than `DUE`: the clock was
@@ -295,6 +296,7 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
     // In SQL, over working out the status: this is asked at every catch-up.
     let mut rows = db.prepare_cached(&format!(
         "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, f.account IS NOT NULL, f.retry_at,
+             iif(a.problem = 'unavailable' AND f.reads > 0, f.reads, NULL),
              EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id AND {SIGNED_IN_NOW}),
              {},
              EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= a.full_read_at
@@ -304,17 +306,21 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
     ))?;
     let schedules = rows
         .query_map([now], |row| {
+            let checked_at: Option<i64> = row.get(3)?;
+            let reads: Option<i64> = row.get(6)?;
+            let backed_off = checked_at.zip(reads).map(|(at, reads)| at + backoff(reads));
             Ok((
                 row.get(0)?,
                 Schedule {
                     read_at: row.get(1)?,
                     full_read_at: row.get(2)?,
-                    checked_at: row.get(3)?,
+                    checked_at,
                     failing: row.get(4)?,
                     retry_at: row.get(5)?,
-                    signed_in: row.get(6)?,
-                    in_use: row.get(7)?,
-                    reset_passed: row.get(8)?,
+                    backed_off,
+                    signed_in: row.get(7)?,
+                    in_use: row.get(8)?,
+                    reset_passed: row.get(9)?,
                 },
             ))
         })?
@@ -675,9 +681,9 @@ fn problem_name(problem: &Problem) -> &'static str {
 }
 
 /// Note in `failing` how `account`'s read went, before its row says: how
-/// many reads in a row failed as this one did, what it met, and when it's
-/// read next. What's new of it, if anything, as the log says it, `named`
-/// naming the account.
+/// many reads in a row failed as this one did, what it met, and when its
+/// provider asked to be asked again. What's new of it, if anything, as the
+/// log says it, `named` naming the account.
 fn failing(
     tx: &Transaction,
     account: &str,
@@ -715,7 +721,7 @@ fn failing(
             why, retry_after, ..
         } => (
             Some(why.as_str()),
-            Some(now + backoff(reads, *retry_after)),
+            retry_after.map(|after| now + after.min(BACKED_OFF)),
             reads,
         ),
         _ => (None, None, reads),
@@ -1313,41 +1319,30 @@ mod tests {
         );
     }
 
-    /// When the fake provider's account is read next, as `failing` says.
-    fn retry_at(db: &Connection) -> Option<i64> {
-        one(db, "SELECT max(retry_at) FROM failing")
-    }
-
     #[test]
     fn a_provider_that_keeps_failing_is_asked_less_often() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = crate::db::open(dir.path()).unwrap();
         let minute = crate::time::MINUTE;
+        // The minutes after `at` it waits before it's read, opened.
+        let waits = |db: &Connection, at: i64| {
+            (0..=30)
+                .find(|&minutes| due(db, at + minutes * minute, Ask::Opened))
+                .unwrap()
+        };
         let mut at = 0;
-        for waits in [5, 10, 20, 30, 30] {
+        for minutes in [5, 10, 20, 30, 30] {
             at += 60 * minute;
             failed(&mut db, Problem::unavailable("down"), at);
-            assert_eq!(retry_at(&db), Some(at + waits * minute));
+            assert_eq!(waits(&db, at), minutes);
         }
-        // As long as it asks, up to as long as any wait.
-        let asks = |seconds: i64| Problem::Unavailable {
-            why: "busy".to_owned(),
-            retry_after: Some(seconds * 1000),
-            answered: true,
-        };
-        let (_, held) = fake(Kind::Subscription, &[]);
-        record(
-            &mut db,
-            signed_in(),
-            vec![(Read::failed(asks(0)), held)],
-            at,
-        )
-        .unwrap();
-        assert_eq!(retry_at(&db), Some(at + 30 * minute));
-        // A read that works ends it.
+        // Refresh Limits reads it, no more often than a claim holds.
+        assert!(due(&db, at + minute, Ask::Force));
+        assert!(!due(&db, at + CLAIM / 2, Ask::Force));
+        // A read that works ends it: its limits stand as any read's do.
         let (_, held) = fake(Kind::Subscription, &[]);
         record(&mut db, signed_in(), vec![(monthly(1), held)], at).unwrap();
-        assert_eq!(retry_at(&db), None);
+        assert_eq!(waits(&db, at), 5);
         // Nor is a read of some keys, as the provider answered.
         let some = Read {
             problem: Some(Problem::unavailable("down")),
@@ -1355,7 +1350,7 @@ mod tests {
         };
         let (_, held) = fake(Kind::ApiKey, &[]);
         record(&mut db, signed_in(), vec![(some, held)], at).unwrap();
-        assert_eq!(retry_at(&db), None);
+        assert_eq!(waits(&db, at), 0);
         // Nor is a provider that didn't answer, as when the Mac is offline,
         // however long it lasts.
         for _ in 0..6 {
@@ -1365,22 +1360,27 @@ mod tests {
                 answered: false,
             };
             failed(&mut db, offline, at);
-            assert_eq!(retry_at(&db), None);
+            assert_eq!(waits(&db, at), 0);
         }
         // And the first that answers after them waits five minutes.
         failed(&mut db, Problem::unavailable("down"), at);
-        assert_eq!(retry_at(&db), Some(at + 5 * minute));
+        assert_eq!(waits(&db, at), 5);
         // A refused login isn't backed off.
         failed(&mut db, Problem::SignIn, at);
         failed(&mut db, Problem::SignIn, at + 5 * minute);
-        assert_eq!(retry_at(&db), None);
-        // Waiting, it isn't read, even when opened or forced: until its wait is
-        // out, or unless the wait is longer than any (clock set back).
+        assert_eq!(waits(&db, at + 5 * minute), 0);
+        // A provider that asked to wait isn't read before then, even forced,
+        // up to as long as any wait; unless the wait is longer than any
+        // (clock set back).
+        let asks = |seconds: i64| Problem::Unavailable {
+            why: "busy".to_owned(),
+            retry_after: Some(seconds * 1000),
+            answered: true,
+        };
         failed(&mut db, asks(3600), at);
-        assert!(!due(&db, at + 5 * minute, Ask::Opened));
         assert!(!due(&db, at + 5 * minute, Ask::Force));
         assert!(due(&db, at + 30 * minute, Ask::Scheduled));
-        assert!(due(&db, at - 10 * minute, Ask::Scheduled));
+        assert!(due(&db, at - 40 * minute, Ask::Scheduled));
     }
 
     /// Whether the fake provider's account is read at `now`.
@@ -1843,7 +1843,7 @@ mod tests {
         }
 
         fn folders(&self, home: &Path) -> Vec<std::path::PathBuf> {
-            agents::own_and_found(home, ".fake", ".fake-", "login")
+            agents::own_and_found(home, ".fake", "login")
         }
 
         fn installed(&self, folder: &Path) -> bool {
@@ -2181,7 +2181,7 @@ mod tests {
         // It couldn't be read, which isn't backed off, and the log says why.
         let problem = "SELECT problem FROM account WHERE id = 'fake:api'";
         assert_eq!(one::<String>(&db, problem), "unavailable");
-        assert_eq!(retry_at(&db), None);
+        assert!(schedules(&db, 2_001).unwrap()["fake:api"].due(2_001, Ask::Opened));
         let log = std::fs::read_to_string(data.path().join("app.log")).unwrap();
         assert!(log.contains(": limits not read: reading"), "{log}");
 

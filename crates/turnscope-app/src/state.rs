@@ -1,5 +1,5 @@
 //! Domain state, engine event handling, and side-effect queuing for the app.
-//! Ephemeral UI chrome state (which row is open, folds, active page/tab) stays local to each shell
+//! Ephemeral UI chrome state (which row is open, folds, active page/tab) stays in the shell
 //! so UI interactions never round-trip through FFI or JSON.
 
 use std::collections::{BTreeSet, HashMap};
@@ -7,9 +7,8 @@ use std::collections::{BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
 use turnscope::alerts::{Alert, Notify, Settings, replaces};
 use turnscope::engine::{Event, Shown, Stopped, UsedMost};
-use turnscope::status::{Account, Agent, Connection, Status};
+use turnscope::status::{Account, Agent, Connection, Standing, Status};
 
-use crate::standing::{AccountStanding, Standing};
 use crate::view::{AppSync, build_sync};
 use crate::words::{self, AlertNote, Words};
 
@@ -209,7 +208,11 @@ impl State {
         if self.all().is_empty() {
             words::welcome(&self.installed(), &self.agent_names(), self.reading())
         } else {
-            words.verdict(&self.in_use(), self.hidden_in_use(), self.all())
+            words.verdict(
+                self.in_use().first().copied(),
+                self.hidden_in_use(),
+                self.all(),
+            )
         }
     }
 
@@ -493,7 +496,6 @@ impl Core {
         });
     }
 
-    /// Drain pending effects and produce a complete `AppSync` snapshot for the host shell.
     pub fn sync(&mut self) -> AppSync {
         let animated = std::mem::take(&mut self.animated);
         let effects = std::mem::take(&mut self.effects);
@@ -579,13 +581,7 @@ pub(crate) mod tests {
         let reading = shown(first.clone());
         assert_eq!(ids(reading.in_use()), visible);
         assert!(reading.recent().is_empty() && reading.unused().is_empty());
-        let words = reading.words();
-        let verdict = reading.verdict(&words);
-        assert_ne!(verdict.0, "Nothing in use");
-        assert_eq!(
-            verdict,
-            words.verdict(&reading.in_use()[..1], false, reading.all())
-        );
+        assert_ne!(reading.verdict(&reading.words()).0, "Nothing in use");
         let mut done = first;
         done.status.history_read = true;
         let read = shown(done);

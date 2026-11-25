@@ -190,11 +190,8 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
             return;
         };
         let session = INFO.session(native);
-        read.session(&session).cwd = line
-            .cwd
-            .as_deref()
-            .filter(|cwd| !cwd.is_empty())
-            .map(str::to_owned);
+        read.session(&session);
+        read.cwd(&session, line.cwd.as_deref());
         (cursor.session, cursor.began) = (Some(session), at);
         return;
     }

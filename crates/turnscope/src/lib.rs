@@ -51,7 +51,7 @@ pub enum Error {
     /// Another Turnscope was reading history for longer than this one
     /// waited (`ingest::ingest`), so an MCP answer says its usage is only
     /// part of it. Exit 1.
-    Busy(String),
+    Busy,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -59,10 +59,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(match self {
-            Error::Usage(message)
-            | Error::NotFound(message)
-            | Error::Failed(message)
-            | Error::Busy(message) => message,
+            Error::Usage(message) | Error::NotFound(message) | Error::Failed(message) => message,
+            Error::Busy => "another Turnscope is reading your agents' history",
             Error::Newer { replaced: true } => {
                 "Turnscope was updated after this one started; start it again"
             }
@@ -222,8 +220,8 @@ pub fn logged(data: &Path, now: i64) -> Vec<String> {
         .rev()
         .filter(|line| {
             line.split_once(' ')
-                .and_then(|(at, _)| at.parse::<jiff::Timestamp>().ok())
-                .is_some_and(|at| at.as_millisecond() > now - time::DAY)
+                .and_then(|(at, _)| time::millis(at))
+                .is_some_and(|at| at > now - time::DAY)
         })
         .take(5)
         .collect();
