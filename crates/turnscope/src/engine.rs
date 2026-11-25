@@ -1370,24 +1370,32 @@ mod tests {
         assert!(!running(data.path()));
     }
 
+    /// Both when this app keeps the data current and when another does.
     #[test]
     fn refresh_now_tells_the_status_even_when_nothing_changed_then_that_it_ended() {
-        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        drop(read_just_now(data.path()));
-        let (engine, told) = start(data.path(), home.path());
-        // Once the first catch-up reports `history_read`, `keep` has installed
-        // `wake` and parked on `changes.recv_timeout`.
-        next(&told, 10, |event| match event {
-            Event::Shown(shown, _) if shown.status.history_read => Some(()),
-            _ => None,
-        });
-        engine.refresh_now();
-        let refreshed = |event| match event {
-            Event::Shown(..) => Some(false),
-            Event::Refreshed => Some(true),
-            _ => None,
-        };
-        assert!(!next(&told, 10, refreshed));
-        assert!(next(&told, 10, refreshed));
+        for another_keeps in [false, true] {
+            let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            drop(read_just_now(data.path()));
+            let _other = another_keeps.then(|| lock(data.path()).unwrap().unwrap());
+            let (engine, told) = start(data.path(), home.path());
+            // Once `keep` reports `history_read` it has installed `wake` and
+            // parked; with the lock held elsewhere, `Kept` is told instead.
+            next(&told, 10, |event| match event {
+                Event::Shown(shown, _) if shown.status.history_read => Some(()),
+                Event::Kept(None) if another_keeps => Some(()),
+                _ => None,
+            });
+            engine.refresh_now();
+            let shown = std::cell::Cell::new(false);
+            next(&told, 10, |event| match event {
+                Event::Shown(..) => {
+                    shown.set(true);
+                    None
+                }
+                Event::Refreshed => Some(()),
+                _ => None,
+            });
+            assert!(shown.get(), "another keeps: {another_keeps}");
+        }
     }
 }

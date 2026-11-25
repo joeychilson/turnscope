@@ -873,11 +873,14 @@ pub(crate) mod tests {
         assert!(state.counting());
     }
 
-    /// A status told meanwhile, as after a hide, isn't the refresh's.
+    /// A status told meanwhile, as after a hide, isn't the refresh's; the
+    /// engine stopping ends it too, as its read is lost, so once it's back
+    /// nothing says it's refreshing.
     #[test]
     fn refreshing_is_said_until_the_refresh_ends_and_only_once_there_is_a_status() {
         let refreshing = |core: &mut Core| core.sync().panel.footer_note.map(|n| n.text);
         let mut core = Core::new(shown(example()));
+        assert!(core.sync().panel.can_refresh);
         assert_eq!(core.apply(Action::RefreshNow {}, 0), [Call::RefreshNow]);
         assert_eq!(refreshing(&mut core).as_deref(), Some("Refreshing limits…"));
         core.took(Event::Shown(Box::new(example()), Vec::new()));
@@ -886,7 +889,14 @@ pub(crate) mod tests {
         core.took(Event::Refreshed);
         assert_eq!(refreshing(&mut core), None);
 
+        assert_eq!(core.apply(Action::RefreshNow {}, 0), [Call::RefreshNow]);
+        core.took(Event::Kept(Some(Stopped::Failing("disk full".into()))));
+        core.took(Event::Kept(None));
+        assert_eq!(refreshing(&mut core), None);
+        assert_eq!(core.apply(Action::RefreshNow {}, 0), [Call::RefreshNow]);
+
         let mut unopened = Core::new(State::default());
+        assert!(!unopened.sync().panel.can_refresh);
         assert_eq!(unopened.apply(Action::RefreshNow {}, 0), []);
         assert_eq!(refreshing(&mut unopened), None);
     }
