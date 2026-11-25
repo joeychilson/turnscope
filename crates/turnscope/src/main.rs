@@ -220,7 +220,7 @@ fn main() -> ExitCode {
             ExitCode::from(match error {
                 Error::Usage(_) => 2,
                 Error::NotFound(_) => 3,
-                Error::Failed(_) | Error::Newer { .. } | Error::Busy(_) => 1,
+                Error::Failed(_) | Error::Newer { .. } | Error::Busy => 1,
             })
         }
     }
@@ -400,10 +400,8 @@ fn cmd_usage_limit(
                     shares.as_ref().map(|shares| (limit, shares)),
                     status.at,
                 );
-            if let Some(why) = usage::unshared(&used, limit, between)
-                .or_else(|| usage::elsewhere(&used, limit, between))
-            {
-                text += &format!("\n{why}");
+            if let Some(note) = usage::footnote(&used, limit, between) {
+                text += &format!("\n{note}");
             }
             text
         },

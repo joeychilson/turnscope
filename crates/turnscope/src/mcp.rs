@@ -450,7 +450,7 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
     // While all of history is read, the first time or after an update, what
     // was read before is only part of it: 450,000 responses read again
     // after an update gave 153,450 at one call, then 383,724 (2026-11-18).
-    let partial = matches!(caught, Err(turnscope::Error::Busy(_)))
+    let partial = matches!(caught, Err(turnscope::Error::Busy))
         && matches!(turnscope::ingest::all_read(db), Ok(false));
     let ask = Ask {
         db,
@@ -770,10 +770,8 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     if let Some(line) = own_line {
         out += &line;
     }
-    if let Some(why) = limit.and_then(|limit| {
-        usage::unshared(&used, limit, between).or_else(|| usage::elsewhere(&used, limit, between))
-    }) {
-        out += &format!("\n{why}\n");
+    if let Some(note) = limit.and_then(|limit| usage::footnote(&used, limit, between)) {
+        out += &format!("\n{note}\n");
     }
     // Asked since a time, as the calendar week for "this week" of a weekly
     // limit, the shares are left out: say how to get them. There are none

@@ -573,7 +573,7 @@ pub fn unreset(
 /// the points used: approximate, as providers say how much of a limit is
 /// used but not by what. None for a window that reset since it was read,
 /// as how much of the new one is used isn't known, for usage with no known
-/// price (`unshared`), as a share is of cost, and for usage asked `between`
+/// price (`footnote`), as a share is of cost, and for usage asked `between`
 /// other times than the window's.
 pub fn shares(
     usage: &Usage,
@@ -600,41 +600,30 @@ pub fn shares(
     })
 }
 
-/// Of a key's limit in dollars, how much of what's used the usage here
-/// doesn't account for, when its shares, each of the limit's size, add up
-/// to less.
-pub fn elsewhere(
+/// The line under `usage` of `limit` over its window, if any: why it gives
+/// no `shares`, when some of it has no known price; or, of a key's limit in
+/// dollars, how much of what's used it doesn't account for, when its
+/// shares, each of the limit's size, add up to less.
+pub fn footnote(
     usage: &Usage,
     limit: &crate::status::Limit,
     between: Option<(i64, i64)>,
 ) -> Option<String> {
-    let money = limit.money.filter(|_| limit.is_key())?;
     window(limit, between)?;
+    if usage.total.unpriced > 0 {
+        return Some(format!(
+            "No shares of {} are given: {} with no known price, and a share is of cost.",
+            limit.named(),
+            counted(usage.total.unpriced, "response")
+        ));
+    }
+    let money = limit.money.filter(|_| limit.is_key())?;
     let used = money.size_usd - money.left_usd;
     let (seen, said) = (dollars(usage.total.cost_usd), dollars(used));
-    (usage.total.unpriced == 0 && usage.total.cost_usd < used && seen != said).then(|| {
+    (usage.total.cost_usd < used && seen != said).then(|| {
         format!(
             "Your agents here account for {seen} of the {said} used; the rest was spent \
              elsewhere with this key."
-        )
-    })
-}
-
-/// Why `usage` of `limit` gives no `shares`, when it's that some of it has
-/// no known price.
-pub fn unshared(
-    usage: &Usage,
-    limit: &crate::status::Limit,
-    between: Option<(i64, i64)>,
-) -> Option<String> {
-    if usage.total.unpriced == 0 {
-        return None;
-    }
-    let responses = counted(usage.total.unpriced, "response");
-    window(limit, between).map(|_| {
-        format!(
-            "No shares of {} are given: {responses} with no known price, and a share is of cost.",
-            limit.named()
         )
     })
 }
@@ -919,7 +908,7 @@ mod tests {
         let (usage, none) = shares(&db);
         assert!(none.is_none());
         assert_eq!(
-            unshared(&usage, weekly, None).as_deref(),
+            footnote(&usage, weekly, None).as_deref(),
             Some(
                 "No shares of Weekly are given: 1 response with no known price, and a share is of cost."
             )
