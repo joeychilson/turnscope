@@ -40,6 +40,9 @@
   or without its 5-hour window, as a renamed field read.
 - **OpenRouter's credits stay shown when only they couldn't be read**,
   as of their last read, instead of going missing until the next read.
+- **Refresh Limits reads a provider that keeps failing** at once, instead
+  of waiting up to 30 minutes for its next try. One that asked to wait is
+  still left until then.
 
 ## 0.4.1
 
