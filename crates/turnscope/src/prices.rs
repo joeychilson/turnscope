@@ -7,6 +7,8 @@
 //! charges.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{Connection, params};
 use serde::Deserialize;
@@ -151,7 +153,11 @@ pub fn in_force<T>(history: &[(i64, T)], at: i64) -> Option<&T> {
 /// model listed for the first time prices what was used of it before, and
 /// what had no price is priced again. Whether it was taken in.
 pub fn refresh(db: &mut Connection) -> Result<bool> {
-    refresh_from(db, catalog)
+    let data = db
+        .path()
+        .and_then(|file| Path::new(file).parent())
+        .map(Path::to_path_buf);
+    refresh_from(db, || catalog(data.as_deref()))
 }
 
 fn refresh_from(db: &mut Connection, ask: impl FnOnce() -> Result<Catalog>) -> Result<bool> {
@@ -186,12 +192,33 @@ fn claim(db: &mut Connection, now: i64) -> Result<bool> {
 
 type Catalog = Vec<((String, String), (String, Option<String>))>;
 
-fn catalog() -> Result<Catalog> {
+/// models.dev's catalog.
+fn catalog(data: Option<&Path>) -> Result<Catalog> {
     let (status, json) = providers::get("https://models.dev/api.json", 60)?;
+    let checked = check(status, &json);
+    if let Some(data) = data {
+        tell(data, checked.as_ref().err().map(ToString::to_string));
+    }
+    checked
+}
+
+/// A catalog refused goes in `app.log` in `data`, which `doctor` shows, as
+/// prices then go stale: once while it's refused alike, though it's asked
+/// again every 10 minutes.
+fn tell(data: &Path, refused: Option<String>) {
+    static TOLD: Mutex<Option<String>> = Mutex::new(None);
+    let mut told = TOLD.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(why) = refused.as_ref().filter(|&why| told.as_ref() != Some(why)) {
+        crate::engine::log(data, why);
+    }
+    *told = refused;
+}
+
+fn check(status: u16, json: &[u8]) -> Result<Catalog> {
     if status != 200 {
         return Err(Error::Failed(format!("models.dev answered {status}")));
     }
-    let catalog = parse_catalog(&json)?;
+    let catalog = parse_catalog(json)?;
     // A catalog cut short would leave most usage unpriced.
     if catalog.len() < 1000 {
         return Err(Error::Failed(format!(
@@ -608,5 +635,16 @@ mod tests {
             ),
             Some(9.0)
         );
+    }
+
+    #[test]
+    fn a_catalog_refused_alike_is_logged_once() {
+        let data = tempfile::tempdir().unwrap();
+        let refused = || Some("models.dev answered 403".to_owned());
+        for told in [refused(), refused(), None, refused()] {
+            tell(data.path(), told);
+        }
+        let log = std::fs::read_to_string(data.path().join("app.log")).unwrap();
+        assert_eq!(log.matches("models.dev answered 403").count(), 2, "{log}");
     }
 }

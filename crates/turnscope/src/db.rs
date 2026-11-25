@@ -199,6 +199,10 @@ pub fn open(dir: &Path) -> Result<Connection> {
     let mut db = Connection::open(&path)?;
     db.busy_timeout(std::time::Duration::from_secs(10))?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
+    // The write-ahead log is cut back to this once checkpointed: without it,
+    // one large write left a 359 MB log for as long as a connection stayed
+    // open, as the app's does. Above the 4 MB SQLite checkpoints at.
+    db.pragma_update(None, "journal_size_limit", 16 << 20)?;
     let latest = REVISIONS.len() as i64;
     // Read `user_version` before `application_id`: a concurrent creator commits
     // both together, so reading `application_id` first could observe 0 followed
@@ -429,13 +433,16 @@ fn open_lock(path: &Path) -> Result<File> {
         .create(true)
         .truncate(false)
         .open(path)
-        .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
+        .map_err(|error| locking(path, error))
+}
+
+fn locking(path: &Path, error: std::io::Error) -> Error {
+    Error::Failed(format!("locking {}: {error}", path.display()))
 }
 
 pub fn lock(path: &Path) -> Result<File> {
     let file = open_lock(path)?;
-    file.lock()
-        .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))?;
+    file.lock().map_err(|error| locking(path, error))?;
     Ok(file)
 }
 
@@ -449,12 +456,7 @@ pub fn lock_within(path: &Path, wait: std::time::Duration) -> Result<Option<File
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
-            Err(std::fs::TryLockError::Error(error)) => {
-                return Err(Error::Failed(format!(
-                    "locking {}: {error}",
-                    path.display()
-                )));
-            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(locking(path, error)),
         }
     }
 }
@@ -472,13 +474,10 @@ const VERSION: i64 = number(env!("CARGO_PKG_VERSION_MAJOR")) * 1_000_000
     + number(env!("CARGO_PKG_VERSION_PATCH"));
 
 const fn number(digits: &str) -> i64 {
-    let digits = digits.as_bytes();
-    let (mut number, mut at) = (0, 0);
-    while at < digits.len() {
-        number = number * 10 + (digits[at] - b'0') as i64;
-        at += 1;
+    match i64::from_str_radix(digits, 10) {
+        Ok(number) => number,
+        Err(_) => panic!("a version's part isn't a number"),
     }
-    number
 }
 
 /// Refuses writes once a newer Turnscope version has written here, recording
@@ -641,6 +640,23 @@ mod tests {
         assert!(opened.iter().all(|opened| *opened), "{opened:?}");
         let db = open(dir.path()).unwrap();
         assert_eq!(rows(&db, "PRAGMA journal_mode"), ["wal"]);
+    }
+
+    #[test]
+    fn the_write_ahead_log_shrinks_after_a_large_write_while_the_data_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(dir.path()).unwrap();
+        let _app = open(dir.path()).unwrap();
+        db.execute_batch(
+            "CREATE TABLE big (data BLOB);
+             WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 32)
+             INSERT INTO big SELECT zeroblob(1 << 20) FROM n;
+             PRAGMA wal_checkpoint;
+             DELETE FROM big;",
+        )
+        .unwrap();
+        let wal = std::fs::metadata(dir.path().join("turnscope.db-wal")).unwrap();
+        assert!(wal.len() <= 16 << 20, "{} bytes", wal.len());
     }
 
     #[test]

@@ -299,11 +299,11 @@ turnscope doctor
 ```
 
 Lists what can't be read and how to fix it: logins that can't be read or
-were refused, providers that haven't answered, history files and lines
-that couldn't be read, models with no known price, prices not read yet,
-and what was logged in the last day: what went wrong in the app, and why
-an account's limits couldn't be read. When all is well it prints
-`Nothing to fix.`
+were refused, providers that haven't answered, history files still there
+and lines in them that couldn't be read, models with no known price,
+prices not read yet, and what was logged in the last day: what went wrong
+in the app, why an account's limits couldn't be read, and why models.dev's
+catalog was refused. When all is well it prints `Nothing to fix.`
 
 ## MCP
 
