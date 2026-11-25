@@ -96,7 +96,7 @@ static TOOLS: &[Tool] = &[
         input: r#"{"type": "object", "properties": {
             "account": {"type": "string", "description": "One account, by id or part of its title or label. Default: yours."},
             "all": {"type": "boolean", "description": "Every account's usage together, as across your agents, with no share of a limit; since is then 30 days back unless given."},
-            "limit": {"type": "string", "description": "Part of a limit's name, such as week or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: the one that decides the account."},
+            "limit": {"type": "string", "description": "Part of a limit's name, such as week, 5h or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: without since, the one that decides the account."},
             "since": {"type": "string", "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, an RFC 3339 time, or now."},
             "until": {"type": "string", "description": "Up to when, in the same forms as since, with since. Default: now."},
             "by": {"type": "string", "enum": ["session", "project", "model", "agent", "account", "day", "week", "month"], "description": "Default session."},
@@ -482,13 +482,14 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
     }
 }
 
-/// `arguments` with nulls taken as not given, or why they don't fit
-/// `tool`'s schema, said by the schema: serde says "invalid type: string
-/// \"two\", expected f64".
+/// `arguments` with nulls and empty text taken as not given, or why they
+/// don't fit `tool`'s schema, said by the schema: serde says "invalid type:
+/// string \"two\", expected f64".
 fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
     let Value::Object(mut given) = arguments else {
         return Err(format!("arguments are an object, not {arguments}"));
     };
+    let unsaid = |value: &Value| value.is_null() || value == "";
     let schema: Value = serde_json::from_str(tool.input).unwrap_or_default();
     let properties = &schema["properties"];
     for (name, value) in &given {
@@ -505,7 +506,7 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
                 status::list(&names, "or")
             ));
         }
-        if value.is_null() {
+        if unsaid(value) {
             continue;
         }
         let (min, max) = (property["minimum"].as_f64(), property["maximum"].as_f64());
@@ -532,7 +533,7 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
             return Err(format!("{name} is {kind}, not {value}"));
         }
     }
-    given.retain(|_, value| !value.is_null());
+    given.retain(|_, value| !unsaid(value));
     Ok(Value::Object(given))
 }
 
@@ -576,11 +577,7 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     // Whether the hours fit each account shown, so one call compares them.
     let fit = match input.hours {
         None => String::new(),
-        Some(hours) => {
-            let fits = status::fits(&shown, hours, status.at);
-            let apart = if shown.len() > 1 { "\n" } else { "" };
-            format!("{fits}\n{apart}")
-        }
+        Some(hours) => format!("{}\n\n", status::fits(&shown, hours, status.at)),
     };
     let caller_agent = ask.caller.agent.map(|agent| agent.info().id);
     // Of every account, the one to work on leads, not the verdict on the
@@ -591,10 +588,12 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
         .flatten();
     let unknown_line = "Which account is yours isn't known, so here is every one.";
     let head = match (unknown, room) {
-        (true, Some(room)) => format!("{unknown_line}\n{room}"),
-        (true, None) => unknown_line.to_owned(),
-        (false, Some(room)) => room,
-        (false, None) => status::verdict(first, status.at),
+        (true, Some(room)) => format!("{unknown_line}\n{room}\n\n"),
+        (true, None) => format!("{unknown_line}\n\n"),
+        (false, Some(room)) => format!("{room}\n\n"),
+        // One account's fit is its verdict.
+        (false, None) if input.hours.is_some() && shown.len() == 1 => String::new(),
+        (false, None) => format!("{}\n\n", status::verdict(first, status.at)),
     };
     let alternate = (shown.len() == 1 && !unknown)
         .then(|| status::alternate_note(&status, first, caller_agent))
@@ -603,7 +602,7 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
             format!("\n\n{note} Call check_limits with all: true to compare.")
         });
     Ok(format!(
-        "{fit}{head}\n\n{}{alternate}",
+        "{fit}{head}{}{alternate}",
         status::text(&status, &shown, yours)
     ))
 }
@@ -658,16 +657,6 @@ fn usage_asked<'a>(
             }
         },
     };
-    let limit = match (account, &input.limit) {
-        (Some(account), Some(name)) => Some(account.limit(name)?),
-        (Some(account), None) => account.deciding_limit(),
-        (None, Some(_)) => {
-            return Err(Error::Usage(
-                "a limit is one account's: give account with it, not all".to_owned(),
-            ));
-        }
-        (None, None) => None,
-    };
     let between = match (input.since.as_deref(), input.until.as_deref()) {
         (None | Some("window"), Some(_)) => {
             return Err(Error::Usage(
@@ -676,6 +665,18 @@ fn usage_asked<'a>(
         }
         (None | Some("window"), None) => None,
         (Some(since), until) => Some(time::between(since, until, now, "")?),
+    };
+    // Since a time, unless a limit is named, the usage is the account's, as
+    // for a day gone by: the limit that decides it now has no part in it.
+    let limit = match (account, &input.limit) {
+        (Some(account), Some(name)) => Some(account.limit(name)?),
+        (Some(account), None) if between.is_none() => account.deciding_limit(),
+        (None, Some(_)) => {
+            return Err(Error::Usage(
+                "a limit is one account's: give account with it, not all".to_owned(),
+            ));
+        }
+        (_, None) => None,
     };
     Ok(UsageAsked {
         lead,
@@ -721,55 +722,47 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     };
     let mut used = usage::usage(ask.db, &query)?;
     let mut shares = limit.and_then(|limit| usage::shares(&used, limit, between));
-    let own_line = if by == By::Session
-        && used.rows.len() > top
-        && let Some(yours) = yours
-        && let Some((at, row)) = used
-            .rows
-            .iter()
-            .enumerate()
-            .skip(top)
-            .find(|(_, row)| row.key == yours)
-    {
-        let points = limit
-            .zip(shares.as_ref())
-            .map_or(String::new(), |(limit, shares)| {
-                format!(", {} of {}", usage::share(shares.rows[at]), limit.named())
+    let folded = usage::fold(&mut used, shares.as_mut(), top);
+    // Added up with the rest, the caller's own session has a line of its own.
+    let own_line = yours
+        .filter(|_| by == By::Session)
+        .and_then(|yours| folded.iter().find(|(row, _)| row.key == yours))
+        .map(|(row, points)| {
+            let points = limit.zip(*points).map_or(String::new(), |(limit, points)| {
+                format!(", {} of {}", usage::share(points), limit.named())
             });
-        Some(format!(
-            "\nYour session: {}, over {}{points}.\n",
-            usage::cost(row.cost_usd, row.unpriced),
-            usage::counted(row.responses, "response"),
-        ))
-    } else {
-        None
-    };
-    usage::fold(&mut used, shares.as_mut(), top);
+            format!(
+                "\nYour session: {}, over {}{points}.\n",
+                usage::cost(row.cost_usd, row.unpriced),
+                usage::counted(row.responses, "response"),
+            )
+        });
     // Times are told as of the status's minute, as `check_limits` tells
     // them: at 12:00:40, a reset at 14:00 is in 2h, not 1h 59m.
     let minute = status.at;
-    let to = match until_given {
-        true => format!(" to {}", time::ago(query.until, minute)),
-        false => String::new(),
+    let mut out = match (account, limit) {
+        (Some(account), Some(limit)) if limit.window.is_none() && between.is_none() => format!(
+            "{}: {}\n",
+            account.full_title(),
+            usage::unreset(account, limit, &used, minute, "")
+        ),
+        _ => {
+            let to = match until_given {
+                true => format!(" to {}", time::ago(query.until, minute)),
+                false => String::new(),
+            };
+            let mut out = format!(
+                "{lead}Usage of {} since {}{to}: {}.\n",
+                account.map_or("every account".to_owned(), |account| account.full_title()),
+                time::ago(used.since, minute),
+                usage::spent(&used.total),
+            );
+            if let Some(limit) = limit {
+                out += &format!("{}\n", status::limit_text(limit, minute));
+            }
+            out
+        }
     };
-    let mut out = format!(
-        "{lead}Usage of {} since {}{to}: {} at list prices over {}{}.\n",
-        account.map_or("every account".to_owned(), |account| account.full_title()),
-        time::ago(used.since, minute),
-        usage::dollars(used.total.cost_usd),
-        usage::counted(used.total.responses, "response"),
-        if used.total.unpriced > 0 {
-            format!(
-                ", {} of them with no known price",
-                usage::count(used.total.unpriced)
-            )
-        } else {
-            String::new()
-        },
-    );
-    if let Some(limit) = limit {
-        out += &format!("{}\n", status::limit_text(limit, minute));
-    }
     if !used.rows.is_empty() {
         let shares = limit.zip(shares.as_ref());
         out += &format!("\n{}", usage::markdown(&used, shares, yours));
@@ -777,7 +770,9 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     if let Some(line) = own_line {
         out += &line;
     }
-    if let Some(why) = limit.and_then(|limit| usage::unshared(&used, limit, between)) {
+    if let Some(why) = limit.and_then(|limit| {
+        usage::unshared(&used, limit, between).or_else(|| usage::elsewhere(&used, limit, between))
+    }) {
         out += &format!("\n{why}\n");
     }
     // Asked since a time, as the calendar week for "this week" of a weekly

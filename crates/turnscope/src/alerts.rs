@@ -483,6 +483,7 @@ mod tests {
         refused.accounts[0].state = State::AsOf {
             read_at: DAY - MINUTE,
             why: crate::status::Stale::SignIn,
+            worked_hours: 0.0,
         };
         assert_eq!(kinds(&raise(&mut db, &refused).unwrap()), [Kind::SignIn]);
         // Not acknowledged, as when notifications were off.
@@ -548,6 +549,7 @@ mod tests {
         refused.accounts[0].state = State::AsOf {
             read_at: DAY - MINUTE,
             why: crate::status::Stale::SignIn,
+            worked_hours: 0.0,
         };
         for (mut status, kind) in [
             (status(DAY, 0, Outlook::UsedUp { back: None }), Kind::UsedUp),

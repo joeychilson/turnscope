@@ -327,7 +327,7 @@ fn every_command_answers_as_its_snapshot_says() {
             vec!["usage", "--account", "claude", "--limit", "week"],
             true,
         ),
-        // The earlier days added up, each with its share.
+        // Each day with its share.
         (
             "usage-limit-day",
             vec![
@@ -338,8 +338,6 @@ fn every_command_answers_as_its_snapshot_says() {
                 "week",
                 "--by",
                 "day",
-                "--top",
-                "1",
             ],
             false,
         ),
@@ -544,12 +542,17 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             "hours is a number of 0 or more, not -1",
         ]
     );
-    // A null is an input not given.
+    // A null is an input not given, and so is empty text.
     let answers = tools(
         &mut command(data.path(), &["mcp"]),
-        &[("check_limits", r#"{"all":null}"#), ("check_limits", "{}")],
+        &[
+            ("check_limits", r#"{"all":null}"#),
+            ("check_limits", r#"{"account":""}"#),
+            ("check_limits", "{}"),
+        ],
     );
-    assert_eq!(answers[0], answers[1]);
+    assert_eq!(answers[0], answers[2]);
+    assert_eq!(answers[1], answers[2]);
 }
 
 /// A command says so before it reads all of history: the first time, and
@@ -713,6 +716,17 @@ fn explain_usage_marks_the_session_its_caller_names() {
             .map(str::to_owned)
             .collect()
     };
+    // A third session of Claude Max's, so one row can be added up with
+    // another past the top.
+    Connection::open(data.path().join("turnscope.db"))
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO response SELECT agent, 'r-third', 'claude-code:third', copy, file,
+                 folder, at, provider, model, input, cache_read, cache_write_5m, cache_write_1h,
+                 output, reasoning, prompt, web_searches, priority, recorded, 0.001, account
+             FROM response WHERE agent = 'claude-code' LIMIT 1",
+        )
+        .unwrap();
     let claude = asked_by("claude");
     assert!(claude.starts_with("Usage of Claude Max"), "{claude}");
     assert_eq!(
@@ -759,6 +773,8 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
         "Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at this pace it runs out 13:00 (in 1h)."
     );
     assert_eq!(guard("5 hours", "20").status.code(), Some(0));
+    // Named as the status line shows it, `5h 25%`.
+    assert_eq!(guard("5h", "50").status.code(), Some(2));
     // One it can't follow blocks nothing.
     assert_eq!(guard("month", "50").status.code(), Some(1));
     // Nor does one mistyped.
@@ -824,7 +840,10 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
         &[
             ("check_limits", r#"{"account":"claude"}"#),
             ("explain_usage", r#"{"account":"claude"}"#),
-            ("explain_usage", r#"{"account":"claude","since":"1h"}"#),
+            (
+                "explain_usage",
+                r#"{"account":"claude","limit":"5 hours","since":"1h"}"#,
+            ),
             ("explain_usage", r#"{"account":"claude","since":"now"}"#),
             ("explain_usage", r#"{"all":true}"#),
             (
@@ -989,6 +1008,139 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
     assert!(
         text.contains("Claude Max (me@example.com): it couldn't be read since 11:25; it's tried again every 5 to 30 minutes."),
         "{text}"
+    );
+    // Claude Code has worked on it since, so whether more work fits isn't
+    // known; with no work since, it's said as of the read.
+    let fit = || {
+        let output = turnscope(
+            data.path(),
+            &["status", "--account", "claude", "--hours", "0.4"],
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.lines().next().unwrap().to_owned()
+    };
+    assert_eq!(
+        fit(),
+        "Claude Max (me@example.com): whether 0.4 more hours of work fit can't be told: 5 hours had 25% left at 11:25, and your agents have worked about 40m since."
+    );
+    // Its 5 hours reset since the read, at 11:55: the read is still of
+    // Weekly.
+    db.execute(
+        "UPDATE reading SET starts = starts - ?1, resets = resets - ?1
+         WHERE account = 'anthropic:acct-1:org-1' AND limit_key = 'five_hour'",
+        [2 * HOUR + 5 * HOUR / 60],
+    )
+    .unwrap();
+    assert_eq!(
+        fit(),
+        "Claude Max (me@example.com): whether 0.4 more hours of work fit can't be told: Weekly had 56% left at 11:25, and your agents have worked about 40m since."
+    );
+    db.execute(
+        "DELETE FROM response WHERE account = 'anthropic:acct-1:org-1' AND at > ?1",
+        [NOW - 35 * HOUR / 60],
+    )
+    .unwrap();
+    let said = fit();
+    assert!(
+        said.ends_with(
+            "That's as of 11:25: it couldn't be read since; it's tried again every 5 to 30 minutes."
+        ),
+        "{said}"
+    );
+}
+
+/// `check_limits` of one account says whether the hours fit and how it
+/// stands in one line, the verdict's range and reset in it, before the
+/// account's lines.
+#[test]
+fn check_limits_of_one_account_says_its_fit_and_verdict_in_one_line() {
+    let data = store();
+    let answers = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[
+            ("check_limits", r#"{"account":"claude","hours":2}"#),
+            ("check_limits", r#"{"account":"supergrok","hours":2}"#),
+        ],
+    );
+    assert!(
+        answers[0].starts_with(
+            "Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 10m); it resets 14:00 (in 2h).\n\nClaude Max (me@example.com) · via"
+        ),
+        "{}",
+        answers[0]
+    );
+    assert!(
+        answers[1].starts_with(
+            "SuperGrok (me@example.com): whether 2 more hours of work fit can't be told: its login was refused.\n\nSuperGrok (me@example.com) · via"
+        ),
+        "{}",
+        answers[1]
+    );
+}
+
+/// Pi's OpenRouter key: $9.00 of its $20.00 weekly limit used, by $0.00 of
+/// Pi's usage here.
+#[test]
+fn a_limit_in_dollars_is_shared_by_dollars() {
+    let data = store();
+    let elsewhere = "Your agents here account for $0.00 of the $9.00 used; the rest was spent elsewhere with this key.";
+    let answer = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("explain_usage", r#"{"account":"openrouter","limit":"key"}"#)],
+    );
+    assert!(
+        answer[0].contains(" | $0.00 | 2 | <1% |\n") && answer[0].contains(elsewhere),
+        "{}",
+        answer[0]
+    );
+    let output = turnscope(
+        data.path(),
+        &["usage", "--account", "openrouter", "--limit", "key"],
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.trim_end().ends_with(elsewhere), "{text}");
+}
+
+/// Credits never reset, so their usage runs from the month's start, and
+/// what of them is used is said beside it: nothing used this month.
+#[test]
+fn usage_of_credits_says_which_it_is_and_what_of_them_is_used() {
+    let data = store();
+    let said = "Credits don't reset, so this is this month's usage, since 00:00 (12h ago): nothing yet. $15.00 of them are used; give since, such as 30d, to see what used them.";
+    let answer = tools(
+        &mut command_as("pi", data.path(), &["mcp"]),
+        &[("explain_usage", "{}")],
+    );
+    assert_eq!(answer[0], format!("OpenRouter API key: {said}"));
+    let output = turnscope(
+        data.path(),
+        &["usage", "--account", "openrouter", "--limit", "credits"],
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.starts_with(&format!(
+            "OpenRouter API key · {}\n",
+            said.replace("give since", "give --since")
+        )),
+        "{text}"
+    );
+}
+
+/// Usage since a time, as yesterday's, is the account's, without the limit
+/// whose window is now's.
+#[test]
+fn explain_usage_since_a_time_leaves_out_the_limit_of_now() {
+    let data = store();
+    let answer = tools(
+        &mut command(data.path(), &["mcp"]),
+        &[("explain_usage", r#"{"since":"yesterday","until":"today"}"#)],
+    );
+    assert!(
+        answer[0].starts_with(
+            "Usage of Claude Max (me@example.com) since Wed 00:00 (1d 12h ago) to 00:00 (12h ago): $0.03 at list prices over 3 responses.\n\n| Session |"
+        ) && !answer[0].contains("Shares of"),
+        "{}",
+        answer[0]
     );
 }
 
