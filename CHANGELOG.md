@@ -35,6 +35,11 @@
 - **A date in another year shows its year**, and a span of a year or more
   is in years: `since Jan 1 2020 00:00 (6y ago)`. A table no longer adds
   up a lone row as "1 more": it's shown by name.
+- **An answer from ChatGPT or Claude that isn't understood keeps the
+  last limits**, shown as of their read, instead of a plan without limits
+  or without its 5-hour window, as a renamed field read.
+- **OpenRouter's credits stay shown when only they couldn't be read**,
+  as of their last read, instead of going missing until the next read.
 
 ## 0.4.1
 
