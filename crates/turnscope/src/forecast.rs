@@ -184,14 +184,6 @@ pub fn work_rate(
     known: Option<i64>,
     enough: f64,
 ) -> Option<f64> {
-    let hours = |from: i64, to: i64| {
-        // No hours where `from` is after `to`, as a window's start drifted
-        // past its first reading is.
-        let slots = worked
-            .partition_point(|at| *at <= to)
-            .saturating_sub(worked.partition_point(|at| *at <= from));
-        (slots as i64 * SLOT) as f64 / HOUR as f64
-    };
     let (mut rose, mut worked_hours) = (0.0, 0.0);
     for (index, reading) in readings.iter().enumerate().rev() {
         if worked_hours >= enough {
@@ -204,19 +196,30 @@ pub fn work_rate(
             (Some(before), _) if same && reading.used < before.used - 1.0 => {}
             (Some(before), _) if same => {
                 rose += (reading.used - before.used).max(0.0);
-                worked_hours += hours(before.at, reading.at);
+                worked_hours += hours(worked, before.at, reading.at);
             }
             (_, Some(starts))
                 if known.is_some_and(|known| known <= starts)
                     && worked.first().is_some_and(|first| *first <= starts) =>
             {
                 rose += reading.used;
-                worked_hours += hours(starts, reading.at);
+                worked_hours += hours(worked, starts, reading.at);
             }
             _ => {}
         }
     }
     (worked_hours >= 1.0 && rose >= 2.0).then(|| rose / worked_hours)
+}
+
+/// The hours of work after `from` up to `to`, by the slots `worked` starts,
+/// oldest first.
+pub fn hours(worked: &[i64], from: i64, to: i64) -> f64 {
+    // No hours where `from` is after `to`, as a window's start drifted past
+    // its first reading is.
+    let slots = worked
+        .partition_point(|at| *at <= to)
+        .saturating_sub(worked.partition_point(|at| *at <= from));
+    (slots as i64 * SLOT) as f64 / HOUR as f64
 }
 
 /// The hours of work [`work_rate`] walks back to for a window of `length`.

@@ -54,7 +54,8 @@ wait for it, and after a second say
   message lists them.
 - **Limits** are named by part of a name as shown or of a key, in any
   case: `week` names Weekly (`seven_day`), `"5 hours"` names 5 hours, and
-  `opus` names Weekly (Opus). A model's limit takes its model after its
+  `opus` names Weekly (Opus). The name the [status line](#status-line)
+  shows names a limit too: `5h`. A model's limit takes its model after its
   name, as `status` shows it, or before it, as the app does:
   `"weekly (opus)"` or `"opus weekly"`. A name that fits several limits
   names the first by key.
@@ -80,7 +81,9 @@ and `until`, take:
 | A time | `2026-10-01T09:00:00Z` | RFC 3339, with `Z` or an offset such as `-05:00` |
 | Now | `now` | Now |
 
-Times are read and shown in the Mac's time zone, or the one `TZ` names.
+Times are read and shown in the Mac's time zone, or the one `TZ` names. A
+date in another year than now's shows its year, `Jan 1 2020 00:00`, and a
+span of a year or more is in years, `(6y ago)`.
 
 ## Exit codes
 
@@ -150,16 +153,16 @@ been read yet, or every account is hidden, and then that `--all` shows
 them. With `--json`, `accounts` is empty.
 
 With `--hours`, whether that many more hours of work fit comes first, as
-`check_limits` says it ([mcp.md](mcp.md#check_limits)): for several
-accounts, a line each, named. With `--json`, `fit` is a list of each
-account's `account` id and `fit` line.
+`check_limits` says it ([mcp.md](mcp.md#check_limits)): a line for each
+account, named. With `--json`, `fit` is a list of each account's
+`account` id and `fit` line.
 
 ```console
 $ turnscope status --hours 3
-- Claude Max (me@example.com): 3 more hours of work don't fit: 5 hours runs out after about 40m of work.
-- ChatGPT Plus (me@example.com): Whether 3 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
-- OpenRouter API key: Whether 3 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
-- SuperGrok (me@example.com): Whether 3 more hours of work fit can't be told: its login was refused.
+- Claude Max (me@example.com): 3 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 10m); it resets 14:00 (in 2h).
+- ChatGPT Plus (me@example.com): whether 3 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
+- OpenRouter API key: whether 3 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
+- SuperGrok (me@example.com): whether 3 more hours of work fit can't be told: its login was refused.
 
 Claude Max (me@example.com) · via Claude Code · in use
 …
@@ -181,7 +184,7 @@ must be earlier. An `--until` past now counts to now. `--account` must
 match one account. `--until` and `--agent` don't go with `--limit`.
 Grouped by time, `--top` shows the latest rows, with the earlier ones
 added up in a first row; otherwise the rows that cost most, with the rest
-added up in a last row.
+added up in a last row. One row past the top is shown, not added up.
 
 ```console
 $ turnscope usage --since 2026-09-29 --by model
@@ -206,20 +209,21 @@ is the id in full, as `claude-code:0f6e3f6a-713c-4d1e-9a6b-2b8c1d4e5f60`,
 and `name` the title. A title is kept to its first 200 characters.
 
 **What used a limit.** With `--limit`, the usage runs from the start of the
-limit's current window (for a limit with no window, this month for an API
-key and the last 7 days otherwise), by
-session, and each row gets its share of the limit, as does the row that
-adds up the rest. Without `--account`, the account is the calling agent's
-if it has the limit, or else the first account shown that has it. `--since`
-moves the start, and then rows get no share. A limit whose window reset
-since it was read counts from the reset, or from one window's length ago
-when the reset is longer ago than that, and its rows get no share either:
-how much of the new window is used isn't known. Nor do they while some of
-the usage has no known price, since a share is of cost: a line says so.
-A key's own limit counts only the usage made with that key. With `--json`,
-`sharePercents` holds each row's share in the rows' order, and
-`restSharePercent` the share of the row adding up the rest, each `null`
-when rows get none.
+limit's current window, by session, and each row gets its share of the
+limit, as does the row that adds up the rest. A limit that never resets,
+as credits, has no window: the usage is this month's for an API key and
+the last 7 days' otherwise, and in place of what's left, the heading says
+so and how much of the limit is used. Without `--account`, the account is
+the calling agent's if it has the limit, or else the first account shown
+that has it. `--since` moves the start, and then rows get no share. A
+limit whose window reset since it was read counts from the reset, or from
+one window's length ago when the reset is longer ago than that, and its
+rows get no share either: how much of the new window is used isn't known.
+Nor do they while some of the usage has no known price, since a share is
+of cost: a line says so. A key's own limit counts only the usage made
+with that key. With `--json`, `sharePercents` holds each row's share in
+the rows' order, and `restSharePercent` the share of the row adding up
+the rest, each `null` when rows get none.
 
 ```console
 $ turnscope usage --account claude --limit week
@@ -234,7 +238,10 @@ Costs are at list prices: what the same tokens cost on each provider's API.
 ```
 
 Shares are approximate. Providers say how much of a limit is used, not by
-what, so each row's share is its part of the cost. A limit on some models,
+what, so each row's share is its part of the cost. Of a limit in dollars,
+as an OpenRouter key's own, a row's share is its cost over the limit's
+size, and when the rows' cost is less than what's used, a last line says
+so: the rest was spent elsewhere with the key. A limit on some models,
 such as `Weekly (Opus)` or a [pool](architecture.md#glossary) such as
 `Weekly (Claude and GPT)`, counts only the responses of models whose id
 names one of them, such as `claude-opus-5`.

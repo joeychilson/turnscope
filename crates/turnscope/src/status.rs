@@ -185,15 +185,20 @@ impl Account {
 }
 
 /// How an account's limits were last read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum State {
     /// Read at the last try.
     #[serde(rename_all = "camelCase")]
     Live { read_at: i64 },
-    /// As of an earlier read, and why not since.
+    /// As of an earlier read, why not since, and the hours agents here
+    /// worked on it since, to a tenth: what they used isn't in that read.
     #[serde(rename_all = "camelCase")]
-    AsOf { read_at: i64, why: Stale },
+    AsOf {
+        read_at: i64,
+        why: Stale,
+        worked_hours: f64,
+    },
     /// Never read, and why: every account was recorded by a read that
     /// either worked or failed.
     Unread { why: Stale },
@@ -327,16 +332,23 @@ impl Limit {
         self.money.is_some() && self.name.ends_with('s')
     }
 
+    /// Its name as a status line shows it: "5h", "weekly", "opus weekly".
+    pub fn short_name(&self) -> String {
+        self.lowercase("h")
+    }
+
     /// Whether `name` names it: part of its name as shown, with its models
     /// after it as the command line shows them or before it as the app
-    /// does, or part of its key. So `week` names Weekly and `seven_day`, and
-    /// `weekly (claude` and `gpt weekly` name Weekly (Claude and GPT). Of the
-    /// limits a name fits, the first by key is taken: `gpt` alone is 5 hours
+    /// does, as the status line shows it, or part of its key. So `week`
+    /// names Weekly and `seven_day`, `5h` names 5 hours, and `weekly
+    /// (claude` and `gpt weekly` name Weekly (Claude and GPT). Of the limits
+    /// a name fits, the first by key is taken: `gpt` alone is 5 hours
     /// (Claude and GPT).
     pub fn answers_to(&self, name: &str) -> bool {
         let name = name.to_lowercase();
         let holds = |text: &str| text.to_lowercase().contains(&name);
         holds(&self.named())
+            || holds(&self.short_name())
             || holds(&self.key)
             || self
                 .scope
@@ -584,6 +596,11 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             (Some(read_at), why) => State::AsOf {
                 read_at,
                 why: why.unwrap_or(Stale::ReadFailed),
+                worked_hours: tenths(forecast::hours(
+                    &worked(db, &id, &[], None, read_at)?,
+                    read_at,
+                    now,
+                )),
             },
             (None, why) => State::Unread {
                 why: why.unwrap_or(Stale::ReadFailed),
@@ -962,7 +979,7 @@ fn work(
         Entry::Occupied(slots) => slots.into_mut(),
         Entry::Vacant(slot) => {
             let (models, key) = slot.key();
-            let found = worked(db, account, models, key.as_deref(), now)?;
+            let found = worked(db, account, models, key.as_deref(), now - WORKED)?;
             slot.insert(found)
         }
     };
@@ -975,7 +992,6 @@ fn work(
     else {
         return Ok(None);
     };
-    let tenths = |value: f64| (value * 10.0).round() / 10.0;
     let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
     let left_hours = forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
         .map(|(low, likely, high)| HoursLeft {
@@ -989,8 +1005,12 @@ fn work(
     }))
 }
 
-/// The start of each slot of work on `account` in the last two weeks, by
-/// the responses that count toward a limit on `models` or `key`
+fn tenths(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+/// The start of each slot of work on `account` from `since`, by the
+/// responses that count toward a limit on `models` or `key`
 /// (`usage::limited`).
 ///
 /// One seek in `response_account` per slot, over grouping every response:
@@ -1002,7 +1022,7 @@ fn worked(
     account: &str,
     models: &[String],
     key: Option<&str>,
-    now: i64,
+    since: i64,
 ) -> Result<Vec<i64>> {
     let (limited, values) = crate::usage::limited(models, key);
     let sql = format!(
@@ -1015,8 +1035,7 @@ fn worked(
          )
          SELECT at FROM slot WHERE at IS NOT NULL"
     );
-    let mut given: Vec<rusqlite::types::Value> =
-        vec![account.to_owned().into(), (now - WORKED).into()];
+    let mut given: Vec<rusqlite::types::Value> = vec![account.to_owned().into(), since.into()];
     given.extend(values.iter().cloned());
     given.extend([
         account.to_owned().into(),
@@ -1325,7 +1344,10 @@ mod tests {
         );
         assert_eq!(
             fit(&account, 1.0, now),
-            "1 more hour of work doesn't fit: Weekly is used up."
+            format!(
+                "1 more hour of work doesn't fit: Weekly is used up, back {}.",
+                time::ahead(now + 72 * HOUR, now)
+            )
         );
         // One with no reset is back at no known time, wherever it's listed.
         account.limits[1].outlook = never.clone();
@@ -1372,10 +1394,9 @@ mod tests {
             verdict(&account, now)
                 .starts_with("Google AI Ultra: Weekly (Claude and GPT) is used up, back"),
         );
-        assert_eq!(
-            fit(&account, 1.0, now),
-            "1 more hour of work doesn't fit: Weekly (Claude and GPT) is used up."
-        );
+        assert!(fit(&account, 1.0, now).starts_with(
+            "1 more hour of work doesn't fit: Weekly (Claude and GPT) is used up, back"
+        ));
         // Back on Gemini.
         drew("r2", now, "gemini-3.8-flash");
         assert_eq!(shown(&db).deciding.as_deref(), Some("5h"));

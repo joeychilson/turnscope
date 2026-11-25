@@ -65,7 +65,7 @@ pub fn none(status: &Status, show: &str) -> String {
 pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
     let (why, read_at) = match account.state {
         State::Live { .. } => return None,
-        State::AsOf { read_at, why } => (why, Some(read_at)),
+        State::AsOf { read_at, why, .. } => (why, Some(read_at)),
         State::Unread { why } => (why, None),
     };
     // The agents to sign in with, `Codex or Pi`: one is always signed in to
@@ -297,15 +297,32 @@ fn first_out(account: &Account) -> Option<(&Limit, HoursLeft)> {
         .min_by(|(_, a), (_, b)| a.likely.total_cmp(&b.likely))
 }
 
-/// Whether `hours` more of work fit each of `accounts`: one line, or a line
-/// each, named.
+/// The likely hours of work left before `limit` runs out, endless where
+/// that isn't measured.
+fn likely_left(limit: &Limit) -> f64 {
+    limit
+        .work
+        .and_then(|work| work.left_hours)
+        .map_or(f64::INFINITY, |left| left.likely)
+}
+
+/// Whether `hours` more of work fit each of `accounts`, after its title: a
+/// line each. Of one, its line is its verdict too, so it says when that
+/// rests on an earlier read.
 pub fn fits(accounts: &[&Account], hours: f64, now: i64) -> String {
+    let line = |account: &Account| {
+        let (_, fit, dated) = judge(account, hours, now);
+        (format!("{}: {fit}", account.full_title()), dated)
+    };
     if let [account] = accounts {
-        return fit(account, hours, now);
+        return match line(account) {
+            (line, true) => line,
+            (line, false) => line + &as_of(account, now),
+        };
     }
     let lines: Vec<String> = accounts
         .iter()
-        .map(|account| format!("- {}: {}", account.full_title(), fit(account, hours, now)))
+        .map(|account| format!("- {}", line(account).0))
         .collect();
     lines.join("\n")
 }
@@ -315,7 +332,7 @@ pub fn fits(accounts: &[&Account], hours: f64, now: i64) -> String {
 /// fit with a note after, OpenCode Go's rolling 5 hours at 4% left read as
 /// room for hours of work.
 pub fn fit(account: &Account, hours: f64, now: i64) -> String {
-    judge(account, hours, now).1
+    capital(&judge(account, hours, now).1)
 }
 
 /// Whether hours of work fit an account, as `fit` says it.
@@ -326,32 +343,74 @@ pub(super) enum Fits {
     Yes,
 }
 
-/// `fit`, and whether that says they fit.
-pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String) {
+/// `fit` as it follows a title, whether that says they fit, and whether it
+/// says why the account isn't read now.
+pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, bool) {
     let (more, fit, dont_fit) = match hours == 1.0 {
         true => ("1 more hour".to_owned(), "fits", "doesn't fit"),
         false => (format!("{hours} more hours"), "fit", "don't fit"),
     };
-    let untold = |why: &str| format!("Whether {more} of work {fit} can't be told: {why}.");
+    let untold = |why: &str| format!("whether {more} of work {fit} can't be told: {why}.");
     // No limit read: an account not read now says why. One read with none,
     // as a key whose provider Turnscope doesn't ask, may still draw on
     // credit or a spend cap.
     if account.limits.is_empty()
         && let Some(why) = account.state.why()
     {
-        return (Fits::Untold, untold(unread(why)));
+        return (Fits::Untold, untold(unread(why)), true);
     }
-    if let Some((limit, _)) = used_up(account) {
+    if let Some((limit, back)) = used_up(account) {
         let are = agree(limit, "is", "are");
         return (
             Fits::No,
             format!(
-                "{more} of work {dont_fit}: {} {are} used up.",
-                limit.named()
+                "{more} of work {dont_fit}: {} {are} used up{}.",
+                limit.named(),
+                back_at(back, now)
             ),
+            false,
         );
     }
-    let mut out: Option<(&Limit, f64)> = None;
+    // What agents here used since a read is no part of it, so what's left
+    // now isn't known. Said of the limit it stands by of those the read is
+    // still of: the deciding one with no work rate, as `standing` says it,
+    // or else the one with the fewest hours of work left. With every one
+    // reset since, what the new windows hold is as unknown.
+    if let State::AsOf {
+        read_at,
+        worked_hours,
+        ..
+    } = account.state
+        && worked_hours > 0.0
+        && account.limits.iter().any(|limit| account.stands_by(limit))
+    {
+        let still = |limit: &&Limit| account.stands_by(limit) && limit.reset_since.is_none();
+        let limit = account
+            .deciding_limit()
+            .filter(|limit| still(limit) && limit.work.is_none())
+            .or_else(|| {
+                account
+                    .limits
+                    .iter()
+                    .filter(still)
+                    .min_by(|a, b| likely_left(a).total_cmp(&likely_left(b)))
+            });
+        let then = match limit {
+            Some(limit) => format!(
+                "{} had {} left at {}",
+                limit.named(),
+                left(limit),
+                time::clock(read_at, now)
+            ),
+            None => format!("its limits were last read at {}", time::clock(read_at, now)),
+        };
+        let why = format!(
+            "{then}, and your agents have worked {} since",
+            about(worked_hours)
+        );
+        return (Fits::Untold, untold(&why), true);
+    }
+    let mut out: Option<(&Limit, f64, Option<HoursLeft>)> = None;
     let mut after = Vec::new();
     let mut untold_why = None;
     for limit in account
@@ -383,24 +442,30 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String) {
             continue;
         };
         match ends(limit, work, hours, now) {
-            End::Out(at) if out.is_none_or(|(_, first)| at < first) => out = Some((limit, at)),
-            End::Out(_) => {}
+            End::Out(at, within) if out.is_none_or(|(_, first, _)| at < first) => {
+                out = Some((limit, at, within))
+            }
+            End::Out(..) => {}
             End::Leaves(left) => after.push(format!("about {left:.0}% of {}", limit.named())),
         }
     }
-    if let Some((limit, at)) = out {
+    if let Some((limit, at, within)) = out {
         let run = agree(limit, "runs", "run");
+        let within = within.map_or(String::new(), |left| {
+            range(limit, &left, now) + &resets(limit, now)
+        });
         return (
             Fits::No,
             format!(
-                "{more} of work {dont_fit}: {} {run} out after {} of work.",
+                "{more} of work {dont_fit}: {} {run} out after {} of work{within}.",
                 limit.named(),
                 about(at)
             ),
+            false,
         );
     }
     let after = after.join(", ");
-    match (untold_why, after.is_empty()) {
+    let (fits, said) = match (untold_why, after.is_empty()) {
         (Some(why), true) => (Fits::Untold, untold(&why)),
         (Some(why), false) => (
             Fits::Untold,
@@ -411,13 +476,15 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String) {
             Fits::Yes,
             format!("{more} of work {fit} at your work rate, leaving {after}."),
         ),
-    }
+    };
+    (fits, said, false)
 }
 
 /// Where `hours` more of work leave a limit.
 enum End {
-    /// Out after these hours of work.
-    Out(f64),
+    /// Out after these hours of work, and the hours it has left where that's
+    /// before its reset.
+    Out(f64, Option<HoursLeft>),
     /// With this percent left.
     Leaves(f64),
 }
@@ -432,7 +499,7 @@ fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
     if let Some(left) = work.left_hours
         && left.likely < hours
     {
-        return End::Out(left.likely);
+        return End::Out(left.likely, Some(left));
     }
     let left = f64::from(limit.left_percent);
     let Some(until) = limit.hours_to_reset(now).filter(|until| *until < hours) else {
@@ -451,7 +518,7 @@ fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
         None => (past, past),
     };
     match first * rate > 100.0 {
-        true => End::Out(until + 100.0 / rate),
+        true => End::Out(until + 100.0 / rate, None),
         false => End::Leaves((100.0 - rate * last).max(0.0)),
     }
 }
@@ -460,19 +527,37 @@ fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
 /// and for how much work, by the limit it stands by that runs out first.
 pub fn verdict(account: &Account, now: i64) -> String {
     let title = account.full_title();
-    let Some(stale) = stale(account, true, now) else {
-        return standing(account, &title, now);
-    };
-    match account.state {
-        // What's said rests on an earlier read, and an agent acts on this
-        // line first.
-        State::AsOf { read_at, .. } => format!(
-            "{} That's as of {}: {stale}.",
-            standing(account, &title, now),
-            time::clock(read_at, now)
-        ),
-        _ => format!("{title}: {stale}."),
+    match (&account.state, stale(account, true, now)) {
+        (State::Unread { .. }, Some(stale)) => format!("{title}: {stale}."),
+        _ => standing(account, &title, now) + &as_of(account, now),
     }
+}
+
+/// That what's said of `account` rests on an earlier read, after it, as an
+/// agent acts on an answer's first line: ` That's as of 11:25: it couldn't
+/// be read since; …`. Nothing for one read now.
+fn as_of(account: &Account, now: i64) -> String {
+    match (&account.state, stale(account, true, now)) {
+        (State::AsOf { read_at, .. }, Some(stale)) => {
+            format!(" That's as of {}: {stale}.", time::clock(*read_at, now))
+        }
+        _ => String::new(),
+    }
+}
+
+/// `, back 14:00 (in 2h)`: when a limit used up is back, where it resets.
+fn back_at(back: Option<Moment>, now: i64) -> String {
+    back.map_or(String::new(), |back| {
+        format!(", back {}", time::ahead(back.at, now))
+    })
+}
+
+/// `; it resets 14:00 (in 2h)`, unless `limit` reset since it was read or
+/// never does.
+fn resets(limit: &Limit, now: i64) -> String {
+    limit.resets().map_or(String::new(), |resets| {
+        format!("; it resets {}", time::ahead(resets, now))
+    })
 }
 
 /// How `account`, read, stands: used up until the limit that decides it is
@@ -483,25 +568,24 @@ pub fn verdict(account: &Account, now: i64) -> String {
 /// before Weekly runs out".
 fn standing(account: &Account, title: &str, now: i64) -> String {
     if let Some((limit, back)) = used_up(account) {
-        let back = back.map_or(String::new(), |back| {
-            format!(", back {}", time::ahead(back.at, now))
-        });
         let is = agree(limit, "is", "are");
-        return format!("{title}: {} {is} used up{back}.", limit.named());
+        return format!(
+            "{title}: {} {is} used up{}.",
+            limit.named(),
+            back_at(back, now)
+        );
     }
     let unmeasured = account
         .deciding_limit()
         .is_some_and(|limit| account.stands_by(limit) && limit.work.is_none());
     if !unmeasured && let Some((limit, left)) = first_out(account) {
-        let resets = limit.resets().map_or(String::new(), |resets| {
-            format!("; it resets {}", time::ahead(resets, now))
-        });
         return format!(
-            "{title}: {} of work left{} before {} {} out{resets}.",
+            "{title}: {} of work left{} before {} {} out{}.",
             about(left.likely),
             range(limit, &left, now),
             limit.named(),
-            agree(limit, "runs", "run")
+            agree(limit, "runs", "run"),
+            resets(limit, now)
         );
     }
     let stood_by: Vec<&Limit> = account
@@ -668,7 +752,7 @@ fn elsewhere(account: &Account, agent: Option<&str>) -> String {
 /// A limit in a few words: `5h 86%`, `weekly 25%, out Sat 18:00`, `weekly
 /// used up, back Sun 00:00`.
 fn short(limit: &Limit, now: i64) -> String {
-    let name = limit.lowercase("h");
+    let name = limit.short_name();
     let left = match limit.money {
         Some(money) => crate::usage::dollars(money.left_usd),
         None => format!("{}%", limit.left_percent),
@@ -694,17 +778,24 @@ mod tests {
         let example = example();
         let now = example["at"].as_i64().unwrap();
         let claude = &example["accounts"][0];
-        // Claude Max's 5 hours with half an hour of work left.
+        // Claude Max's 5 hours with half an hour of work left: said with its
+        // range and reset, as the verdict says them.
         let mut account = claude.clone();
-        account["limits"][0]["work"]["leftHours"]["likely"] = 0.5.into();
+        account["limits"][0]["work"]["leftHours"] =
+            serde_json::json!({"low": 0.3, "likely": 0.5, "high": 1.0});
         let account: Account = serde_json::from_value(account).unwrap();
+        let resets = time::ahead(account.limits[0].resets().unwrap(), now);
         assert_eq!(
             fit(&account, 1.0, now),
-            "1 more hour of work doesn't fit: 5 hours runs out after about 30m of work."
+            format!(
+                "1 more hour of work doesn't fit: 5 hours runs out after about 30m of work (20m–1h); it resets {resets}."
+            )
         );
         assert_eq!(
             fit(&account, 2.0, now),
-            "2 more hours of work don't fit: 5 hours runs out after about 30m of work."
+            format!(
+                "2 more hours of work don't fit: 5 hours runs out after about 30m of work (20m–1h); it resets {resets}."
+            )
         );
         // Its Weekly with 40 minutes of work left and 5 hours with 1h 15m:
         // the first out decides, by its likely hours, as the verdict says.
@@ -713,9 +804,12 @@ mod tests {
         account["limits"][1]["work"]["leftHours"] =
             serde_json::json!({"low": 0.3, "likely": 0.67, "high": 1.5});
         let account: Account = serde_json::from_value(account).unwrap();
+        let resets = time::ahead(account.limits[1].resets().unwrap(), now);
         assert_eq!(
             fit(&account, 2.0, now),
-            "2 more hours of work don't fit: Weekly runs out after about 40m of work."
+            format!(
+                "2 more hours of work don't fit: Weekly runs out after about 40m of work (20m–1h 30m); it resets {resets}."
+            )
         );
         let said = verdict(&account, now);
         assert!(
@@ -736,7 +830,7 @@ mod tests {
         let account: Account = serde_json::from_value(account).unwrap();
         assert_eq!(
             fit(&account, 4.0, now),
-            "4 more hours of work don't fit: 5 hours runs out after about 3h of work."
+            "4 more hours of work don't fit: 5 hours runs out after about 3h of work (1h 50m or more)."
         );
         // Its slow end lasts the new window, as long as the one read.
         assert_eq!(
@@ -777,12 +871,22 @@ mod tests {
             fit(&rolling, 1.0, now),
             "Whether 1 more hour of work fits can't be told: 5 hours has 28% left, and is a window that rolls, so it isn't forecast. At your work rate they'd leave about 59% of Weekly."
         );
-        // Deciding the account, it's said over Weekly's hours of work.
+        // Deciding the account, it's said over Weekly's hours of work, and
+        // over them as of a read since which agents worked.
         account["deciding"] = "five_hour".into();
-        let deciding: Account = serde_json::from_value(account).unwrap();
+        let deciding: Account = serde_json::from_value(account.clone()).unwrap();
         let said = verdict(&deciding, now);
         assert!(
             said.starts_with("Claude Max (me@example.com): 5 hours has 28% left; it resets "),
+            "{said}"
+        );
+        account["state"] = serde_json::json!({"kind": "asOf", "readAt": now - 35 * MINUTE, "why": "readFailed", "workedHours": 0.7});
+        account["limits"][1]["work"]["leftHours"] =
+            serde_json::json!({"low": 20.0, "likely": 40.0, "high": 60.0});
+        let dated: Account = serde_json::from_value(account).unwrap();
+        let said = fit(&dated, 1.0, now);
+        assert!(
+            said.contains("can't be told: 5 hours had 28% left at "),
             "{said}"
         );
     }
@@ -884,9 +988,12 @@ mod tests {
             ),
             "{verdict}"
         );
-        assert_eq!(
-            fit(&few, 1.0, now),
-            "1 more hour of work doesn't fit: 5 hours runs out after under 10m of work."
+        let said = fit(&few, 1.0, now);
+        assert!(
+            said.starts_with(
+                "1 more hour of work doesn't fit: 5 hours runs out after under 10m of work; it resets "
+            ),
+            "{said}"
         );
         // A slow end of ten minutes or more is still said.
         account["limits"][0]["work"]["leftHours"]["high"] = 0.3.into();
@@ -988,6 +1095,7 @@ mod tests {
         expired.state = State::AsOf {
             read_at: status.at - 45 * MINUTE,
             why: Stale::Expired,
+            worked_hours: 0.0,
         };
         assert!(
             verdict(&expired, status.at)
@@ -1066,6 +1174,7 @@ mod tests {
         key.state = State::AsOf {
             read_at: status.at,
             why: Stale::SignIn,
+            worked_hours: 0.0,
         };
         assert_eq!(
             fit(&key, 1.0, status.at),
