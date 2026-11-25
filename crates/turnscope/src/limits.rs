@@ -1843,7 +1843,7 @@ mod tests {
         }
 
         fn folders(&self, home: &Path) -> Vec<std::path::PathBuf> {
-            agents::own_and_found(home, ".fake", ".fake-", "login")
+            agents::own_and_found(home, ".fake", "login")
         }
 
         fn installed(&self, folder: &Path) -> bool {

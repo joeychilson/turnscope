@@ -75,7 +75,7 @@ impl Agent for Acme {
     }
 
     fn folders(&self, home: &Path) -> Vec<PathBuf> {
-        super::own_and_found(home, ".acme", ".acme-", "auth.json")
+        super::own_and_found(home, ".acme", "auth.json")
     }
 
     fn files(&self, folder: &Path) -> Vec<PathBuf> { … }

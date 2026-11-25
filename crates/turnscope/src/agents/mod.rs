@@ -542,18 +542,20 @@ fn entries(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
         .map(|entry| entry.path())
 }
 
+/// Content with `text`, as a message's part.
+#[derive(Deserialize)]
+struct Text<'a> {
+    #[serde(borrow)]
+    text: Option<Cow<'a, str>>,
+}
+
 /// The texts of a message's `content`: a string, or parts with `text`.
 fn texts(content: &RawValue) -> Vec<String> {
-    #[derive(Deserialize)]
-    struct Part<'a> {
-        #[serde(borrow)]
-        text: Option<Cow<'a, str>>,
-    }
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Content<'a> {
         Text(#[serde(borrow)] Cow<'a, str>),
-        Parts(#[serde(borrow)] Vec<Part<'a>>),
+        Parts(#[serde(borrow)] Vec<Text<'a>>),
     }
     match serde_json::from_str(content.get()) {
         Ok(Content::Text(text)) => vec![text.into_owned()],
@@ -689,12 +691,13 @@ pub(crate) fn claims(token: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-pub(crate) fn own_and_found(home: &Path, own: &str, prefix: &str, signed: &str) -> Vec<PathBuf> {
+pub(crate) fn own_and_found(home: &Path, own: &str, signed: &str) -> Vec<PathBuf> {
+    let prefix = format!("{own}-");
     let mut folders: Vec<PathBuf> = entries(home)
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.len() > prefix.len() && name.starts_with(prefix))
+                .is_some_and(|name| name.len() > prefix.len() && name.starts_with(&prefix))
                 && path.join(signed).is_file()
         })
         .collect();
@@ -705,6 +708,15 @@ pub(crate) fn own_and_found(home: &Path, own: &str, prefix: &str, signed: &str) 
         seen.insert(std::fs::canonicalize(folder).unwrap_or_else(|_| folder.clone()))
     });
     folders
+}
+
+/// What the person typed: what `tag` holds, or else `text` without the
+/// agent's `added` blocks.
+fn typed_in(text: &str, tag: &str, added: &[&str]) -> String {
+    match inner(text, tag) {
+        Some(typed) => typed.trim().to_owned(),
+        None => without_tags(text, added),
+    }
 }
 
 /// Where in `text` the first mark of `tag` is that begins with `opens`, `<`
