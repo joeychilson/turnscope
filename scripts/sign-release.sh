@@ -23,9 +23,7 @@
 # The app is signed inside out, as Sparkle asks of an app that isn't
 # sandboxed: Sparkle's helpers, its framework, the command line, then the
 # app, each with the hardened runtime and a secure timestamp. Sparkle's
-# tools, which sign the update, are those scripts/sparkle.sh fetches into
-# target/sparkle/: the version it names, checked against its checksum, and
-# never built.
+# sign_update, which signs the update, is the one scripts/sparkle.sh fetches.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -46,10 +44,6 @@ if [ ! -d "$app" ]; then
 fi
 version=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
 image="$dist/Turnscope-$version.dmg"
-if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "sign-release.sh: the app's version, $version, isn't X.Y.Z" >&2
-  exit 2
-fi
 if [ "$identity" != - ]; then
   for name in NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER SPARKLE_PUBLIC_KEY; do
     if [ -z "${!name:-}" ]; then

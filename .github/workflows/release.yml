@@ -51,9 +51,7 @@ jobs:
             exit 1
           fi
       - name: Check the release notes
-        run: |
-          set -euo pipefail
-          scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > /dev/null
+        run: scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > /dev/null
       - name: Check the secrets
         env:
           DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
@@ -83,7 +81,7 @@ jobs:
   # The app, built on a runner that holds no secret, so nothing the build
   # runs, such as a dependency's build script, can reach a key.
   build:
-    needs: [check, verify]
+    needs: check
     runs-on: macos-26
     timeout-minutes: 60
     permissions:
@@ -115,7 +113,7 @@ jobs:
   # the keys are here, only Apple's tools, Sparkle's sign_update and the
   # script's own check of the update's signature run.
   publish:
-    needs: build
+    needs: [verify, build]
     runs-on: macos-26
     timeout-minutes: 120
     environment: release
