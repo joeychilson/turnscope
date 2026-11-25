@@ -26,9 +26,13 @@ pub fn millis(text: &str) -> Option<i64> {
 }
 
 pub fn local(at: i64) -> ZonedDateTime {
+    zoned(at, &TimeZone::system())
+}
+
+fn zoned(at: i64, zone: &TimeZone) -> ZonedDateTime {
     Timestamp::from_millisecond(at)
         .unwrap_or_default()
-        .to_zoned_datetime(TimeZone::system())
+        .to_zoned_datetime(zone.clone())
 }
 
 #[derive(Clone, Copy)]
@@ -39,16 +43,11 @@ pub enum Period {
 }
 
 pub fn start_of(period: Period, at: i64) -> i64 {
-    let zone = TimeZone::system();
-    start_of_day(period_date(period, at, &zone), &zone)
+    window(period, at, &TimeZone::system()).0
 }
 
 pub fn period_date(period: Period, at: i64, zone: &TimeZone) -> Date {
-    let day = Timestamp::from_millisecond(at)
-        .unwrap_or_default()
-        .to_zoned_datetime(zone.clone())
-        .date();
-    start_date(period, day).0
+    start_date(period, zoned(at, zone).date()).0
 }
 
 fn start_date(period: Period, day: Date) -> (Date, jiff::Span) {
@@ -64,11 +63,7 @@ fn start_date(period: Period, day: Date) -> (Date, jiff::Span) {
 }
 
 pub fn window(period: Period, at: i64, zone: &TimeZone) -> (i64, i64) {
-    let day = Timestamp::from_millisecond(at)
-        .unwrap_or_default()
-        .to_zoned_datetime(zone.clone())
-        .date();
-    let (start, span) = start_date(period, day);
+    let (start, span) = start_date(period, zoned(at, zone).date());
     let end = start.checked_add(span).unwrap_or(start);
     (start_of_day(start, zone), start_of_day(end, zone))
 }
@@ -111,6 +106,24 @@ pub fn parse(text: &str, now: i64) -> Result<i64> {
              or 4w, a date such as 2026-10-01, an RFC 3339 time such as 2026-10-01T09:00:00Z, or now"
         ))
     })
+}
+
+/// From `since` to `until`, or to now without it: an `until` past now is now.
+/// Refused when nothing is between them, over answering that nothing was
+/// used, which an agent could pass on as none.
+pub fn between(since: &str, until: Option<&str>, now: i64) -> Result<(i64, i64)> {
+    let since = parse(since, now)?;
+    let until = match until {
+        Some(until) => parse(until, now)?.min(now),
+        None => now,
+    };
+    if since >= until {
+        return Err(Error::Usage(
+            "since is at or after until, or now, so there's no usage in between: give an earlier since"
+                .to_owned(),
+        ));
+    }
+    Ok((since, until))
 }
 
 pub fn today(at: i64, now: i64) -> bool {

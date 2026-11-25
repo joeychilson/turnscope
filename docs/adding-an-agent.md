@@ -123,11 +123,20 @@ struct Cursor {
     offset: u64,
 }
 
+#[derive(Deserialize)]
+struct Line<'a> {
+    #[serde(rename = "type", borrow, default)]
+    kind: Cow<'a, str>,
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
+    timestamp: Option<Cow<'a, str>>,
+    // The other fields the reader needs.
+}
+
 fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
     let mut cursor: Cursor = serde_json::from_str(cursor).unwrap_or_default();
     let mut read = Read::default();
     cursor.offset = super::lines(file, cursor.offset, |bytes| {
-        let Ok(line) = serde_json::from_slice::<Value>(bytes) else {
+        let Ok(line) = serde_json::from_slice::<Line>(bytes) else {
             read.skipped += 1;
             return;
         };
@@ -138,9 +147,10 @@ fn read(&self, file: &Path, cursor: &str) -> Result<Read> {
 }
 ```
 
-Claude Code's, Codex's and Grok Build's readers parse a line into a struct
-that borrows from it, not a `Value`: for a file that grows large, that
-takes less than half the time (`grok_build.rs` says what was measured).
+A line is parsed into a struct that borrows from it, not a `Value`: for a
+file that grows large, that takes less than half the time (`grok_build.rs`
+says what was measured). A field the reader can do without is `lenient`, so
+a null or a new type there doesn't lose the line.
 
 An agent that keeps a SQLite database, as OpenCode does, is opened read-only
 and read on from a little before the latest `time_updated` seen, since a

@@ -58,10 +58,7 @@ impl Provider for Xai {
             &[401],
             by,
         )?;
-        Ok(Limits {
-            plan: None,
-            readings: vec![parse(&answer).ok_or_else(|| Problem::not_understood(BILLING))?],
-        })
+        Ok(vec![parse(&answer).ok_or_else(|| Problem::not_understood(BILLING))?].into())
     }
 }
 

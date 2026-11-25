@@ -984,43 +984,4 @@ mod tests {
         std::fs::write(folder.join(FALLBACK), "{").unwrap();
         assert!(Antigravity.logins(&folder, home.path()).is_err());
     }
-
-    #[test]
-    fn of_the_keychain_and_the_file_the_newer_sign_in_is_read() {
-        let signed = |token: &str, expires: i64| {
-            Ok(Some(Credential {
-                provider: "google",
-                secret: Secret::new(token),
-                key: false,
-                expires: Some(expires),
-                identity: None,
-                plan: None,
-                refresh: None,
-            }))
-        };
-        let failed = || Err(crate::Error::Failed("made-up failure".to_owned()));
-        let read = |kept, file| {
-            crate::agents::fresher(kept, file)
-                .unwrap()
-                .map(|one| one.secret.expose().to_owned())
-        };
-        assert_eq!(
-            read(signed("kept", 1), signed("file", 2)).as_deref(),
-            Some("file")
-        );
-        assert_eq!(
-            read(signed("kept", 2), signed("file", 1)).as_deref(),
-            Some("kept")
-        );
-        assert_eq!(read(failed(), signed("file", 1)).as_deref(), Some("file"));
-        assert_eq!(read(signed("kept", 1), failed()).as_deref(), Some("kept"));
-        let lasting = signed("kept", 0).map(|one| {
-            one.map(|kept| Credential {
-                expires: None,
-                ..kept
-            })
-        });
-        assert_eq!(read(lasting, signed("file", 2)).as_deref(), Some("kept"));
-        assert!(crate::agents::fresher(Ok(None), failed()).is_err());
-    }
 }

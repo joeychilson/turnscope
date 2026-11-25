@@ -2,6 +2,44 @@
 
 ## 0.4.1
 
+- **The data directory no longer keeps hundreds of MB of write-ahead
+  log.** `turnscope.db-wal` is cut back to 16 MB once SQLite checkpoints
+  it; before, one large write left it that size while the app ran.
+- **`app.log` says once why the data can't be kept current**, not at
+  every try: a database that couldn't be opened added a line every 5
+  seconds and pushed out what was logged before.
+- **`doctor` says why models.dev's catalog was refused**, as when it
+  answers with an error, and no longer lists unreadable lines of history
+  files since deleted.
+- **Data from Turnscope 0.1 and 0.2 is no longer carried over.** Updating
+  straight from them starts anew: the agents' history is read again, but
+  usage older than the agents keep (Claude Code keeps 30 days), past
+  limits, alerts and settings aren't. `turnscope.sqlite`, which 0.3 and 0.4
+  copied, can be deleted.
+- **Opening the panel or refreshing limits while a `turnscope` command
+  reads them** waits for that read instead of asking each provider again
+  at once. A login refused once could then count as refused twice and ask
+  you to sign in again.
+- **`turnscope usage --until` past now counts to now**, as `explain_usage`
+  does, so the heading no longer names an end that hasn't come. A `--since`
+  at or after `--until` or now is refused with the words `explain_usage`
+  uses.
+- **`turnscope usage` says "1 response"**, not "1 responses", and tells
+  its times by the minute they're in, as every other answer does.
+- **`check_limits` says why hours of work can't be told.** An account not
+  read says why, such as "its login was refused". A limit with too little
+  work measured says where the clock's pace takes it by its reset. An API
+  key with no limit read says what it cost this month.
+- **`check_limits` with `all` names the account with the most room**, to
+  choose where to work, in place of the verdict on yours. Given `hours`,
+  it leaves out an account they don't fit.
+- **`explain_usage` groups by account**, as `turnscope usage --by account`
+  does.
+- **An MCP input that doesn't fit says what the input takes**, such as
+  `hours is a number of 0 or more, not "two"`. A `top` outside 1 to 20 is
+  refused instead of moved into range.
+- **`turnscope status --hours` says whether the hours fit each account
+  shown**, not only the first, and with `--json`, `fit` is a list of them.
 - **Refresh Limits no longer spins forever while Turnscope can't read its
   data**, and is greyed out in the right-click menu while a newer
   Turnscope has written to the data.
