@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **A login refused or expired names its agents as a list**: "open Claude
+  Code, OpenCode or Pi to sign in again", not "open Claude Code or
+  OpenCode or Pi".
+- **`turnscope disconnect` says the command to run by hand** when it
+  can't run the agent's own, as `connect` does.
+
 ## 0.4.1
 
 - **The data directory no longer keeps hundreds of MB of write-ahead

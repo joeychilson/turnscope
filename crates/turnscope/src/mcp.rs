@@ -239,9 +239,7 @@ fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
                 .map_or("", |word| word.rsplit('/').next().unwrap_or(word)),
             _ => first,
         };
-        // A login shell's name opens with a dash; a versioned build adds
-        // its version, as `grok-1.0.41-macos-aarch64`.
-        let name = name.trim_start_matches('-');
+        // A versioned build adds its version, as `grok-1.0.41-macos-aarch64`.
         let found = agents::ALL.iter().copied().find(|agent| {
             let info = agent.info();
             name.strip_prefix(info.command)
@@ -501,7 +499,11 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
                 .iter()
                 .flat_map(|properties| properties.keys().map(String::as_str))
                 .collect();
-            return Err(format!("{} takes {}, not {name}", tool.name, or(&names)));
+            return Err(format!(
+                "{} takes {}, not {name}",
+                tool.name,
+                status::list(&names, "or")
+            ));
         }
         if value.is_null() {
             continue;
@@ -522,7 +524,7 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
             (Some("boolean"), _) => (value.is_boolean(), "true or false".to_owned()),
             (_, Some(options)) => {
                 let names: Vec<&str> = options.iter().filter_map(Value::as_str).collect();
-                (options.contains(value), or(&names))
+                (options.contains(value), status::list(&names, "or"))
             }
             _ => (value.is_string(), "text".to_owned()),
         };
@@ -532,14 +534,6 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
     }
     given.retain(|_, value| !value.is_null());
     Ok(Value::Object(given))
-}
-
-/// `a, b or c`.
-fn or(names: &[&str]) -> String {
-    match names.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
-        _ => names.concat(),
-    }
 }
 
 fn input<T: for<'a> Deserialize<'a>>(arguments: Value) -> Result<T> {
@@ -726,9 +720,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
         }
     };
     let mut used = usage::usage(ask.db, &query)?;
-    let mut shares = limit
-        .filter(|_| between.is_none())
-        .and_then(|limit| usage::shares(&used, limit));
+    let mut shares = limit.and_then(|limit| usage::shares(&used, limit, between));
     let own_line = if by == By::Session
         && used.rows.len() > top
         && let Some(yours) = yours
@@ -785,10 +777,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     if let Some(line) = own_line {
         out += &line;
     }
-    if let Some(why) = limit
-        .filter(|_| between.is_none())
-        .and_then(|limit| usage::unshared(&used, limit))
-    {
+    if let Some(why) = limit.and_then(|limit| usage::unshared(&used, limit, between)) {
         out += &format!("\n{why}\n");
     }
     // Asked since a time, as the calendar week for "this week" of a weekly

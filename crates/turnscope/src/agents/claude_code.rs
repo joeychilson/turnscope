@@ -560,12 +560,7 @@ fn read_line(line: &Line, own_native: &str, own: &str, cursor: &mut Cursor, read
         }
         _ => return,
     }
-    if let Some(cwd) = line.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
-        let session = read.session(&owner());
-        if session.cwd.is_none() {
-            session.cwd = Some(cwd.to_owned());
-        }
-    }
+    read.cwd(&owner(), line.cwd.as_deref());
 }
 
 fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
@@ -584,8 +579,7 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
     };
     let (mut tokens, mut prompt) = (Tokens::default(), 0);
     for call in calls {
-        prompt =
-            prompt.max(call.input + call.cache_read + call.cache_write_5m + call.cache_write_1h);
+        prompt = prompt.max(call.prompt());
         tokens = tokens.zip(call, |a, b| a + b);
     }
     tokens.reasoning = usage

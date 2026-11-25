@@ -186,19 +186,21 @@ fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
 /// is read: Google answers a token of Antigravity's other client with
 /// limits nothing has touched (CodexBar's code, read 2026-11-10).
 fn credential(kept: &Value) -> Option<Credential> {
-    let text = |at: &str| kept.pointer(at)?.as_str().filter(|text| !text.is_empty());
-    let (Some(token), Some("consumer")) = (text("/token/access_token"), text("/auth_method"))
-    else {
+    let (Some(token), Some("consumer")) = (
+        super::str_at(kept, "/token/access_token"),
+        super::str_at(kept, "/auth_method"),
+    ) else {
         return None;
     };
     Some(Credential {
         provider: "google",
         secret: Secret::new(token),
         key: false,
-        expires: text("/token/expiry").and_then(crate::time::millis),
-        identity: text("/id_token_email").map(|email| (email.to_owned(), Some(email.to_owned()))),
+        expires: super::str_at(kept, "/token/expiry").and_then(crate::time::millis),
+        identity: super::str_at(kept, "/id_token_email")
+            .map(|email| (email.to_owned(), Some(email.to_owned()))),
         plan: None,
-        refresh: text("/token/refresh_token").map(|token| Refresh {
+        refresh: super::str_at(kept, "/token/refresh_token").map(|token| Refresh {
             token: Secret::new(token),
             programs: Vec::new(),
         }),
@@ -339,7 +341,7 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
             // list price (`prices`); none was seen in history.
             provider: "google".to_owned(),
             model: model.to_owned(),
-            prompt: tokens.input + tokens.cache_read + tokens.cache_write_5m,
+            prompt: tokens.prompt(),
             tokens,
             web_searches: 0,
             priority: false,

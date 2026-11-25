@@ -42,8 +42,7 @@ impl Projection {
         let at_reset = used + rate * ((resets - at) as f64 / HOUR as f64).max(0.0);
         let remaining = (100.0 - used) / rate * HOUR as f64;
         let runs_out = (rate > 0.0 && used < 100.0 && remaining < (resets - at) as f64)
-            .then(|| at.saturating_add(remaining as i64))
-            .filter(|out| *out < resets);
+            .then(|| at.saturating_add(remaining as i64));
         Projection {
             at,
             used,

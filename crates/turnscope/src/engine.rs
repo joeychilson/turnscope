@@ -811,14 +811,8 @@ impl Showing {
                 Some((account, limit))
             })
             .ok_or_else(|| Error::NotFound(format!("no limit {limit} of {account}")))?;
-        let (used, shares) = usage::breakdown(
-            &self.db,
-            account,
-            Some(limit),
-            None,
-            usage::By::Session,
-            now,
-        )?;
+        let (used, shares) =
+            usage::breakdown(&self.db, account, limit, None, usage::By::Session, now)?;
         let mut sessions = Vec::new();
         for (at, row) in used.rows.iter().enumerate().take(3) {
             let (project_path, agent) = usage::brief(&self.db, &row.key)?;

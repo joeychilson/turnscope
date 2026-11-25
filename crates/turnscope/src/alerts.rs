@@ -541,6 +541,27 @@ mod tests {
         }
     }
 
+    /// Not raised, so not recorded either: told once the account is in use.
+    #[test]
+    fn an_account_not_in_use_is_told_nothing_until_it_is() {
+        let mut refused = status(DAY, 60, LASTS);
+        refused.accounts[0].state = State::AsOf {
+            read_at: DAY - MINUTE,
+            why: crate::status::Stale::SignIn,
+        };
+        for (mut status, kind) in [
+            (status(DAY, 0, Outlook::UsedUp { back: None }), Kind::UsedUp),
+            (runs_out(DAY), Kind::RunningOut),
+            (refused, Kind::SignIn),
+        ] {
+            let (_dir, mut db) = open();
+            status.accounts[0].in_use = false;
+            assert!(raise(&mut db, &status).unwrap().is_empty());
+            status.accounts[0].in_use = true;
+            assert_eq!(kinds(&raise(&mut db, &status).unwrap()), [kind]);
+        }
+    }
+
     #[test]
     fn running_out_is_told_once_while_its_reset_drifts() {
         let (_dir, mut db) = open();
@@ -629,8 +650,10 @@ mod tests {
             },
         });
         assert_eq!(kinds(&raise(&mut db, &early).unwrap()), [Kind::Reset]);
-        let pending = pending(&db, &early, 3 * DAY).unwrap();
-        assert_eq!(kinds(&pending), [Kind::Reset]);
+        let pending_at = |now| kinds(&pending(&db, &early, now).unwrap());
+        assert_eq!(pending_at(3 * DAY), [Kind::Reset]);
+        // Not sent days late, as at a launch after the Mac was off.
+        assert!(pending_at(5 * DAY).is_empty());
     }
 
     #[test]
