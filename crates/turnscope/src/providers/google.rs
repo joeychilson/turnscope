@@ -309,10 +309,10 @@ fn rodata(program: &Path) -> Option<Vec<u8>> {
 /// as `free`.
 fn plan(signed_in: &Value) -> Option<String> {
     let plan = match signed_in["paidTier"]["name"].as_str() {
-        Some(name) => name.strip_prefix(PLANS).unwrap_or(name).trim(),
+        Some(name) => name.trim_prefix(PLANS).trim(),
         None => {
             let tier = signed_in["currentTier"]["id"].as_str()?;
-            tier.strip_suffix("-tier").unwrap_or(tier)
+            tier.trim_suffix("-tier")
         }
     };
     Some(plan.to_owned()).filter(|plan| !plan.is_empty())
