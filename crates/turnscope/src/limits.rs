@@ -513,14 +513,25 @@ fn record(
         // Named in `app.log` by its title alone: a label can be an email,
         // and `doctor` prints the log for a report someone may post.
         logged.extend(failing(&tx, &id, &read, &title, now)?);
-        // A read that failed may not know the plan, so the title stays.
+        // A read that failed may not know the plan, so the title stays. One
+        // of some limits only, as an API key's keys without its credits,
+        // leaves the others as last read, and the account as of them unless
+        // that's ahead of now (the clock set back since); one of none isn't
+        // a read.
+        let full = read.limits.is_some() && read.problem.is_none();
+        let some = read
+            .limits
+            .as_ref()
+            .is_some_and(|limits| full || !limits.readings.is_empty());
         tx.prepare_cached(
             "INSERT INTO account (id, provider, kind, title, label, read_at, full_read_at, checked_at, problem)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?9, ?7, ?8)
              ON CONFLICT (id) DO UPDATE SET
                  title = iif(excluded.read_at IS NULL, title, excluded.title),
                  label = coalesce(excluded.label, label),
-                 read_at = coalesce(excluded.read_at, read_at),
+                 read_at = iif(excluded.full_read_at IS NULL,
+                     coalesce(min(read_at, excluded.read_at), read_at, excluded.read_at),
+                     excluded.read_at),
                  full_read_at = coalesce(excluded.full_read_at, full_read_at),
                  checked_at = excluded.checked_at, problem = excluded.problem",
         )?
@@ -530,12 +541,10 @@ fn record(
             held.account.kind,
             title,
             held.account.label,
-            read.limits.is_some().then_some(now),
+            some.then_some(now),
             now,
             read.problem.as_ref().map(problem_name),
-            // Of some limits only, as an API key's keys without its credits,
-            // the others stand as last read.
-            (read.limits.is_some() && read.problem.is_none()).then_some(now),
+            full.then_some(now),
         ])?;
         if let Some(limits) = &read.limits {
             // Readings stamped after this one were stamped while the clock
@@ -1490,6 +1499,24 @@ mod tests {
             .map(|(key, _)| key)
             .collect();
         assert_eq!(shown, ["credits", "key"]);
+        // The account is as of the read of them all; and a first read of
+        // none isn't a read.
+        let state = |db: &Connection| {
+            let status = crate::status::status(db, 5 * minute).unwrap();
+            status.accounts[0].state.clone()
+        };
+        assert!(
+            matches!(state(&db), crate::status::State::AsOf { read_at, .. } if read_at == minute)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let none = Read {
+            problem: Some(Problem::unavailable("down")),
+            ..Read::of(Vec::new().into())
+        };
+        let (_, held) = fake(Kind::ApiKey, &[]);
+        record(&mut db, signed_in(), vec![(none, held)], 5 * minute).unwrap();
+        assert!(matches!(state(&db), crate::status::State::Unread { .. }));
     }
 
     #[test]
@@ -1556,6 +1583,15 @@ mod tests {
             at + 9 * minute
         ));
         assert_eq!(left(&db, at + 9 * minute), [("five".to_owned(), 30)]);
+        // So does a read of some limits only.
+        read(&mut db, at + 70 * minute, 10.0);
+        let some = Read {
+            problem: Some(Problem::unavailable("down")),
+            ..Read::of(in_band(at, 60.0).readings.into())
+        };
+        let (_, held) = fake(Kind::Subscription, &[]);
+        record(&mut db, signed_in(), vec![(some, held)], at + 10 * minute).unwrap();
+        assert_eq!(left(&db, at + 11 * minute), [("five".to_owned(), 40)]);
     }
 
     #[test]
