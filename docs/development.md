@@ -234,7 +234,7 @@ The tag starts **Release** (`.github/workflows/release.yml`):
 |---|---|
 | `check` | Checks that the tag matches `Cargo.toml`, is on `main` and isn't released yet; that `CHANGELOG.md` has the version's notes; and that every secret and the variable are set |
 | `verify` | All of Verify |
-| `build` | Runs `scripts/app.sh --release`, and hands the app to `publish` as an artifact |
+| `build` | Runs `scripts/app.sh --release` while `verify` runs, and hands the app to `publish`, which waits for both, as an artifact |
 | `publish` | Fetches Sparkle's tools with `scripts/sparkle.sh`, imports the certificate into a keychain made for the run, runs `scripts/sign-release.sh` with the keys, removes the keychain and the notary key, runs `scripts/check-app.sh` on the result, and publishes the release with the disk image and `appcast.xml` |
 
 The build and the keys are on separate runners. Whatever the build runs,

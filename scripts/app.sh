@@ -72,9 +72,8 @@ case "${1:-}" in
   --release)
     app=target/dist/Turnscope.app
     # Each binary for both architectures, joined into one universal file.
-    for target in aarch64-apple-darwin x86_64-apple-darwin; do
-      cargo build --locked --release -p turnscope -p turnscope-app --target "$target"
-    done
+    cargo build --locked --release -p turnscope -p turnscope-app \
+      --target aarch64-apple-darwin --target x86_64-apple-darwin
     compile_swift arm64 "$target_dir/aarch64-apple-darwin/release/libturnscope_app.a" "$built/turnscope-app-arm64" release
     compile_swift x86_64 "$target_dir/x86_64-apple-darwin/release/libturnscope_app.a" "$built/turnscope-app-x86_64" release
     lipo -create -output "$built/turnscope-app" "$built/turnscope-app-arm64" "$built/turnscope-app-x86_64"
