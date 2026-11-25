@@ -24,6 +24,7 @@ and the agent's version they were read from.
 In `src/agents/acme.rs`:
 
 ```rust
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -295,7 +296,7 @@ TURNSCOPE_BLESS=1 cargo test --test cli
 
 Add a one-color SVG (`currentColor`) at
 `assets/logos/agents/acme.svg`, and say where it
-came from in that folder's `README.md`. Without one, the panel shows a
+came from in `assets/logos/README.md`. Without one, the panel shows a
 terminal in its place.
 
 ## 7. Update the docs
