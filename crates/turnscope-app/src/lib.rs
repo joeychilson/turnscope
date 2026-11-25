@@ -1,7 +1,6 @@
 //! Shared app core for Turnscope: owns the in-process engine, state, wording,
 //! view model generation, and the C ABI linked into `apps/macos`.
 
-pub mod standing;
 pub mod state;
 pub mod view;
 pub mod words;
@@ -79,7 +78,7 @@ impl Wake {
 /// lets `app.lock` go.
 pub struct TurnscopeApp {
     core: Arc<Mutex<Core>>,
-    engine: Option<Arc<OnceLock<Engine>>>,
+    engine: Arc<OnceLock<Engine>>,
     data: Option<PathBuf>,
 }
 
@@ -178,11 +177,11 @@ pub fn start(
     let core = Arc::new(Mutex::new(Core::new(state)));
     let wake = wake.map(|cb| Wake { ctx, cb });
 
-    let engine = if runs_engine {
+    let engine: Arc<OnceLock<Engine>> = Arc::new(OnceLock::new());
+    if runs_engine {
         install_panic_hook(data.clone());
         let core_for_cb = Arc::clone(&core);
-        let cell: Arc<OnceLock<Engine>> = Arc::new(OnceLock::new());
-        let weak = Arc::downgrade(&cell);
+        let weak = Arc::downgrade(&engine);
         let started = Engine::start(data.clone(), home.clone(), binary(), move |event| {
             let (calls, should_wake) = lock_core(&core_for_cb).took(event);
             if let Some(held) = weak.upgrade() {
@@ -192,11 +191,8 @@ pub fn start(
                 wake.trigger();
             }
         });
-        let _ = cell.set(started);
-        Some(cell)
-    } else {
-        None
-    };
+        let _ = engine.set(started);
+    }
 
     Ok(TurnscopeApp {
         core,
@@ -346,7 +342,7 @@ pub unsafe extern "C" fn turnscope_app_action(
         let sync = core.sync();
         (calls, sync)
     };
-    send(app.engine.as_ref().and_then(|cell| cell.get()), calls);
+    send(app.engine.get(), calls);
     serialize_c(&sync)
 }
 
@@ -568,11 +564,11 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn swift_models_match_rust_wire_contract() {
-        use crate::standing::Standing;
         use crate::state::Effect;
         use crate::view::*;
         use crate::words::AlertNote;
         use turnscope::alerts::Notify;
+        use turnscope::status::Standing;
 
         let full_row = AccountRowModel {
             id: "anthropic:a".into(),
@@ -711,10 +707,6 @@ mod tests {
                         connected: true,
                         enabled: false,
                     }],
-                    accounts_empty: Some(EmptyMessage {
-                        headline: "No accounts".into(),
-                        detail: "Sign in".into(),
-                    }),
                     subscriptions: vec![AccountModel {
                         id: "anthropic:a".into(),
                         provider: "anthropic".into(),
@@ -806,7 +798,6 @@ precondition(p.settings.agentsEmpty == EmptyMessage(headline: "No agents", detai
 precondition(p.settings.agents[0].note == "Uses another Turnscope")
 precondition(p.settings.agents[0].configured == "/old/turnscope")
 precondition(p.settings.agents[0].changing == "Connecting…")
-precondition(p.settings.accountsEmpty == EmptyMessage(headline: "No accounts", detail: "Sign in"))
 precondition(p.settings.subscriptions[0].label == "me@example.com")
 precondition(p.settings.subscriptions[0].via == "Claude Code")
 precondition(sync.effects == [
