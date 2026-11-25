@@ -1,4 +1,4 @@
-Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
+Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
 Mon Sep 28 00:00 to Thu Oct 1 12:00: 27 responses, $0.50
 
   Session                                                   Responses   Cost  % of Weekly

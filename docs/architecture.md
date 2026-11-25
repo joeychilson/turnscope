@@ -365,10 +365,12 @@ says how to run it). `status.rs` applies it.
   window, run forward to the reset to give the outlook.
 - **Not enough data** gives `unknown` early in a window, after little use,
   or when the run-out is too far off to tell.
-- **Ranges** are 80% ranges, scaled by how the pace that followed compared
-  with it in the backtest.
+- **The fast end** is the pace times `FAST`, which the pace that followed
+  stayed under 90% of the time in the backtest. It gives the least left at
+  the reset and the soonest a limit runs out. There's no slow end: use
+  often stops.
 - **Work left** divides what's left by the work rate, measured over recent
-  hours of work on the account.
+  hours of work on the account, as an 80% range.
 
 ## Alerts
 

@@ -479,19 +479,14 @@ pub struct HoursLeft {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Outlook {
     /// It lasts until its reset, with about this percent left then, rounded
-    /// down, as an 80% range; `None` with nothing used yet.
+    /// down; `None` with nothing used yet.
     #[serde(rename_all = "camelCase")]
     Lasts { left_at_reset: Option<Spread> },
-    /// It runs out before its reset: likely then, and within the 80% range
-    /// from soonest to latest (`None` where the slow end lasts). Each is
-    /// rounded to 10 minutes within a day and to the hour beyond, and is
-    /// never in the past.
+    /// It runs out before its reset: likely then, and soonest at the fast
+    /// end. Each is rounded to 10 minutes within a day and to the hour
+    /// beyond, and is never in the past.
     #[serde(rename_all = "camelCase")]
-    RunsOut {
-        likely: Moment,
-        soonest: Moment,
-        latest: Option<Moment>,
-    },
+    RunsOut { likely: Moment, soonest: Moment },
     /// It's used up, and back when it resets: `None` for a limit that never
     /// resets.
     #[serde(rename_all = "camelCase")]
@@ -516,15 +511,13 @@ pub enum Unknown {
     Rolling,
 }
 
-/// Percent left at the reset, as an 80% range, each end rounded down.
+/// Percent left at the reset, likely and at the fast end, each rounded down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Spread {
-    /// At the fast end of the range.
+    /// At the fast end.
     pub low: u8,
     pub likely: u8,
-    /// At the slow end.
-    pub high: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -1071,7 +1064,7 @@ fn outlook(window: &Window, now: i64) -> Outlook {
             reason: Unknown::NotEnoughData,
         };
     };
-    let band = forecast::band(window, now);
+    let fast = forecast::fast(window);
     let margin = ((window.resets - window.starts) / 50).max(15 * MINUTE);
     let meaningful = |at: i64| at + margin < window.resets;
     if let Some(out) = projection.runs_out.filter(|at| meaningful(*at)) {
@@ -1080,8 +1073,8 @@ fn outlook(window: &Window, now: i64) -> Outlook {
                 reason: Unknown::NotEnoughData,
             };
         }
-        // The fast end runs out first, as every band's fast end is over 1.
-        let (soonest, latest) = forecast::runs_out(&projection, band);
+        // The fast end runs out first, as every fast end is over 1.
+        let soonest = forecast::runs_out(&projection, fast);
         // A pace can't tell the minute a week runs out.
         let shown = |at: i64| {
             let step = if at - now <= DAY { 10 * MINUTE } else { HOUR };
@@ -1091,9 +1084,6 @@ fn outlook(window: &Window, now: i64) -> Outlook {
         return Outlook::RunsOut {
             likely: Moment::of(likely, now),
             soonest: Moment::of(shown(soonest.unwrap_or(out)).min(likely), now),
-            latest: latest
-                .filter(|at| meaningful(*at))
-                .map(|at| Moment::of(shown(at).max(likely), now)),
         };
     }
     // Only one with nothing used says nothing of the reset: one whose use was
@@ -1103,14 +1093,12 @@ fn outlook(window: &Window, now: i64) -> Outlook {
             left_at_reset: None,
         };
     }
-    // Used at the slow and fast ends, as left: the fast end leaves least.
-    let (slow, fast) = forecast::at_reset(&projection, band);
+    let least = forecast::at_reset(&projection, fast);
     let left = |used: f64| (100.0 - used).clamp(0.0, 100.0).floor() as u8;
     Outlook::Lasts {
         left_at_reset: Some(Spread {
-            low: left(fast),
+            low: left(least),
             likely: left(projection.at_reset),
-            high: left(slow),
         }),
     }
 }
@@ -1452,7 +1440,6 @@ mod tests {
         let left = Some(Spread {
             low: 60,
             likely: 60,
-            high: 60,
         });
         assert_eq!(limit.left_percent, 60);
         assert_eq!(

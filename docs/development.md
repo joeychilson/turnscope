@@ -141,7 +141,7 @@ built app draw it.
 ## Forecast backtest
 
 `forecast::tests::backtest` replays real limit history and scores the
-forecast: its point error, how often its 80% ranges hold, and how often it
+forecast: its point error, how often its fast end holds, and how often it
 declines to forecast. It needs weeks of history to say much. Run it on a
 copy of a data directory, never the real one:
 

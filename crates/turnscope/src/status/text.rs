@@ -197,19 +197,18 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             Some(Spread { likely: 0, .. }) => {
                 "At this pace it runs out about when it resets.".to_owned()
             }
-            Some(Spread { low, likely, high }) if low == high => {
+            Some(Spread { low, likely }) if low == likely => {
                 format!("Lasts, with about {likely}% left at the reset.")
             }
-            Some(Spread { low, likely, high }) => {
-                format!("Lasts, with about {likely}% left at the reset ({low}–{high}%).")
+            Some(Spread { low, likely }) => {
+                format!("Lasts, with about {likely}% left at the reset (as little as {low}%).")
             }
             None => "No use shows in its reading yet.".to_owned(),
         },
-        Outlook::RunsOut {
-            likely,
-            soonest,
-            latest,
-        } => {
+        Outlook::RunsOut { likely, soonest } if soonest.at == likely.at => {
+            format!("At this pace it runs out {}.", time::ahead(likely.at, now))
+        }
+        Outlook::RunsOut { likely, soonest } => {
             // Today's day said where the likely time says one, as "13:30"
             // beside "Sat 18:00" would read as Saturday's.
             let near = |at: i64| match time::today(at, now) && !time::today(likely.at, now) {
@@ -217,12 +216,9 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
                 false => time::clock(at, now),
             };
             format!(
-                "At this pace it runs out {}, {}.",
+                "At this pace it runs out {}, as soon as {}.",
                 time::ahead(likely.at, now),
-                match latest {
-                    Some(latest) => format!("between {} and {}", near(soonest.at), near(latest.at)),
-                    None => format!("as soon as {}", near(soonest.at)),
-                }
+                near(soonest.at)
             )
         }
         Outlook::UsedUp { back: Some(back) } => {
@@ -1011,6 +1007,25 @@ mod tests {
             line.ends_with(". Under 10m of work left, at 25% an hour of work."),
             "{line}"
         );
+    }
+
+    #[test]
+    fn a_run_out_as_soon_as_it_likely_is_says_its_time_once() {
+        let example = example();
+        let now = example["at"].as_i64().unwrap();
+        // Claude Max's 5 hours, its soonest rounded to its likely time, as
+        // near the end of a window.
+        let mut account = example["accounts"][0].clone();
+        let outlook = &mut account["limits"][0]["outlook"];
+        outlook["soonest"] = outlook["likely"].clone();
+        let likely = outlook["likely"]["at"].as_i64().unwrap();
+        let account: Account = serde_json::from_value(account).unwrap();
+        let line = limit_text(&account.limits[0], now);
+        let once = format!(
+            "At this pace it runs out {}. About",
+            time::ahead(likely, now)
+        );
+        assert!(line.contains(&once), "{line}");
     }
 
     #[test]
