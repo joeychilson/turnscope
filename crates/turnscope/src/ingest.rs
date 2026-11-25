@@ -214,10 +214,10 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     let mut unmatched = Vec::new();
     let mut renames: Vec<(i64, String)> = Vec::new();
     let mut older = Vec::new();
-    let load_cursor = |id: i64| -> Result<String> {
+    let stored = |id: i64| -> Result<(String, String)> {
         Ok(db
-            .prepare_cached("SELECT cursor FROM file WHERE id = ?1")?
-            .query_row([id], |row| row.get(0))?)
+            .prepare_cached("SELECT agent, cursor FROM file WHERE id = ?1")?
+            .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))?)
     };
 
     for &agent in agents::ALL {
@@ -230,7 +230,7 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
                 if let Some(was) = known.remove(path.as_os_str()) {
                     let cursor = match was.resume(&stat, &mut older) {
                         Resume::Unchanged => continue,
-                        Resume::On => load_cursor(was.id)?,
+                        Resume::On => stored(was.id)?.1,
                         Resume::FromStart => String::new(),
                     };
                     due.push(Due {
@@ -262,9 +262,7 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     for (agent, folder, path, stat) in unmatched {
         let mut cursor = String::new();
         if let Some(was) = moved.remove(&stat.inode) {
-            let (was_agent, was_cursor): (String, String) = db
-                .prepare_cached("SELECT agent, cursor FROM file WHERE id = ?1")?
-                .query_row([was.id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            let (was_agent, was_cursor) = stored(was.id)?;
             if was_agent == agent.info().id {
                 renames.push((was.id, path.to_string_lossy().into_owned()));
                 match was.resume(&stat, &mut older) {
@@ -317,11 +315,6 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
         })?;
 
     let due = due(db, home)?;
-    // The first read ends by saying so, even with nothing to read.
-    if due.is_empty() && !first && readers == READERS {
-        return Ok(false);
-    }
-
     let mut wrote = false;
     let mut projects = HashMap::new();
     if !due.is_empty() {

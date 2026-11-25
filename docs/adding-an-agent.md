@@ -208,7 +208,7 @@ holds a login for, and fails as its doc comment says:
 
 ```rust
 fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
-    let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
+    let kept = super::json_file(&folder.join("auth.json"))?;
     let token = kept["access_token"]
         .as_str()
         .filter(|token| !token.is_empty());
