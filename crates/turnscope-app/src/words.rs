@@ -385,7 +385,7 @@ impl Words {
                 Stale::ReadFailed => "It couldn't be read yet.".into(),
                 Stale::SignedOut => "No agent here is signed in to it.".into(),
             }),
-            State::AsOf { read_at, why } => {
+            State::AsOf { read_at, why, .. } => {
                 if *why == Stale::SignedOut && refilled(account) {
                     return None;
                 }
@@ -1322,6 +1322,7 @@ mod tests {
             state: State::AsOf {
                 read_at: noon(),
                 why: Stale::SignedOut,
+                worked_hours: 0.0,
             },
             agents: vec![],
             ..backup
@@ -1384,6 +1385,7 @@ mod tests {
             state: State::AsOf {
                 read_at: noon(),
                 why: Stale::ReadFailed,
+                worked_hours: 0.0,
             },
             ..account(vec![week.clone()])
         };
@@ -1605,7 +1607,11 @@ mod tests {
     fn an_opened_account_says_why_its_limits_are_old_or_unread() {
         let w = words();
         let as_of_state = |why: Stale, at: i64, limit: Limit| Account {
-            state: State::AsOf { read_at: at, why },
+            state: State::AsOf {
+                read_at: at,
+                why,
+                worked_hours: 0.0,
+            },
             ..account(vec![limit])
         };
         let half = || Limit {

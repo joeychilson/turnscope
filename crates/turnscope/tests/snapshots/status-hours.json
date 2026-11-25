@@ -98,7 +98,7 @@
   "fit": [
     {
       "account": "anthropic:acct-1:org-1",
-      "fit": "3 more hours of work don't fit: 5 hours runs out after about 40m of work."
+      "fit": "3 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 10m); it resets 14:00 (in 2h)."
     }
   ]
 }

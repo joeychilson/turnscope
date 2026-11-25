@@ -2,7 +2,7 @@ Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). L
 Mon Sep 28 00:00 to Thu Oct 1 12:00: 27 responses, $0.50
 
   Day         Responses   Cost  % of Weekly
-  1 earlier           3  $0.03           3%
+  2026-09-30          3  $0.03           3%
   2026-10-01         24  $0.47          41%
 
 Costs are at list prices: what the same tokens cost on each provider's API.

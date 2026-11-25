@@ -387,14 +387,22 @@ fn cmd_usage_limit(
             })
         },
         || {
-            let heading = format!(
-                "{} · {}\n",
-                account.full_title(),
-                status::limit_text(limit, status.at)
-            );
-            let mut text =
-                heading + &usage::text(&used, shares.as_ref().map(|shares| (limit, shares)));
-            if let Some(why) = usage::unshared(&used, limit, between) {
+            // A limit that never resets has no window: which usage this is
+            // is said in its place, with what of it is used.
+            let said = match (&limit.window, between) {
+                (None, None) => usage::unreset(account, limit, &used, status.at, "--"),
+                _ => status::limit_text(limit, status.at),
+            };
+            let heading = format!("{} · {said}\n", account.full_title());
+            let mut text = heading
+                + &usage::text(
+                    &used,
+                    shares.as_ref().map(|shares| (limit, shares)),
+                    status.at,
+                );
+            if let Some(why) = usage::unshared(&used, limit, between)
+                .or_else(|| usage::elsewhere(&used, limit, between))
+            {
                 text += &format!("\n{why}");
             }
             text
@@ -428,7 +436,11 @@ fn cmd_usage(db: &rusqlite::Connection, now: i64, json: bool, args: UsageArgs) -
     };
     let mut used = usage::usage(db, &query)?;
     usage::fold(&mut used, None, args.top);
-    Ok(print(json, || json!(used), || usage::text(&used, None)))
+    Ok(print(
+        json,
+        || json!(used),
+        || usage::text(&used, None, now),
+    ))
 }
 
 fn cmd_accounts(

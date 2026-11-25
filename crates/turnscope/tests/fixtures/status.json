@@ -178,7 +178,8 @@
       "state": {
         "kind": "asOf",
         "readAt": 1791459600000,
-        "why": "signedOut"
+        "why": "signedOut",
+        "workedHours": 0.0
       },
       "title": "ChatGPT Pro",
       "usedBy": []
@@ -254,7 +255,8 @@
       "state": {
         "kind": "asOf",
         "readAt": 1791460200000,
-        "why": "readFailed"
+        "why": "readFailed",
+        "workedHours": 0.0
       },
       "title": "OpenRouter API key",
       "usedBy": []
@@ -297,7 +299,8 @@
       "state": {
         "kind": "asOf",
         "readAt": 1791455400000,
-        "why": "signIn"
+        "why": "signIn",
+        "workedHours": 0.0
       },
       "title": "SuperGrok",
       "usedBy": []
