@@ -376,6 +376,16 @@ mod tests {
                 ("xai", None),
             ]
         );
+        // OpenRouter's sign-in gives Pi a key, so it's the API-key account.
+        let openrouter = logins.iter().find(|login| login.provider == "openrouter");
+        let credential = openrouter.and_then(|login| login.credential.as_ref());
+        let account = crate::providers::by_id("openrouter")
+            .and_then(|provider| provider.account(credential?))
+            .unwrap();
+        assert_eq!(
+            (account.id.as_str(), account.kind),
+            ("openrouter:api", crate::providers::Kind::ApiKey)
+        );
     }
 
     #[test]

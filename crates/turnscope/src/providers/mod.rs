@@ -169,6 +169,17 @@ pub struct Reading {
     pub resets: Option<i64>,
 }
 
+/// The key of an API key's own limit, by the API key's fingerprint.
+pub fn key_limit(fingerprint: &str) -> String {
+    format!("key-{fingerprint}")
+}
+
+/// The fingerprint of the API key whose own limit is keyed `key`, if it's
+/// one's.
+pub fn key_limit_fingerprint(key: &str) -> Option<&str> {
+    key.strip_prefix("key-")
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Problem {
     /// The provider refused the login: sign in again in the agent.

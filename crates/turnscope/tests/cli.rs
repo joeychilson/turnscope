@@ -766,6 +766,19 @@ fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
         String::from_utf8_lossy(&named.stdout).trim(),
         "SuperGrok · sign in again"
     );
+    // Claude Code's own session, read, says its account, not that of its
+    // agent folder's latest response.
+    Connection::open(data.path().join("turnscope.db"))
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO account (id, provider, kind, title)
+             VALUES ('anthropic:acct-4:org-4', 'anthropic', 'subscription', 'Claude Pro');
+             UPDATE response SET account = 'anthropic:acct-4:org-4'
+             WHERE session = 'claude-code:7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f';",
+        )
+        .unwrap();
+    let own = turnscope(data.path(), &["statusline"]);
+    assert_eq!(String::from_utf8_lossy(&own.stdout).trim(), claude);
 }
 
 #[test]
