@@ -195,7 +195,9 @@ fn main() -> ExitCode {
             db::open(&data).and_then(|db| cmd_accounts(&db, now(), cli.json, action))
         }
         Command::Doctor => caught_up(&home, &data).and_then(|db| {
-            let notes = turnscope::doctor(&db, &data, &home, now())?;
+            let now = now();
+            let mut notes = turnscope::doctor(&db, &home, now)?;
+            notes.extend(turnscope::logged(&data, now));
             Ok(print(
                 cli.json,
                 || json!(notes),

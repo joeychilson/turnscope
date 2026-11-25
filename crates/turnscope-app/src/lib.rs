@@ -214,16 +214,15 @@ pub fn diagnostics(data: Option<&Path>, home: Option<&Path>) -> String {
         return out;
     };
     out += &format!("Binary: {}\n", binary().display());
+    // Doctor's own notes: the log follows in full.
     match turnscope::db::read(data) {
-        // Its notes end with what was logged in the last day.
-        Some(db) => match turnscope::doctor(&db, data, home, turnscope::now()) {
-            Ok(notes) if notes.is_empty() => return out + "Doctor: Nothing to fix.\n",
+        Some(db) => match turnscope::doctor(&db, home, turnscope::now()) {
+            Ok(notes) if notes.is_empty() => out += "Doctor: Nothing to fix.\n",
             Ok(notes) => {
                 out += "Doctor:\n";
                 for note in notes {
                     out += &format!("- {note}\n");
                 }
-                return out;
             }
             Err(error) => out += &format!("Doctor failed: {error}\n"),
         },
@@ -540,14 +539,21 @@ mod tests {
     fn diagnostics_says_the_version_and_each_line_logged_once() {
         let data = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        turnscope::engine::log(data.path(), "sample diagnostic line");
-        let logged = |report: &str| report.matches("sample diagnostic line").count();
+        // One more than doctor's five, each said once.
+        for n in 1..=6 {
+            turnscope::engine::log(data.path(), &format!("sample line {n}."));
+        }
+        let logged = |report: &str| {
+            (1..=6)
+                .map(|n| report.matches(&format!("sample line {n}.")).count())
+                .collect::<Vec<_>>()
+        };
         let unread = diagnostics(Some(data.path()), Some(home.path()));
         assert!(
             unread.contains("Doctor: database not readable yet."),
             "{unread}"
         );
-        assert_eq!(logged(&unread), 1, "{unread}");
+        assert_eq!(logged(&unread), [1; 6], "{unread}");
 
         drop(turnscope::db::open(data.path()).unwrap());
         let cfg = serde_json::json!({ "data": data.path(), "home": home.path() }).to_string();
@@ -556,7 +562,7 @@ mod tests {
         let report = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         unsafe { turnscope_app_free_string(ptr) };
         assert!(report.contains(&format!("Turnscope {}", env!("CARGO_PKG_VERSION"))));
-        assert_eq!(logged(&report), 1, "{report}");
+        assert_eq!(logged(&report), [1; 6], "{report}");
         assert!(diagnostics(None, None).contains("Mode: fixture"));
     }
 
