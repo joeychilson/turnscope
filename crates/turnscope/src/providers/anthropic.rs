@@ -8,9 +8,9 @@
 //! week's use by model, extra usage). Every `seven_day_` key with a
 //! `utilization` of its own is read as a window, named by its words, code
 //! names of features Anthropic tries out included: `seven_day_opus` is
-//! Weekly (Opus). One of the plan's own two whose use or reset doesn't read
-//! fails the whole answer, since the rest would pass for the plan's full
-//! set. Any other is passed over: one feature tried out wrote in a way of
+//! Weekly (Opus). One of the plan's own two that's missing, or whose use or
+//! reset doesn't read, fails the whole answer, since the rest would pass for
+//! the plan's full set. Any other is passed over: one feature tried out wrote in a way of
 //! its own shouldn't leave the plan unread.
 //!
 //! A window with nothing used since it last ended has no reset: it begins
@@ -56,6 +56,7 @@ impl Provider for Anthropic {
 }
 
 fn parse(answer: &Value, now: i64) -> Option<Vec<Reading>> {
+    answer.get("five_hour").and(answer.get("seven_day"))?;
     let mut readings = Vec::new();
     for (key, window) in answer.as_object()? {
         if super::absent(window) {
@@ -131,7 +132,8 @@ mod tests {
             5 * HOUR
         );
         // A window not begun begins now.
-        let answer = json!({"five_hour": {"utilization": 0.0, "resets_at": null}});
+        let answer =
+            json!({"five_hour": {"utilization": 0.0, "resets_at": null}, "seven_day": null});
         let readings = super::parse(&answer, 1_000).unwrap();
         assert_eq!(
             (readings[0].starts, readings[0].resets),
@@ -143,6 +145,7 @@ mod tests {
     fn a_window_beside_the_plans_own_that_doesnt_read_is_passed_over() {
         let answer = json!({
             "five_hour": {"utilization": 52.0, "resets_at": "2026-10-01T15:00:00Z"},
+            "seven_day": null,
             "seven_day_tangelo": {"utilization": "n/a", "resets_at": null},
             "seven_day_quince": {"utilization": 5.0, "resets_at": "soon"},
         });
@@ -152,9 +155,11 @@ mod tests {
             .map(|reading| reading.key.clone())
             .collect();
         assert_eq!(read, ["five_hour"]);
-        // One of the plan's own fails the answer (whether invalid or missing
-        // utilization), which would otherwise pass for a plan without it.
+        // One of the plan's own fails the answer (invalid or missing
+        // utilization, or missing, as renamed), which would otherwise pass for
+        // a plan without it.
         for bad in [
+            json!({"five_hour_window": {"utilization": 90.0, "resets_at": "2026-10-01T15:00:00Z"}, "seven_day": {"utilization": 44.0, "resets_at": "2026-10-05T00:00:00Z"}}),
             json!({"five_hour": {"utilization": "n/a", "resets_at": null}, "seven_day": {"utilization": 44.0, "resets_at": "2026-10-05T00:00:00Z"}}),
             json!({"five_hour": {"resets_at": "2026-10-01T15:00:00Z"}, "seven_day": {"utilization": 44.0, "resets_at": "2026-10-05T00:00:00Z"}}),
         ] {
