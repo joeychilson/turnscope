@@ -161,6 +161,9 @@ struct Inner {
     showing: Mutex<Option<Showing>>,
     kept: Mutex<Kept>,
     wake: Mutex<Option<Sender<Wake>>>,
+    /// A forced read sent to `keep` and not answered yet, which `run`
+    /// answers if `keep` ends first.
+    forcing: AtomicBool,
     ended: AtomicBool,
 }
 
@@ -186,6 +189,7 @@ impl Engine {
             showing: Mutex::new(None),
             kept: Mutex::new(Kept::Unset),
             wake: Mutex::new(None),
+            forcing: AtomicBool::new(false),
             ended: AtomicBool::new(false),
         });
         let running = Arc::clone(&inner);
@@ -277,9 +281,10 @@ impl Engine {
     /// respecting provider backoff and `CLAIM`: told as the status, changed
     /// or not, then `Event::Refreshed`.
     pub fn refresh_now(&self) {
-        let sent = locked(&self.inner.wake)
-            .as_ref()
-            .is_some_and(|wake| wake.send(Wake::Force).is_ok());
+        let sent = locked(&self.inner.wake).as_ref().is_some_and(|wake| {
+            self.inner.forcing.store(true, Ordering::Release);
+            wake.send(Wake::Force).is_ok()
+        });
         if !sent {
             Engine::ask(&self.requests, |inner| {
                 inner.give(Tell::Always);
@@ -383,6 +388,10 @@ impl Inner {
                     }));
                     *locked(&self.wake) = None;
                     drop(lock);
+                    if self.forcing.swap(false, Ordering::AcqRel) {
+                        self.give(Tell::Always);
+                        (self.tell)(Event::Refreshed);
+                    }
                     let why = match kept {
                         Ok(Ok(())) => continue,
                         Ok(Err(error)) => error,
@@ -444,6 +453,7 @@ impl Inner {
             });
         }
         if always {
+            self.forcing.store(false, Ordering::Release);
             (self.tell)(Event::Refreshed);
         }
         !self.ended() && self.newer().is_none()
@@ -1368,6 +1378,23 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!running(data.path()));
+    }
+
+    /// A forced read that a newer Turnscope's write stops still ends.
+    #[test]
+    fn a_refresh_a_newer_turnscope_stops_still_ends() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = read_just_now(data.path());
+        let (engine, told) = start(data.path(), home.path());
+        next(&told, 10, |event| match event {
+            Event::Shown(shown, _) if shown.status.history_read => Some(()),
+            _ => None,
+        });
+        db.execute_batch(NEWER[1]).unwrap();
+        engine.refresh_now();
+        next(&told, 10, |event| {
+            matches!(event, Event::Refreshed).then_some(())
+        });
     }
 
     /// Both when this app keeps the data current and when another does.

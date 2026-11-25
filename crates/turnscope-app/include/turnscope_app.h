@@ -27,7 +27,7 @@ char *turnscope_app_action(TurnscopeApp *app, const char *action_json);
 /* Append a line to `app.log` in the active data directory (no-op in fixture mode). */
 void turnscope_app_log(TurnscopeApp *app, const char *line);
 
-/* Build a plain-text diagnostics report (version, and doctor's notes or else the end of app.log)
+/* Build a plain-text diagnostics report (version, doctor's notes and the end of app.log)
  * from a JSON SnapshotConfig (`fixture`/`data`/`home`). Safe to call off the main thread. */
 char *turnscope_app_diagnostics(const char *config_json);
 

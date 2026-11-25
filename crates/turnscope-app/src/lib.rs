@@ -205,8 +205,8 @@ pub fn start(
     })
 }
 
-/// Build a plain-text diagnostics report (version, and `turnscope::doctor`, or the tail of
-/// `app.log` where it can't run) ready to copy into a bug report.
+/// Build a plain-text diagnostics report (version, `turnscope::doctor`'s notes and the last
+/// 20 lines of `app.log`) ready to copy into a bug report.
 pub fn diagnostics(data: Option<&Path>, home: Option<&Path>) -> String {
     let mut out = format!("Turnscope {}\n", env!("CARGO_PKG_VERSION"));
     let (Some(data), Some(home)) = (data, home) else {
@@ -214,7 +214,6 @@ pub fn diagnostics(data: Option<&Path>, home: Option<&Path>) -> String {
         return out;
     };
     out += &format!("Binary: {}\n", binary().display());
-    // Doctor's own notes: the log follows in full.
     match turnscope::db::read(data) {
         Some(db) => match turnscope::doctor(&db, home, turnscope::now()) {
             Ok(notes) if notes.is_empty() => out += "Doctor: Nothing to fix.\n",
@@ -534,7 +533,7 @@ mod tests {
         assert_eq!(panel.settings.agents.len(), 2);
     }
 
-    /// Each line logged is said once: by doctor, or where it can't run, from the log itself.
+    /// Each of the last lines logged is said once, whether or not doctor can run.
     #[test]
     fn diagnostics_says_the_version_and_each_line_logged_once() {
         let data = tempfile::tempdir().unwrap();

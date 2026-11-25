@@ -331,7 +331,6 @@ impl Core {
             }
             Event::Pending(alerts) => (calls, self.post(alerts)),
             Event::Kept(stopped) => {
-                self.state.refreshing = false;
                 self.state.problem = stopped;
                 (calls, true)
             }
@@ -873,9 +872,9 @@ pub(crate) mod tests {
         assert!(state.counting());
     }
 
-    /// A status told meanwhile, as after a hide, isn't the refresh's; the
-    /// engine stopping ends it too, as its read is lost, so once it's back
-    /// nothing says it's refreshing.
+    /// A status told meanwhile, as after a hide, isn't the refresh's, nor is
+    /// the first catch-up's `Kept`: the refresh ends on `Refreshed` alone,
+    /// which the engine tells for every forced read.
     #[test]
     fn refreshing_is_said_until_the_refresh_ends_and_only_once_there_is_a_status() {
         let refreshing = |core: &mut Core| core.sync().panel.footer_note.map(|n| n.text);
@@ -890,10 +889,9 @@ pub(crate) mod tests {
         assert_eq!(refreshing(&mut core), None);
 
         assert_eq!(core.apply(Action::RefreshNow {}, 0), [Call::RefreshNow]);
-        core.took(Event::Kept(Some(Stopped::Failing("disk full".into()))));
         core.took(Event::Kept(None));
-        assert_eq!(refreshing(&mut core), None);
-        assert_eq!(core.apply(Action::RefreshNow {}, 0), [Call::RefreshNow]);
+        assert_eq!(refreshing(&mut core).as_deref(), Some("Refreshing limits…"));
+        assert_eq!(core.apply(Action::RefreshNow {}, 0), []);
 
         let mut unopened = Core::new(State::default());
         assert!(!unopened.sync().panel.can_refresh);
