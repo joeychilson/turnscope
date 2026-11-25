@@ -57,7 +57,7 @@
             "readOnlyHint": true,
             "title": "Explain usage"
           },
-          "description": "What used a limit, or what an account's usage cost: by session (default), project, model, agent, day, week or month, each row with its cost at list prices and its approximate share of the limit, over the limit's current window or since a time; with all, every account's usage together. Call it when the person asks what used a limit or what something cost.",
+          "description": "What used a limit, or what an account's usage cost: by session (default), project, model, agent, account, day, week or month, each row with its cost at list prices and its approximate share of the limit, over the limit's current window or since a time; with all, every account's usage together. Call it when the person asks what used a limit or what something cost.",
           "inputSchema": {
             "additionalProperties": false,
             "properties": {
@@ -76,6 +76,7 @@
                   "project",
                   "model",
                   "agent",
+                  "account",
                   "day",
                   "week",
                   "month"
@@ -115,7 +116,7 @@
     "result": {
       "content": [
         {
-          "text": "- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work.\n- ChatGPT Plus (me@example.com): Whether 2 more hours of work fit can't be told: Weekly has 80% left, and too little work on it has been measured.\n- OpenRouter API key: Whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, and too little work on them has been measured.\n- SuperGrok (me@example.com): Whether 2 more hours of work fit can't be told: no limit on all its usage was read.\n\nClaude Max (me@example.com): about 40m of work left (20m–1h 10m) before 5 hours runs out; it resets 14:00 (in 2h).\n\nClaude Max (me@example.com) · via Claude Code · yours · in use\n  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (20m–1h 10m), at 40.9% an hour of work.\n  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.\n\nChatGPT Plus (me@example.com) · via Codex\n  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (0–54%).\n\nOpenRouter API key · via Pi\n  Credits: $35.00 of $50.00 left. Doesn't reset.\n  Weekly key limit: $11.00 of $20.00 left, resets Tue 00:00 (in 4d 12h). No forecast yet.\n  This month, across its keys: $0.00.\n\nSuperGrok (me@example.com) · via Grok Build\n  Its login was refused; open Grok Build to sign in again.",
+          "text": "- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work.\n- ChatGPT Plus (me@example.com): Whether 2 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.\n- OpenRouter API key: Whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.\n- SuperGrok (me@example.com): Whether 2 more hours of work fit can't be told: its login was refused.\n\nMost room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h).\n\nClaude Max (me@example.com) · via Claude Code · yours · in use\n  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (20m–1h 10m), at 40.9% an hour of work.\n  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.\n\nChatGPT Plus (me@example.com) · via Codex\n  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (0–54%).\n\nOpenRouter API key · via Pi\n  Credits: $35.00 of $50.00 left. Doesn't reset.\n  Weekly key limit: $11.00 of $20.00 left, resets Tue 00:00 (in 4d 12h). No forecast yet.\n  This month, across its keys: $0.00.\n\nSuperGrok (me@example.com) · via Grok Build\n  Its login was refused; open Grok Build to sign in again.",
           "type": "text"
         }
       ]
@@ -152,7 +153,7 @@
     "result": {
       "content": [
         {
-          "text": "arguments that don't fit: invalid type: string \"two\", expected f64",
+          "text": "hours is a number of 0 or more, not \"two\"",
           "type": "text"
         }
       ],
@@ -221,5 +222,17 @@
     },
     "id": 10,
     "jsonrpc": "2.0"
+  },
+  {
+    "id": 11,
+    "jsonrpc": "2.0",
+    "result": {
+      "content": [
+        {
+          "text": "Usage of every account since Sep 1 12:00 (30d ago): $0.53 at list prices over 38 responses, 6 of them with no known price.\n\n| Account | Cost | Responses |\n|---|--:|--:|\n| Claude Max (me@example.com) | $0.50 | 27 |\n| SuperGrok (me@example.com) | $0.02 | 1 |\n| no account | $0.01 (+2 unpriced) | 4 |\n| OpenRouter API key | $0.00 | 2 |\n| ChatGPT Plus (me@example.com) | $0.00 (+4 unpriced) | 4 |\n\nBy model: claude-opus-5: $0.50; grok-4.6-build: $0.02; glm-5.3: $0.01.\nBy project: /work/api: $0.47; /work/app: $0.03 (+4 unpriced); /work/docs: $0.02.",
+          "type": "text"
+        }
+      ]
+    }
   }
 ]
