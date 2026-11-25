@@ -367,7 +367,7 @@ mod tests {
     /// forecast on every window whose outcome is known: one that ran out, or
     /// was read in its last sixth. At every tenth of a window (a minute to an
     /// hour), it's forecast from the readings before, and scored on its point
-    /// error, how often its 80% range held, and how often it declined.
+    /// error, how often its fast end held, and how often it declined.
     #[test]
     #[ignore = "replays a copy of real history: TURNSCOPE_BACKTEST=<data dir>"]
     fn backtest() {
