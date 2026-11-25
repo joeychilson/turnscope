@@ -14,11 +14,6 @@ final class MenuBarItem {
 
     private var drawn: MenuBarModel?
 
-    private static let amber = dynamicColor(UrgencyHex.amber, alpha: 1)
-    private static let red = dynamicColor(UrgencyHex.red, alpha: 1)
-    private static let amberDim = dynamicColor(UrgencyHex.amber, alpha: dimmed)
-    private static let redDim = dynamicColor(UrgencyHex.red, alpha: dimmed)
-
     func image(for model: MenuBarModel) -> NSImage? {
         guard model != drawn else { return nil }
         drawn = model
@@ -60,8 +55,8 @@ final class MenuBarItem {
             totalWidth = content + 10 * CGFloat(parts.count - 1) + 2
         }
 
-        let amberColor = model.outOfDate ? Self.amberDim : Self.amber
-        let redColor = model.outOfDate ? Self.redDim : Self.red
+        let amberColor = Self.dynamicColor(UrgencyHex.amber, alpha: fraction)
+        let redColor = Self.dynamicColor(UrgencyHex.red, alpha: fraction)
 
         let image = NSImage(size: NSSize(width: totalWidth, height: Self.height), flipped: false) { _ in
             func ink(_ standing: Standing) -> NSColor {

@@ -180,22 +180,13 @@ final class Bridge {
 
     func sync() {
         guard let handle else { return }
-        guard let json = takeRustString(turnscope_app_sync(handle)) else {
-            reportError("turnscope_app_sync returned null")
-            return
-        }
-        guard let sync = decodeSync(json) else { return }
-        apply(sync)
+        take(takeRustString(turnscope_app_sync(handle)), from: "turnscope_app_sync")
     }
 
     func send(_ action: AppAction) {
         guard let handle else { return }
-        guard let answer = json(action).withCString({ takeRustString(turnscope_app_action(handle, $0)) }) else {
-            reportError("turnscope_app_action returned null")
-            return
-        }
-        guard let sync = decodeSync(answer) else { return }
-        apply(sync)
+        let answer = json(action).withCString { takeRustString(turnscope_app_action(handle, $0)) }
+        take(answer, from: "turnscope_app_action")
     }
 
     func log(_ line: String) {
@@ -227,9 +218,7 @@ final class Bridge {
         }
         guard shouldDispatch else { return }
         DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                self?.drainWake()
-            }
+            self?.drainWake()
         }
     }
 
@@ -240,12 +229,13 @@ final class Bridge {
         sync()
     }
 
-    private func decodeSync(_ json: String) -> AppSync? {
+    /// Applies the `AppSync` that `call` answered, or says why there's none.
+    private func take(_ answer: String?, from call: String) {
+        guard let answer else { return reportError("\(call) returned null") }
         do {
-            return try decoder.decode(AppSync.self, from: Data(json.utf8))
+            apply(try decoder.decode(AppSync.self, from: Data(answer.utf8)))
         } catch {
             reportError("failed to decode AppSync: \(error)")
-            return nil
         }
     }
 
