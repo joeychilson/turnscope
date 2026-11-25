@@ -197,19 +197,15 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             Some(Spread { likely: 0, .. }) => {
                 "At this pace it runs out about when it resets.".to_owned()
             }
-            Some(Spread { low, likely, high }) if low == high => {
+            Some(Spread { low, likely }) if low == likely => {
                 format!("Lasts, with about {likely}% left at the reset.")
             }
-            Some(Spread { low, likely, high }) => {
-                format!("Lasts, with about {likely}% left at the reset ({low}–{high}%).")
+            Some(Spread { low, likely }) => {
+                format!("Lasts, with about {likely}% left at the reset (as little as {low}%).")
             }
             None => "No use shows in its reading yet.".to_owned(),
         },
-        Outlook::RunsOut {
-            likely,
-            soonest,
-            latest,
-        } => {
+        Outlook::RunsOut { likely, soonest } => {
             // Today's day said where the likely time says one, as "13:30"
             // beside "Sat 18:00" would read as Saturday's.
             let near = |at: i64| match time::today(at, now) && !time::today(likely.at, now) {
@@ -217,12 +213,9 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
                 false => time::clock(at, now),
             };
             format!(
-                "At this pace it runs out {}, {}.",
+                "At this pace it runs out {}, as soon as {}.",
                 time::ahead(likely.at, now),
-                match latest {
-                    Some(latest) => format!("between {} and {}", near(soonest.at), near(latest.at)),
-                    None => format!("as soon as {}", near(soonest.at)),
-                }
+                near(soonest.at)
             )
         }
         Outlook::UsedUp { back: Some(back) } => {

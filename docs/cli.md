@@ -129,10 +129,10 @@ zero or more, decimals too.
 $ turnscope status
 Claude Max (me@example.com) · via Claude Code · in use
   5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (20m–1h 10m), at 40.9% an hour of work.
-  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
+  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
 
 ChatGPT Plus (me@example.com) · via Codex
-  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (0–54%).
+  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (as little as 0%).
 
 OpenRouter API key · via Pi
   Credits: $35.00 of $50.00 left. Doesn't reset.
@@ -145,7 +145,9 @@ SuperGrok (me@example.com) · via Grok Build
 
 "At this pace" uses clock time, breaks included. "Of work" counts only the
 hours your agents were working: the work rate, `40.9% an hour of work`, is
-how much of the limit an hour of it uses. Ranges are 80% ranges.
+how much of the limit an hour of it uses. Ranges of work left are 80%
+ranges; "as little as" and "as soon as" are at a pace that went faster
+only 1 time in 10.
 [architecture.md](architecture.md#forecast) says how both are worked out.
 
 With no account to show, it says why in one line: no account's limits have
@@ -227,7 +229,7 @@ the rest, each `null` when rows get none.
 
 ```console
 $ turnscope usage --account claude --limit week
-Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
+Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
 Mon Sep 28 00:00 to Thu Oct 1 12:00: 27 responses, $0.50
 
   Session                                                   Responses   Cost  % of Weekly

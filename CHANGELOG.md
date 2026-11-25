@@ -43,6 +43,10 @@
 - **Refresh Limits reads a provider that keeps failing** at once, instead
   of waiting up to 30 minutes for its next try. One that asked to wait is
   still left until then.
+- **A forecast says how bad it could get, not a range.** A limit that
+  lasts says "about 12% left at the reset (as little as 0%)", and one that
+  runs out says how soon, not how late. On real limit history, the old 80%
+  ranges held 62–71% of the time; the new bound holds 85–89%.
 
 ## 0.4.1
 

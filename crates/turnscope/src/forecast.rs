@@ -1,20 +1,18 @@
 //! Where a limit's window is headed, by the clock and by the work done:
-//! what it will have used by its reset, when it runs out if it does, and how
-//! many hours of work are left, each as an 80% range. The pace was chosen,
-//! and its range measured, by replaying this Mac's real limit history (the
-//! `backtest` test).
+//! what it will have used by its reset and when it runs out if it does,
+//! likely and at the fast end, and how many hours of work are left, as an
+//! 80% range. The pace was chosen, and its fast end measured, by replaying
+//! this Mac's real limit history (the `backtest` test).
 
 use crate::time::{DAY, HOUR, MINUTE};
 
-/// The 80% range of the pace that followed over the pace projected, for
-/// windows of a day or less, then longer, by share of the window left: the
-/// last quarter, half, and more. Measured by the backtest, rounded
-/// outward; a bucket measured on fewer than five windows takes the widest
-/// of its length's. The ranges held 82% of the time.
-const BANDS: [[(f64, f64); 3]; 2] = [
-    [(0.05, 2.5), (0.25, 1.8), (0.35, 1.6)],
-    [(0.0, 3.4), (0.0, 3.4), (0.7, 3.4)],
-];
+/// The pace that followed, as a multiple of the pace projected, that 90% of
+/// forecasts stayed under, for windows of a day or less, then longer.
+/// Measured by the backtest on this Mac's history from 2026-10-10 to
+/// 2026-11-25, rounded up. One per length: split by share of the window left
+/// too, a longer one rested on as few as 15 windows. There's no slow end: at
+/// least one forecast in ten was followed by no more use.
+const FAST: [f64; 2] = [2.0, 5.5];
 
 /// A limit's current window.
 pub struct Window {
@@ -101,41 +99,25 @@ pub fn told(window: &Window, at: i64, out: i64) -> bool {
     out - at <= (window.resets - window.starts) / 4
 }
 
-/// The 80% range of pace, as multiples of the pace projected, for `window`
-/// as of `at`.
-pub fn band(window: &Window, at: i64) -> (f64, f64) {
-    let length = (window.resets - window.starts).max(1);
-    let left = (window.resets - at) as f64 / length as f64;
-    let bucket = match left {
-        left if left < 0.25 => 0,
-        left if left < 0.5 => 1,
-        _ => 2,
-    };
-    BANDS[usize::from(length > DAY)][bucket]
+/// The fast end of pace, as a multiple of the pace projected, for `window`.
+pub fn fast(window: &Window) -> f64 {
+    FAST[usize::from(window.resets - window.starts > DAY)]
 }
 
-/// Percent used at the reset at the slow and fast ends of `band`.
-pub fn at_reset(projection: &Projection, (low, high): (f64, f64)) -> (f64, f64) {
-    let added = projection.at_reset - projection.used;
-    (
-        projection.used + added * low,
-        projection.used + added * high,
+/// Percent used at the reset at `fast` times the pace.
+pub fn at_reset(projection: &Projection, fast: f64) -> f64 {
+    projection.used + (projection.at_reset - projection.used) * fast
+}
+
+/// When it runs out at `fast` times the pace, if before the reset.
+pub fn runs_out(projection: &Projection, fast: f64) -> Option<i64> {
+    Projection::at_rate(
+        projection.used,
+        projection.rate * fast,
+        projection.at,
+        projection.resets,
     )
-}
-
-/// When it runs out at the fast end of `band`, and at the slow end, each if
-/// before the reset.
-pub fn runs_out(projection: &Projection, (low, high): (f64, f64)) -> (Option<i64>, Option<i64>) {
-    let reaches = |times: f64| {
-        Projection::at_rate(
-            projection.used,
-            projection.rate * times,
-            projection.at,
-            projection.resets,
-        )
-        .runs_out
-    };
-    (reaches(high), reaches(low))
+    .runs_out
 }
 
 /// How long a stretch of work is: a slot holding a response.
@@ -323,18 +305,6 @@ mod tests {
     }
 
     #[test]
-    fn the_range_scales_the_pace() {
-        let window = window(&[(2.0, 30.0)]);
-        let projection = project(&window, 2 * HOUR).unwrap();
-        // 60% of the window left: 0.35 to 1.6 times the pace.
-        assert_eq!(band(&window, 2 * HOUR), (0.35, 1.6));
-        let (soonest, latest) = runs_out(&projection, band(&window, 2 * HOUR));
-        // At 24 points an hour, 70 more take 2h55m; at 5.25 it lasts.
-        assert_eq!(soonest, Some(2 * HOUR + 2 * HOUR + 55 * MINUTE));
-        assert_eq!(latest, None);
-    }
-
-    #[test]
     fn work_is_what_rose_over_the_hours_worked() {
         let at = |hours: f64| (hours * HOUR as f64) as i64;
         // A week from hour 0, read each hour: 10 points by hour 2, with work
@@ -450,6 +420,9 @@ mod tests {
             held: usize,
             outs: usize,
             outs_held: usize,
+            /// The pace that followed over the pace projected, where any was
+            /// projected.
+            paces: Vec<f64>,
         }
         // By length: a day or less, then longer.
         let mut scores: [Score; 2] = Default::default();
@@ -490,18 +463,18 @@ mod tests {
                 score
                     .errors
                     .push((came_to - projection.at_reset.min(100.0)).abs());
-                let band = band(&seen, projection.at);
-                let (low, high) = at_reset(&projection, band);
-                score.held +=
-                    usize::from((low.min(100.0) - 0.5..=high.min(100.0) + 0.5).contains(&came_to));
+                let fast = fast(&seen);
+                score.held += usize::from(came_to <= at_reset(&projection, fast).min(100.0) + 0.5);
+                let added = projection.at_reset - projection.used;
+                if added > 0.0 {
+                    score.paces.push((came_to - projection.used) / added);
+                }
                 if let Some(out) = ran_out {
                     score.outs += 1;
-                    let (soonest, latest) = runs_out(&projection, band);
-                    let held = soonest.is_some_and(|soonest| {
-                        soonest - out <= 15 * MINUTE
-                            && latest.is_none_or(|latest| out - latest <= 15 * MINUTE)
-                    });
-                    score.outs_held += usize::from(held);
+                    score.outs_held += usize::from(
+                        runs_out(&projection, fast)
+                            .is_some_and(|soonest| soonest - out <= 15 * MINUTE),
+                    );
                 }
             }
         }
@@ -514,12 +487,22 @@ mod tests {
                 .unwrap_or(f64::NAN);
             let share = |part: usize, whole: usize| 100.0 * part as f64 / whole.max(1) as f64;
             println!(
-                "{name}: {} forecasts, {:.0}% declined, median error {median:.1} points, 80% range held {:.0}%, run-out range held {:.0}% of {}",
+                "{name}: {} forecasts, {:.0}% declined, median error {median:.1} points, fast end held {:.0}%, soonest held {:.0}% of {}",
                 score.forecasts,
                 share(score.declined, score.forecasts + score.declined),
                 share(score.held, score.forecasts),
                 share(score.outs_held, score.outs),
                 score.outs,
+            );
+            score.paces.sort_by(f64::total_cmp);
+            let fast = score
+                .paces
+                .get(score.paces.len() * 9 / 10)
+                .copied()
+                .unwrap_or(f64::NAN);
+            println!(
+                "  90% of {} went under {fast:.2} times the pace",
+                score.paces.len()
             );
         }
     }

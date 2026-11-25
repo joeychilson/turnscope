@@ -945,7 +945,6 @@ mod tests {
         Outlook::RunsOut {
             likely,
             soonest: likely,
-            latest: None,
         }
     }
 

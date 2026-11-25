@@ -206,10 +206,10 @@ Most room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left and las
 
 Claude Max (me@example.com) · via Claude Code · yours · in use
   5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (20m–1h 10m), at 40.9% an hour of work.
-  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
+  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
 
 ChatGPT Plus (me@example.com) · via Codex
-  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (0–54%).
+  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (as little as 0%).
 
 OpenRouter API key · via Pi
   Credits: $35.00 of $50.00 left. Doesn't reset.
@@ -286,7 +286,7 @@ Called with `{"account": "claude", "limit": "week", "by": "model"}`:
 
 ```markdown
 Usage of Claude Max (me@example.com) since Mon 00:00 (3d 12h ago): $0.50 at list prices over 27 responses.
-Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (0–25%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
+Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (8h 30m–47h), at 3% an hour of work.
 
 | Model | Cost | Responses | % of Weekly |
 |---|--:|--:|--:|

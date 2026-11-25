@@ -511,7 +511,6 @@ mod tests {
         let outlook = Outlook::RunsOut {
             likely,
             soonest: likely,
-            latest: None,
         };
         status(at, 40, outlook)
     }
@@ -598,7 +597,6 @@ mod tests {
             Outlook::RunsOut {
                 likely: soon,
                 soonest: soon,
-                latest: Some(soon),
             },
         );
         assert_eq!(kinds(&raise(&mut db, &warned).unwrap()), [Kind::RunningOut]);

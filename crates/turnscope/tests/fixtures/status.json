@@ -19,10 +19,6 @@
           "name": "5 hours",
           "outlook": {
             "kind": "runsOut",
-            "latest": {
-              "at": 1791468600000,
-              "horizon": "soon"
-            },
             "likely": {
               "at": 1791463800000,
               "horizon": "soon"
@@ -60,7 +56,6 @@
           "outlook": {
             "kind": "lasts",
             "leftAtReset": {
-              "high": 60,
               "likely": 43,
               "low": 2
             }
