@@ -184,14 +184,13 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     let mut statement = db.prepare(&sql)?;
     let mut rows = statement.query(params_from_iter(values))?;
     while let Some(row) = rows.next()? {
-        let count = |at: usize| row.get::<_, i64>(at).map(|count| count as u64);
         let found = Row {
             key: String::new(),
             name: None,
-            responses: count(2)?,
+            responses: crate::db::count(row, 2)?,
             tokens: crate::db::tokens(row, 3)?,
             cost_usd: row.get(9)?,
-            unpriced: count(10)?,
+            unpriced: crate::db::count(row, 10)?,
         };
         let key = if let Some((period, zone)) = &period {
             time::period_date(*period, row.get(0)?, zone).to_string()
@@ -449,21 +448,18 @@ pub fn markdown(
     out
 }
 
-/// What used a limit: `account`'s usage in `limit`'s window, or `between` a
-/// start and an end, with the points of the limit each row took in the
-/// window (`shares`). With no limit, the account's usage.
+/// What used `limit`: `account`'s usage in its window, or `between` a start
+/// and an end, with the points of the limit each row took (`shares`).
 pub fn breakdown(
     db: &Connection,
     account: &crate::status::Account,
-    limit: Option<&crate::status::Limit>,
+    limit: &crate::status::Limit,
     between: Option<(i64, i64)>,
     by: By,
     now: i64,
 ) -> Result<(Usage, Option<Shares>)> {
-    let usage = usage(db, &query(account, limit, between, by, now))?;
-    let shares = limit
-        .filter(|_| between.is_none())
-        .and_then(|limit| shares(&usage, limit));
+    let usage = usage(db, &query(account, Some(limit), between, by, now))?;
+    let shares = shares(&usage, limit, between);
     Ok((usage, shares))
 }
 
@@ -510,13 +506,18 @@ pub fn query(
     }
 }
 
-/// The points of `limit` each row of `usage` of its window took: its share
-/// of the cost, times the points used. Approximate, as providers say how
-/// much of a limit is used but not by what. None for a window that reset
-/// since it was read, as how much of the new one is used isn't known, and
-/// for usage with no known price (`unshared`): a share is of cost.
-pub fn shares(usage: &Usage, limit: &crate::status::Limit) -> Option<Shares> {
-    limit.started()?;
+/// The points of `limit` each row of `usage` took: its share of the cost,
+/// times the points used. Approximate, as providers say how much of a limit
+/// is used but not by what. None for a window that reset since it was read,
+/// as how much of the new one is used isn't known, for usage with no known
+/// price (`unshared`), as a share is of cost, and for usage asked `between`
+/// other times than the window's.
+pub fn shares(
+    usage: &Usage,
+    limit: &crate::status::Limit,
+    between: Option<(i64, i64)>,
+) -> Option<Shares> {
+    window(limit, between)?;
     if usage.total.unpriced > 0 || usage.total.cost_usd <= 0.0 {
         return None;
     }
@@ -528,19 +529,29 @@ pub fn shares(usage: &Usage, limit: &crate::status::Limit) -> Option<Shares> {
     })
 }
 
-/// Why `usage` of `limit`'s window gives no shares, when it's that some of
-/// it has no known price.
-pub fn unshared(usage: &Usage, limit: &crate::status::Limit) -> Option<String> {
+/// Why `usage` of `limit` gives no `shares`, when it's that some of it has
+/// no known price.
+pub fn unshared(
+    usage: &Usage,
+    limit: &crate::status::Limit,
+    between: Option<(i64, i64)>,
+) -> Option<String> {
     if usage.total.unpriced == 0 {
         return None;
     }
     let responses = counted(usage.total.unpriced, "response");
-    limit.started().map(|_| {
+    window(limit, between).map(|_| {
         format!(
             "No shares of {} are given: {responses} with no known price, and a share is of cost.",
             limit.named()
         )
     })
+}
+
+/// When the window of `limit` that shares are of started, for usage over
+/// it: asked `between` other times, there's none.
+fn window(limit: &crate::status::Limit, between: Option<(i64, i64)>) -> Option<i64> {
+    limit.started().filter(|_| between.is_none())
 }
 
 pub fn models(scope: Option<&str>) -> Vec<String> {
@@ -657,17 +668,17 @@ mod tests {
             ("r2", "claude-sonnet-5", 1.0, at),
         ];
         let (_dir, db) = store(account, "claude-code", &responses);
-        let (usage, shares) = breakdown(&db, account, Some(opus), None, By::Model, now).unwrap();
+        let (usage, shares) = breakdown(&db, account, opus, None, By::Model, now).unwrap();
         assert_eq!(keys(&usage), ["claude-opus-5"]);
         assert_eq!(shares.unwrap().rows, [f64::from(100 - opus.left_percent)]);
 
         // A limit on several counts any of them.
         let mut either = opus.clone();
         either.scope = Some("Sonnet and Opus".to_owned());
-        let (usage, _) = breakdown(&db, account, Some(&either), None, By::Model, now).unwrap();
+        let (usage, _) = breakdown(&db, account, &either, None, By::Model, now).unwrap();
         assert_eq!(keys(&usage), ["claude-opus-5", "claude-sonnet-5"]);
         either.scope = Some("Haiku and GPT".to_owned());
-        let (usage, _) = breakdown(&db, account, Some(&either), None, By::Model, now).unwrap();
+        let (usage, _) = breakdown(&db, account, &either, None, By::Model, now).unwrap();
         assert!(usage.rows.is_empty());
     }
 
@@ -692,7 +703,7 @@ mod tests {
             ("two days ago", "glm-5", 1.0, now - 2 * time::DAY),
         ];
         let (_dir, db) = store(account, "opencode", &responses);
-        let (usage, _) = breakdown(&db, account, Some(&rolling), None, By::Session, now).unwrap();
+        let (usage, _) = breakdown(&db, account, &rolling, None, By::Session, now).unwrap();
         assert_eq!(usage.since, now - 5 * time::HOUR);
         assert_eq!(keys(&usage), ["this hour", "four hours ago"]);
         // Its reset still ahead.
@@ -701,7 +712,7 @@ mod tests {
             resets: crate::status::Moment::of(now + time::HOUR, now),
         });
         rolling.reset_since = None;
-        let (usage, _) = breakdown(&db, account, Some(&rolling), None, By::Session, now).unwrap();
+        let (usage, _) = breakdown(&db, account, &rolling, None, By::Session, now).unwrap();
         assert_eq!(keys(&usage), ["this hour", "four hours ago"]);
     }
 
@@ -724,7 +735,7 @@ mod tests {
             resets: crate::status::Moment::of(reset, now),
         });
         late.reset_since = Some(reset);
-        let (usage, shares) = breakdown(&db, account, Some(&late), None, By::Session, now).unwrap();
+        let (usage, shares) = breakdown(&db, account, &late, None, By::Session, now).unwrap();
         assert_eq!(usage.since, now - 7 * time::DAY);
         assert_eq!(keys(&usage), ["this week"]);
         assert!(shares.is_none());
@@ -743,8 +754,7 @@ mod tests {
             ("r3", "claude-haiku-5", 0.25, at),
         ];
         let (_dir, db) = store(account, "claude-code", &responses);
-        let (mut usage, shares) =
-            breakdown(&db, account, Some(weekly), None, By::Model, now).unwrap();
+        let (mut usage, shares) = breakdown(&db, account, weekly, None, By::Model, now).unwrap();
         let mut shares = shares.unwrap();
         fold(&mut usage, Some(&mut shares), 1);
         // Of the 40 points used, three quarters of the cost and the rest's
@@ -763,7 +773,7 @@ mod tests {
             markdown.contains("| 2 more models | $1.00 | 2 | 10% |\n"),
             "{markdown}"
         );
-        let (mut usage, _) = breakdown(&db, account, Some(weekly), None, By::Model, now).unwrap();
+        let (mut usage, _) = breakdown(&db, account, weekly, None, By::Model, now).unwrap();
         fold(&mut usage, None, 2);
         let markdown = super::markdown(&usage, None, None);
         assert!(
@@ -791,7 +801,7 @@ mod tests {
              INSERT INTO sign_in VALUES ('pi', 'pi', 'openrouter', 0, 'openrouter:api', '0123456789abcdef');",
         )
         .unwrap();
-        let (usage, _) = breakdown(&db, account, Some(limit), None, By::Agent, now).unwrap();
+        let (usage, _) = breakdown(&db, account, limit, None, By::Agent, now).unwrap();
         assert_eq!(keys(&usage), ["opencode"]);
     }
 
@@ -808,14 +818,14 @@ mod tests {
         ];
         let (_dir, db) = store(account, "claude-code", &responses);
         let shares =
-            |db: &Connection| breakdown(db, account, Some(weekly), None, By::Model, now).unwrap();
+            |db: &Connection| breakdown(db, account, weekly, None, By::Model, now).unwrap();
         assert!(shares(&db).1.is_some());
         db.execute("UPDATE response SET cost = NULL WHERE id = 'r2'", [])
             .unwrap();
         let (usage, none) = shares(&db);
         assert!(none.is_none());
         assert_eq!(
-            unshared(&usage, weekly).as_deref(),
+            unshared(&usage, weekly, None).as_deref(),
             Some(
                 "No shares of Weekly are given: 1 response with no known price, and a share is of cost."
             )

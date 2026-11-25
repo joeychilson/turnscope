@@ -195,7 +195,9 @@ fn main() -> ExitCode {
             db::open(&data).and_then(|db| cmd_accounts(&db, now(), cli.json, action))
         }
         Command::Doctor => caught_up(&home, &data).and_then(|db| {
-            let notes = turnscope::doctor(&db, &data, &home, now())?;
+            let now = now();
+            let mut notes = turnscope::doctor(&db, &home, now)?;
+            notes.extend(turnscope::logged(&data, now));
             Ok(print(
                 cli.json,
                 || json!(notes),
@@ -371,7 +373,7 @@ fn cmd_usage_limit(
         .as_deref()
         .map(|since| time::between(since, None, now, "--"))
         .transpose()?;
-    let (mut used, mut shares) = usage::breakdown(db, account, Some(limit), between, by, now)?;
+    let (mut used, mut shares) = usage::breakdown(db, account, limit, between, by, now)?;
     usage::fold(&mut used, shares.as_mut(), args.top);
     Ok(print(
         json,
@@ -392,7 +394,7 @@ fn cmd_usage_limit(
             );
             let mut text =
                 heading + &usage::text(&used, shares.as_ref().map(|shares| (limit, shares)));
-            if let Some(why) = usage::unshared(&used, limit).filter(|_| between.is_none()) {
+            if let Some(why) = usage::unshared(&used, limit, between) {
                 text += &format!("\n{why}");
             }
             text

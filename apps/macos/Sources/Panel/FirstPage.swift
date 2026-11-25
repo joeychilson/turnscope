@@ -11,8 +11,8 @@ struct FirstPage: View {
         let panel = bridge.panel
         let openAccount = ui.openAccount
         VStack(alignment: .leading, spacing: 0) {
-            if !panel.hasStatus {
-                Waiting(model: panel.waiting)
+            if let waiting = panel.waiting {
+                Waiting(model: waiting)
             } else {
                 if let verdict = panel.verdict {
                     Verdict(model: verdict)
@@ -93,19 +93,19 @@ struct FirstPage: View {
 }
 
 struct Waiting: View {
-    var model: WaitingModel?
+    var model: WaitingModel
 
     var body: some View {
-        if let problem = model?.problem {
+        if let problem = model.problem {
             Message(
                 headline: "Turnscope can't read its data",
                 detail: problem,
-                footnote: model?.retries == true ? "It tries again on its own." : nil
+                footnote: model.retries ? "It tries again on its own." : nil
             )
         } else {
             VStack(spacing: 8) {
                 Spinner()
-                Text("Reading your agents' history…")
+                Text(model.reading)
                     .font(.line)
                     .foregroundStyle(.secondary)
             }
@@ -206,7 +206,7 @@ private struct Footer: View {
             Button("Close", action: closePanel)
                 .keyboardShortcut(.cancelAction)
                 .hiddenShortcut()
-            if bridge.isLive && !bridge.panel.stopped {
+            if bridge.panel.canRefresh {
                 Button("Refresh Limits") {
                     withAnimation(spring) {
                         bridge.send(.refreshNow)

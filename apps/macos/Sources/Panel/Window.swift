@@ -4,6 +4,7 @@ import AppKit
 import SwiftUI
 
 let panelWidth: CGFloat = 340
+let panelShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
 
 extension EnvironmentValues {
     @Entry var closePanel: () -> Void = {}
@@ -27,20 +28,14 @@ struct Floating: View {
     static let gutter: CGFloat = 28
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         Panel()
-            .clipShape(shape)
+            .panelEdge()
             .background {
                 // Keep hit-testing on the material so WindowServer's event shape covers the whole
                 // panel; disabling it makes closed rows and row gaps click-through to windows behind.
-                shape
+                panelShape
                     .fill(.regularMaterial)
                     .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
-            }
-            .overlay {
-                shape
-                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
-                    .allowsHitTesting(false)
             }
             .materialActiveAppearance(.active)
             .padding(.horizontal, Floating.gutter)
@@ -50,11 +45,14 @@ struct Floating: View {
 }
 
 extension View {
-    func panelFrame(_ background: some View) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-        return self.background(background)
-            .clipShape(shape)
-            .overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+    /// Clips the panel, and what's drawn behind it so far, to its shape, and draws its edge.
+    func panelEdge() -> some View {
+        clipShape(panelShape)
+            .overlay {
+                panelShape
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                    .allowsHitTesting(false)
+            }
     }
 }
 

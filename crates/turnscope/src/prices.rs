@@ -328,10 +328,7 @@ mod tests {
             at: 0,
             provider: provider.to_owned(),
             model: model.to_owned(),
-            prompt: tokens.input
-                + tokens.cache_read
-                + tokens.cache_write_5m
-                + tokens.cache_write_1h,
+            prompt: tokens.prompt(),
             tokens,
             web_searches: 0,
             priority: false,
@@ -378,10 +375,12 @@ mod tests {
             input: 100_000,
             cache_read: 200_000,
             output: 1_000,
+            reasoning: 400,
             ..Tokens::default()
         };
         let mut used = response("openai", "gpt-6-astra", tokens);
-        // 300K of prompt is past 272K: 100,000×20 + 200,000×2 + 1,000×75.
+        // 300K of prompt is past 272K: 100,000×20 + 200,000×2 + 1,000×75,
+        // the 400 of reasoning among the 1,000 of output.
         assert!((prices.cost("claude-code", &used).unwrap() - 2.475).abs() < 1e-9);
         used.prompt = 50_000;
         used.priority = true;
