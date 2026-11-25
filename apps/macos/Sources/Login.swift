@@ -17,12 +17,7 @@ final class Login {
     private(set) var status: Status = .off
 
     func check() {
-        Task.detached {
-            let current = Self.readStatus()
-            await MainActor.run { [weak self] in
-                self?.status = current
-            }
-        }
+        Task { status = await Task.detached { Self.readStatus() }.value }
     }
 
     func set(_ on: Bool, isLive: Bool, log: (String) -> Void) {
