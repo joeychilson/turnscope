@@ -71,7 +71,7 @@ Times are UTC milliseconds and money is dollars. The schema is
 | `session_file` | Which files tell of each session |
 | `response` | One row per response: tokens, prompt size, the cost the agent recorded, its cost, its account, and the file that last reported it |
 | `account` | Each account: provider, kind, title, label, whether it's hidden, its last reading, the last read of all its limits that worked, when its provider was last asked, and what went wrong then |
-| `failing` | Each account whose last read failed: how many reads in a row failed that way, what the last met, and when it's read next |
+| `failing` | Each account whose last read failed: how many reads in a row failed that way, what the last met, and when its provider asked to be asked again |
 | `reading` | Each limit at each read: name, scope, percent used, size in dollars, the window's start and reset |
 | `sign_in` | What each agent folder held for each provider, from when: the account, and an API key's fingerprint |
 | `alert` | Each alert raised, what it says, and whether the app acknowledged it |

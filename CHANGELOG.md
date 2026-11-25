@@ -14,6 +14,9 @@
   can't run the agent's own, as `connect` does.
 - **The window that offers an update shows what's new in it**, instead
   of loading its whole GitHub release page.
+- **Refresh Limits reads a provider that keeps failing** at once, instead
+  of waiting up to 30 minutes for its next try. One that asked to wait is
+  still left until then.
 
 ## 0.4.1
 
