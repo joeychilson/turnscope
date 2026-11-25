@@ -10,16 +10,6 @@
 #   SPARKLE_PUBLIC_KEY  the public half of the key updates are signed with,
 #                       which the app carries to check them; without it the
 #                       app can't update itself
-#
-# This is the one place the bundle's layout is written:
-#
-#   Contents/Info.plist          apps/macos/assets/Info.plist, with
-#                                the version and SPARKLE_PUBLIC_KEY
-#   Contents/MacOS/Turnscope     the SwiftUI menu bar app linked to libturnscope_app.a
-#   Contents/Helpers/turnscope   the command line, which connected agents run:
-#                                it stays here, as 0.2 put it, or they'd lose it
-#   Contents/Frameworks/         Sparkle, which the app loads to update itself
-#   Contents/Resources/          the icon (Turnscope.icon) and shared logos (assets/logos/)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -111,6 +101,7 @@ plutil -replace CFBundleShortVersionString -string "$version" "$plist"
 plutil -replace CFBundleVersion -string "$version" "$plist"
 plutil -replace SUPublicEDKey -string "${SPARKLE_PUBLIC_KEY:-}" "$plist"
 cp "$built/turnscope-app" "$app/Contents/MacOS/Turnscope"
+# Connected agents run the command line by this path, so it never moves.
 cp "$built/turnscope" "$app/Contents/Helpers/turnscope"
 cp assets/logos/agents/*.svg "$app/Contents/Resources/logos/agents/"
 cp assets/logos/providers/*.svg "$app/Contents/Resources/logos/providers/"
@@ -126,6 +117,5 @@ else
   codesign --force --sign - "$app/Contents/Frameworks/Sparkle.framework"
   codesign --force --sign - --identifier com.joeychilson.turnscope.cli "$app/Contents/Helpers/turnscope"
   codesign --force --sign - "$app"
-  echo "Built $app. Open it on scratch data with:"
-  echo "  open $app --args --data \"\$(mktemp -d)\""
+  echo "Built $app. To run it on scratch data, see docs/development.md."
 fi
