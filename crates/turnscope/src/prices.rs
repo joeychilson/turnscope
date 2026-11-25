@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{Connection, params};
 use serde::Deserialize;
@@ -191,15 +192,26 @@ fn claim(db: &mut Connection, now: i64) -> Result<bool> {
 
 type Catalog = Vec<((String, String), (String, Option<String>))>;
 
-/// models.dev's catalog. One it answered with but that's refused is added
-/// to `app.log` in `data`, which `doctor` shows, as prices then go stale.
+/// models.dev's catalog.
 fn catalog(data: Option<&Path>) -> Result<Catalog> {
     let (status, json) = providers::get("https://models.dev/api.json", 60)?;
     let checked = check(status, &json);
-    if let (Err(error), Some(data)) = (&checked, data) {
-        crate::engine::log(data, &error.to_string());
+    if let Some(data) = data {
+        tell(data, checked.as_ref().err().map(ToString::to_string));
     }
     checked
+}
+
+/// A catalog refused goes in `app.log` in `data`, which `doctor` shows, as
+/// prices then go stale: once while it's refused alike, though it's asked
+/// again every 10 minutes.
+fn tell(data: &Path, refused: Option<String>) {
+    static TOLD: Mutex<Option<String>> = Mutex::new(None);
+    let mut told = TOLD.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(why) = refused.as_ref().filter(|&why| told.as_ref() != Some(why)) {
+        crate::engine::log(data, why);
+    }
+    *told = refused;
 }
 
 fn check(status: u16, json: &[u8]) -> Result<Catalog> {
@@ -623,5 +635,16 @@ mod tests {
             ),
             Some(9.0)
         );
+    }
+
+    #[test]
+    fn a_catalog_refused_alike_is_logged_once() {
+        let data = tempfile::tempdir().unwrap();
+        let refused = || Some("models.dev answered 403".to_owned());
+        for told in [refused(), refused(), None, refused()] {
+            tell(data.path(), told);
+        }
+        let log = std::fs::read_to_string(data.path().join("app.log")).unwrap();
+        assert_eq!(log.matches("models.dev answered 403").count(), 2, "{log}");
     }
 }
