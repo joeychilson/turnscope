@@ -19,7 +19,7 @@ use std::time::Instant;
 use jiff::tz::TimeZone;
 use serde_json::Value;
 
-use super::{Account, Info, Limits, Problem, Provider, Reading};
+use super::{Info, Limits, Problem, Provider, Reading};
 use crate::agents::Credential;
 use crate::time::{self, Period};
 
@@ -40,21 +40,11 @@ impl Provider for OpenRouter {
         &INFO
     }
 
-    /// Its sign-in gives an agent a key, so every login is a key.
-    fn account(&self, _credential: &Credential) -> Option<Account> {
-        Some(super::api_account(INFO.id))
-    }
-
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
         let key = super::ask(KEY, credential, &[], by)?;
         let name = format!("key-{}", credential.secret.fingerprint());
-        Ok(Limits {
-            plan: None,
-            readings: own_limit(&key, &name, now)
-                .ok_or_else(|| Problem::not_understood(KEY))?
-                .into_iter()
-                .collect(),
-        })
+        let own = own_limit(&key, &name, now).ok_or_else(|| Problem::not_understood(KEY))?;
+        Ok(Vec::from_iter(own).into())
     }
 
     fn account_limits(

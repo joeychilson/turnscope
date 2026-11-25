@@ -149,11 +149,17 @@ With no account to show, it says why in one line: no account's limits have
 been read yet, or every account is hidden, and then that `--all` shows
 them. With `--json`, `accounts` is empty.
 
-With `--hours`, the answer comes first:
+With `--hours`, whether that many more hours of work fit comes first, as
+`check_limits` says it ([mcp.md](mcp.md#check_limits)): for several
+accounts, a line each, named. With `--json`, `fit` is a list of each
+account's `account` id and `fit` line.
 
 ```console
-$ turnscope status --account claude --hours 3
-3 more hours of work don't fit: 5 hours runs out after about 40m of work.
+$ turnscope status --hours 3
+- Claude Max (me@example.com): 3 more hours of work don't fit: 5 hours runs out after about 40m of work.
+- ChatGPT Plus (me@example.com): Whether 3 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
+- OpenRouter API key: Whether 3 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
+- SuperGrok (me@example.com): Whether 3 more hours of work fit can't be told: its login was refused.
 
 Claude Max (me@example.com) · via Claude Code · in use
 …
@@ -171,10 +177,11 @@ tokens cost on each provider's API. A response with no known price is
 counted as unpriced, not free.
 
 `--since` and `--until` take a [time form](#time-forms), and `--since`
-must be earlier. `--account` must match one account. `--until` and
-`--agent` don't go with `--limit`. Grouped by time, `--top` shows the
-latest rows, with the earlier ones added up in a first row; otherwise the
-rows that cost most, with the rest added up in a last row.
+must be earlier. An `--until` past now counts to now. `--account` must
+match one account. `--until` and `--agent` don't go with `--limit`.
+Grouped by time, `--top` shows the latest rows, with the earlier ones
+added up in a first row; otherwise the rows that cost most, with the rest
+added up in a last row.
 
 ```console
 $ turnscope usage --since 2026-09-29 --by model
@@ -299,11 +306,11 @@ turnscope doctor
 ```
 
 Lists what can't be read and how to fix it: logins that can't be read or
-were refused, providers that haven't answered, history files and lines
-that couldn't be read, models with no known price, prices not read yet,
-and what was logged in the last day: what went wrong in the app, and why
-an account's limits couldn't be read. When all is well it prints
-`Nothing to fix.`
+were refused, providers that haven't answered, history files still there
+and lines in them that couldn't be read, models with no known price,
+prices not read yet, and what was logged in the last day: what went wrong
+in the app, why an account's limits couldn't be read, and why models.dev's
+catalog was refused. When all is well it prints `Nothing to fix.`
 
 ## MCP
 
@@ -356,9 +363,9 @@ Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at t
 A hook waits for the guard, so it reads no history and no prices. It reads
 the limits only as they come due, and not while the app runs, which reads
 them itself, nor once a newer Turnscope has written to the data: then it
-guards by the limits read before. Nor does it make the database or take in
-0.2's: before Turnscope has, or after an update until the new version has
-opened it, the standing isn't known. Each read of a login's limits gives
+guards by the limits read before. Nor does it make or migrate the
+database: before Turnscope has, or after an update until the new version
+has opened it, the standing isn't known. Each read of a login's limits gives
 up after 15 seconds, whether its provider takes one request or two, or
 after 5 if it can't connect.
 
