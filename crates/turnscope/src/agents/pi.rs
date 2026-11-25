@@ -318,7 +318,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         at,
         provider,
         model,
-        prompt: usage.input + usage.cache_read + usage.cache_write,
+        prompt: tokens.prompt(),
         tokens,
         web_searches: 0,
         priority: false,

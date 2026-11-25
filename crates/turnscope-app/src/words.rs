@@ -8,7 +8,7 @@ use serde::Serialize;
 use turnscope::alerts::{Alert, Kind as AlertKind};
 use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{
-    Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, State, Unknown,
+    Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, State, Unknown, list,
 };
 use turnscope::usage::counted;
 
@@ -898,14 +898,6 @@ fn back_at(limit: &Limit) -> i64 {
     match &limit.outlook {
         Outlook::UsedUp { back: Some(b) } => b.at,
         _ => i64::MAX,
-    }
-}
-
-fn list(names: &[&str], last: &str) -> String {
-    match names {
-        [] => String::new(),
-        [one] => (*one).to_owned(),
-        [rest @ .., final_] => format!("{} {last} {final_}", rest.join(", ")),
     }
 }
 

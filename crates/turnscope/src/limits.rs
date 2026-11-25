@@ -152,8 +152,10 @@ pub enum Ask {
 
 /// Read the limits of each account that's due (`Schedule::due`), and the
 /// agents' logins, when no other process is reading them (one asked for
-/// waits for it), and, unless they were asked for, none claimed doing so in
-/// the last `CLAIM`, or the last [`DUE`] with no account due; whether it did.
+/// waits for it) and none claimed doing so in the last `CLAIM`, or the last
+/// [`DUE`] for a scheduled read with no signed-in account due; whether it
+/// did. A read opened, or forced with a signed-in account due or after
+/// waiting, isn't held off by a claim.
 ///
 /// A read asked for that no provider answered leaves the account as it
 /// was: asked for as the Mac woke, before its network was back, it showed
@@ -293,13 +295,10 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
     // In SQL, over working out the status: this is asked at every catch-up.
     let mut rows = db.prepare_cached(&format!(
         "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, f.account IS NOT NULL, f.retry_at,
-             EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id
-                 AND s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)),
+             EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id AND {SIGNED_IN_NOW}),
              {},
              EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= a.full_read_at
-                 AND NOT EXISTS (SELECT 1 FROM reading n
-                     WHERE n.account = r.account AND n.at > r.at AND n.limit_key = r.limit_key)
-                 AND r.resets > a.checked_at AND r.resets <= ?1)
+                 AND {LATEST_READING} AND r.resets > a.checked_at AND r.resets <= ?1)
          FROM account a LEFT JOIN failing f ON f.account = a.id",
         crate::status::Account::in_use_sql()
     ))?;
@@ -342,10 +341,10 @@ fn gather(
          ORDER BY since DESC LIMIT 1",
     )?;
     let listable = std::fs::read_dir(home).is_ok();
-    let mut latest = db.prepare(
-        "SELECT folder, provider, account FROM sign_in s WHERE agent = ?1 AND account IS NOT NULL
-         AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
-    )?;
+    let mut latest = db.prepare(&format!(
+        "SELECT folder, provider, account FROM sign_in s
+         WHERE agent = ?1 AND account IS NOT NULL AND {SIGNED_IN_NOW}"
+    ))?;
     for &agent in agents {
         let folders = agent.installed_folders(home);
         // Each folder whose logins were read, with the providers they name.
@@ -723,10 +722,18 @@ fn failing(
 }
 
 /// The sign-in in force at response `r`, or before the folder's first, the
-/// first, as `ingest::Derived::of` finds it.
+/// first, as `ingest::Derived::account` finds it.
 pub const SIGN_IN_AT: &str =
     "FROM sign_in held WHERE held.folder = r.folder AND held.provider = r.provider
     ORDER BY held.since > r.at, iif(held.since > r.at, held.since, -held.since) LIMIT 1";
+
+/// Whether sign-in `s` is the one its folder holds for its provider now.
+pub const SIGNED_IN_NOW: &str =
+    "s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)";
+
+/// Whether reading `r` is the latest of its limit.
+pub const LATEST_READING: &str = "NOT EXISTS (SELECT 1 FROM reading n
+    WHERE n.account = r.account AND n.limit_key = r.limit_key AND n.at > r.at)";
 
 /// Write each folder's sign-in that changed, and the account of the
 /// responses made in that folder since, in the same write: after it, a

@@ -474,7 +474,8 @@ fn write(
         {
             response.merge(was);
         }
-        let (cost, account) = derived.of(agent, folder, &response);
+        let cost = derived.prices.cost(agent, &response);
+        let account = derived.account(folder, &response.provider, response.at);
         let tokens = &response.tokens;
         store.execute(params![
             agent,
@@ -522,7 +523,6 @@ fn write(
 
 /// A response as stored, its columns in `response_columns!`'s order.
 fn stored(row: &Row) -> rusqlite::Result<Response> {
-    let count = |at: usize| row.get::<_, i64>(at).map(|count| count as u64);
     Ok(Response {
         session: row.get(0)?,
         copy: row.get(1)?,
@@ -530,8 +530,8 @@ fn stored(row: &Row) -> rusqlite::Result<Response> {
         provider: row.get(3)?,
         model: row.get(4)?,
         tokens: crate::db::tokens(row, 5)?,
-        prompt: count(11)?,
-        web_searches: count(12)?,
+        prompt: crate::db::count(row, 11)?,
+        web_searches: crate::db::count(row, 12)?,
         priority: row.get(13)?,
         cost: row.get(14)?,
         id: row.get(15)?,
@@ -580,12 +580,6 @@ impl Derived {
             .get(provider)
             .and_then(|held| in_force(held, at))
             .and_then(|account| account.as_deref())
-    }
-
-    /// The cost of `response`, and the account it drew on.
-    fn of(&self, agent: &str, folder: &str, response: &Response) -> (Option<f64>, Option<&str>) {
-        let account = self.account(folder, &response.provider, response.at);
-        (self.prices.cost(agent, response), account)
     }
 }
 
@@ -909,6 +903,8 @@ mod tests {
         );
     }
 
+    /// A line half written when it's read is read once it ends. The lines
+    /// `doctor` says couldn't be read add up over the reads.
     #[test]
     fn a_file_that_grew_between_catch_ups_adds_only_what_was_appended() {
         use std::io::Write as _;
@@ -919,31 +915,30 @@ mod tests {
             serde_json::json!({"type": "assistant", "sessionId": "s1", "requestId": format!("req_{n}"), "timestamp": at,
                 "message": {"id": format!("msg_{n}"), "model": "claude-opus-5", "role": "assistant", "content": [],
                     "usage": {"input_tokens": 100, "output_tokens": output}}})
+            .to_string()
         };
-        let lines = [
-            reply("2026-09-30T09:00:05Z", 1, 16),
-            // The same response's next block, its usage grown.
-            reply("2026-09-30T09:00:09Z", 1, 900),
-            reply("2026-09-30T09:01:30Z", 2, 40),
-        ];
-        let write = |lines: &[serde_json::Value]| {
+        let first = reply("2026-09-30T09:00:05Z", 1, 16);
+        // The same response's next block, its usage grown.
+        let grown = reply("2026-09-30T09:00:09Z", 1, 900);
+        let (half, rest) = grown.split_at(grown.len() / 2);
+        let second = reply("2026-09-30T09:01:30Z", 2, 40);
+        let write = |text: String| {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&log)
                 .unwrap();
-            for line in lines {
-                writeln!(file, "{line}").unwrap();
-            }
+            file.write_all(text.as_bytes()).unwrap();
         };
-        write(&lines[..1]);
+        write(format!("{first}\nnot a line\n{half}"));
         ingest(&mut db, home.path(), None).unwrap();
-        write(&lines[1..]);
+        write(format!("{rest}\nnot a line\n{second}\n"));
         ingest(&mut db, home.path(), None).unwrap();
         assert_eq!(
             rows(&db, "SELECT id, output FROM response ORDER BY id"),
             ["msg_1:req_1|900", "msg_2:req_2|40"]
         );
+        assert_eq!(one::<i64>(&db, "SELECT skipped FROM file"), 2);
     }
 
     #[test]

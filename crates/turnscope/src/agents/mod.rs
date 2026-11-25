@@ -187,6 +187,16 @@ impl Read {
         self.sessions.get_mut(id).expect("session just inserted")
     }
 
+    /// Take in the folder `session` works in: the first given, of those not
+    /// empty.
+    pub fn cwd(&mut self, session: &str, cwd: Option<&str>) {
+        if let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) {
+            self.session(session)
+                .cwd
+                .get_or_insert_with(|| cwd.to_owned());
+        }
+    }
+
     /// Take in limits the agent wrote, over any it wrote before of the same
     /// provider and scope: a long file's first read keeps its latest alone.
     pub fn in_band(&mut self, snapshot: InBand) {
@@ -352,6 +362,11 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// Every input count, which together are the prompt.
+    pub fn prompt(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write_5m + self.cache_write_1h
+    }
+
     pub fn zip(self, other: Tokens, f: fn(u64, u64) -> u64) -> Tokens {
         Tokens {
             input: f(self.input, other.input),
@@ -841,7 +856,10 @@ mod tests {
         assert_eq!(session.title.as_ref().unwrap().1.chars().count(), 200);
         let full = "a".repeat(199);
         session.title(Title::Named, &format!("{full} b"));
-        assert_eq!(session.title.unwrap().1, full);
+        assert_eq!(session.title.as_ref().unwrap().1, full);
+        // Renamed: of one rank, the latest.
+        session.title(Title::Named, "Parser");
+        assert_eq!(session.title.unwrap().1, "Parser");
     }
 
     #[test]

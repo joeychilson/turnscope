@@ -18,7 +18,8 @@ use crate::{Result, agents};
 
 mod text;
 pub use text::{
-    NONE_READ, alternate_note, fit, fits, limit_text, line, most_room, none, stale, text, verdict,
+    NONE_READ, alternate_note, fit, fits, limit_text, line, list, most_room, none, stale, text,
+    verdict,
 };
 
 /// How recently a response must have drawn on an account for it to be in use.
@@ -120,14 +121,14 @@ impl Account {
         format!(
             "(EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?1 - {IN_USE})
              OR EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= ?1 - {IN_USE}
-                 AND NOT EXISTS (SELECT 1 FROM reading n
-                     WHERE n.account = r.account AND n.at > r.at AND n.limit_key = r.limit_key)
+                 AND {latest}
                  AND r.used > (SELECT used FROM reading p
                      WHERE p.account = r.account AND p.limit_key = r.limit_key AND p.at < r.at
                          AND p.at >= coalesce(r.starts, r.at - {DAY})
                          AND (p.resets IS r.resets OR abs(p.resets - r.resets) <= {drift})
                      ORDER BY p.at DESC LIMIT 1)))",
             drift = forecast::DRIFT,
+            latest = crate::limits::LATEST_READING,
         )
     }
 
@@ -528,11 +529,11 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
     let now = time::minute(now);
     let mut signed: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut keys: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut rows = db.prepare(
+    let mut rows = db.prepare(&format!(
         "SELECT s.agent, s.account, s.key FROM sign_in s
-         WHERE s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)
-           AND s.account IS NOT NULL",
-    )?;
+         WHERE {} AND s.account IS NOT NULL",
+        crate::limits::SIGNED_IN_NOW
+    ))?;
     for row in rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))? {
         let (agent, account, key): (String, String, Option<String>) = row?;
         let agents = signed.entry(account).or_default();
@@ -708,11 +709,7 @@ fn roomiest<'a>(
 fn roomy(accounts: &[Account]) -> impl Iterator<Item = (&Account, &Limit)> {
     accounts
         .iter()
-        .filter(|account| {
-            !account.hidden
-                && matches!(account.state, State::Live { .. })
-                && !account.agents.is_empty()
-        })
+        .filter(|account| !account.hidden && matches!(account.state, State::Live { .. }))
         .filter_map(|account| {
             let limit = account.deciding_limit()?;
             (limit.left_percent >= 25 && limit.urgency() == 0).then_some((account, limit))

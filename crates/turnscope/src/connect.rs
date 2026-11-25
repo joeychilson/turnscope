@@ -29,14 +29,6 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
     let path = login_path();
     for (n, folder) in agent.folders(home).iter().enumerate() {
         let at = (n > 0).then_some(folder.as_path());
-        let by_hand = || {
-            format!(
-                "{}{} {} '{exe}' mcp",
-                pointed(info, at, home),
-                info.command,
-                info.mcp_add.join(" ")
-            )
-        };
         let add = |exe: &str| {
             let args = [info.mcp_add, &[exe, "mcp"]].concat();
             run(info, &args, path.as_deref(), at, home)
@@ -46,20 +38,10 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
             // Nothing to remove is fine.
             let _ = run(info, remove, path.as_deref(), at, home);
         }
-        let failed = match add(&exe) {
-            Ok(output) if output.status.success() => continue,
-            Ok(output) => format!(
-                "{} couldn't add the server: {}. To add it by hand, run: {}",
-                info.name,
-                String::from_utf8_lossy(&output.stderr).trim(),
-                by_hand()
-            ),
-            Err(error) => format!(
-                "couldn't run {}: {error}. Is {} installed? To add the server by hand, run: {}",
-                info.command,
-                info.name,
-                by_hand()
-            ),
+        let quoted = format!("'{exe}'");
+        let by_hand = [info.mcp_add, &[&quoted, "mcp"]].concat();
+        let Some(failed) = failed(info, "add", add(&exe), &by_hand, at, home) else {
+            continue;
         };
         if let (Some(_), Some(earlier)) = (info.mcp_remove, earlier) {
             let _ = add(&earlier);
@@ -90,27 +72,43 @@ pub fn disconnect(agent: &dyn Agent, home: &Path) -> Result<()> {
             continue;
         }
         let at = (n > 0).then_some(folder.as_path());
-        match run(info, remove, path.as_deref(), at, home) {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                return Err(Error::Failed(format!(
-                    "{} couldn't remove the server: {}. To remove it by hand, run: {}{} {}",
-                    info.name,
-                    String::from_utf8_lossy(&output.stderr).trim(),
-                    pointed(info, at, home),
-                    info.command,
-                    remove.join(" ")
-                )));
-            }
-            Err(error) => {
-                return Err(Error::Failed(format!(
-                    "couldn't run {}: {error}. Is {} installed?",
-                    info.command, info.name
-                )));
-            }
+        let ran = run(info, remove, path.as_deref(), at, home);
+        if let Some(failed) = failed(info, "remove", ran, remove, at, home) {
+            return Err(Error::Failed(failed));
         }
     }
     Ok(())
+}
+
+/// Why running `info`'s command to `act` on the server (`add` or `remove`)
+/// in the folder `at` failed, as `ran` says, and how to do it by hand: the
+/// command with `args`. None when it worked.
+fn failed(
+    info: &Info,
+    act: &str,
+    ran: std::io::Result<Output>,
+    args: &[&str],
+    at: Option<&Path>,
+    home: &Path,
+) -> Option<String> {
+    let by_hand = format!(
+        "{}{} {}",
+        pointed(info, at, home),
+        info.command,
+        args.join(" ")
+    );
+    match ran {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => Some(format!(
+            "{} couldn't {act} the server: {}. To {act} it by hand, run: {by_hand}",
+            info.name,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        )),
+        Err(error) => Some(format!(
+            "couldn't run {}: {error}. Is {} installed? To {act} the server by hand, run: {by_hand}",
+            info.command, info.name
+        )),
+    }
 }
 
 fn run(

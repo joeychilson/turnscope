@@ -667,6 +667,34 @@ fn connect_and_disconnect_leave_the_database_alone() {
     );
 }
 
+/// Where an agent's command can't be run, as when it isn't installed, the
+/// command to run by hand is said: here Claude Code's, its server in a
+/// made-up home, with no login shell to find its command on the `PATH`.
+#[test]
+fn disconnect_says_how_to_remove_the_server_by_hand() {
+    let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let settings = json!({"mcpServers": {"turnscope": {"command": "/made-up/turnscope"}}});
+    std::fs::write(home.path().join(".claude.json"), settings.to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_turnscope"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("SHELL", "/usr/bin/false")
+        .env("TURNSCOPE_OFFLINE", "1")
+        .arg("--data")
+        .arg(data.path())
+        .arg("--home")
+        .arg(home.path())
+        .args(["disconnect", "claude-code"])
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&output.stderr);
+    let by_hand = format!(
+        "Is Claude Code installed? To remove the server by hand, run: HOME='{}' claude mcp remove --scope user turnscope",
+        home.path().display()
+    );
+    assert!(said.trim_end().ends_with(&by_hand), "{said}");
+}
+
 /// Claude Code names its session in the environment, so its row is marked.
 /// Codex, run from Claude Code's shell, inherits that name, which isn't its
 /// own: none of its rows is.
@@ -1083,6 +1111,14 @@ fn with_no_account_to_show_every_front_end_says_why() {
     assert_eq!(
         check_limits(data.path(), r#"{"all":true}"#),
         "Every account is hidden: name one with account to see its limits."
+    );
+    // An agent with no account of its own, as OpenCode here, isn't given a
+    // hidden one.
+    let opencode = |args: &[&str]| command_as("opencode", data.path(), args).output().unwrap();
+    assert!(opencode(&["statusline"]).stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&opencode(&["usage", "--limit", "week"]).stderr).trim_end(),
+        "turnscope: no account has a limit named week"
     );
     // One named shows, hidden or not.
     let named = said(data.path(), &["status", "--account", "supergrok"]);

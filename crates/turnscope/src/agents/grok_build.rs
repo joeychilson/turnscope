@@ -4,7 +4,9 @@
 //! of `summary.json`, rewritten as it goes on, with its directory and title,
 //! and `updates.jsonl`, a JSON-RPC notification a line: the only record of
 //! usage, a `turn_completed` per prompt with the turn's usage per model and
-//! what xAI charged. `chat_history.jsonl` isn't read.
+//! what xAI charged. `chat_history.jsonl` isn't read. A second account's
+//! folder is `~/.grok-<name>`, used through `GROK_HOME`, once it holds
+//! `auth.json`.
 //!
 //! Measured on this Mac's history, September and October 2026:
 //!

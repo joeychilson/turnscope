@@ -410,18 +410,19 @@ pub fn newer() -> Error {
     }
 }
 
+/// A count, which SQLite keeps signed, as it does every integer.
+pub fn count(row: &Row, at: usize) -> rusqlite::Result<u64> {
+    row.get::<_, i64>(at).map(|count| count as u64)
+}
+
 pub fn tokens(row: &Row, from: usize) -> rusqlite::Result<Tokens> {
-    let count = |at: usize| {
-        row.get::<_, Option<i64>>(from + at)
-            .map(|count| count.unwrap_or(0) as u64)
-    };
     Ok(Tokens {
-        input: count(0)?,
-        cache_read: count(1)?,
-        cache_write_5m: count(2)?,
-        cache_write_1h: count(3)?,
-        output: count(4)?,
-        reasoning: count(5)?,
+        input: count(row, from)?,
+        cache_read: count(row, from + 1)?,
+        cache_write_5m: count(row, from + 2)?,
+        cache_write_1h: count(row, from + 3)?,
+        output: count(row, from + 4)?,
+        reasoning: count(row, from + 5)?,
     })
 }
 
