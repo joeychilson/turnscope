@@ -57,10 +57,9 @@ impl Provider for OpenCodeGo {
 
     fn limits(&self, credential: &Credential, _now: i64, by: Instant) -> Result<Limits, Problem> {
         let answer = super::ask(USAGE, credential, &[], by)?;
-        Ok(Limits {
-            plan: None,
-            readings: parse(&answer).ok_or_else(|| Problem::not_understood(USAGE))?,
-        })
+        Ok(parse(&answer)
+            .ok_or_else(|| Problem::not_understood(USAGE))?
+            .into())
     }
 
     fn rolls(&self, key: &str) -> Option<i64> {

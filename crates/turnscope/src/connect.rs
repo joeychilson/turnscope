@@ -39,12 +39,12 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
         };
         let add = |exe: &str| {
             let args = [info.mcp_add, &[exe, "mcp"]].concat();
-            run(info, &args, &path, at, home)
+            run(info, &args, path.as_deref(), at, home)
         };
         let earlier = agent.mcp_command(folder, home);
         if let Some(remove) = info.mcp_remove {
             // Nothing to remove is fine.
-            let _ = run(info, remove, &path, at, home);
+            let _ = run(info, remove, path.as_deref(), at, home);
         }
         let failed = match add(&exe) {
             Ok(output) if output.status.success() => continue,
@@ -90,7 +90,7 @@ pub fn disconnect(agent: &dyn Agent, home: &Path) -> Result<()> {
             continue;
         }
         let at = (n > 0).then_some(folder.as_path());
-        match run(info, remove, &path, at, home) {
+        match run(info, remove, path.as_deref(), at, home) {
             Ok(output) if output.status.success() => {}
             Ok(output) => {
                 return Err(Error::Failed(format!(
@@ -116,7 +116,7 @@ pub fn disconnect(agent: &dyn Agent, home: &Path) -> Result<()> {
 fn run(
     info: &Info,
     args: &[&str],
-    path: &Option<String>,
+    path: Option<&str>,
     at: Option<&Path>,
     home: &Path,
 ) -> std::io::Result<Output> {
@@ -127,7 +127,7 @@ fn run(
 fn command(
     info: &Info,
     args: &[&str],
-    path: &Option<String>,
+    path: Option<&str>,
     at: Option<&Path>,
     home: &Path,
 ) -> Command {
@@ -170,26 +170,19 @@ fn pointed(info: &Info, at: Option<&Path>, home: &Path) -> String {
 pub fn connection(agent: &dyn Agent, home: &Path, engine: &Path) -> (Connection, Option<String>) {
     let real = |path: &Path| std::fs::canonicalize(path).ok();
     let me = real(engine);
-    let mut outdated_cmd = None;
-    let matches: Vec<Option<bool>> = agent
+    let commands: Vec<Option<String>> = agent
         .folders(home)
         .iter()
-        .map(|folder| {
-            agent.mcp_command(folder, home).map(|cmd| {
-                let same = me.is_some() && real(Path::new(&cmd)) == me;
-                if !same && outdated_cmd.is_none() {
-                    outdated_cmd = Some(cmd);
-                }
-                same
-            })
-        })
+        .map(|folder| agent.mcp_command(folder, home))
         .collect();
-    if matches.iter().all(|&m| m == Some(true)) {
-        (Connection::Connected, None)
-    } else if matches.contains(&Some(false)) {
-        (Connection::Outdated, outdated_cmd)
-    } else {
-        (Connection::Available, None)
+    let other = commands
+        .iter()
+        .flatten()
+        .find(|command| me.is_none() || real(Path::new(command)) != me);
+    match other {
+        Some(other) => (Connection::Outdated, Some(other.clone())),
+        None if commands.iter().all(Option::is_some) => (Connection::Connected, None),
+        None => (Connection::Available, None),
     }
 }
 
@@ -216,17 +209,50 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::Path;
 
+    use serde_json::json;
+
+    use crate::status::Connection;
+
+    /// Connected once every folder of the agent runs this binary, a link to
+    /// it counting; one that runs another says which.
+    #[test]
+    fn an_agent_is_connected_once_each_of_its_folders_runs_this_turnscope() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let (engine, other, link) = (home.join("ts"), home.join("old-ts"), home.join("link"));
+        std::fs::write(&engine, "").unwrap();
+        std::fs::write(&other, "").unwrap();
+        std::os::unix::fs::symlink(&engine, &link).unwrap();
+        let work = home.join(".claude-work");
+        std::fs::create_dir(&work).unwrap();
+        let runs = |settings: &Path, command: Option<&Path>| {
+            let servers = command.map(|command| json!({"turnscope": {"command": command}}));
+            let settings = settings.join(".claude.json");
+            std::fs::write(settings, json!({ "mcpServers": servers }).to_string()).unwrap();
+        };
+        let agent = crate::agents::by_id("claude-code").unwrap();
+        let connection = || super::connection(agent, home, &engine);
+        runs(home, Some(&link));
+        runs(&work, None);
+        assert_eq!(connection(), (Connection::Available, None));
+        runs(&work, Some(&other));
+        let configured = other.to_string_lossy().into_owned();
+        assert_eq!(connection(), (Connection::Outdated, Some(configured)));
+        runs(&work, Some(&engine));
+        assert_eq!(connection(), (Connection::Connected, None));
+    }
+
     #[test]
     fn an_agents_command_is_run_in_the_home_turnscope_was_given() {
         let home = Path::new("/made-up/home");
         let second = home.join("second");
-        let path = Some("/made-up/bin".to_owned());
+        let path = Some("/made-up/bin");
         for agent in crate::agents::ALL {
             let info = agent.info();
             let args = [info.mcp_add, &["/made-up/turnscope", "mcp"]].concat();
             // For its own folder, then for a second account's.
             for at in [None, Some(second.as_path())] {
-                let command = super::command(info, &args, &path, at, home);
+                let command = super::command(info, &args, path, at, home);
                 assert_eq!(command.get_program(), info.command);
                 assert_eq!(command.get_args().collect::<Vec<_>>(), args);
                 let set: HashMap<&OsStr, Option<&OsStr>> = command.get_envs().collect();
