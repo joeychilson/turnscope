@@ -546,7 +546,7 @@ fn record(
             read.problem.as_ref().map(problem_name),
             full.then_some(now),
         ])?;
-        if let Some(limits) = &read.limits {
+        if some && let Some(limits) = &read.limits {
             // Readings stamped after this one were stamped while the clock
             // was ahead. Kept, they'd stand for the limits, and keep out what
             // Codex writes, until the clock caught up with them; left out of
@@ -1592,6 +1592,15 @@ mod tests {
         let (_, held) = fake(Kind::Subscription, &[]);
         record(&mut db, signed_in(), vec![(some, held)], at + 10 * minute).unwrap();
         assert_eq!(left(&db, at + 11 * minute), [("five".to_owned(), 40)]);
+        // And one of none takes nothing away, as a read that failed doesn't.
+        read(&mut db, at + 80 * minute, 10.0);
+        let none = Read {
+            problem: Some(Problem::unavailable("down")),
+            ..Read::of(Vec::new().into())
+        };
+        let (_, held) = fake(Kind::Subscription, &[]);
+        record(&mut db, signed_in(), vec![(none, held)], at + 12 * minute).unwrap();
+        assert_eq!(left(&db, at + 13 * minute), [("five".to_owned(), 90)]);
     }
 
     #[test]
