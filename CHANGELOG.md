@@ -2,6 +2,24 @@
 
 ## 0.4.1
 
+- **The data directory no longer keeps hundreds of MB of write-ahead
+  log.** `turnscope.db-wal` is cut back to 16 MB once SQLite checkpoints
+  it; before, one large write left it that size while the app ran.
+- **`app.log` says once why the data can't be kept current**, not at
+  every try: a database that couldn't be opened added a line every 5
+  seconds and pushed out what was logged before.
+- **`doctor` says why models.dev's catalog was refused**, as when it
+  answers with an error, and no longer lists unreadable lines of history
+  files since deleted.
+- **Data from Turnscope 0.1 and 0.2 is no longer carried over.** Updating
+  straight from them starts anew: the agents' history is read again, but
+  usage older than the agents keep (Claude Code keeps 30 days), past
+  limits, alerts and settings aren't. `turnscope.sqlite`, which 0.3 and 0.4
+  copied, can be deleted.
+- **Opening the panel or refreshing limits while a `turnscope` command
+  reads them** waits for that read instead of asking each provider again
+  at once. A login refused once could then count as refused twice and ask
+  you to sign in again.
 - **`turnscope usage --until` past now counts to now**, as `explain_usage`
   does, so the heading no longer names an end that hasn't come. A `--since`
   at or after `--until` or now is refused with the words `explain_usage`

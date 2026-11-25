@@ -48,12 +48,10 @@ impl Provider for Anthropic {
 
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
         let answer = super::ask(USAGE, credential, &["anthropic-beta: oauth-2025-04-20"], by)?;
-        let readings = parse(&answer, now).ok_or_else(|| Problem::not_understood(USAGE))?;
         // The plan is the credential's, which the account's title takes.
-        Ok(Limits {
-            plan: None,
-            readings,
-        })
+        Ok(parse(&answer, now)
+            .ok_or_else(|| Problem::not_understood(USAGE))?
+            .into())
     }
 }
 
@@ -63,16 +61,16 @@ fn parse(answer: &Value, now: i64) -> Option<Vec<Reading>> {
         if super::absent(window) {
             continue;
         }
-        let (name, scope, length) = match key.as_str() {
-            "five_hour" => ("5 hours", None, 5 * HOUR),
-            "seven_day" => ("Weekly", None, 7 * DAY),
+        let (scope, length) = match key.as_str() {
+            "five_hour" => (None, 5 * HOUR),
+            "seven_day" => (None, 7 * DAY),
             // Use through other apps signed in with the plan. Scoped, so used
             // up it doesn't decide the account, and as `Other apps` names no
             // model, no response of Claude Code's counts toward it. Not
             // measured: no answer read here has carried it.
-            "seven_day_oauth_apps" => ("Weekly", Some("Other apps".to_owned()), 7 * DAY),
+            "seven_day_oauth_apps" => (Some("Other apps".to_owned()), 7 * DAY),
             other => match other.strip_prefix("seven_day_").filter(|m| !m.is_empty()) {
-                Some(model) => ("Weekly", Some(super::words(model)), 7 * DAY),
+                Some(model) => (Some(super::words(model)), 7 * DAY),
                 None => continue,
             },
         };
@@ -85,15 +83,7 @@ fn parse(answer: &Value, now: i64) -> Option<Vec<Reading>> {
             continue;
         };
         let resets = resets.or((used == 0.0).then_some(now + length));
-        readings.push(Reading {
-            key: key.clone(),
-            name: name.to_owned(),
-            scope,
-            used,
-            size: None,
-            starts: resets.map(|resets| resets - length),
-            resets,
-        });
+        readings.push(super::windowed(key.clone(), scope, used, length, resets));
     }
     (!readings.is_empty()).then_some(readings)
 }

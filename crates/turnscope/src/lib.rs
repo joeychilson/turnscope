@@ -100,16 +100,13 @@ pub fn now() -> i64 {
         .unwrap_or_else(|| jiff::Timestamp::now().as_millisecond())
 }
 
+/// The first `bytes` of `data`'s SHA-256, in hex.
 pub fn sha256_hex(data: &[u8], bytes: usize) -> String {
     use sha2::Digest as _;
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = sha2::Sha256::digest(data);
-    let mut out = String::with_capacity(bytes * 2);
-    for &byte in &digest[..bytes] {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
+    sha2::Sha256::digest(data)[..bytes]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Bring the database up to date: prices and limits when due, then what's
@@ -170,21 +167,10 @@ pub fn doctor(
             notes.push(format!("{}: {stale}.", account.full_title()));
         }
     }
-    let mut failed =
-        db.prepare("SELECT path, failed FROM file WHERE failed IS NOT NULL ORDER BY path")?;
-    let rows = failed.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    // One deleted isn't tried again; one in a folder that can't be looked
-    // into may still be there. Before the first ten, so deleted ones never
-    // hide one that's still failing.
-    let failing = rows.filter(|row| {
-        row.as_ref().map_or(true, |(path, _)| {
-            Path::new(path).try_exists().unwrap_or(true)
-        })
-    });
-    for row in failing.take(10) {
-        let (path, why) = row?;
+    for (path, why) in files::<String>(
+        db,
+        "SELECT path, failed FROM file WHERE failed IS NOT NULL ORDER BY path",
+    )? {
         // A reader's error often names its file already.
         let why = if why.contains(&path) {
             why
@@ -195,13 +181,10 @@ pub fn doctor(
             "{why}. It's tried again each time history is read."
         ));
     }
-    let mut skipped = db.prepare(
-        "SELECT path, skipped FROM file WHERE skipped > 0 ORDER BY skipped DESC LIMIT 10",
-    )?;
-    for row in skipped.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    })? {
-        let (path, skipped) = row?;
+    for (path, skipped) in files::<i64>(
+        db,
+        "SELECT path, skipped FROM file WHERE skipped > 0 ORDER BY skipped DESC",
+    )? {
         notes.push(format!(
             "{path}: {} couldn't be read; their agent may write a newer format.",
             usage::counted(skipped as u64, "line")
@@ -250,6 +233,26 @@ pub fn doctor(
         notes.push(format!("Logged: {line}"));
     }
     Ok(notes)
+}
+
+/// The first ten history files `sql` lists with what it says of each, of
+/// those still there: a deleted one isn't read again, and one in a folder
+/// that can't be looked into may still be there. Filtered before the ten,
+/// so deleted files never hide one still there.
+fn files<T: rusqlite::types::FromSql>(
+    db: &rusqlite::Connection,
+    sql: &str,
+) -> Result<Vec<(String, T)>> {
+    Ok(db
+        .prepare(sql)?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get(1)?)))?
+        .filter(|row| {
+            row.as_ref().map_or(true, |(path, _)| {
+                Path::new(path).try_exists().unwrap_or(true)
+            })
+        })
+        .take(10)
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 #[cfg(test)]
