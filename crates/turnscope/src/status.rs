@@ -1065,7 +1065,7 @@ fn outlook(window: &Window, now: i64) -> Outlook {
             };
         }
         // The fast end runs out first, as every band's fast end is over 1.
-        let (soonest, latest) = forecast::runs_out(&projection, band, window.resets);
+        let (soonest, latest) = forecast::runs_out(&projection, band);
         // A pace can't tell the minute a week runs out.
         let shown = |at: i64| {
             let step = if at - now <= DAY { 10 * MINUTE } else { HOUR };

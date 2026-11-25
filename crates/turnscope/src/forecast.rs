@@ -35,6 +35,8 @@ pub struct Projection {
     pub at_reset: f64,
     /// When it reaches 100%, if before the reset.
     pub runs_out: Option<i64>,
+    /// When the window resets.
+    resets: i64,
 }
 
 impl Projection {
@@ -49,6 +51,7 @@ impl Projection {
             rate,
             at_reset,
             runs_out,
+            resets,
         }
     }
 }
@@ -121,18 +124,14 @@ pub fn at_reset(projection: &Projection, (low, high): (f64, f64)) -> (f64, f64) 
 }
 
 /// When it runs out at the fast end of `band`, and at the slow end, each if
-/// before `resets`.
-pub fn runs_out(
-    projection: &Projection,
-    (low, high): (f64, f64),
-    resets: i64,
-) -> (Option<i64>, Option<i64>) {
+/// before the reset.
+pub fn runs_out(projection: &Projection, (low, high): (f64, f64)) -> (Option<i64>, Option<i64>) {
     let reaches = |times: f64| {
         Projection::at_rate(
             projection.used,
             projection.rate * times,
             projection.at,
-            resets,
+            projection.resets,
         )
         .runs_out
     };
@@ -329,7 +328,7 @@ mod tests {
         let projection = project(&window, 2 * HOUR).unwrap();
         // 60% of the window left: 0.35 to 1.6 times the pace.
         assert_eq!(band(&window, 2 * HOUR), (0.35, 1.6));
-        let (soonest, latest) = runs_out(&projection, band(&window, 2 * HOUR), window.resets);
+        let (soonest, latest) = runs_out(&projection, band(&window, 2 * HOUR));
         // At 24 points an hour, 70 more take 2h55m; at 5.25 it lasts.
         assert_eq!(soonest, Some(2 * HOUR + 2 * HOUR + 55 * MINUTE));
         assert_eq!(latest, None);
@@ -497,7 +496,7 @@ mod tests {
                     usize::from((low.min(100.0) - 0.5..=high.min(100.0) + 0.5).contains(&came_to));
                 if let Some(out) = ran_out {
                     score.outs += 1;
-                    let (soonest, latest) = runs_out(&projection, band, window.resets);
+                    let (soonest, latest) = runs_out(&projection, band);
                     let held = soonest.is_some_and(|soonest| {
                         soonest - out <= 15 * MINUTE
                             && latest.is_none_or(|latest| out - latest <= 15 * MINUTE)
