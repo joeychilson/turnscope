@@ -9,8 +9,8 @@ for the logo.
 
 Prices need no code when responses name the provider by its models.dev id:
 they come from models.dev's catalog. A response whose provider or model
-models.dev doesn't list costs what the agent recorded, if anything, and
-`turnscope doctor` names its model.
+models.dev doesn't list costs what the agent recorded, if anything; with
+nothing recorded, `turnscope doctor` names its model.
 
 The steps use a provider called Acme, with id `acme`.
 
@@ -125,7 +125,8 @@ them.
 For a window that rolls, implement `rolls`: given the limit's `key`, how
 long the window is. What used the limit is then the use of the last so
 long, as OpenCode Go's 5 hours is. The default, `None`, counts a limit
-with no start over the last week.
+with no start over this month for an API key, and the last 7 days
+otherwise.
 
 If the provider's keys don't say which plan they're to, implement
 `plan_mark`: a value read from `Limits` that tells one plan from another.

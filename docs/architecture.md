@@ -159,7 +159,7 @@ Each kind of extension lives in one place.
 | An agent | `crates/turnscope/src/agents/<agent>.rs`, implementing `Agent` | A line in `agents::ALL` ([adding-an-agent.md](adding-an-agent.md)) |
 | A provider | `crates/turnscope/src/providers/<provider>.rs`, implementing `Provider` | A line in `providers::ALL` ([adding-a-provider.md](adding-a-provider.md)) |
 | An MCP tool | A function `fn(&Ask, Value) -> Result<String>` in `mcp.rs`, answering in markdown | An entry in `mcp::TOOLS`: name, title, description, input JSON Schema, and the function |
-| A CLI command | A variant of `main::Command` | Its arm in `main::answer`, and whether it catches up first |
+| A CLI command | A variant of `main::Command` | Its arm in `main`'s `match cli.command`, and whether it catches up first (`caught_up`) |
 | Something an app shows or asks | An `engine::Event`, or a method of `engine::Engine` | Its handling in `crates/turnscope-app/src/state.rs` and `view.rs` |
 | A database change | A new script at the end of `db::REVISIONS` | |
 
