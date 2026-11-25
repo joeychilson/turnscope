@@ -195,6 +195,10 @@ SWIFT
   fi
 
   minimum=$(plutil -extract LSMinimumSystemVersion raw "$app/Contents/Info.plist")
+  # The notes as Markdown: Sparkle 2.10 reads `sparkle:format`, not the
+  # `sparkle:descriptionFormat` its SUAppcastItem.h names, which it ignores and
+  # shows the Markdown raw.
+  notes=$(scripts/release-notes.sh "$version")
   releases=https://github.com/joeychilson/turnscope/releases
   cat > "$dist/appcast.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
@@ -207,7 +211,7 @@ SWIFT
       <sparkle:version>$version</sparkle:version>
       <sparkle:shortVersionString>$version</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>$minimum</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>$releases/tag/v$version</sparkle:releaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[$notes]]></description>
       <enclosure url="$releases/download/v$version/$(basename "$image")" $enclosure type="application/octet-stream"/>
     </item>
   </channel>

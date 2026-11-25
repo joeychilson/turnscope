@@ -12,6 +12,8 @@
   OpenCode or Pi".
 - **`turnscope disconnect` says the command to run by hand** when it
   can't run the agent's own, as `connect` does.
+- **The window that offers an update shows what's new in it**, instead
+  of loading its whole GitHub release page.
 
 ## 0.4.1
 
