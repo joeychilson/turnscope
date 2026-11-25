@@ -4,9 +4,10 @@
 #
 #   scripts/release-notes.sh X.Y.Z
 #
-# The release workflow publishes them on the GitHub release, which is also
-# the page Sparkle shows when it offers the update. A version with no section,
-# or an empty one, stops the release.
+# The release workflow publishes them on the GitHub release, and
+# sign-release.sh puts them in the appcast, for Sparkle to show when it
+# offers the update. A version with no section, or an empty one, stops the
+# release.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

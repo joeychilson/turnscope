@@ -223,7 +223,7 @@ it, no installed copy will accept an update.
    `cargo build` so `Cargo.lock` has it too. The command line and the app
    take their version from it.
 2. Add a `## X.Y.Z` section to `CHANGELOG.md`. It becomes the release
-   notes.
+   notes, on the GitHub release and in the window that offers the update.
 3. Merge to `main`, then push the tag `vX.Y.Z` on that commit. The
    `release tags` ruleset lets only the owner push, move or delete a `v*`
    tag.

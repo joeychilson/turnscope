@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **The window that offers an update shows what's new in it**, instead
+  of loading its whole GitHub release page.
+
 ## 0.4.1
 
 - **The data directory no longer keeps hundreds of MB of write-ahead
