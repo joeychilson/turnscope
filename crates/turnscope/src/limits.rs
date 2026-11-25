@@ -1205,6 +1205,7 @@ mod tests {
     #[test]
     fn a_subscription_is_read_with_its_freshest_login_past_any_refused() {
         let (provider, mut held) = fake(Kind::Subscription, &["refused", "old", "older"]);
+        held.credentials.reverse();
         let limits = read(&mut held, now());
         assert_eq!((keys(&limits), &limits.problem), (vec!["key-old"], &None));
         assert_eq!(*provider.asked.lock().unwrap(), ["refused", "old"]);
