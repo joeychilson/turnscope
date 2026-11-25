@@ -110,20 +110,24 @@ pub fn parse(text: &str, now: i64) -> Result<i64> {
 
 /// From `since` to `until`, or to now without it: an `until` past now is now.
 /// Refused when nothing is between them, over answering that nothing was
-/// used, which an agent could pass on as none.
-pub fn between(since: &str, until: Option<&str>, now: i64) -> Result<(i64, i64)> {
+/// used, which an agent could pass on as none. The refusal names the inputs
+/// with `dashes` before them: `--` on the command line.
+pub fn between(since: &str, until: Option<&str>, now: i64, dashes: &str) -> Result<(i64, i64)> {
     let since = parse(since, now)?;
-    let until = match until {
-        Some(until) => parse(until, now)?.min(now),
-        None => now,
-    };
-    if since >= until {
-        return Err(Error::Usage(
-            "since is at or after until, or now, so there's no usage in between: give an earlier since"
-                .to_owned(),
-        ));
+    let until = until
+        .map(|until| parse(until, now))
+        .transpose()?
+        .filter(|&until| until < now);
+    if since >= until.unwrap_or(now) {
+        let why = match until {
+            Some(_) => format!("is at or after {dashes}until, so nothing is between them"),
+            None => "is now or later, so there's no usage after it".to_owned(),
+        };
+        return Err(Error::Usage(format!(
+            "{dashes}since {why}: give an earlier {dashes}since"
+        )));
     }
-    Ok((since, until))
+    Ok((since, until.unwrap_or(now)))
 }
 
 pub fn today(at: i64, now: i64) -> bool {

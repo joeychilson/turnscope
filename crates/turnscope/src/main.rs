@@ -369,7 +369,7 @@ fn cmd_usage_limit(
     let between = args
         .since
         .as_deref()
-        .map(|since| time::between(since, None, now))
+        .map(|since| time::between(since, None, now, "--"))
         .transpose()?;
     let (mut used, mut shares) = usage::breakdown(db, account, Some(limit), between, by, now)?;
     usage::fold(&mut used, shares.as_mut(), args.top);
@@ -414,7 +414,7 @@ fn cmd_usage(db: &rusqlite::Connection, now: i64, json: bool, args: UsageArgs) -
         None => None,
     };
     let since = args.since.as_deref().unwrap_or(usage::SINCE);
-    let (since, until) = time::between(since, args.until.as_deref(), now)?;
+    let (since, until) = time::between(since, args.until.as_deref(), now, "--")?;
     let query = usage::Query {
         since,
         until,

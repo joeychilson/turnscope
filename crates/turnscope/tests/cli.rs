@@ -466,7 +466,6 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "no agent is claude; agents are claude-code, ",
         ),
-        // As `explain_usage` says of a `since` at or after now.
         (
             vec![
                 "usage",
@@ -478,13 +477,18 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
                 "now",
             ],
             2,
-            "since is at or after until, or now",
+            "--since is now or later, so there's no usage after it: give an earlier --since",
         ),
-        // With no --until, until now.
+        // An --until past now is now.
         (
-            vec!["usage", "--since", "now"],
+            vec!["usage", "--since", "now", "--until", "2099-01-01"],
             2,
-            "since is at or after until, or now",
+            "--since is now or later",
+        ),
+        (
+            vec!["usage", "--since", "2d", "--until", "3d"],
+            2,
+            "--since is at or after --until, so nothing is between them: give an earlier --since",
         ),
         (vec!["usage", "--since", "last tuesday"], 2, "24h, 7d or 4w"),
         (
@@ -818,7 +822,10 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
     // nothing to tell. Earlier in this minute is gone by, not ahead.
     for (text, since) in [
         (&texts[2], "since 11:00 (1h ago)"),
-        (&texts[3], "since is at or after until, or now"),
+        (
+            &texts[3],
+            "since is now or later, so there's no usage after it: give an earlier since",
+        ),
         (&texts[4], "(30d ago)"),
         (&texts[5], "since 12:00 (0m ago)"),
     ] {

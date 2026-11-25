@@ -681,7 +681,7 @@ fn usage_asked<'a>(
             ));
         }
         (None | Some("window"), None) => None,
-        (Some(since), until) => Some(time::between(since, until, now)?),
+        (Some(since), until) => Some(time::between(since, until, now, "")?),
     };
     Ok(UsageAsked {
         lead,
@@ -712,7 +712,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
         None => {
             let (since, until) = match between {
                 Some(between) => between,
-                None => time::between(usage::SINCE, None, now)?,
+                None => time::between(usage::SINCE, None, now, "")?,
             };
             usage::Query {
                 since,

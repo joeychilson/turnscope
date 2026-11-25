@@ -18,17 +18,15 @@
   copied, can be deleted.
 - **Opening the panel or refreshing limits while a `turnscope` command
   reads them** waits for that read instead of asking each provider again
-  at once. A login refused once could then count as refused twice and ask
-  you to sign in again.
+  at once, which could count a login refused once as refused twice and
+  ask you to sign in again.
 - **`turnscope usage --until` past now counts to now**, as `explain_usage`
-  does, so the heading no longer names an end that hasn't come. A `--since`
-  at or after `--until` or now is refused with the words `explain_usage`
-  uses.
+  does, so the heading no longer names an end that hasn't come.
 - **`turnscope usage` says "1 response"**, not "1 responses", and tells
   its times by the minute they're in, as every other answer does.
 - **`check_limits` says why hours of work can't be told.** An account not
   read says why, such as "its login was refused". A limit with too little
-  work measured says where the clock's pace takes it by its reset. An API
+  work measured says whether it lasts at its pace until it resets. An API
   key with no limit read says what it cost this month.
 - **`check_limits` with `all` names the account with the most room**, to
   choose where to work, in place of the verdict on yours. Given `hours`,
@@ -37,7 +35,8 @@
   does.
 - **An MCP input that doesn't fit says what the input takes**, such as
   `hours is a number of 0 or more, not "two"`. A `top` outside 1 to 20 is
-  refused instead of moved into range.
+  refused instead of moved into range. A `since` at or after `until` or
+  now says which.
 - **`turnscope status --hours` says whether the hours fit each account
   shown**, not only the first, and with `--json`, `fit` is a list of them.
 - **Refresh Limits no longer spins forever while Turnscope can't read its
