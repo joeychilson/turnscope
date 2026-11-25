@@ -12,16 +12,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var onOpen: (String?) -> Void = { _ in }
     var onAcknowledged: (Int64, String?) -> Void = { _, _ in }
 
-    private static let isBundled: Bool = {
-        Bundle.main.bundleIdentifier != nil && Bundle.main.bundlePath.hasSuffix(".app")
-    }()
-
-    private var center: UNUserNotificationCenter? {
-        Self.isBundled ? .current() : nil
-    }
+    private var center: UNUserNotificationCenter { .current() }
 
     func start() {
-        guard let center else { return }
         center.delegate = self
         Task {
             _ = try? await center.requestAuthorization(options: [.alert, .sound])
@@ -34,13 +27,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func refreshDenied() async {
-        guard let center else { return }
         let settings = await center.notificationSettings()
         denied = settings.authorizationStatus == .denied
     }
 
     func post(_ alerts: [AlertNote]) {
-        guard let center, !alerts.isEmpty else { return }
         for alert in alerts {
             let content = UNMutableNotificationContent()
             content.title = alert.title
@@ -60,7 +51,6 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func remove(_ identifiers: [String]) {
-        guard let center, !identifiers.isEmpty else { return }
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 

@@ -57,8 +57,8 @@ struct SettingsPage: View {
         .focusEffectDisabled()
         .focused($focused)
         .onChange(of: ui.focusNonce, initial: true) { focused = true }
-        .onKeyPress(.leftArrow) { stepTab(-1, current: ui.tab) }
-        .onKeyPress(.rightArrow) { stepTab(1, current: ui.tab) }
+        .onKeyPress(.leftArrow) { stepTab(-1) }
+        .onKeyPress(.rightArrow) { stepTab(1) }
     }
 
     private func tabShortcut(_ tab: SettingsTab, key: KeyEquivalent) -> some View {
@@ -66,9 +66,9 @@ struct SettingsPage: View {
             .keyboardShortcut(key, modifiers: .command)
     }
 
-    private func stepTab(_ delta: Int, current: SettingsTab) -> KeyPress.Result {
+    private func stepTab(_ delta: Int) -> KeyPress.Result {
         let tabs = SettingsTab.allCases
-        guard let index = tabs.firstIndex(of: current) else { return .ignored }
+        guard let index = tabs.firstIndex(of: ui.tab) else { return .ignored }
         let next = max(0, min(tabs.count - 1, index + delta))
         guard next != index else { return .handled }
         ui.setTab(tabs[next])
