@@ -138,14 +138,9 @@ pub fn online() -> bool {
     std::env::var_os("TURNSCOPE_OFFLINE").is_none_or(|offline| offline == "0")
 }
 
-/// Diagnostic notes on logins, stale accounts, unreadable history files,
-/// unpriced models, and recent `app.log` entries.
-pub fn doctor(
-    db: &rusqlite::Connection,
-    data: &Path,
-    home: &Path,
-    now: i64,
-) -> Result<Vec<String>> {
+/// Diagnostic notes on logins, stale accounts, unreadable history files and
+/// unpriced models.
+pub fn doctor(db: &rusqlite::Connection, home: &Path, now: i64) -> Result<Vec<String>> {
     let mut notes = Vec::new();
     for agent in agents::ALL {
         for folder in agent.installed_folders(home) {
@@ -214,9 +209,13 @@ pub fn doctor(
             ));
         }
     }
-    // What went wrong in the last day, the latest five: the app is started
-    // from its icon, and limits are read in agents' hooks, where no one sees
-    // their errors.
+    Ok(notes)
+}
+
+/// What `app.log` in `data` says went wrong in the last day, the latest five,
+/// as notes for `doctor`: the app is started from its icon, and limits are
+/// read in agents' hooks, where no one sees their errors.
+pub fn logged(data: &Path, now: i64) -> Vec<String> {
     let log = std::fs::read_to_string(data.join("app.log")).unwrap_or_default();
     let mut logged: Vec<&str> = log
         .lines()
@@ -229,10 +228,10 @@ pub fn doctor(
         .take(5)
         .collect();
     logged.reverse();
-    for line in logged {
-        notes.push(format!("Logged: {line}"));
-    }
-    Ok(notes)
+    logged
+        .iter()
+        .map(|line| format!("Logged: {line}"))
+        .collect()
 }
 
 /// The first ten history files `sql` lists with what it says of each, of
@@ -276,9 +275,7 @@ mod tests {
         let mut db = db::open(data.path()).unwrap();
         let mut notes = || {
             ingest::ingest(&mut db, home.path(), None).unwrap();
-            doctor(&db, data.path(), home.path(), now())
-                .unwrap()
-                .join("\n")
+            doctor(&db, home.path(), now()).unwrap().join("\n")
         };
         assert!(notes().contains("s00.jsonl"));
         // The ten it named are deleted, and don't hide the last.

@@ -35,11 +35,8 @@ pub struct StartConfig {
     pub fixture: Option<PathBuf>,
     pub data: Option<PathBuf>,
     pub home: Option<PathBuf>,
-    #[serde(default)]
     pub from_disk_image: bool,
-    #[serde(default)]
     pub menu_shows: MenuShows,
-    #[serde(default)]
     pub dismissed_connect: Vec<String>,
 }
 
@@ -67,9 +64,10 @@ struct Wake {
     cb: WakeFn,
 }
 
-// SAFETY: `ctx` is an opaque host pointer kept valid until `turnscope_app_stop` returns;
-// `TurnscopeApp::drop` clears the mutex-guarded `Wake` so no callback runs after stop.
+// SAFETY: the host keeps `ctx` valid while the process runs, and `cb` may be called from any
+// thread at once (`turnscope_app.h`).
 unsafe impl Send for Wake {}
+unsafe impl Sync for Wake {}
 
 impl Wake {
     fn trigger(self) {
@@ -77,19 +75,12 @@ impl Wake {
     }
 }
 
+/// Never freed: the app quits by exiting, which SQLite's transactions are safe for, and which
+/// lets `app.lock` go.
 pub struct TurnscopeApp {
     core: Arc<Mutex<Core>>,
-    wake: Arc<Mutex<Option<Wake>>>,
     engine: Option<Arc<OnceLock<Engine>>>,
     data: Option<PathBuf>,
-}
-
-impl Drop for TurnscopeApp {
-    fn drop(&mut self) {
-        if let Ok(mut guard) = self.wake.lock() {
-            *guard = None;
-        }
-    }
 }
 
 static PANIC_DATA: OnceLock<PathBuf> = OnceLock::new();
@@ -185,12 +176,11 @@ pub fn start(
     state.from_disk_image = config.from_disk_image;
 
     let core = Arc::new(Mutex::new(Core::new(state)));
-    let wake = Arc::new(Mutex::new(wake.map(|cb| Wake { ctx, cb })));
+    let wake = wake.map(|cb| Wake { ctx, cb });
 
     let engine = if runs_engine {
         install_panic_hook(data.clone());
         let core_for_cb = Arc::clone(&core);
-        let wake_for_cb = Arc::clone(&wake);
         let cell: Arc<OnceLock<Engine>> = Arc::new(OnceLock::new());
         let weak = Arc::downgrade(&cell);
         let started = Engine::start(data.clone(), home.clone(), binary(), move |event| {
@@ -198,10 +188,7 @@ pub fn start(
             if let Some(held) = weak.upgrade() {
                 send(held.get(), calls);
             }
-            if should_wake
-                && let Ok(guard) = wake_for_cb.lock()
-                && let Some(wake) = *guard
-            {
+            if should_wake && let Some(wake) = wake {
                 wake.trigger();
             }
         });
@@ -213,14 +200,13 @@ pub fn start(
 
     Ok(TurnscopeApp {
         core,
-        wake,
         engine,
         data: runs_engine.then_some(data),
     })
 }
 
-/// Build a plain-text diagnostics report (version, `turnscope::doctor`, and
-/// the tail of `app.log`) ready to copy into a bug report.
+/// Build a plain-text diagnostics report (version, `turnscope::doctor`'s notes and the last
+/// 20 lines of `app.log`) ready to copy into a bug report.
 pub fn diagnostics(data: Option<&Path>, home: Option<&Path>) -> String {
     let mut out = format!("Turnscope {}\n", env!("CARGO_PKG_VERSION"));
     let (Some(data), Some(home)) = (data, home) else {
@@ -229,7 +215,7 @@ pub fn diagnostics(data: Option<&Path>, home: Option<&Path>) -> String {
     };
     out += &format!("Binary: {}\n", binary().display());
     match turnscope::db::read(data) {
-        Some(db) => match turnscope::doctor(&db, data, home, turnscope::now()) {
+        Some(db) => match turnscope::doctor(&db, home, turnscope::now()) {
             Ok(notes) if notes.is_empty() => out += "Doctor: Nothing to fix.\n",
             Ok(notes) => {
                 out += "Doctor:\n";
@@ -294,7 +280,7 @@ pub unsafe extern "C" fn turnscope_app_snapshot(config_json: *const c_char) -> *
 ///
 /// # Safety
 /// `config_json` must be null or a valid NUL-terminated C string; `error_out` must be null or writable;
-/// `ctx` must remain valid for `wake` calls until `turnscope_app_stop` returns.
+/// `ctx` must remain valid for `wake` calls while the process runs.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn turnscope_app_start(
     config_json: *const c_char,
@@ -416,18 +402,6 @@ pub unsafe extern "C" fn turnscope_app_log_path(app: *mut TurnscopeApp) -> *mut 
     into_c_string(target.to_string_lossy().into_owned())
 }
 
-/// Stop the background engine and free the app core.
-///
-/// # Safety
-/// `app` must be null or a pointer returned by `turnscope_app_start` that has not already been stopped.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn turnscope_app_stop(app: *mut TurnscopeApp) {
-    if !app.is_null() {
-        // SAFETY: Takes ownership of pointer created by `turnscope_app_start`.
-        let _ = unsafe { Box::from_raw(app) };
-    }
-}
-
 /// Free a string returned by `turnscope_app_*`.
 ///
 /// # Safety
@@ -451,7 +425,13 @@ mod tests {
     fn ffi_round_trip_with_fixture_builds_panel_and_handles_actions() {
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../turnscope/tests/fixtures/status.json");
-        let cfg = serde_json::json!({ "fixture": fixture }).to_string();
+        let cfg = serde_json::json!({
+            "fixture": fixture,
+            "fromDiskImage": false,
+            "menuShows": "all",
+            "dismissedConnect": [],
+        })
+        .to_string();
         let cfg_c = CString::new(cfg).unwrap();
         let mut err: *mut c_char = std::ptr::null_mut();
         let app =
@@ -474,8 +454,7 @@ mod tests {
         assert_eq!(sync["menuBar"]["slots"].as_array().unwrap().len(), 1);
 
         let hide_action =
-            CString::new(r#"{"kind":"setHidden","id":"anthropic:acct-1:org-1","hidden":true}"#)
-                .unwrap();
+            CString::new(r#"{"setHidden":{"id":"anthropic:acct-1:org-1","hidden":true}}"#).unwrap();
         let after_ptr = unsafe { turnscope_app_action(app, hide_action.as_ptr()) };
         let after_json = unsafe { CStr::from_ptr(after_ptr) }
             .to_str()
@@ -485,12 +464,12 @@ mod tests {
         let after: serde_json::Value = serde_json::from_str(&after_json).unwrap();
         assert_eq!(after["panel"]["inUse"].as_array().unwrap().len(), 0);
         assert_eq!(after["panel"]["hidden"].as_array().unwrap().len(), 2);
-
-        unsafe { turnscope_app_stop(app) };
     }
 
     #[test]
-    fn live_core_wakes_shell_and_stops_cleanly() {
+    fn live_core_wakes_shell() {
+        // Static: the app is never freed, so its engine may still wake it after the test.
+        static WAKES: AtomicUsize = AtomicUsize::new(0);
         extern "C" fn count_wake(ctx: *mut c_void) {
             let counter = unsafe { &*(ctx as *const AtomicUsize) };
             counter.fetch_add(1, Ordering::Release);
@@ -506,10 +485,12 @@ mod tests {
         )
         .unwrap();
         drop(db);
-        let wakes = AtomicUsize::new(0);
         let cfg = serde_json::json!({
             "data": data.path(),
             "home": home.path(),
+            "fromDiskImage": false,
+            "menuShows": "all",
+            "dismissedConnect": [],
         })
         .to_string();
         let cfg_c = CString::new(cfg).unwrap();
@@ -517,17 +498,17 @@ mod tests {
         let app = unsafe {
             turnscope_app_start(
                 cfg_c.as_ptr(),
-                (&wakes as *const AtomicUsize) as *mut c_void,
+                (&WAKES as *const AtomicUsize) as *mut c_void,
                 Some(count_wake),
                 &mut err,
             )
         };
         assert!(!app.is_null());
         let deadline = Instant::now() + Duration::from_secs(5);
-        while wakes.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        while WAKES.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(wakes.load(Ordering::Acquire) > 0);
+        assert!(WAKES.load(Ordering::Acquire) > 0);
         let sync_ptr = unsafe { turnscope_app_sync(app) };
         let sync_json = unsafe { CStr::from_ptr(sync_ptr) }
             .to_str()
@@ -536,13 +517,6 @@ mod tests {
         unsafe { turnscope_app_free_string(sync_ptr) };
         let sync: serde_json::Value = serde_json::from_str(&sync_json).unwrap();
         assert_eq!(sync["panel"]["hasStatus"], true);
-
-        unsafe { turnscope_app_stop(app) };
-        let release_deadline = Instant::now() + Duration::from_secs(2);
-        while turnscope::engine::running(data.path()) && Instant::now() < release_deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!turnscope::engine::running(data.path()));
     }
 
     #[test]
@@ -559,26 +533,36 @@ mod tests {
         assert_eq!(panel.settings.agents.len(), 2);
     }
 
+    /// Each of the last lines logged is said once, whether or not doctor can run.
     #[test]
-    fn diagnostics_includes_version_doctor_and_recent_log() {
+    fn diagnostics_says_the_version_and_each_line_logged_once() {
         let data = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        drop(turnscope::db::open(data.path()).unwrap());
-        turnscope::engine::log(data.path(), "sample diagnostic line");
-        let report = diagnostics(Some(data.path()), Some(home.path()));
-        assert!(report.contains(&format!("Turnscope {}", env!("CARGO_PKG_VERSION"))));
-        assert!(report.contains("sample diagnostic line"), "{report}");
-        assert!(diagnostics(None, None).contains("Mode: fixture"));
+        // One more than doctor's five, each said once.
+        for n in 1..=6 {
+            turnscope::engine::log(data.path(), &format!("sample line {n}."));
+        }
+        let logged = |report: &str| {
+            (1..=6)
+                .map(|n| report.matches(&format!("sample line {n}.")).count())
+                .collect::<Vec<_>>()
+        };
+        let unread = diagnostics(Some(data.path()), Some(home.path()));
+        assert!(
+            unread.contains("Doctor: database not readable yet."),
+            "{unread}"
+        );
+        assert_eq!(logged(&unread), [1; 6], "{unread}");
 
+        drop(turnscope::db::open(data.path()).unwrap());
         let cfg = serde_json::json!({ "data": data.path(), "home": home.path() }).to_string();
         let cfg_c = CString::new(cfg).unwrap();
         let ptr = unsafe { turnscope_app_diagnostics(cfg_c.as_ptr()) };
-        let ffi_report = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        let report = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         unsafe { turnscope_app_free_string(ptr) };
-        assert!(
-            ffi_report.contains("sample diagnostic line"),
-            "{ffi_report}"
-        );
+        assert!(report.contains(&format!("Turnscope {}", env!("CARGO_PKG_VERSION"))));
+        assert_eq!(logged(&report), [1; 6], "{report}");
+        assert!(diagnostics(None, None).contains("Mode: fixture"));
     }
 
     #[test]
@@ -640,215 +624,134 @@ mod tests {
             }],
         };
 
-        let syncs = vec![
-            AppSync {
-                animated: true,
-                counting: true,
-                menu_bar: MenuBarModel {
-                    slots: vec![
-                        MenuBarSlot {
-                            provider: "anthropic".into(),
-                            standing: Standing::Lasts,
-                            figure: "88%".into(),
-                        },
-                        MenuBarSlot {
-                            provider: "openai".into(),
-                            standing: Standing::UsedUp,
-                            figure: "Back 4:00 PM".into(),
-                        },
-                    ],
-                    spoken: "Claude Max 88%".into(),
-                    out_of_date: true,
-                },
-                panel: PanelModel {
-                    version: "0.3.2".into(),
-                    has_status: true,
-                    stopped: false,
-                    waiting: None,
-                    verdict: Some(VerdictModel {
-                        headline: "Claude Max runs out in 50m".into(),
-                        detail: "Back 3:00 PM.".into(),
-                        standing: Standing::RunningOut,
-                    }),
-                    in_use: vec![full_row],
-                    recent: vec![],
-                    unused: vec![],
-                    hidden: vec![AccountModel {
-                        id: "openai:b".into(),
+        // Every optional field is set: Swift decodes one whose key it doesn't know as nil.
+        let sync = AppSync {
+            animated: true,
+            counting: true,
+            menu_bar: MenuBarModel {
+                slots: vec![
+                    MenuBarSlot {
+                        provider: "anthropic".into(),
+                        standing: Standing::Lasts,
+                        figure: "88%".into(),
+                    },
+                    MenuBarSlot {
                         provider: "openai".into(),
-                        title: "ChatGPT Pro".into(),
-                        label: Some("work@example.com".into()),
-                        via: Some("Codex".into()),
-                        called: "ChatGPT Pro".into(),
-                        shown: false,
-                    }],
-                    unused_fold_label: Some("1 hidden".into()),
-                    hidden_fold_label: Some("1 hidden".into()),
-                    connect_offer: Some(ConnectOfferModel {
+                        standing: Standing::UsedUp,
+                        figure: "Back 4:00 PM".into(),
+                    },
+                ],
+                spoken: "Claude Max 88%".into(),
+                out_of_date: true,
+            },
+            panel: PanelModel {
+                version: "0.3.2".into(),
+                has_status: true,
+                stopped: false,
+                can_refresh: true,
+                waiting: Some(WaitingModel {
+                    reading: "Reading…".into(),
+                    problem: Some("database locked".into()),
+                    retries: true,
+                }),
+                verdict: Some(VerdictModel {
+                    headline: "Claude Max runs out in 50m".into(),
+                    detail: "Back 3:00 PM.".into(),
+                    standing: Standing::RunningOut,
+                }),
+                in_use: vec![full_row],
+                recent: vec![],
+                unused: vec![],
+                hidden: vec![AccountModel {
+                    id: "openai:b".into(),
+                    provider: "openai".into(),
+                    title: "ChatGPT Pro".into(),
+                    label: Some("work@example.com".into()),
+                    via: Some("Codex".into()),
+                    called: "ChatGPT Pro".into(),
+                    shown: false,
+                }],
+                unused_fold_label: Some("1 hidden".into()),
+                hidden_fold_label: Some("1 hidden".into()),
+                connect_offer: Some(ConnectOfferModel {
+                    id: "claude-code".into(),
+                    name: "Claude Code".into(),
+                    note: Some("Uses another Turnscope".into()),
+                    configured: Some("/old/turnscope".into()),
+                    changing: false,
+                    verb: "Reconnect".into(),
+                    help: "Points Claude Code at this copy".into(),
+                }),
+                footer_note: Some(FooterNoteModel {
+                    text: "Not up to date".into(),
+                    help: Some("Offline".into()),
+                    spoken: "Not up to date: Offline".into(),
+                    busy: false,
+                }),
+                settings: SettingsModel {
+                    menu_shows: MenuShows::All,
+                    notify: Some(Notify {
+                        running_out: true,
+                        used_up: false,
+                        reset: true,
+                        sign_in: false,
+                    }),
+                    can_edit_notify: true,
+                    agents_empty: Some(EmptyMessage {
+                        headline: "No agents".into(),
+                        detail: "Install one".into(),
+                    }),
+                    agents_title: "Let these agents check their limits".into(),
+                    agents: vec![AgentRowModel {
                         id: "claude-code".into(),
                         name: "Claude Code".into(),
                         note: Some("Uses another Turnscope".into()),
                         configured: Some("/old/turnscope".into()),
-                        changing: false,
-                        verb: "Reconnect".into(),
-                        help: "Points Claude Code at this copy".into(),
+                        changing: Some("Connecting…".into()),
+                        connected: true,
+                        enabled: false,
+                    }],
+                    accounts_empty: Some(EmptyMessage {
+                        headline: "No accounts".into(),
+                        detail: "Sign in".into(),
                     }),
-                    footer_note: Some(FooterNoteModel {
-                        text: "Not up to date".into(),
-                        help: Some("Offline".into()),
-                        spoken: "Not up to date: Offline".into(),
-                        busy: false,
-                    }),
-                    settings: SettingsModel {
-                        menu_shows: MenuShows::All,
-                        notify: Some(Notify {
-                            running_out: true,
-                            used_up: false,
-                            reset: true,
-                            sign_in: false,
-                        }),
-                        can_edit_notify: true,
-                        agents_empty: None,
-                        agents_title: "Let these agents check their limits".into(),
-                        agents: vec![AgentRowModel {
-                            id: "claude-code".into(),
-                            name: "Claude Code".into(),
-                            note: Some("Uses another Turnscope".into()),
-                            configured: Some("/old/turnscope".into()),
-                            changing: Some("Connecting…".into()),
-                            connected: true,
-                            enabled: false,
-                        }],
-                        accounts_empty: None,
-                        subscriptions: vec![AccountModel {
-                            id: "anthropic:a".into(),
-                            provider: "anthropic".into(),
-                            title: "Claude Max".into(),
-                            label: Some("me@example.com".into()),
-                            via: Some("Claude Code".into()),
-                            called: "Claude Max (me@example.com)".into(),
-                            shown: true,
-                        }],
-                        api_keys: vec![],
-                    },
+                    subscriptions: vec![AccountModel {
+                        id: "anthropic:a".into(),
+                        provider: "anthropic".into(),
+                        title: "Claude Max".into(),
+                        label: Some("me@example.com".into()),
+                        via: Some("Claude Code".into()),
+                        called: "Claude Max (me@example.com)".into(),
+                        shown: true,
+                    }],
+                    api_keys: vec![],
                 },
-                effects: vec![
-                    Effect::PostAlerts {
-                        alerts: vec![AlertNote {
-                            id: 7,
-                            account: "anthropic:a".into(),
-                            replaces: "turnscope-limit-anthropic:a".into(),
-                            sign_in: false,
-                            title: "Claude Max".into(),
-                            subtitle: "5 hours".into(),
-                            body: "Runs out in 50m".into(),
-                        }],
-                    },
-                    Effect::RemoveNotifications {
-                        identifiers: vec!["turnscope-sign-in-anthropic:a".into()],
-                    },
-                    Effect::SavePreferences {
-                        menu_shows: MenuShows::One,
-                        dismissed_connect: vec!["codex".into()],
-                    },
-                ],
             },
-            AppSync {
-                animated: false,
-                counting: false,
-                menu_bar: MenuBarModel {
-                    slots: vec![],
-                    spoken: "Turnscope".into(),
-                    out_of_date: false,
+            effects: vec![
+                Effect::PostAlerts {
+                    alerts: vec![AlertNote {
+                        id: 7,
+                        account: "anthropic:a".into(),
+                        replaces: "turnscope-limit-anthropic:a".into(),
+                        sign_in: false,
+                        title: "Claude Max".into(),
+                        subtitle: "5 hours".into(),
+                        body: "Runs out in 50m".into(),
+                    }],
                 },
-                panel: PanelModel {
-                    version: "0.3.2".into(),
-                    has_status: false,
-                    stopped: true,
-                    waiting: Some(WaitingModel {
-                        problem: Some("database locked".into()),
-                        retries: true,
-                    }),
-                    verdict: None,
-                    in_use: vec![],
-                    recent: vec![],
-                    unused: vec![],
-                    hidden: vec![],
-                    unused_fold_label: None,
-                    hidden_fold_label: None,
-                    connect_offer: None,
-                    footer_note: Some(FooterNoteModel {
-                        text: "Reading…".into(),
-                        help: Some("First run".into()),
-                        spoken: "Reading".into(),
-                        busy: true,
-                    }),
-                    settings: SettingsModel {
-                        menu_shows: MenuShows::One,
-                        notify: None,
-                        can_edit_notify: false,
-                        agents_empty: Some(EmptyMessage {
-                            headline: "No agents".into(),
-                            detail: "Install one".into(),
-                        }),
-                        agents_title: "Move Turnscope".into(),
-                        agents: vec![],
-                        accounts_empty: Some(EmptyMessage {
-                            headline: "No accounts".into(),
-                            detail: "Sign in".into(),
-                        }),
-                        subscriptions: vec![],
-                        api_keys: vec![],
-                    },
+                Effect::RemoveNotifications {
+                    identifiers: vec!["turnscope-sign-in-anthropic:a".into()],
                 },
-                effects: vec![],
-            },
-            AppSync {
-                animated: true,
-                counting: false,
-                menu_bar: MenuBarModel {
-                    slots: vec![],
-                    spoken: "Turnscope".into(),
-                    out_of_date: false,
+                Effect::SavePreferences {
+                    menu_shows: MenuShows::One,
+                    dismissed_connect: vec!["codex".into()],
                 },
-                panel: PanelModel {
-                    version: "0.3.2".into(),
-                    has_status: true,
-                    stopped: false,
-                    waiting: None,
-                    verdict: None,
-                    in_use: vec![],
-                    recent: vec![],
-                    unused: vec![],
-                    hidden: vec![],
-                    unused_fold_label: None,
-                    hidden_fold_label: None,
-                    connect_offer: None,
-                    footer_note: Some(FooterNoteModel {
-                        text: "Refreshing limits…".into(),
-                        help: None,
-                        spoken: "Refreshing limits".into(),
-                        busy: true,
-                    }),
-                    settings: SettingsModel {
-                        menu_shows: MenuShows::All,
-                        notify: None,
-                        can_edit_notify: false,
-                        agents_empty: None,
-                        agents_title: String::new(),
-                        agents: vec![],
-                        accounts_empty: None,
-                        subscriptions: vec![],
-                        api_keys: vec![],
-                    },
-                },
-                effects: vec![],
-            },
-        ];
+            ],
+        };
 
         let snapshots = vec![
             SnapshotOutput::Ok {
-                panel: Box::new(syncs[0].panel.clone()),
+                panel: Box::new(sync.panel.clone()),
             },
             SnapshotOutput::Err {
                 error: "unreadable".into(),
@@ -857,9 +760,9 @@ mod tests {
         ];
 
         let dir = tempfile::tempdir().unwrap();
-        let syncs_path = dir.path().join("syncs.json");
+        let sync_path = dir.path().join("sync.json");
         let snaps_path = dir.path().join("snapshots.json");
-        std::fs::write(&syncs_path, serde_json::to_string(&syncs).unwrap()).unwrap();
+        std::fs::write(&sync_path, serde_json::to_string(&sync).unwrap()).unwrap();
         std::fs::write(&snaps_path, serde_json::to_string(&snapshots).unwrap()).unwrap();
 
         let driver = dir.path().join("main.swift");
@@ -876,13 +779,11 @@ struct Out: Encodable {
 
 let args = CommandLine.arguments
 let decoder = JSONDecoder()
-let syncs = try decoder.decode([AppSync].self, from: Data(contentsOf: URL(fileURLWithPath: args[1])))
-precondition(syncs.count == 3)
-
-// Verify every optional field Rust sends as Some decodes non-nil (decodeIfPresent would silently drop renamed keys).
-let p0 = syncs[0].panel
-precondition(p0.verdict?.headline == "Claude Max runs out in 50m")
-let row = p0.inUse[0]
+let sync = try decoder.decode(AppSync.self, from: Data(contentsOf: URL(fileURLWithPath: args[1])))
+let p = sync.panel
+precondition(p.waiting == WaitingModel(reading: "Reading…", problem: "database locked", retries: true))
+precondition(p.verdict?.headline == "Claude Max runs out in 50m")
+let row = p.inUse[0]
 precondition(row.label == "me@example.com")
 precondition(row.figureThen == "· 12%")
 precondition(row.note == "As of 2:00 PM")
@@ -893,32 +794,26 @@ precondition(row.limits[0].timeLeftFraction == 0.42)
 precondition(row.limits[1].size == "of $30")
 precondition(row.usedMost[0].sessionId == "0f6e-1234")
 precondition(row.usedMost[0].projectPath == "/tmp/turnscope")
-precondition(p0.hidden[0].label == "work@example.com")
-precondition(p0.hidden[0].via == "Codex")
-precondition(p0.unusedFoldLabel == "1 hidden")
-precondition(p0.hiddenFoldLabel == "1 hidden")
-precondition(p0.connectOffer?.note == "Uses another Turnscope")
-precondition(p0.connectOffer?.configured == "/old/turnscope")
-precondition(p0.footerNote == FooterNoteModel(text: "Not up to date", help: "Offline", spoken: "Not up to date: Offline", busy: false))
-precondition(p0.settings.notify == NotifySettings(runningOut: true, usedUp: false, reset: true, signIn: false))
-precondition(p0.settings.agents[0].note == "Uses another Turnscope")
-precondition(p0.settings.agents[0].configured == "/old/turnscope")
-precondition(p0.settings.agents[0].changing == "Connecting…")
-precondition(p0.settings.subscriptions[0].label == "me@example.com")
-precondition(p0.settings.subscriptions[0].via == "Claude Code")
-precondition(syncs[0].effects == [
+precondition(p.hidden[0].label == "work@example.com")
+precondition(p.hidden[0].via == "Codex")
+precondition(p.unusedFoldLabel == "1 hidden")
+precondition(p.hiddenFoldLabel == "1 hidden")
+precondition(p.connectOffer?.note == "Uses another Turnscope")
+precondition(p.connectOffer?.configured == "/old/turnscope")
+precondition(p.footerNote == FooterNoteModel(text: "Not up to date", help: "Offline", spoken: "Not up to date: Offline", busy: false))
+precondition(p.settings.notify == NotifySettings(runningOut: true, usedUp: false, reset: true, signIn: false))
+precondition(p.settings.agentsEmpty == EmptyMessage(headline: "No agents", detail: "Install one"))
+precondition(p.settings.agents[0].note == "Uses another Turnscope")
+precondition(p.settings.agents[0].configured == "/old/turnscope")
+precondition(p.settings.agents[0].changing == "Connecting…")
+precondition(p.settings.accountsEmpty == EmptyMessage(headline: "No accounts", detail: "Sign in"))
+precondition(p.settings.subscriptions[0].label == "me@example.com")
+precondition(p.settings.subscriptions[0].via == "Claude Code")
+precondition(sync.effects == [
     .postAlerts(alerts: [AlertNote(id: 7, account: "anthropic:a", replaces: "turnscope-limit-anthropic:a", signIn: false, title: "Claude Max", subtitle: "5 hours", body: "Runs out in 50m")]),
     .removeNotifications(identifiers: ["turnscope-sign-in-anthropic:a"]),
     .savePreferences(menuShows: .one, dismissedConnect: ["codex"]),
 ])
-
-let p1 = syncs[1].panel
-precondition(p1.waiting?.problem == "database locked")
-precondition(p1.footerNote == FooterNoteModel(text: "Reading…", help: "First run", spoken: "Reading", busy: true))
-precondition(p1.settings.agentsEmpty == EmptyMessage(headline: "No agents", detail: "Install one"))
-precondition(p1.settings.accountsEmpty == EmptyMessage(headline: "No accounts", detail: "Sign in"))
-
-precondition(syncs[2].panel.footerNote == FooterNoteModel(text: "Refreshing limits…", help: nil, spoken: "Refreshing limits", busy: true))
 
 let snaps = try decoder.decode([SnapshotResponse].self, from: Data(contentsOf: URL(fileURLWithPath: args[2])))
 precondition(snaps.count == 2)
@@ -1009,7 +904,7 @@ print(String(data: data, encoding: .utf8)!)
         );
 
         let run = std::process::Command::new(&bin)
-            .arg(&syncs_path)
+            .arg(&sync_path)
             .arg(&snaps_path)
             .output()
             .expect("contract binary should run");
@@ -1030,8 +925,8 @@ print(String(data: data, encoding: .utf8)!)
         assert_eq!(
             parsed.actions,
             vec![
-                Action::PanelOpened,
-                Action::PanelClosed,
+                Action::PanelOpened {},
+                Action::PanelClosed {},
                 Action::SetHidden {
                     id: "anthropic:a".into(),
                     hidden: true,
@@ -1063,8 +958,8 @@ print(String(data: data, encoding: .utf8)!)
                     id: 8,
                     sign_in_account: Some("anthropic:a".into()),
                 },
-                Action::RefreshNow,
-                Action::Tick,
+                Action::RefreshNow {},
+                Action::Tick {},
             ]
         );
         assert_eq!(parsed.start.fixture.as_deref(), Some(Path::new("f.json")));

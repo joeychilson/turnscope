@@ -41,6 +41,7 @@ pub struct PanelModel {
     pub version: String,
     pub has_status: bool,
     pub stopped: bool,
+    pub can_refresh: bool,
     pub waiting: Option<WaitingModel>,
     pub verdict: Option<VerdictModel>,
     pub in_use: Vec<AccountRowModel>,
@@ -57,6 +58,8 @@ pub struct PanelModel {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaitingModel {
+    /// Said beside a spinner while there's no problem.
+    pub reading: String,
     pub problem: Option<String>,
     pub retries: bool,
 }
@@ -218,6 +221,7 @@ pub fn build_panel(s: &State) -> PanelModel {
     let headlined = in_use_accounts.first().copied();
 
     let waiting = (!has_status).then(|| WaitingModel {
+        reading: words::READING_TEXT.to_owned(),
         problem: s.problem.as_ref().map(ToString::to_string),
         retries: matches!(s.problem, Some(Stopped::Failing(_))),
     });
@@ -254,18 +258,15 @@ pub fn build_panel(s: &State) -> PanelModel {
         (!hidden.is_empty() && !unused.is_empty()).then(|| words::hidden(hidden.len()));
 
     let connect_offer = s.to_connect().map(|agent| {
-        let note = s
-            .agent_errors
-            .get(&agent.id)
-            .map(|(_, error)| error.clone())
-            .or_else(|| words::connection(agent));
+        let row = build_agent_row(s, agent);
         let (verb, help) = words::connect_action(agent);
         ConnectOfferModel {
-            id: agent.id.clone(),
-            name: agent.name.clone(),
-            note,
-            configured: agent.configured.clone(),
-            changing: s.changing_agents.contains_key(&agent.id),
+            id: row.id,
+            name: row.name,
+            // Settings leaves out that it isn't connected, beside its switch.
+            note: row.note.or_else(|| words::connection(agent)),
+            configured: row.configured,
+            changing: row.changing.is_some(),
             verb: verb.to_owned(),
             help,
         }
@@ -275,6 +276,7 @@ pub fn build_panel(s: &State) -> PanelModel {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         has_status,
         stopped: s.stopped(),
+        can_refresh: s.can_refresh(),
         waiting,
         verdict,
         in_use,
@@ -473,6 +475,8 @@ fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
 mod tests {
     use super::*;
     use crate::state::tests::example;
+    use turnscope::engine::Shown;
+    use turnscope::time::MINUTE;
 
     #[test]
     fn time_left_fraction_is_set_only_for_fixed_active_windows() {
@@ -487,6 +491,40 @@ mod tests {
         // ChatGPT Pro: primary reset since read, secondary rolling -> neither has a tick.
         assert_eq!(panel.recent[0].limits[0].time_left_fraction, None);
         assert_eq!(panel.recent[0].limits[1].time_left_fraction, None);
+        // Nor 5 minutes into 5 hours, where the tick would sit on the bar's end.
+        let mut early = example();
+        early.status.at = early.status.accounts[0].limits[0].started().unwrap() + 5 * MINUTE;
+        let panel = build_panel(&State::fixed(early));
+        assert_eq!(panel.in_use[0].limits[0].time_left_fraction, None);
+    }
+
+    #[test]
+    fn the_fold_says_what_it_holds_and_folds_hidden_accounts_only_beside_others() {
+        let mut shown = example();
+        let folds = |shown: &Shown| {
+            let panel = build_panel(&State::fixed(shown.clone()));
+            (panel.unused_fold_label, panel.hidden_fold_label)
+        };
+        assert_eq!(
+            folds(&shown),
+            (Some("2 more accounts".into()), Some("1 hidden".into()))
+        );
+        for account in &mut shown.status.accounts {
+            account.hidden |= !account.in_use && !account.recent;
+        }
+        assert_eq!(folds(&shown), (Some("3 hidden".into()), None));
+    }
+
+    #[test]
+    fn a_row_shows_its_label_only_beside_another_account_with_its_title() {
+        let mut shown = example();
+        let label = |shown: &Shown| {
+            let panel = build_panel(&State::fixed(shown.clone()));
+            panel.in_use[0].label.clone()
+        };
+        assert_eq!(label(&shown), None);
+        shown.status.accounts[1].title = "Claude Max".into();
+        assert_eq!(label(&shown), Some("me@example.com".into()));
     }
 
     #[test]

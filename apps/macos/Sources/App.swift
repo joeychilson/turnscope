@@ -222,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if bridge.isLive {
             let refresh = NSMenuItem(title: "Refresh Limits", action: #selector(menuRefreshLimits), keyEquivalent: "r")
             refresh.target = self
-            refresh.isEnabled = bridge.panel.hasStatus && !bridge.panel.stopped
+            refresh.isEnabled = bridge.panel.canRefresh
             menu.addItem(refresh)
             menu.addItem(.separator())
         }

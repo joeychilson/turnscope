@@ -78,6 +78,9 @@ pub enum Event {
         connection: crate::status::Connection,
         error: Option<String>,
     },
+    /// A refresh asked for (`Engine::refresh_now`) ended, told after its
+    /// status.
+    Refreshed,
 }
 
 /// Why the data isn't kept current.
@@ -158,6 +161,9 @@ struct Inner {
     showing: Mutex<Option<Showing>>,
     kept: Mutex<Kept>,
     wake: Mutex<Option<Sender<Wake>>>,
+    /// A forced read sent to `keep` and not answered yet, which `run`
+    /// answers if `keep` ends first.
+    forcing: AtomicBool,
     ended: AtomicBool,
 }
 
@@ -183,6 +189,7 @@ impl Engine {
             showing: Mutex::new(None),
             kept: Mutex::new(Kept::Unset),
             wake: Mutex::new(None),
+            forcing: AtomicBool::new(false),
             ended: AtomicBool::new(false),
         });
         let running = Arc::clone(&inner);
@@ -271,13 +278,18 @@ impl Engine {
     }
 
     /// Ask for a limit read skipping staleness (`DUE`/`IDLE`), while still
-    /// respecting provider backoff and `CLAIM`, and always emit `Shown` when done.
+    /// respecting provider backoff and `CLAIM`: told as the status, changed
+    /// or not, then `Event::Refreshed`.
     pub fn refresh_now(&self) {
-        let sent = locked(&self.inner.wake)
-            .as_ref()
-            .is_some_and(|wake| wake.send(Wake::Force).is_ok());
+        let sent = locked(&self.inner.wake).as_ref().is_some_and(|wake| {
+            self.inner.forcing.store(true, Ordering::Release);
+            wake.send(Wake::Force).is_ok()
+        });
         if !sent {
-            Engine::ask(&self.requests, |inner| inner.give(Tell::Always));
+            Engine::ask(&self.requests, |inner| {
+                inner.give(Tell::Always);
+                (inner.tell)(Event::Refreshed);
+            });
         }
     }
 
@@ -376,6 +388,10 @@ impl Inner {
                     }));
                     *locked(&self.wake) = None;
                     drop(lock);
+                    if self.forcing.swap(false, Ordering::AcqRel) {
+                        self.give(Tell::Always);
+                        (self.tell)(Event::Refreshed);
+                    }
                     let why = match kept {
                         Ok(Ok(())) => continue,
                         Ok(Err(error)) => error,
@@ -435,6 +451,10 @@ impl Inner {
             } else {
                 Tell::IfChanged
             });
+        }
+        if always {
+            self.forcing.store(false, Ordering::Release);
+            (self.tell)(Event::Refreshed);
         }
         !self.ended() && self.newer().is_none()
     }
@@ -1354,20 +1374,49 @@ mod tests {
         assert!(!running(data.path()));
     }
 
+    /// A forced read that a newer Turnscope's write stops still ends.
     #[test]
-    fn refresh_now_emits_shown_even_when_nothing_changed() {
+    fn a_refresh_a_newer_turnscope_stops_still_ends() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        drop(read_just_now(data.path()));
+        let db = read_just_now(data.path());
         let (engine, told) = start(data.path(), home.path());
-        // Once the first catch-up reports `history_read`, `keep` has installed
-        // `wake` and parked on `changes.recv_timeout`.
         next(&told, 10, |event| match event {
             Event::Shown(shown, _) if shown.status.history_read => Some(()),
             _ => None,
         });
+        db.execute_batch(NEWER[1]).unwrap();
         engine.refresh_now();
         next(&told, 10, |event| {
-            matches!(event, Event::Shown(_, _)).then_some(())
+            matches!(event, Event::Refreshed).then_some(())
         });
+    }
+
+    /// Both when this app keeps the data current and when another does.
+    #[test]
+    fn refresh_now_tells_the_status_even_when_nothing_changed_then_that_it_ended() {
+        for another_keeps in [false, true] {
+            let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            drop(read_just_now(data.path()));
+            let _other = another_keeps.then(|| lock(data.path()).unwrap().unwrap());
+            let (engine, told) = start(data.path(), home.path());
+            // Once `keep` reports `history_read` it has installed `wake` and
+            // parked; with the lock held elsewhere, `Kept` is told instead.
+            next(&told, 10, |event| match event {
+                Event::Shown(shown, _) if shown.status.history_read => Some(()),
+                Event::Kept(None) if another_keeps => Some(()),
+                _ => None,
+            });
+            engine.refresh_now();
+            let shown = std::cell::Cell::new(false);
+            next(&told, 10, |event| match event {
+                Event::Shown(..) => {
+                    shown.set(true);
+                    None
+                }
+                Event::Refreshed => Some(()),
+                _ => None,
+            });
+            assert!(shown.get(), "another keeps: {another_keeps}");
+        }
     }
 }

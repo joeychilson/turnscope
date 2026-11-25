@@ -263,6 +263,10 @@ It's in the engine crate, so an app for another platform only draws.
   save of the settings and a connect, changed or not, so a change the app
   showed at once goes back if the request failed. Whichever thread works
   out a status, statuses are told in the order they're worked out.
+- Refresh Limits (`Engine::refresh_now`) reads every limit at once, though
+  read lately, except a provider's that asked to wait. It then tells the
+  status, changed or not, and that the refresh ended (`Event::Refreshed`):
+  the app says it's refreshing until then.
 - The data is said to be current (`Event::Kept`) once a catch-up has read
   every agent. If one fails, it tells the app why and tries again: at the
   next change in the agents' folders, or the next minute. If keeping the

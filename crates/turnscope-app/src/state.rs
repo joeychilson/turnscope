@@ -44,15 +44,12 @@ pub enum Effect {
     },
 }
 
+/// What the shell asks. Variants with no fields are written `{}`, as Swift encodes them.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Action {
-    PanelOpened,
-    PanelClosed,
+    PanelOpened {},
+    PanelClosed {},
     SetHidden {
         id: String,
         hidden: bool,
@@ -74,8 +71,8 @@ pub enum Action {
         id: i64,
         sign_in_account: Option<String>,
     },
-    RefreshNow,
-    Tick,
+    RefreshNow {},
+    Tick {},
 }
 
 /// A request to the engine, sent once the core's lock is let go.
@@ -203,6 +200,11 @@ impl State {
         matches!(self.problem, Some(Stopped::Newer { .. }))
     }
 
+    /// Whether Refresh Limits can be asked for: without a status, there's nothing to refresh.
+    pub fn can_refresh(&self) -> bool {
+        self.live() && self.status.is_some() && !self.stopped()
+    }
+
     pub fn verdict(&self, words: &Words) -> (String, String) {
         if self.all().is_empty() {
             words::welcome(&self.installed(), &self.agent_names(), self.reading())
@@ -294,7 +296,6 @@ impl Core {
         let mut calls = Vec::new();
         match event {
             Event::Shown(shown, alerts) => {
-                self.state.refreshing = false;
                 if self.state.panel_open {
                     self.animated = true;
                 }
@@ -330,7 +331,6 @@ impl Core {
             }
             Event::Pending(alerts) => (calls, self.post(alerts)),
             Event::Kept(stopped) => {
-                self.state.refreshing = false;
                 self.state.problem = stopped;
                 (calls, true)
             }
@@ -364,6 +364,7 @@ impl Core {
                 }
                 (calls, self.state.panel_open)
             }
+            Event::Refreshed => (calls, std::mem::take(&mut self.state.refreshing)),
         }
     }
 
@@ -371,7 +372,7 @@ impl Core {
     pub fn apply(&mut self, action: Action, now_ms: i64) -> Vec<Call> {
         let mut calls = Vec::new();
         match action {
-            Action::PanelOpened => {
+            Action::PanelOpened {} => {
                 if !self.state.panel_open {
                     self.state.panel_open = true;
                     self.state.now = turnscope::time::minute(now_ms);
@@ -379,7 +380,7 @@ impl Core {
                     calls.push(Call::AskLimits);
                 }
             }
-            Action::PanelClosed => {
+            Action::PanelClosed {} => {
                 self.state.panel_open = false;
             }
             Action::SetHidden { id, hidden } => {
@@ -447,18 +448,13 @@ impl Core {
                     });
                 }
             }
-            // Without a status, the engine has nothing to refresh, and wouldn't say when it's done.
-            Action::RefreshNow => {
-                if self.state.live()
-                    && self.state.status.is_some()
-                    && !self.state.stopped()
-                    && !self.state.refreshing
-                {
+            Action::RefreshNow {} => {
+                if self.state.can_refresh() && !self.state.refreshing {
                     self.state.refreshing = true;
                     calls.push(Call::RefreshNow);
                 }
             }
-            Action::Tick => {
+            Action::Tick {} => {
                 if self.state.panel_open {
                     self.state.now = turnscope::time::minute(now_ms);
                 }
@@ -556,8 +552,16 @@ pub(crate) mod tests {
         state.preferences.dismissed_connect.insert("codex".into());
         assert!(state.to_connect().is_none());
         state.preferences.dismissed_connect.clear();
-        state.from_disk_image = true;
-        assert!(state.to_connect().is_none());
+        let mut core = Core::new(state);
+        let connect = Action::SetConnected {
+            id: "codex".into(),
+            connecting: true,
+        };
+        core.apply(connect, 0);
+        let offer = core.sync().panel.connect_offer;
+        assert!(offer.is_some_and(|offer| offer.changing));
+        core.state.from_disk_image = true;
+        assert!(core.state.to_connect().is_none());
     }
 
     #[test]
@@ -699,7 +703,7 @@ pub(crate) mod tests {
     #[test]
     fn while_the_panel_is_open_a_status_asks_what_used_in_use_and_missing_accounts() {
         let mut core = Core::new(State::default());
-        core.apply(Action::PanelOpened, 0);
+        core.apply(Action::PanelOpened {}, 0);
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
         fn asked(calls: &[Call]) -> Vec<&str> {
             calls
@@ -722,7 +726,7 @@ pub(crate) mod tests {
         changed.status.accounts[1].deciding = Some("primary".into());
         let (calls, _) = core.took(Event::Shown(Box::new(changed), Vec::new()));
         assert_eq!(asked(&calls), [CLAUDE, CODEX]);
-        core.apply(Action::PanelClosed, 0);
+        core.apply(Action::PanelClosed {}, 0);
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
         assert!(calls.is_empty());
     }
@@ -758,6 +762,13 @@ pub(crate) mod tests {
         };
         core.took(Event::Shown(Box::new(read), Vec::new()));
         assert_eq!(removed(core.sync()), [format!("account:{OPENCODE_GO}")]);
+        // Read again while its notification was posted.
+        let acknowledged = Action::AcknowledgeAlert {
+            id: 1,
+            sign_in_account: Some(OPENCODE_GO.into()),
+        };
+        assert_eq!(core.apply(acknowledged, 0), [Call::Acknowledge(1)]);
+        assert_eq!(removed(core.sync()), [format!("account:{OPENCODE_GO}")]);
     }
 
     #[test]
@@ -790,6 +801,68 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn set_to_most_urgent_the_menu_bar_shows_one_account() {
+        let mut two = example();
+        two.status.accounts[1].in_use = true;
+        let mut core = Core::new(shown(two));
+        let slots = |core: &mut Core| core.sync().menu_bar.slots.len();
+        assert_eq!(slots(&mut core), 2);
+        let one = Action::SetMenuShows {
+            shows: MenuShows::One,
+        };
+        core.apply(one, 0);
+        assert_eq!(slots(&mut core), 1);
+    }
+
+    #[test]
+    fn opening_the_panel_asks_for_limits_and_its_words_move_each_minute() {
+        let at = example().status.at;
+        let mut core = Core::new(shown(example()));
+        let asked = core.apply(Action::PanelOpened {}, at);
+        assert!(asked.contains(&Call::AskLimits));
+        let headline = |core: &mut Core| core.sync().panel.verdict.unwrap().headline;
+        assert_eq!(headline(&mut core), "Claude Max runs out in\u{a0}50m");
+        core.apply(Action::Tick {}, at + 10 * turnscope::time::MINUTE);
+        assert_eq!(headline(&mut core), "Claude Max runs out in\u{a0}40m");
+    }
+
+    #[test]
+    fn once_a_newer_turnscope_stops_the_engine_nothing_changes_nor_connects_from_a_disk_image() {
+        let mut stopped = Core::new(shown(example()));
+        stopped.took(Event::Kept(Some(Stopped::Newer { replaced: false })));
+        let mut image = Core::new(State {
+            from_disk_image: true,
+            ..shown(example())
+        });
+        for core in [&mut stopped, &mut image] {
+            let connect = Action::SetConnected {
+                id: "codex".into(),
+                connecting: true,
+            };
+            assert_eq!(core.apply(connect, 0), []);
+            assert!(core.sync().panel.settings.agents.iter().all(|a| !a.enabled));
+        }
+        let notify = example().status.settings.notify;
+        let hide = Action::SetHidden {
+            id: CLAUDE.into(),
+            hidden: true,
+        };
+        let quiet = Action::SetNotify {
+            notify: Notify {
+                reset: false,
+                ..notify
+            },
+        };
+        assert_eq!(stopped.apply(hide, 0), []);
+        assert_eq!(stopped.apply(quiet, 0), []);
+        assert_eq!(stopped.apply(Action::RefreshNow {}, 0), []);
+        let panel = stopped.sync().panel;
+        assert_eq!(panel.in_use[0].id, CLAUDE);
+        assert_eq!(panel.settings.notify, Some(notify));
+        assert!(!panel.settings.can_edit_notify && !panel.can_refresh);
+    }
+
+    #[test]
     fn the_minute_is_counted_while_the_panel_is_open_or_an_account_shown_runs_out() {
         let mut state = shown(example());
         assert!(state.counting());
@@ -799,18 +872,30 @@ pub(crate) mod tests {
         assert!(state.counting());
     }
 
+    /// A status told meanwhile, as after a hide, isn't the refresh's, nor is
+    /// the first catch-up's `Kept`: the refresh ends on `Refreshed` alone,
+    /// which the engine tells for every forced read.
     #[test]
-    fn refreshing_is_said_until_the_status_comes_and_only_once_there_is_one() {
+    fn refreshing_is_said_until_the_refresh_ends_and_only_once_there_is_a_status() {
         let refreshing = |core: &mut Core| core.sync().panel.footer_note.map(|n| n.text);
         let mut core = Core::new(shown(example()));
-        assert_eq!(core.apply(Action::RefreshNow, 0), [Call::RefreshNow]);
+        assert!(core.sync().panel.can_refresh);
+        assert_eq!(core.apply(Action::RefreshNow {}, 0), [Call::RefreshNow]);
         assert_eq!(refreshing(&mut core).as_deref(), Some("Refreshing limits…"));
-        assert_eq!(core.apply(Action::RefreshNow, 0), []);
         core.took(Event::Shown(Box::new(example()), Vec::new()));
+        assert_eq!(refreshing(&mut core).as_deref(), Some("Refreshing limits…"));
+        assert_eq!(core.apply(Action::RefreshNow {}, 0), []);
+        core.took(Event::Refreshed);
         assert_eq!(refreshing(&mut core), None);
 
+        assert_eq!(core.apply(Action::RefreshNow {}, 0), [Call::RefreshNow]);
+        core.took(Event::Kept(None));
+        assert_eq!(refreshing(&mut core).as_deref(), Some("Refreshing limits…"));
+        assert_eq!(core.apply(Action::RefreshNow {}, 0), []);
+
         let mut unopened = Core::new(State::default());
-        assert_eq!(unopened.apply(Action::RefreshNow, 0), []);
+        assert!(!unopened.sync().panel.can_refresh);
+        assert_eq!(unopened.apply(Action::RefreshNow {}, 0), []);
         assert_eq!(refreshing(&mut unopened), None);
     }
 }
