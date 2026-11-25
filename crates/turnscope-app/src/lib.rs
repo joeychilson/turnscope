@@ -515,8 +515,9 @@ mod tests {
         assert_eq!(sync["panel"]["hasStatus"], true);
     }
 
+    /// `scripts/screenshots.sh` draws the panel this way.
     #[test]
-    fn snapshot_reads_fixture_and_builds_agents() {
+    fn a_snapshot_is_drawn_as_of_its_fixture() {
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../turnscope/tests/fixtures/status.json");
         let panel = snapshot(SnapshotConfig {
@@ -525,8 +526,10 @@ mod tests {
             home: None,
         })
         .unwrap();
-        assert!(panel.has_status);
-        assert_eq!(panel.settings.agents.len(), 2);
+        assert_eq!(
+            panel.verdict.unwrap().headline,
+            "Claude Max runs out in\u{a0}50m"
+        );
     }
 
     /// Each of the last lines logged is said once, whether or not doctor can run.
