@@ -175,7 +175,36 @@ fn main() -> ExitCode {
         Command::Connect { agent: Some(id) } => change_agent(&id, true, cli.json, &home),
         Command::Disconnect { agent: id } => change_agent(&id, false, cli.json, &home),
         Command::Connect { agent: None } => connections(cli.json, &home, &data),
-        command => answer(command, cli.json, &home, &data),
+        Command::Status {
+            account,
+            all,
+            hours,
+        } => caught_up(&home, &data)
+            .and_then(|db| cmd_status(&db, now(), cli.json, account.as_deref(), all, hours)),
+        Command::Usage(mut args) => {
+            caught_up(&home, &data).and_then(|db| match args.limit.take() {
+                Some(name) => cmd_usage_limit(&db, &home, now(), cli.json, args, &name),
+                None => cmd_usage(&db, now(), cli.json, args),
+            })
+        }
+        // Hiding or showing one doesn't wait for what's new to be read.
+        Command::Accounts { action: None } => {
+            caught_up(&home, &data).and_then(|db| cmd_accounts(&db, now(), cli.json, None))
+        }
+        Command::Accounts { action } => {
+            db::open(&data).and_then(|db| cmd_accounts(&db, now(), cli.json, action))
+        }
+        Command::Doctor => caught_up(&home, &data).and_then(|db| {
+            let notes = turnscope::doctor(&db, &data, &home, now())?;
+            Ok(print(
+                cli.json,
+                || json!(notes),
+                || match notes.is_empty() {
+                    true => "Nothing to fix.".to_owned(),
+                    false => notes.join("\n"),
+                },
+            ))
+        }),
     };
     match outcome {
         Ok(out) => {
@@ -268,76 +297,19 @@ fn connections(json: bool, home: &Path, data: &Path) -> Result<String> {
     ))
 }
 
-/// Commands that report data catch up first; those that change a setting
-/// don't wait for it.
-fn answer(command: Command, json: bool, home: &Path, data: &Path) -> Result<String> {
+/// The database, with what's new read first, for a command that reports
+/// data.
+fn caught_up(home: &Path, data: &Path) -> Result<rusqlite::Connection> {
     let mut db = db::open(data)?;
-    let reports = !matches!(&command, Command::Accounts { action: Some(_) });
-    if reports {
-        if let Some(wait) = ingest::waits(&db) {
-            eprintln!("{wait}");
-        }
-        if let Err(error) = catch_up(&mut db, home, None) {
-            eprintln!(
-                "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
-            );
-        }
+    if let Some(wait) = ingest::waits(&db) {
+        eprintln!("{wait}");
     }
-    let now = now();
-    match command {
-        Command::Status {
-            account,
-            all,
-            hours,
-        } => cmd_status(&db, now, json, account.as_deref(), all, hours),
-        Command::Usage(mut args) => match args.limit.take() {
-            Some(name) => cmd_usage_limit(&db, home, now, json, args, &name),
-            None => cmd_usage(&db, now, json, args),
-        },
-        Command::Accounts { action } => cmd_accounts(&db, now, json, action),
-        Command::Doctor => {
-            let notes = turnscope::doctor(&db, data, home, now)?;
-            Ok(print(
-                json,
-                || json!(notes),
-                || {
-                    if notes.is_empty() {
-                        "Nothing to fix.".to_owned()
-                    } else {
-                        notes.join("\n")
-                    }
-                },
-            ))
-        }
-        Command::Mcp
-        | Command::Guard { .. }
-        | Command::Statusline { .. }
-        | Command::Connect { .. }
-        | Command::Disconnect { .. } => {
-            unreachable!("served before the database is opened")
-        }
+    if let Err(error) = catch_up(&mut db, home, None) {
+        eprintln!(
+            "turnscope: what's new couldn't be read first, so this is as of the last read: {error}"
+        );
     }
-}
-
-fn parse_time(text: Option<&str>, now: i64) -> Result<Option<i64>> {
-    text.map(|text| time::parse(text, now)).transpose()
-}
-
-fn check_range(since: i64, until_given: Option<i64>, now: i64) -> Result<()> {
-    if since >= until_given.unwrap_or(now) {
-        return Err(Error::Usage(
-            match until_given {
-                Some(_) => {
-                    "--since is at or after --until, so nothing is between them: give an earlier --since"
-                }
-                None => {
-                    "--since is now or later, so there's no usage after it: give an earlier --since"
-                }
-            }
-            .to_owned(),
-        ));
-    }
-    Ok(())
+    Ok(db)
 }
 
 fn cmd_status(
@@ -388,19 +360,13 @@ fn cmd_usage_limit(
     let status = status::status(db, now)?;
     let (account, limit) = limit_of(db, home, &status, args.account.as_deref(), name)?;
     let by = args.by.unwrap_or(usage::By::Session);
-    let since = parse_time(args.since.as_deref(), now)?;
-    if let Some(since) = since {
-        check_range(since, None, now)?;
-    }
-    let (used, shares) = usage::breakdown(
-        db,
-        account,
-        Some(limit),
-        since.map(|since| (since, now)),
-        by,
-        args.top,
-        now,
-    )?;
+    let between = args
+        .since
+        .as_deref()
+        .map(|since| time::between(since, None, now))
+        .transpose()?;
+    let (mut used, mut shares) = usage::breakdown(db, account, Some(limit), between, by, now)?;
+    usage::fold(&mut used, shares.as_mut(), args.top);
     Ok(print(
         json,
         || {
@@ -420,7 +386,7 @@ fn cmd_usage_limit(
             );
             let mut text =
                 heading + &usage::text(&used, shares.as_ref().map(|shares| (limit, shares)));
-            if let Some(why) = usage::unshared(&used, limit).filter(|_| since.is_none()) {
+            if let Some(why) = usage::unshared(&used, limit).filter(|_| between.is_none()) {
                 text += &format!("\n{why}");
             }
             text
@@ -441,20 +407,19 @@ fn cmd_usage(db: &rusqlite::Connection, now: i64, json: bool, args: UsageArgs) -
         ),
         None => None,
     };
-    let since = parse_time(args.since.as_deref(), now)?.unwrap_or(now - 30 * time::DAY);
-    let until_given = parse_time(args.until.as_deref(), now)?;
-    check_range(since, until_given, now)?;
+    let since = args.since.as_deref().unwrap_or(usage::SINCE);
+    let (since, until) = time::between(since, args.until.as_deref(), now)?;
     let query = usage::Query {
         since,
-        until: until_given.unwrap_or(now),
+        until,
         by: args.by.unwrap_or(usage::By::Day),
         agent: args.agent,
         account,
         models: Vec::new(),
         key: None,
-        top: args.top,
     };
-    let used = usage::usage(db, &query)?;
+    let mut used = usage::usage(db, &query)?;
+    usage::fold(&mut used, None, args.top);
     Ok(print(json, || json!(used), || usage::text(&used, None)))
 }
 
@@ -493,7 +458,7 @@ fn cmd_accounts(
         },
         || {
             if status.accounts.is_empty() {
-                status::none(&status, "`turnscope status --all` shows them")
+                status::NONE_READ.to_owned()
             } else {
                 status
                     .accounts
@@ -671,44 +636,4 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
         let session = agent.info().session(native);
         usage::session_account(db, &session).ok().flatten()
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Eleven files that can't be read, one more than doctor names.
-    #[test]
-    fn doctor_names_a_file_that_cant_be_read_until_its_deleted() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let folder = home.path().join(".claude/projects/-work-a");
-        std::fs::create_dir_all(&folder).unwrap();
-        let locked: Vec<PathBuf> = (0..11)
-            .map(|n| folder.join(format!("s{n:02}.jsonl")))
-            .collect();
-        for file in &locked {
-            std::fs::write(file, "{}\n").unwrap();
-            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000)).unwrap();
-        }
-        let mut db = db::open(data.path()).unwrap();
-        let mut notes = || {
-            ingest::ingest(&mut db, home.path(), None).unwrap();
-            turnscope::doctor(&db, data.path(), home.path(), now())
-                .unwrap()
-                .join("\n")
-        };
-        assert!(notes().contains("s00.jsonl"));
-        // The ten it named are deleted, and don't hide the last.
-        for file in &locked[..10] {
-            std::fs::remove_file(file).unwrap();
-        }
-        let named = notes();
-        assert!(
-            named.contains("s10.jsonl") && !named.contains("s00.jsonl"),
-            "{named}"
-        );
-        std::fs::remove_file(&locked[10]).unwrap();
-        assert!(!notes().contains("s10.jsonl"));
-    }
 }

@@ -61,6 +61,9 @@ impl By {
     }
 }
 
+/// Where usage starts when neither a time nor a limit's window says.
+pub const SINCE: &str = "30d";
+
 #[derive(Clone)]
 pub struct Query {
     pub since: i64,
@@ -72,7 +75,6 @@ pub struct Query {
     pub models: Vec<String>,
     /// API key fingerprint; filters to responses made under that key.
     pub key: Option<String>,
-    pub top: usize,
 }
 
 #[derive(Serialize)]
@@ -226,16 +228,14 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
                 .then(b.responses.cmp(&a.responses))
         });
     }
-    let mut usage = Usage {
+    Ok(Usage {
         since: query.since,
         until: query.until,
         by: query.by,
         total,
         rows,
         rest: None,
-    };
-    fold(&mut usage, None, query.top);
-    Ok(usage)
+    })
 }
 
 pub fn fold(usage: &mut Usage, shares: Option<&mut Shares>, top: usize) {
@@ -310,16 +310,12 @@ pub struct Shares {
 }
 
 pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>) -> String {
-    let date = |at: i64| {
-        time::local(time::round_minute(at))
-            .strftime("%a %b %-d %H:%M")
-            .to_string()
-    };
+    let date = |at: i64| time::local(at).strftime("%a %b %-d %H:%M").to_string();
     let mut out = format!(
-        "{} to {}: {} responses, {}\n",
+        "{} to {}: {}, {}\n",
         date(usage.since),
         date(usage.until),
-        count(usage.total.responses),
+        counted(usage.total.responses, "response"),
         cost(usage.total.cost_usd, usage.total.unpriced),
     );
     let time = usage.by.period().is_some();
@@ -462,10 +458,9 @@ pub fn breakdown(
     limit: Option<&crate::status::Limit>,
     between: Option<(i64, i64)>,
     by: By,
-    top: usize,
     now: i64,
 ) -> Result<(Usage, Option<Shares>)> {
-    let usage = usage(db, &query(account, limit, between, by, top, now))?;
+    let usage = usage(db, &query(account, limit, between, by, now))?;
     let shares = limit
         .filter(|_| between.is_none())
         .and_then(|limit| shares(&usage, limit));
@@ -482,7 +477,6 @@ pub fn query(
     limit: Option<&crate::status::Limit>,
     between: Option<(i64, i64)>,
     by: By,
-    top: usize,
     now: i64,
 ) -> Query {
     let rolls = limit.and_then(|limit| {
@@ -511,7 +505,6 @@ pub fn query(
         account: Some(account.id.clone()),
         models: models(limit.and_then(|limit| limit.scope.as_deref())),
         key: key(limit.map_or("", |limit| &limit.key)),
-        top,
     }
 }
 
@@ -666,18 +659,17 @@ mod tests {
             ("r2", "claude-sonnet-5", 1.0, at),
         ];
         let (_dir, db) = store(account, "claude-code", &responses);
-        let (usage, shares) =
-            breakdown(&db, account, Some(opus), None, By::Model, 10, now).unwrap();
+        let (usage, shares) = breakdown(&db, account, Some(opus), None, By::Model, now).unwrap();
         assert_eq!(keys(&usage), ["claude-opus-5"]);
         assert_eq!(shares.unwrap().rows, [f64::from(100 - opus.left_percent)]);
 
         // A limit on several counts any of them.
         let mut either = opus.clone();
         either.scope = Some("Sonnet and Opus".to_owned());
-        let (usage, _) = breakdown(&db, account, Some(&either), None, By::Model, 10, now).unwrap();
+        let (usage, _) = breakdown(&db, account, Some(&either), None, By::Model, now).unwrap();
         assert_eq!(keys(&usage), ["claude-opus-5", "claude-sonnet-5"]);
         either.scope = Some("Haiku and GPT".to_owned());
-        let (usage, _) = breakdown(&db, account, Some(&either), None, By::Model, 10, now).unwrap();
+        let (usage, _) = breakdown(&db, account, Some(&either), None, By::Model, now).unwrap();
         assert!(usage.rows.is_empty());
     }
 
@@ -702,8 +694,7 @@ mod tests {
             ("two days ago", "glm-5", 1.0, now - 2 * time::DAY),
         ];
         let (_dir, db) = store(account, "opencode", &responses);
-        let (usage, _) =
-            breakdown(&db, account, Some(&rolling), None, By::Session, 10, now).unwrap();
+        let (usage, _) = breakdown(&db, account, Some(&rolling), None, By::Session, now).unwrap();
         assert_eq!(usage.since, now - 5 * time::HOUR);
         assert_eq!(keys(&usage), ["this hour", "four hours ago"]);
         // Its reset still ahead.
@@ -712,8 +703,7 @@ mod tests {
             resets: crate::status::Moment::of(now + time::HOUR, now),
         });
         rolling.reset_since = None;
-        let (usage, _) =
-            breakdown(&db, account, Some(&rolling), None, By::Session, 10, now).unwrap();
+        let (usage, _) = breakdown(&db, account, Some(&rolling), None, By::Session, now).unwrap();
         assert_eq!(keys(&usage), ["this hour", "four hours ago"]);
     }
 
@@ -736,8 +726,7 @@ mod tests {
             resets: crate::status::Moment::of(reset, now),
         });
         late.reset_since = Some(reset);
-        let (usage, shares) =
-            breakdown(&db, account, Some(&late), None, By::Session, 10, now).unwrap();
+        let (usage, shares) = breakdown(&db, account, Some(&late), None, By::Session, now).unwrap();
         assert_eq!(usage.since, now - 7 * time::DAY);
         assert_eq!(keys(&usage), ["this week"]);
         assert!(shares.is_none());
@@ -756,9 +745,10 @@ mod tests {
             ("r3", "claude-haiku-5", 0.25, at),
         ];
         let (_dir, db) = store(account, "claude-code", &responses);
-        let (usage, shares) =
-            breakdown(&db, account, Some(weekly), None, By::Model, 1, now).unwrap();
-        let shares = shares.unwrap();
+        let (mut usage, shares) =
+            breakdown(&db, account, Some(weekly), None, By::Model, now).unwrap();
+        let mut shares = shares.unwrap();
+        fold(&mut usage, Some(&mut shares), 1);
         // Of the 40 points used, three quarters of the cost and the rest's
         // quarter.
         assert_eq!(
@@ -775,7 +765,8 @@ mod tests {
             markdown.contains("| 2 more models | $1.00 | 2 | 10% |\n"),
             "{markdown}"
         );
-        let (usage, _) = breakdown(&db, account, Some(weekly), None, By::Model, 2, now).unwrap();
+        let (mut usage, _) = breakdown(&db, account, Some(weekly), None, By::Model, now).unwrap();
+        fold(&mut usage, None, 2);
         let markdown = super::markdown(&usage, None, None);
         assert!(
             markdown.contains("| 1 more model | $0.25 | 1 |\n"),
@@ -802,7 +793,7 @@ mod tests {
              INSERT INTO sign_in VALUES ('pi', 'pi', 'openrouter', 0, 'openrouter:api', '0123456789abcdef');",
         )
         .unwrap();
-        let (usage, _) = breakdown(&db, account, Some(limit), None, By::Agent, 5, now).unwrap();
+        let (usage, _) = breakdown(&db, account, Some(limit), None, By::Agent, now).unwrap();
         assert_eq!(keys(&usage), ["opencode"]);
     }
 
@@ -818,9 +809,8 @@ mod tests {
             ("r2", "claude-new-5", 0.0, at),
         ];
         let (_dir, db) = store(account, "claude-code", &responses);
-        let shares = |db: &Connection| {
-            breakdown(db, account, Some(weekly), None, By::Model, 5, now).unwrap()
-        };
+        let shares =
+            |db: &Connection| breakdown(db, account, Some(weekly), None, By::Model, now).unwrap();
         assert!(shares(&db).1.is_some());
         db.execute("UPDATE response SET cost = NULL WHERE id = 'r2'", [])
             .unwrap();

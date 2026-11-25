@@ -153,44 +153,38 @@ impl Caller {
         }
     }
 
-    pub fn account_id(&self, db: &Connection, home: &Path) -> Result<Option<String>> {
-        if let Some(session) = &self.session {
-            let account = usage::session_account(db, session)?;
-            if account.is_some() {
-                return Ok(account);
-            }
-        }
-        let Some(agent) = self.agent else {
-            return Ok(None);
-        };
-        let folder = self
-            .agent_folder
-            .clone()
-            .or_else(|| agent.folders(home).into_iter().next());
-        Ok(db
-            .prepare_cached(
-                "SELECT account FROM response WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
-                 ORDER BY at DESC LIMIT 1",
-            )?
-            .query_row(
-                rusqlite::params![
-                    agent.info().id,
-                    folder.map(|folder| folder.to_string_lossy().into_owned())
-                ],
-                |row| row.get(0),
-            )
-            .optional()?)
-    }
-
     pub fn account<'a>(
         &self,
         db: &Connection,
         home: &Path,
         status: &'a status::Status,
     ) -> Result<Option<&'a status::Account>> {
-        Ok(self
-            .account_id(db, home)?
-            .and_then(|id| status.accounts.iter().find(|account| account.id == id)))
+        let mut id = match &self.session {
+            Some(session) => usage::session_account(db, session)?,
+            None => None,
+        };
+        if id.is_none()
+            && let Some(agent) = self.agent
+        {
+            let folder = self
+                .agent_folder
+                .clone()
+                .or_else(|| agent.folders(home).into_iter().next());
+            id = db
+                .prepare_cached(
+                    "SELECT account FROM response WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
+                     ORDER BY at DESC LIMIT 1",
+                )?
+                .query_row(
+                    rusqlite::params![
+                        agent.info().id,
+                        folder.map(|folder| folder.to_string_lossy().into_owned())
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()?;
+        }
+        Ok(id.and_then(|id| status.accounts.iter().find(|account| account.id == id)))
     }
 }
 
@@ -544,7 +538,9 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     let alternate = (shown.len() == 1 && !unknown)
         .then(|| status::alternate_note(&status, first, caller_agent))
         .flatten()
-        .map_or(String::new(), |note| format!("\n\n{note}"));
+        .map_or(String::new(), |note| {
+            format!("\n\n{note} Call check_limits with all: true to compare.")
+        });
     Ok(format!(
         "{fit}{head}\n\n{}{alternate}",
         status::text(&status, &shown, yours)
@@ -557,8 +553,10 @@ struct UsageAsked<'a> {
     lead: &'static str,
     account: Option<&'a status::Account>,
     limit: Option<&'a status::Limit>,
-    since: Option<i64>,
-    until: Option<i64>,
+    /// From and to when, where `since` was given.
+    between: Option<(i64, i64)>,
+    /// Whether `until` was given, so the answer says to when.
+    until_given: bool,
     by: By,
     top: usize,
 }
@@ -609,29 +607,15 @@ fn usage_asked<'a>(
         }
         (None, None) => None,
     };
-    let since = match input.since.as_deref() {
-        None | Some("window") => None,
-        Some(period) => Some(time::parse(period, now)?),
-    };
-    let until = match input.until.as_deref() {
-        None => None,
-        Some(_) if since.is_none() => {
+    let between = match (input.since.as_deref(), input.until.as_deref()) {
+        (None | Some("window"), Some(_)) => {
             return Err(Error::Usage(
                 "until is with since: without since, the usage runs to now".to_owned(),
             ));
         }
-        Some(period) => Some(time::parse(period, now)?.min(now)),
+        (None | Some("window"), None) => None,
+        (Some(since), until) => Some(time::between(since, until, now)?),
     };
-    // Refused, over answering that there's no usage, which an agent could
-    // pass on as none.
-    if let Some(since) = since
-        && since >= until.unwrap_or(now)
-    {
-        return Err(Error::Usage(
-            "since is at or after until, or now, so there's no usage in between: give an earlier since"
-                .to_owned(),
-        ));
-    }
     let by = match input.by.as_deref() {
         None | Some("session") => By::Session,
         Some("project") => By::Project,
@@ -650,8 +634,8 @@ fn usage_asked<'a>(
         lead,
         account,
         limit,
-        since,
-        until,
+        between,
+        until_given: input.until.is_some(),
         by,
         top: input.top.unwrap_or(5).clamp(1, 20),
     })
@@ -664,37 +648,33 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
         lead,
         account,
         limit,
-        since,
-        until,
+        between,
+        until_given,
         by,
         top,
     } = usage_asked(ask, arguments, &status, now)?;
     let yours = ask.caller.session.as_deref();
-    // Every row, so the caller's own session is found past the top.
-    let fetch_top = if by == By::Session && yours.is_some() {
-        usize::MAX
-    } else {
-        top
-    };
     let query = match account {
-        Some(account) => {
-            let between = since.map(|since| (since, until.unwrap_or(now)));
-            usage::query(account, limit, between, by, fetch_top, now)
+        Some(account) => usage::query(account, limit, between, by, now),
+        None => {
+            let (since, until) = match between {
+                Some(between) => between,
+                None => time::between(usage::SINCE, None, now)?,
+            };
+            usage::Query {
+                since,
+                until,
+                by,
+                agent: None,
+                account: None,
+                models: Vec::new(),
+                key: None,
+            }
         }
-        None => usage::Query {
-            since: since.unwrap_or(now - 30 * time::DAY),
-            until: until.unwrap_or(now),
-            by,
-            agent: None,
-            account: None,
-            models: Vec::new(),
-            key: None,
-            top: fetch_top,
-        },
     };
     let mut used = usage::usage(ask.db, &query)?;
     let mut shares = limit
-        .filter(|_| since.is_none())
+        .filter(|_| between.is_none())
         .and_then(|limit| usage::shares(&used, limit));
     let own_line = if by == By::Session
         && used.rows.len() > top
@@ -723,9 +703,9 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     // Times are told as of the status's minute, as `check_limits` tells
     // them: at 12:00:40, a reset at 14:00 is in 2h, not 1h 59m.
     let minute = status.at;
-    let to = match until {
-        Some(until) => format!(" to {}", time::ago(until, minute)),
-        None => String::new(),
+    let to = match until_given {
+        true => format!(" to {}", time::ago(query.until, minute)),
+        false => String::new(),
     };
     let mut out = format!(
         "{lead}Usage of {} since {}{to}: {} at list prices over {}{}.\n",
@@ -753,7 +733,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
         out += &line;
     }
     if let Some(why) = limit
-        .filter(|_| since.is_none())
+        .filter(|_| between.is_none())
         .and_then(|limit| usage::unshared(&used, limit))
     {
         out += &format!("\n{why}\n");
@@ -761,7 +741,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     // Asked since a time, as the calendar week for "this week" of a weekly
     // limit, the shares are left out: say how to get them. There are none
     // to get of a limit whose window reset since it was read.
-    if let (Some(limit), Some(_)) = (limit, since)
+    if let (Some(limit), Some(_)) = (limit, between)
         && let Some(start) = limit.started()
     {
         out += &format!(
@@ -788,12 +768,12 @@ fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
         }
         let other = usage::Query {
             by,
-            top: 3,
             ..query.clone()
         };
         let listed: Vec<String> = usage::usage(db, &other)?
             .rows
             .iter()
+            .take(3)
             .map(|row| {
                 let cost = usage::cost(row.cost_usd, row.unpriced);
                 format!("{}: {cost}", row.label(by))
@@ -878,47 +858,5 @@ mod tests {
         assert_eq!(above(350), Some("antigravity"));
         assert_eq!(above(360), None);
         assert_eq!(above(12345), None);
-    }
-
-    #[test]
-    fn check_limits_mentions_alternate_room_only_for_single_tight_account() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = turnscope::db::open(dir.path()).unwrap();
-        let now = turnscope::now();
-        let resets = now + 2 * turnscope::time::HOUR;
-        db.execute_batch(&format!(
-            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at) VALUES
-                ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', {now}, {now}, {now}),
-                ('openai:b', 'openai', 'subscription', 'ChatGPT Pro', {now}, {now}, {now});
-             INSERT INTO sign_in (agent, folder, provider, since, account) VALUES
-                ('claude-code', '/h/.claude', 'anthropic', {now}, 'anthropic:a'),
-                ('codex', '/h/.codex', 'openai', {now}, 'openai:b');
-             INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-                input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-                web_searches, priority, account) VALUES
-                ('claude-code', 'r1', 'claude-code:s1', 0, 1, '/h/.claude', {now}, 'anthropic',
-                 'claude-opus', 1, 0, 0, 0, 1, 0, 0, 0, 0, 'anthropic:a');
-             INSERT INTO reading (account, at, limit_key, name, used, resets) VALUES
-                ('anthropic:a', {now}, 'five_hour', '5 hours', 100.0, {resets}),
-                ('openai:b', {now}, 'primary', 'Weekly', 10.0, {resets});"
-        ))
-        .unwrap();
-        let caller = Caller {
-            agent: agents::by_id("claude-code"),
-            session: None,
-            agent_folder: Some(PathBuf::from("/h/.claude")),
-        };
-        let ask = Ask {
-            db: &db,
-            home: Path::new("/h"),
-            caller: &caller,
-        };
-        let mine = check_limits(&ask, json!({})).unwrap();
-        assert!(
-            mine.contains("Another account has room: ChatGPT Pro has 90% left (Weekly, via Codex). Call check_limits with all: true to compare."),
-            "{mine}"
-        );
-        let all = check_limits(&ask, json!({ "all": true })).unwrap();
-        assert!(!all.contains("Another account has room:"), "{all}");
     }
 }

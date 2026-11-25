@@ -40,13 +40,9 @@ pub struct Projection {
 impl Projection {
     fn at_rate(used: f64, rate: f64, at: i64, resets: i64) -> Projection {
         let at_reset = used + rate * ((resets - at) as f64 / HOUR as f64).max(0.0);
-        let runs_out = (rate > 0.0 && used < 100.0)
-            .then(|| {
-                let remaining = (100.0 - used) / rate * HOUR as f64;
-                (remaining.is_finite() && remaining < (resets - at) as f64)
-                    .then(|| at.saturating_add(remaining as i64))
-            })
-            .flatten()
+        let remaining = (100.0 - used) / rate * HOUR as f64;
+        let runs_out = (rate > 0.0 && used < 100.0 && remaining < (resets - at) as f64)
+            .then(|| at.saturating_add(remaining as i64))
             .filter(|out| *out < resets);
         Projection {
             at,
