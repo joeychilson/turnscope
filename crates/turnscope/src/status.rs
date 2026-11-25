@@ -22,7 +22,7 @@ pub use text::{
 };
 
 /// How recently a response must have drawn on an account for it to be in use.
-pub(crate) const IN_USE: i64 = 30 * MINUTE;
+const IN_USE: i64 = 30 * MINUTE;
 
 /// How recently, for it to be one the person uses.
 const RECENT: i64 = 7 * DAY;
@@ -95,7 +95,8 @@ pub struct Account {
     /// The agents that drew on it in the last half hour, the latest first.
     pub used_by: Vec<String>,
     /// Drawn on in the last half hour, or a limit rose at its last reading,
-    /// taken in the last half hour, as use elsewhere makes it.
+    /// taken in the last half hour, from the one before it in its window
+    /// (or in the day before, with no start), as use elsewhere makes it.
     pub in_use: bool,
     /// In use, or drawn on in the last 7 days: one the person uses.
     pub recent: bool,
@@ -113,6 +114,22 @@ pub struct Account {
 impl Account {
     /// `full_title` in SQL, of an `account` table named `a`.
     pub const FULL_TITLE: &str = "a.title || coalesce(' (' || a.label || ')', '')";
+
+    /// `in_use` in SQL, of an `account` table named `a`, as of `?1`.
+    pub(crate) fn in_use_sql() -> String {
+        format!(
+            "(EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?1 - {IN_USE})
+             OR EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= ?1 - {IN_USE}
+                 AND NOT EXISTS (SELECT 1 FROM reading n
+                     WHERE n.account = r.account AND n.at > r.at AND n.limit_key = r.limit_key)
+                 AND r.used > (SELECT used FROM reading p
+                     WHERE p.account = r.account AND p.limit_key = r.limit_key AND p.at < r.at
+                         AND p.at >= coalesce(r.starts, r.at - {DAY})
+                         AND (p.resets IS r.resets OR abs(p.resets - r.resets) <= {drift})
+                     ORDER BY p.at DESC LIMIT 1)))",
+            drift = forecast::DRIFT,
+        )
+    }
 
     /// `Claude Max (me@example.com)`.
     pub fn full_title(&self) -> String {
@@ -532,14 +549,15 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
     let mut used = drawn(db, now)?;
 
     let mut accounts = Vec::new();
-    let mut rows = db.prepare(
+    let mut rows = db.prepare(&format!(
         "SELECT id, provider, kind, title, label, hidden, read_at, problem,
-             EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?1),
+             EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?2),
              (SELECT reads FROM failing WHERE account = a.id),
-             full_read_at, checked_at
+             full_read_at, checked_at, {}
          FROM account a",
-    )?;
-    let mut rows = rows.query([now - RECENT])?;
+        Account::in_use_sql()
+    ))?;
+    let mut rows = rows.query([now, now - RECENT])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let read_at: Option<i64> = row.get(6)?;
@@ -570,27 +588,27 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
                 why: why.unwrap_or(Stale::ReadFailed),
             },
         };
-        let (limits, rose) = match read_at {
+        let limits = match read_at {
             Some(read_at) => limits(db, &id, read_at, full_read_at, &keys, now)?,
-            None => (Vec::new(), false),
+            None => Vec::new(),
         };
-        let used_by = used.remove(&id).unwrap_or_default();
         let kind: Kind = row.get(2)?;
+        let in_use = row.get(12)?;
         accounts.push(Account {
             spend: (kind == Kind::ApiKey)
                 .then(|| spend(db, &id, now))
                 .transpose()?,
             deciding: deciding(&limits, pool(db, &id, &limits)?).map(|limit| limit.key.clone()),
-            in_use: !used_by.is_empty() || rose,
-            recent: !used_by.is_empty() || rose || row.get(8)?,
+            in_use,
+            recent: in_use || row.get(8)?,
             provider: row.get(1)?,
             title: row.get(3)?,
             label: row.get(4)?,
             hidden: row.get(5)?,
+            used_by: used.remove(&id).unwrap_or_default(),
             id,
             kind,
             agents,
-            used_by,
             state,
             limits,
         });
@@ -815,8 +833,7 @@ fn latest(db: &rusqlite::Connection, account: &str, since: i64, now: i64) -> Res
 
 /// An account's limits, each as last read since its last read in full,
 /// `full_read_at`, or ever with none: an agent writes only the limits that
-/// moved (`limits::record_in_band`). And whether any rose between its last
-/// two readings in the half hour, as use elsewhere makes them.
+/// moved (`limits::record_in_band`).
 fn limits(
     db: &rusqlite::Connection,
     account: &str,
@@ -824,11 +841,11 @@ fn limits(
     full_read_at: Option<i64>,
     keys: &BTreeMap<String, Vec<String>>,
     now: i64,
-) -> Result<(Vec<Limit>, bool)> {
+) -> Result<Vec<Limit>> {
     let since = full_read_at.map_or(i64::MIN, |full| full.min(read_at));
     let latest = latest(db, account, since, now)?;
     if latest.is_empty() {
-        return Ok((Vec::new(), false));
+        return Ok(Vec::new());
     }
     let known: Option<i64> = db.query_row(
         "SELECT min(since) FROM sign_in WHERE account = ?1",
@@ -837,7 +854,6 @@ fn limits(
     )?;
     // The slots of work, by the models and key whose responses count.
     let mut slots: BTreeMap<(Vec<String>, Option<String>), Vec<i64>> = BTreeMap::new();
-    let mut rose = false;
     let mut limits = Vec::new();
     for limit in latest {
         let reset_since = limit.resets.filter(|resets| *resets <= now);
@@ -867,9 +883,6 @@ fn limits(
             })
             .map(|reading| (reading.at, reading.used))
             .collect();
-        if let [.., before, last] = readings.as_slice() {
-            rose |= last.1 > before.1 && now - last.0 <= IN_USE;
-        }
         let stale = reset_since.is_some() || now - limit_read_at > STALE;
         let outlook = match (starts, resets) {
             _ if reset_since.is_none() && used >= 100.0 => Outlook::UsedUp {
@@ -916,7 +929,7 @@ fn limits(
             work,
         });
     }
-    Ok((limits, rose))
+    Ok(limits)
 }
 
 /// The work rate on `limit`, and the work left at it with `left` percent

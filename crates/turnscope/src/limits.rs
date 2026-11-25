@@ -291,43 +291,34 @@ impl Schedule {
 
 fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
     // In SQL, over working out the status: this is asked at every catch-up.
-    let mut rows = db.prepare_cached(
+    let mut rows = db.prepare_cached(&format!(
         "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, f.account IS NOT NULL, f.retry_at,
              EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id
                  AND s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)),
-             EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?1)
-             OR EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= ?1
-                 AND NOT EXISTS (SELECT 1 FROM reading n
-                     WHERE n.account = r.account AND n.at > r.at AND n.limit_key = r.limit_key)
-                 AND r.used > (SELECT used FROM reading p
-                     WHERE p.account = r.account AND p.at < r.at AND p.limit_key = r.limit_key
-                         AND (p.resets IS r.resets OR abs(p.resets - r.resets) <= ?3)
-                     ORDER BY p.at DESC LIMIT 1)),
+             {},
              EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= a.full_read_at
                  AND NOT EXISTS (SELECT 1 FROM reading n
                      WHERE n.account = r.account AND n.at > r.at AND n.limit_key = r.limit_key)
-                 AND r.resets > a.checked_at AND r.resets <= ?2)
+                 AND r.resets > a.checked_at AND r.resets <= ?1)
          FROM account a LEFT JOIN failing f ON f.account = a.id",
-    )?;
+        crate::status::Account::in_use_sql()
+    ))?;
     let schedules = rows
-        .query_map(
-            params![now - crate::status::IN_USE, now, crate::forecast::DRIFT],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    Schedule {
-                        read_at: row.get(1)?,
-                        full_read_at: row.get(2)?,
-                        checked_at: row.get(3)?,
-                        failing: row.get(4)?,
-                        retry_at: row.get(5)?,
-                        signed_in: row.get(6)?,
-                        in_use: row.get(7)?,
-                        reset_passed: row.get(8)?,
-                    },
-                ))
-            },
-        )?
+        .query_map([now], |row| {
+            Ok((
+                row.get(0)?,
+                Schedule {
+                    read_at: row.get(1)?,
+                    full_read_at: row.get(2)?,
+                    checked_at: row.get(3)?,
+                    failing: row.get(4)?,
+                    retry_at: row.get(5)?,
+                    signed_in: row.get(6)?,
+                    in_use: row.get(7)?,
+                    reset_passed: row.get(8)?,
+                },
+            ))
+        })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(schedules)
 }
@@ -1418,10 +1409,22 @@ mod tests {
 
         // A limit that rose at its last read, as use elsewhere makes it, puts
         // it in use; not one that's of a new window.
+        let in_use =
+            |db: &Connection, now| crate::status::status(db, now).unwrap().accounts[0].in_use;
         read_at(&mut db, at + 20 * minute, 10.0, at + 300 * minute);
         assert!(!due(&db, at + 25 * minute, Ask::Scheduled));
         read_at(&mut db, at + 30 * minute, 20.0, at + 300 * minute);
         assert!(due(&db, at + 35 * minute, Ask::Scheduled));
+        assert!(in_use(&db, at + 35 * minute));
+
+        // Nor one with no start that rose from a reading over a day before,
+        // as after a day asleep.
+        let (at, resets) = (at + 40 * minute, at + 30 * crate::time::DAY);
+        read_at(&mut db, at, 30.0, resets);
+        let at = at + crate::time::DAY + minute;
+        read_at(&mut db, at, 40.0, resets);
+        assert!(!in_use(&db, at + DUE));
+        assert!(!due(&db, at + DUE, Ask::Scheduled));
     }
 
     /// Codex's limits for the fake provider's account, as its history gave
