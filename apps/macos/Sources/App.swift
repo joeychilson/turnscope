@@ -43,12 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// clicking the item closes the panel instead of reopening it.
     private var closedAt: ContinuousClock.Instant?
     private var outsideMonitor: Any?
-    private var wakeObserver: (any NSObjectProtocol)?
     private var ticker: Timer?
 
     init(_ launch: Launch) {
-        let prefs = launch.fixture == nil ? Preferences.read() : Preferences(menuShows: .all, dismissedConnect: [])
-        self.bridge = Bridge(launch: launch, fromDiskImage: Self.fromDiskImage, preferences: prefs)
+        self.bridge = Bridge(launch: launch, fromDiskImage: Self.fromDiskImage, preferences: .read())
         self.initialOpening = launch.opening
         super.init()
     }
@@ -80,16 +78,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             observeWake()
         }
         bridge.sync()
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        ticker?.invalidate()
-        ticker = nil
-        if let wakeObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
-            self.wakeObserver = nil
-        }
-        bridge.stop()
     }
 
     // MARK: - Sync & Effects
@@ -148,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func observeWake() {
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        _ = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
@@ -189,15 +177,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // SwiftUI manages the panel's animated height inside the fixed transparent window;
         // disabling AppKit sizing options avoids constraint churn during spring frames.
         host.sizingOptions = []
-        host.wantsLayer = true
-        host.layer?.backgroundColor = .clear
         let panel = PanelWindow(
             contentRect: .zero,
-            styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        panel.isFloatingPanel = true
         panel.level = .popUpMenu
         panel.hasShadow = false
         panel.backgroundColor = .clear
@@ -213,11 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func makeRootView() -> some View {
         Floating()
-            .environment(bridge)
-            .environment(ui)
-            .environment(updater)
-            .environment(notifier)
-            .environment(login)
+            .environment(bridge, ui, updater, notifier, login)
             .environment(\.closePanel, { [weak self] in self?.close() })
     }
 
@@ -254,9 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             menu.addItem(check)
         }
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Turnscope", action: #selector(menuQuit), keyEquivalent: "q")
-        quit.target = self
-        menu.addItem(quit)
+        menu.addItem(NSMenuItem(title: "Quit Turnscope", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         // Assign transiently so left-click continues calling `statusItemClicked`.
         item.menu = menu
@@ -269,15 +248,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func menuOpenSettings() {
-        show(opening: Opening(account: false, unused: false, settings: .general))
+        show(opening: Opening(settings: .general))
     }
 
     @objc private func menuCheckForUpdates() {
         updater.check()
-    }
-
-    @objc private func menuQuit() {
-        NSApp.terminate(nil)
     }
 
     private func toggle() {
@@ -302,7 +277,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let alreadyOpen = panelOpen
         if !alreadyOpen {
             panelOpen = true
-            bridge.screenHeight = currentScreenHeight()
             ui.reset()
             bridge.send(.panelOpened)
         }
@@ -376,11 +350,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func currentScreenHeight() -> CGFloat {
-        let screen = placedItemWindow?.1 ?? NSScreen.screens.first ?? NSScreen.main
-        return screen?.visibleFrame.height ?? 800
-    }
-
     private func place(_ panel: NSWindow) {
         let visible: NSRect
         let midX: CGFloat
@@ -397,6 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             return
         }
+        bridge.screenHeight = visible.height
         panel.setFrame(
             panelFrame(
                 midX: midX,

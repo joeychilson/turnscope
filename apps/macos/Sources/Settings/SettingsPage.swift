@@ -1,5 +1,3 @@
-// Settings page with Back button, three tabs, and a scroll view active only when needed.
-
 import SwiftUI
 
 struct SettingsPage: View {
@@ -53,15 +51,12 @@ struct SettingsPage: View {
                 tabShortcut(.agents, key: "2")
                 tabShortcut(.accounts, key: "3")
             }
-            .frame(width: 0, height: 0)
-            .opacity(0)
-            .accessibilityHidden(true)
+            .hiddenShortcut()
         }
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
-        .onAppear { focused = true }
-        .onChange(of: ui.focusNonce) { _, _ in focused = true }
+        .onChange(of: ui.focusNonce, initial: true) { focused = true }
         .onKeyPress(.leftArrow) { stepTab(-1, current: ui.tab) }
         .onKeyPress(.rightArrow) { stepTab(1, current: ui.tab) }
     }

@@ -27,11 +27,11 @@ func panelFrame(
 
 // MARK: - Launch Arguments (docs/app.md#launch-arguments)
 
-enum Page: Equatable {
+enum Page {
     case main, settings
 }
 
-enum SettingsTab: String, CaseIterable, Equatable {
+enum SettingsTab: String, CaseIterable {
     case general, agents, accounts
 
     var title: String {
@@ -92,11 +92,11 @@ struct Launch: Equatable {
 
 // MARK: - Decoded from Rust (`turnscope-app`)
 
-enum Standing: String, Codable, Equatable {
+enum Standing: String, Codable {
     case lasts, runningOut, usedUp
 }
 
-enum MenuShows: String, Codable, Equatable {
+enum MenuShows: String, Codable {
     case all, one
 }
 
@@ -133,8 +133,6 @@ struct MenuBarModel: Decodable, Equatable {
     var slots: [MenuBarSlot]
     var spoken: String
     var outOfDate: Bool
-
-    static let empty = MenuBarModel(slots: [], spoken: "Turnscope", outOfDate: false)
 }
 
 struct WaitingModel: Decodable, Equatable {
@@ -275,7 +273,7 @@ struct PanelModel: Decodable, Equatable {
     )
 }
 
-struct AppSync: Decodable, Equatable {
+struct AppSync: Decodable {
     var animated: Bool
     var counting: Bool
     var menuBar: MenuBarModel

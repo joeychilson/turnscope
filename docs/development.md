@@ -188,8 +188,10 @@ versions at least 7 days old. Sparkle is pinned to a version and checksum
 in `scripts/sparkle.sh`, and actionlint and cargo-deny to a version and
 checksum in `ci.yml`. These are updated by hand.
 
-The `app` job and the release use Xcode 26.6, named in both workflows. A
-newer Xcode comes in a pull request that changes both, once
+The `rust` and `app` jobs and the release use Xcode 26.6, named in both
+workflows: `rust` compiles the app's wire models for the Rust–Swift
+contract test. A newer Xcode comes in a pull request that changes all
+three, once
 [GitHub's macOS 26 image](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)
 has it.
 

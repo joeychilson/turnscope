@@ -1,5 +1,4 @@
-// The panel's floating frame with native SwiftUI material, hardware shadow,
-// single-spring layout, and horizontal page transitions.
+// The panel: its floating frame, and its two pages.
 
 import AppKit
 import SwiftUI
@@ -9,6 +8,19 @@ let panelWidth: CGFloat = 340
 extension EnvironmentValues {
     @Entry var closePanel: () -> Void = {}
     @Entry var isSnapshot = false
+}
+
+extension View {
+    func environment(
+        _ bridge: Bridge, _ ui: UIState, _ updater: Updater, _ notifier: Notifier, _ login: Login
+    ) -> some View {
+        environment(bridge).environment(ui).environment(updater).environment(notifier).environment(login)
+    }
+
+    /// Keeps a button for its keyboard shortcut, unseen and unread by VoiceOver.
+    func hiddenShortcut() -> some View {
+        frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+    }
 }
 
 struct Floating: View {
@@ -67,9 +79,7 @@ struct Panel: View {
             // Keep ⌘Q active on both FirstPage and SettingsPage since the app has no main menu bar.
             Button("Quit Turnscope") { NSApp.terminate(nil) }
                 .keyboardShortcut("q", modifiers: .command)
-                .frame(width: 0, height: 0)
-                .opacity(0)
-                .accessibilityHidden(true)
+                .hiddenShortcut()
         }
     }
 }

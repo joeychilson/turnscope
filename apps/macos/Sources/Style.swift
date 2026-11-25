@@ -1,6 +1,3 @@
-// Visual constants, typography, contrast-calibrated urgency colors, and small controls
-// shared across the panel and Settings.
-
 import AppKit
 import SwiftUI
 
@@ -10,7 +7,7 @@ func copyToPasteboard(_ text: String) {
     pasteboard.setString(text, forType: .string)
 }
 
-/// Snappy, critically damped spring: starts fast and settles with zero wobble.
+/// Just under critically damped: it overshoots by under 0.1%, so nothing visibly wobbles.
 let spring = Animation.spring(response: 0.25, dampingFraction: 0.92)
 
 /// Expanded content fades in right as layout opens, and fades out at once.

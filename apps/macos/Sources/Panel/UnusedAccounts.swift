@@ -6,33 +6,32 @@ import SwiftUI
 struct UnusedAccounts: View {
     @Environment(Bridge.self) private var bridge
     @Environment(UIState.self) private var ui
+    var label: String
     var focus: FocusState<PanelFocus?>.Binding
 
     var body: some View {
         let panel = bridge.panel
         let openAccount = ui.openAccount
-        if let label = panel.unusedFoldLabel {
-            VStack(alignment: .leading, spacing: Row.spacing) {
-                Fold(text: label, open: ui.unusedOpen, focus: focus, target: .unusedFold) {
-                    ui.toggleUnused(panel: panel)
-                }
-                if ui.unusedOpen {
-                    VStack(spacing: Row.spacing) {
-                        ForEach(panel.unused) {
-                            AccountRow(row: $0, isOpen: openAccount == $0.id, focus: focus)
-                        }
-                        if let hiddenLabel = panel.hiddenFoldLabel {
-                            Fold(text: hiddenLabel, open: ui.hiddenShown, focus: focus, target: .hiddenFold) {
-                                ui.toggleHidden()
-                            }
-                        }
-                        if !panel.hidden.isEmpty && (ui.hiddenShown || panel.unused.isEmpty) {
-                            ForEach(panel.hidden) { HiddenRow(account: $0) }
-                                .transition(appears)
+        VStack(alignment: .leading, spacing: Row.spacing) {
+            Fold(text: label, open: ui.unusedOpen, focus: focus, target: .unusedFold) {
+                ui.toggleUnused(panel: panel)
+            }
+            if ui.unusedOpen {
+                VStack(spacing: Row.spacing) {
+                    ForEach(panel.unused) {
+                        AccountRow(row: $0, isOpen: openAccount == $0.id, focus: focus)
+                    }
+                    if let hiddenLabel = panel.hiddenFoldLabel {
+                        Fold(text: hiddenLabel, open: ui.hiddenShown, focus: focus, target: .hiddenFold) {
+                            ui.toggleHidden()
                         }
                     }
-                    .transition(appears)
+                    if !panel.hidden.isEmpty && (ui.hiddenShown || panel.unused.isEmpty) {
+                        ForEach(panel.hidden) { HiddenRow(account: $0) }
+                            .transition(appears)
+                    }
                 }
+                .transition(appears)
             }
         }
     }
