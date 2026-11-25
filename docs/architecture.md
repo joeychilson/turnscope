@@ -370,7 +370,8 @@ says how to run it). `status.rs` applies it.
   the reset and the soonest a limit runs out. There's no slow end: use
   often stops.
 - **Work left** divides what's left by the work rate, measured over recent
-  hours of work on the account, as an 80% range.
+  hours of work on the account. Its range is the rate times `work_band`,
+  which the next hours of work stayed within 80% of the time in the backtest.
 
 ## Alerts
 
