@@ -230,7 +230,8 @@ posts notifications only for an app bundle.
 
 `Updater.swift` uses Sparkle. It reads the appcast at `SUFeedURL`, the
 latest GitHub release's `appcast.xml`, checks each update's signature with
-`SUPublicEDKey`, and asks before installing.
+`SUPublicEDKey`, and asks before installing, showing the update's notes:
+its section of `CHANGELOG.md`, which the appcast carries as Markdown.
 `SUVerifyUpdateBeforeExtraction` has it check the disk image's signature
 before mounting it. Automatic checks are on by default, and Settings →
 General → Check automatically turns them off.

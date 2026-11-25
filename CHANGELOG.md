@@ -12,6 +12,8 @@
   OpenCode or Pi".
 - **`turnscope disconnect` says the command to run by hand** when it
   can't run the agent's own, as `connect` does.
+- **The window that offers an update shows what's new in it**, instead
+  of loading its whole GitHub release page.
 - **A limit in dollars is shared by dollars.** Of an OpenRouter key's
   limit, a session's share, in the panel's Used most and in answers, is its
   cost over the limit's size, not its part of the cost here, and a last
