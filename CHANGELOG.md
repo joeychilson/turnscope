@@ -7,6 +7,11 @@
   early, and ⌘R could start another refresh.
 - **Copy Diagnostics lists each line of `app.log` once.** The latest were
   in doctor's notes, then again after them.
+- **A login refused or expired names its agents as a list**: "open Claude
+  Code, OpenCode or Pi to sign in again", not "open Claude Code or
+  OpenCode or Pi".
+- **`turnscope disconnect` says the command to run by hand** when it
+  can't run the agent's own, as `connect` does.
 
 ## 0.4.1
 

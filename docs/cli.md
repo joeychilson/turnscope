@@ -298,6 +298,8 @@ the agent would lose it once that's gone.
 With `--home`, the agent's command runs with `HOME` set to that folder, so
 that it changes the settings there and not your own. The command is still
 found on the `PATH` your interactive login shell sets in your own home.
+When the agent's command fails or can't be run, both say the command to
+run by hand.
 
 ## Doctor
 

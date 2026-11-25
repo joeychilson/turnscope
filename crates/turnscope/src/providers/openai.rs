@@ -82,6 +82,7 @@ fn parse(answer: &Value, now: i64) -> Option<Limits> {
         }
     }
     Some(Limits {
+        // ChatGPT sends its Pro Lite plan as `prolite`.
         plan: answer["plan_type"]
             .as_str()
             .map(|plan| plan.replace("prolite", "pro lite")),

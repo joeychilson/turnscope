@@ -152,8 +152,10 @@ pub enum Ask {
 
 /// Read the limits of each account that's due (`Schedule::due`), and the
 /// agents' logins, when no other process is reading them (one asked for
-/// waits for it), and, unless they were asked for, none claimed doing so in
-/// the last `CLAIM`, or the last [`DUE`] with no account due; whether it did.
+/// waits for it) and none claimed doing so in the last `CLAIM`, or the last
+/// [`DUE`] for a scheduled read with no signed-in account due; whether it
+/// did. A read opened, or forced with a signed-in account due or after
+/// waiting, isn't held off by a claim.
 ///
 /// A read asked for that no provider answered leaves the account as it
 /// was: asked for as the Mac woke, before its network was back, it showed
@@ -293,13 +295,10 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
     // In SQL, over working out the status: this is asked at every catch-up.
     let mut rows = db.prepare_cached(&format!(
         "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, f.account IS NOT NULL, f.retry_at,
-             EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id
-                 AND s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)),
+             EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id AND {SIGNED_IN_NOW}),
              {},
              EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= a.full_read_at
-                 AND NOT EXISTS (SELECT 1 FROM reading n
-                     WHERE n.account = r.account AND n.at > r.at AND n.limit_key = r.limit_key)
-                 AND r.resets > a.checked_at AND r.resets <= ?1)
+                 AND {LATEST_READING} AND r.resets > a.checked_at AND r.resets <= ?1)
          FROM account a LEFT JOIN failing f ON f.account = a.id",
         crate::status::Account::in_use_sql()
     ))?;
@@ -342,10 +341,10 @@ fn gather(
          ORDER BY since DESC LIMIT 1",
     )?;
     let listable = std::fs::read_dir(home).is_ok();
-    let mut latest = db.prepare(
-        "SELECT folder, provider, account FROM sign_in s WHERE agent = ?1 AND account IS NOT NULL
-         AND since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)",
-    )?;
+    let mut latest = db.prepare(&format!(
+        "SELECT folder, provider, account FROM sign_in s
+         WHERE agent = ?1 AND account IS NOT NULL AND {SIGNED_IN_NOW}"
+    ))?;
     for &agent in agents {
         let folders = agent.installed_folders(home);
         // Each folder whose logins were read, with the providers they name.
@@ -723,10 +722,18 @@ fn failing(
 }
 
 /// The sign-in in force at response `r`, or before the folder's first, the
-/// first, as `ingest::Derived::of` finds it.
+/// first, as `ingest::Derived::account` finds it.
 pub const SIGN_IN_AT: &str =
     "FROM sign_in held WHERE held.folder = r.folder AND held.provider = r.provider
     ORDER BY held.since > r.at, iif(held.since > r.at, held.since, -held.since) LIMIT 1";
+
+/// Whether sign-in `s` is the one its folder holds for its provider now.
+pub const SIGNED_IN_NOW: &str =
+    "s.since = (SELECT max(since) FROM sign_in WHERE folder = s.folder AND provider = s.provider)";
+
+/// Whether reading `r` is the latest of its limit.
+pub const LATEST_READING: &str = "NOT EXISTS (SELECT 1 FROM reading n
+    WHERE n.account = r.account AND n.limit_key = r.limit_key AND n.at > r.at)";
 
 /// Write each folder's sign-in that changed, and the account of the
 /// responses made in that folder since, in the same write: after it, a
@@ -1817,44 +1824,6 @@ mod tests {
     }
 
     #[test]
-    fn a_login_gone_is_signed_out_of() {
-        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let db = crate::db::open(data.path()).unwrap();
-        let folder = |name: &str| home.path().join(name).to_string_lossy().into_owned();
-        // Two second accounts, signed in when last read. One's folder was
-        // deleted since; the other's sign-in is half written. And the own
-        // folder, whose login is gone: it holds none.
-        for name in [".fake-gone", ".fake-written", ".fake"] {
-            db.execute(
-                "INSERT INTO sign_in (agent, folder, provider, since, account)
-                 VALUES ('fake', ?1, 'fake', 1000, 'fake:account')",
-                [folder(name)],
-            )
-            .unwrap();
-        }
-        std::fs::create_dir(folder(".fake-written")).unwrap();
-        std::fs::write(home.path().join(".fake-written/login"), "{").unwrap();
-        // What each is now recorded as signed in to.
-        let signed = |home: &Path| -> Vec<(String, Option<String>)> {
-            let mut signed: Vec<_> = gathered(&db, home, &FakeAgent::default())
-                .signed_in
-                .into_iter()
-                .map(|signed| (signed.folder, signed.account))
-                .collect();
-            signed.sort();
-            signed
-        };
-        // The one that can't be read keeps what it held.
-        assert_eq!(
-            signed(home.path()),
-            [(folder(".fake"), None), (folder(".fake-gone"), None)]
-        );
-        // A home that can't be listed, as one on a volume that's away, says
-        // nothing of its folders.
-        assert!(signed(&home.path().join("away")).is_empty());
-    }
-
-    #[test]
     fn a_key_keeps_only_an_account_of_the_same_provider() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let db = crate::db::open(data.path()).unwrap();
@@ -2073,33 +2042,45 @@ mod tests {
     }
 
     #[test]
-    fn an_uninstalled_agent_isnt_asked_for_logins_and_records_no_sign_in() {
+    fn a_login_gone_is_signed_out_of_and_an_uninstalled_agent_isnt_asked() {
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let db = crate::db::open(data.path()).unwrap();
         let agent = FakeAgent::default();
-        let signed = || -> Vec<(String, Option<String>)> {
-            let gathered = gathered(&db, home.path(), &agent).signed_in;
-            gathered
+        let folder = |name: &str| home.path().join(name).to_string_lossy().into_owned();
+        let signed = |home: &Path| -> Vec<(String, Option<String>)> {
+            let mut signed: Vec<_> = gathered(&db, home, &agent)
+                .signed_in
                 .into_iter()
                 .map(|signed| (signed.folder, signed.account))
-                .collect()
+                .collect();
+            signed.sort();
+            signed
         };
         // Neither missing nor a folder made by another tool (as Gemini CLI's
         // `~/.gemini` for Antigravity) counts as installed.
-        assert!(signed().is_empty());
-        let folder = home.path().join(".fake");
-        std::fs::create_dir(&folder).unwrap();
-        assert!(signed().is_empty());
-        // One signed in there before is signed out.
-        let folder = folder.to_string_lossy().into_owned();
-        db.execute(
-            "INSERT INTO sign_in (agent, folder, provider, since, account)
-             VALUES ('fake', ?1, 'fake', 1000, 'fake:account')",
-            [&folder],
-        )
-        .unwrap();
-        assert_eq!(signed(), [(folder, None)]);
+        assert!(signed(home.path()).is_empty());
+        std::fs::create_dir(folder(".fake")).unwrap();
+        assert!(signed(home.path()).is_empty());
+        // Signed in when last read: the own folder, a second account's
+        // deleted since, and one whose sign-in is half written.
+        for name in [".fake", ".fake-gone", ".fake-written"] {
+            db.execute(
+                "INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('fake', ?1, 'fake', 1000, 'fake:account')",
+                [folder(name)],
+            )
+            .unwrap();
+        }
+        let all = [".fake", ".fake-gone", ".fake-written"].map(|name| (folder(name), None));
+        assert_eq!(signed(home.path()), all);
         assert!(!agent.asked.load(Ordering::Relaxed), "logins was asked");
+        // The one that can't be read keeps what it held.
+        std::fs::create_dir(folder(".fake-written")).unwrap();
+        std::fs::write(home.path().join(".fake-written/login"), "{").unwrap();
+        assert_eq!(signed(home.path()), all[..2]);
+        // A home that can't be listed, as one on a volume that's away, says
+        // nothing of its folders.
+        assert!(signed(&home.path().join("away")).is_empty());
     }
 
     #[test]

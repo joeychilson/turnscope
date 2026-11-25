@@ -286,7 +286,7 @@ fn messages(
                 .unwrap_or(created),
             provider: provider.into_owned(),
             model: model.into_owned(),
-            prompt: input + cache_read + cache_write,
+            prompt: tokens.prompt(),
             tokens,
             web_searches: 0,
             priority: data

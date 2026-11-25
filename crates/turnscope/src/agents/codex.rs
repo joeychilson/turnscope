@@ -5,7 +5,7 @@
 //! to `archived_sessions/` when archived: JSON Lines of `{timestamp, ordinal,
 //! type, payload}`, opening with the thread's `session_meta`.
 //! `session_index.jsonl` names threads. A second account's folder is
-//! `~/.codex-<name>`, used through `CODEX_HOME`.
+//! `~/.codex-<name>`, used through `CODEX_HOME`, once it holds `auth.json`.
 //!
 //! Measured on this Mac's history, September and October 2026:
 //!
@@ -472,11 +472,8 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
     match (&*line.kind, payload.kind.as_deref()) {
         // Settings are taken from a copy too: its records were made under them.
         ("turn_context", _) => {
-            if !copied && let Some(cwd) = payload.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
-                let session = read.session(thread);
-                if session.cwd.is_none() {
-                    session.cwd = Some(cwd.to_owned());
-                }
+            if !copied {
+                read.cwd(thread, payload.cwd.as_deref());
             }
             apply(
                 payload.model.as_deref(),

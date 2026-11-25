@@ -71,7 +71,7 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
     // The agents to sign in with, `Codex or Pi`: one is always signed in to
     // an account not `SignedOut`.
     let names: Vec<&str> = account.agents.iter().map(|id| agents::name(id)).collect();
-    let agents = names.join(" or ");
+    let agents = list(&names, "or");
     Some(match why {
         Stale::SignedOut => unread(why).to_owned(),
         Stale::SignIn => format!("{}; open {agents} to sign in again", unread(why)),
@@ -332,17 +332,14 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String) {
         true => ("1 more hour".to_owned(), "fits", "doesn't fit"),
         false => (format!("{hours} more hours"), "fit", "don't fit"),
     };
+    let untold = |why: &str| format!("Whether {more} of work {fit} can't be told: {why}.");
     // No limit read: an account not read now says why. One read with none,
     // as a key whose provider Turnscope doesn't ask, may still draw on
     // credit or a spend cap.
     if account.limits.is_empty()
         && let Some(why) = account.state.why()
     {
-        let why = unread(why);
-        return (
-            Fits::Untold,
-            format!("Whether {more} of work {fit} can't be told: {why}."),
-        );
+        return (Fits::Untold, untold(unread(why)));
     }
     if let Some((limit, _)) = used_up(account) {
         let are = agree(limit, "is", "are");
@@ -403,7 +400,6 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String) {
         );
     }
     let after = after.join(", ");
-    let untold = |why: &str| format!("Whether {more} of work {fit} can't be told: {why}.");
     match (untold_why, after.is_empty()) {
         (Some(why), true) => (Fits::Untold, untold(&why)),
         (Some(why), false) => (
@@ -608,12 +604,18 @@ pub fn line(account: &Account, now: i64) -> String {
 
 /// `via Codex` or `via Claude Code and OpenCode`.
 fn via(ids: &[String]) -> Option<String> {
-    let (last, rest) = ids.split_last()?;
-    let names: Vec<&str> = rest.iter().map(|agent| agents::name(agent)).collect();
-    Some(match names.is_empty() {
-        true => format!("via {}", agents::name(last)),
-        false => format!("via {} and {}", names.join(", "), agents::name(last)),
-    })
+    let names: Vec<&str> = ids.iter().map(|id| agents::name(id)).collect();
+    (!names.is_empty()).then(|| format!("via {}", list(&names, "and")))
+}
+
+/// `names` in a sentence: `a`, `a or b`, `a, b or c`, with `last`, `and`
+/// or `or`, before the last.
+pub fn list(names: &[&str], last: &str) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., final_] => format!("{} {last} {final_}", rest.join(", ")),
+    }
 }
 
 /// Another account with room, where `current` runs out or is used up: with
@@ -990,6 +992,14 @@ mod tests {
         assert!(
             verdict(&expired, status.at)
                 .ends_with("its login expired; it's read again when Claude Code runs."),
+        );
+        // Signed in by several agents, any of them.
+        let mut refused = status.accounts[0].clone();
+        refused.agents = ["claude-code", "opencode", "pi"].map(str::to_owned).into();
+        refused.state = State::Unread { why: Stale::SignIn };
+        assert_eq!(
+            verdict(&refused, status.at),
+            "Claude Max (me@example.com): its login was refused; open Claude Code, OpenCode or Pi to sign in again."
         );
     }
 
