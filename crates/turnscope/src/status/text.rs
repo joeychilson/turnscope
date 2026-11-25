@@ -372,25 +372,40 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
         );
     }
     // What agents here used since a read is no part of it, so what's left
-    // now isn't known. Said of the limit it stands by with the fewest hours
-    // of work left, of those the read is still of.
+    // now isn't known. Said of the limit it stands by of those the read is
+    // still of: the deciding one with no work rate, as `standing` says it,
+    // or else the one with the fewest hours of work left. With every one
+    // reset since, what the new windows hold is as unknown.
     if let State::AsOf {
         read_at,
         worked_hours,
         ..
     } = account.state
         && worked_hours > 0.0
-        && let Some(limit) = account
-            .limits
-            .iter()
-            .filter(|limit| account.stands_by(limit) && limit.reset_since.is_none())
-            .min_by(|a, b| likely_left(a).total_cmp(&likely_left(b)))
+        && account.limits.iter().any(|limit| account.stands_by(limit))
     {
+        let still = |limit: &&Limit| account.stands_by(limit) && limit.reset_since.is_none();
+        let limit = account
+            .deciding_limit()
+            .filter(|limit| still(limit) && limit.work.is_none())
+            .or_else(|| {
+                account
+                    .limits
+                    .iter()
+                    .filter(still)
+                    .min_by(|a, b| likely_left(a).total_cmp(&likely_left(b)))
+            });
+        let then = match limit {
+            Some(limit) => format!(
+                "{} had {} left at {}",
+                limit.named(),
+                left(limit),
+                time::clock(read_at, now)
+            ),
+            None => format!("its limits were last read at {}", time::clock(read_at, now)),
+        };
         let why = format!(
-            "{} had {} left at {}, and your agents have worked {} since",
-            limit.named(),
-            left(limit),
-            time::clock(read_at, now),
+            "{then}, and your agents have worked {} since",
             about(worked_hours)
         );
         return (Fits::Untold, untold(&why), true);
@@ -856,12 +871,22 @@ mod tests {
             fit(&rolling, 1.0, now),
             "Whether 1 more hour of work fits can't be told: 5 hours has 28% left, and is a window that rolls, so it isn't forecast. At your work rate they'd leave about 59% of Weekly."
         );
-        // Deciding the account, it's said over Weekly's hours of work.
+        // Deciding the account, it's said over Weekly's hours of work, and
+        // over them as of a read since which agents worked.
         account["deciding"] = "five_hour".into();
-        let deciding: Account = serde_json::from_value(account).unwrap();
+        let deciding: Account = serde_json::from_value(account.clone()).unwrap();
         let said = verdict(&deciding, now);
         assert!(
             said.starts_with("Claude Max (me@example.com): 5 hours has 28% left; it resets "),
+            "{said}"
+        );
+        account["state"] = serde_json::json!({"kind": "asOf", "readAt": now - 35 * MINUTE, "why": "readFailed", "workedHours": 0.7});
+        account["limits"][1]["work"]["leftHours"] =
+            serde_json::json!({"low": 20.0, "likely": 40.0, "high": 60.0});
+        let dated: Account = serde_json::from_value(account).unwrap();
+        let said = fit(&dated, 1.0, now);
+        assert!(
+            said.contains("can't be told: 5 hours had 28% left at "),
             "{said}"
         );
     }

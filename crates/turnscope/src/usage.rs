@@ -241,7 +241,7 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
 /// up, each with its share. A lone row is shown by name: its row added up
 /// would hide it in one no shorter.
 pub fn fold(usage: &mut Usage, shares: Option<&mut Shares>, top: usize) -> Vec<(Row, Option<f64>)> {
-    if usage.rows.len() <= top + 1 {
+    if usage.rows.len() <= top.saturating_add(1) {
         return Vec::new();
     }
     let time = usage.by.period().is_some();
@@ -864,8 +864,10 @@ mod tests {
             markdown.contains("| 2 more models | $1.00 | 2 | 10% |\n"),
             "{markdown}"
         );
-        // A lone row past the top is shown by name, not added up.
+        // A lone row past the top is shown by name, not added up; a top
+        // past any count, as `--top` takes, folds nothing.
         let (mut usage, _) = breakdown(&db, account, weekly, None, By::Model, now).unwrap();
+        fold(&mut usage, None, usize::MAX);
         fold(&mut usage, None, 2);
         let markdown = super::markdown(&usage, None, None);
         assert!(

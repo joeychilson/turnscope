@@ -1035,6 +1035,16 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
         fit(),
         "Claude Max (me@example.com): whether 0.4 more hours of work fit can't be told: Weekly had 56% left at 11:25, and your agents have worked about 40m since."
     );
+    // And Weekly too, at 11:50: no limit of the read is left.
+    db.execute(
+        "UPDATE reading SET resets = ?1 WHERE account = 'anthropic:acct-1:org-1' AND limit_key = 'seven_day'",
+        [NOW - 10 * HOUR / 60],
+    )
+    .unwrap();
+    assert_eq!(
+        fit(),
+        "Claude Max (me@example.com): whether 0.4 more hours of work fit can't be told: its limits were last read at 11:25, and your agents have worked about 40m since."
+    );
     db.execute(
         "DELETE FROM response WHERE account = 'anthropic:acct-1:org-1' AND at > ?1",
         [NOW - 35 * HOUR / 60],
