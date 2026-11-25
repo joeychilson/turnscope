@@ -16,6 +16,10 @@
   usage older than the agents keep (Claude Code keeps 30 days), past
   limits, alerts and settings aren't. `turnscope.sqlite`, which 0.3 and 0.4
   copied, can be deleted.
+- **Opening the panel or refreshing limits while a `turnscope` command
+  reads them** waits for that read instead of asking each provider again
+  at once. A login refused once could then count as refused twice and ask
+  you to sign in again.
 
 ## 0.4.0
 
