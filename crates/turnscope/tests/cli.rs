@@ -1074,7 +1074,7 @@ fn check_limits_of_one_account_says_its_fit_and_verdict_in_one_line() {
     );
     assert!(
         answers[0].starts_with(
-            "Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 10m); it resets 14:00 (in 2h).\n\nClaude Max (me@example.com) · via"
+            "Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 40m); it resets 14:00 (in 2h).\n\nClaude Max (me@example.com) · via"
         ),
         "{}",
         answers[0]

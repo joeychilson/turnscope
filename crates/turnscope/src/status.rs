@@ -772,7 +772,7 @@ fn drawn(db: &rusqlite::Connection, now: i64) -> Result<BTreeMap<String, Vec<Str
 
 /// How far back a limit's readings, and its account's work, are looked at
 /// for the work rate.
-const WORKED: i64 = 14 * DAY;
+pub(crate) const WORKED: i64 = 14 * DAY;
 
 /// The hours from `now` until a window resets. One that reset since it was
 /// read is a new one, as long: its start isn't known, and is taken as now.
@@ -1026,7 +1026,7 @@ fn tenths(value: f64) -> f64 {
 /// with a made-up 233,000 responses in two weeks, a status took 80 ms
 /// grouping and 12 ms seeking; with 2,000 over 1,194 slots, 1.5 ms grouping
 /// and 4.3 ms seeking.
-fn worked(
+pub(crate) fn worked(
     db: &rusqlite::Connection,
     account: &str,
     models: &[String],

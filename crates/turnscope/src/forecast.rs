@@ -211,12 +211,16 @@ pub fn enough_work(length: Option<i64>) -> f64 {
     }
 }
 
-/// The 80% range of what an hour of work used next over the rate measured,
-/// for a window of `length`.
+/// The 80% range of what the next hours of work used over the rate
+/// measured, for a window of `length`. Measured by `work_backtest` on
+/// Anthropic's 5-hour and weekly limits from 2026-10-10 to 2026-11-25, 3,003
+/// and 11,457 forecasts, rounded outward. Other limits had too few windows of
+/// work, except OpenCode Go's, which swung too far for any range: one week rose
+/// 44 points in 36 minutes of work, the week before 1 point in 4 hours.
 pub fn work_band(length: Option<i64>) -> (f64, f64) {
     match length {
-        Some(length) if length <= DAY => (0.5, 1.6),
-        _ => (0.4, 2.2),
+        Some(length) if length <= DAY => (0.35, 2.15),
+        _ => (0.35, 2.4),
     }
 }
 
@@ -346,10 +350,10 @@ mod tests {
             .map(|slot| at(10.0) + 10_000 + slot * SLOT)
             .collect();
         assert_eq!(work_rate(&drifted, &worked, Some(0), 5.0), Some(4.5));
-        let (low, likely, high) =
-            work_left(14.0, 4.0, work_band(Some(at(168.0))), Some(164.0)).unwrap();
+        let (slow, fast) = work_band(Some(at(168.0)));
+        let (low, likely, high) = work_left(14.0, 4.0, (slow, fast), Some(164.0)).unwrap();
         assert_eq!(likely, 21.5);
-        assert!((low - 21.5 / 2.2).abs() < 1e-9 && (high - 21.5 / 0.4).abs() < 1e-9);
+        assert!((low - 21.5 / fast).abs() < 1e-9 && (high - 21.5 / slow).abs() < 1e-9);
         // More work left than hours to the reset lasts until it, even
         // working all the time.
         assert_eq!(
@@ -357,9 +361,10 @@ mod tests {
             None
         );
         // Less runs out first, its slow end no later than the reset.
+        let (slow, fast) = work_band(Some(at(5.0)));
         assert_eq!(
-            work_left(90.0, 4.0, work_band(Some(at(5.0))), Some(4.0)),
-            Some((10.0 / 6.4, 2.5, 4.0))
+            work_left(90.0, 4.0, (slow, fast), Some(4.0)),
+            Some((10.0 / 4.0 / fast, 2.5, 4.0))
         );
     }
 
@@ -503,6 +508,105 @@ mod tests {
             println!(
                 "  90% of {} went under {fast:.2} times the pace",
                 score.paces.len()
+            );
+        }
+    }
+
+    /// Replay each limit's readings in a copy of a data directory and score
+    /// [`work_band`]: at every reading, the work rate as the status measures
+    /// it, against what the next hours of work in the window used.
+    #[test]
+    #[ignore = "replays a copy of real history: TURNSCOPE_BACKTEST=<data dir>"]
+    fn work_backtest() {
+        let dir = std::env::var("TURNSCOPE_BACKTEST")
+            .expect("TURNSCOPE_BACKTEST names a copy of a data directory");
+        let db =
+            rusqlite::Connection::open(std::path::Path::new(&dir).join("turnscope.db")).unwrap();
+        // A rolling window, with a reset but no start, has no work rate.
+        let mut rows = db
+            .prepare("SELECT account, limit_key, scope, at, used, starts, resets FROM reading WHERE starts IS NOT NULL OR resets IS NULL ORDER BY account, limit_key, scope, at")
+            .unwrap();
+        let mut limits: std::collections::BTreeMap<(String, String, Option<String>), Vec<Reading>> =
+            Default::default();
+        for row in rows
+            .query_map([], |row| {
+                let reading = Reading {
+                    at: row.get(3)?,
+                    used: row.get(4)?,
+                    starts: row.get(5)?,
+                    resets: row.get(6)?,
+                };
+                Ok(((row.get(0)?, row.get(1)?, row.get(2)?), reading))
+            })
+            .unwrap()
+        {
+            let (limit, reading) = row.unwrap();
+            limits.entry(limit).or_default().push(reading);
+        }
+        // By provider, limit and scope: what the next hours of work used over
+        // the rate measured, and whether its band held it.
+        let mut scores: std::collections::BTreeMap<String, Vec<(f64, bool)>> = Default::default();
+        for ((account, key, scope), readings) in &limits {
+            let models = crate::usage::models(scope.as_deref());
+            let fingerprint = crate::providers::key_limit_fingerprint(key);
+            let worked = crate::status::worked(&db, account, &models, fingerprint, 0).unwrap();
+            let known: Option<i64> = db
+                .query_row(
+                    "SELECT min(since) FROM sign_in WHERE account = ?1",
+                    [account],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let provider = account.split(':').next().unwrap_or_default();
+            let scope = scope
+                .as_deref()
+                .map(|scope| format!(" ({scope})"))
+                .unwrap_or_default();
+            let ratios = scores
+                .entry(format!("{provider} {key}{scope}"))
+                .or_default();
+            for (at, reading) in readings.iter().enumerate() {
+                let length = reading
+                    .starts
+                    .zip(reading.resets)
+                    .map(|(starts, resets)| resets - starts);
+                let enough = enough_work(length);
+                let since = reading.at - crate::status::WORKED;
+                let walked = &readings[readings.partition_point(|old| old.at < since)..=at];
+                let slots = &worked[worked.partition_point(|slot| *slot < since)
+                    ..worked.partition_point(|slot| *slot <= reading.at)];
+                let Some(rate) = work_rate(walked, slots, known, enough) else {
+                    continue;
+                };
+                let (mut rose, mut hours_next) = (0.0, 0.0);
+                for pair in readings[at..].windows(2) {
+                    if hours_next >= enough
+                        || !same_reset(pair[0].resets, pair[1].resets)
+                        || pair[1].used < pair[0].used - 1.0
+                    {
+                        break;
+                    }
+                    rose += (pair[1].used - pair[0].used).max(0.0);
+                    hours_next += hours(&worked, pair[0].at, pair[1].at);
+                }
+                if hours_next >= 1.0 {
+                    let ratio = rose / hours_next / rate;
+                    let (slow, fast) = work_band(length);
+                    ratios.push((ratio, (slow..=fast).contains(&ratio)));
+                }
+            }
+        }
+        for (limit, ratios) in scores.iter().filter(|(_, ratios)| !ratios.is_empty()) {
+            let held = ratios.iter().filter(|(_, held)| *held).count();
+            let mut sorted: Vec<f64> = ratios.iter().map(|(ratio, _)| *ratio).collect();
+            sorted.sort_by(f64::total_cmp);
+            let share = |of: f64| sorted[((sorted.len() - 1) as f64 * of).round() as usize];
+            println!(
+                "{limit}: {} forecasts, 80% from {:.2} to {:.2} times the rate measured, band held {:.0}%",
+                ratios.len(),
+                share(0.1),
+                share(0.9),
+                100.0 * held as f64 / ratios.len() as f64,
             );
         }
     }

@@ -47,6 +47,10 @@
   lasts says "about 12% left at the reset (as little as 0%)", and one that
   runs out says how soon, not how late. On real limit history, the old 80%
   ranges held 62–71% of the time; the new bound holds 85–89%.
+- **A range of work left holds 8 times in 10.** On real limit history,
+  "About 40m of work left (20m–1h 10m)" held 65% of the time for Claude's
+  5-hour limit and 78% for its weekly one. Now wider, as "(20m–1h 40m)", it
+  holds 83% for both.
 
 ## 0.4.1
 
