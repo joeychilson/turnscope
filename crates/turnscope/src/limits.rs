@@ -516,7 +516,7 @@ fn record(
         // A read that failed may not know the plan, so the title stays.
         tx.prepare_cached(
             "INSERT INTO account (id, provider, kind, title, label, read_at, full_read_at, checked_at, problem)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?9, ?7, ?8)
              ON CONFLICT (id) DO UPDATE SET
                  title = iif(excluded.read_at IS NULL, title, excluded.title),
                  label = coalesce(excluded.label, label),
@@ -533,6 +533,9 @@ fn record(
             read.limits.is_some().then_some(now),
             now,
             read.problem.as_ref().map(problem_name),
+            // Of some limits only, as an API key's keys without its credits,
+            // the others stand as last read.
+            (read.limits.is_some() && read.problem.is_none()).then_some(now),
         ])?;
         if let Some(limits) = &read.limits {
             // Readings stamped after this one were stamped while the clock
@@ -1465,6 +1468,28 @@ mod tests {
             .iter()
             .map(|limit| (limit.key.clone(), limit.left_percent));
         left.collect()
+    }
+
+    /// As OpenRouter's key limit read without its credits.
+    #[test]
+    fn a_read_of_some_limits_leaves_the_others_as_last_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let minute = crate::time::MINUTE;
+        let (_, held) = fake(Kind::ApiKey, &[]);
+        let both = Read::of(vec![limit("credits"), limit("key")].into());
+        record(&mut db, signed_in(), vec![(both, held)], minute).unwrap();
+        let some = Read {
+            problem: Some(Problem::unavailable("down")),
+            ..Read::of(vec![limit("key")].into())
+        };
+        let (_, held) = fake(Kind::ApiKey, &[]);
+        record(&mut db, signed_in(), vec![(some, held)], 5 * minute).unwrap();
+        let shown: Vec<_> = left(&db, 5 * minute)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(shown, ["credits", "key"]);
     }
 
     #[test]

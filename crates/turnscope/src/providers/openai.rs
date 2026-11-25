@@ -70,7 +70,10 @@ fn workspace(credential: &Credential) -> Option<(String, Option<String>)> {
 /// `None` for an answer with no `rate_limit` at all, such as an error sent
 /// with 200, so it isn't taken for a plan without limits.
 fn parse(answer: &Value, now: i64) -> Option<Limits> {
-    let mut readings = windows(answer.get("rate_limit")?, None, now)?;
+    // No window of the plan's own is an answer not understood, as a window
+    // renamed: taken as is, it read as a plan without limits.
+    let mut readings =
+        windows(answer.get("rate_limit")?, None, now).filter(|readings| !readings.is_empty())?;
     for extra in answer["additional_rate_limits"]
         .as_array()
         .into_iter()
@@ -101,9 +104,12 @@ fn windows(rate: &Value, scope: Option<&str>, now: i64) -> Option<Vec<Reading>> 
             .as_i64()
             .filter(|seconds| *seconds > 0)?;
         let length = seconds.checked_mul(1000)?;
-        // An unknown reset comes as zero; the countdown beside it still says when.
-        let resets = match window["reset_at"].as_i64() {
+        // An unknown reset comes as zero; the countdown beside it still says
+        // when. One that isn't a number fails the answer, as it read as none.
+        let reset_at = &window["reset_at"];
+        let resets = match reset_at.as_i64() {
             Some(at) if at > 0 => Some(at.checked_mul(1000)?),
+            _ if !reset_at.is_null() && !reset_at.is_number() => return None,
             _ => window["reset_after_seconds"]
                 .as_i64()
                 .filter(|&after| after >= 0)
@@ -149,6 +155,16 @@ mod tests {
             limits.readings[1].resets,
             Some(1_789_000_000_000 + 3_600_000)
         );
-        assert!(super::parse(&json!({"error": "nope"}), 0).is_none());
+        // Not understood: no window of the plan's own, or a reset that isn't
+        // a number.
+        let window = json!({"used_percent": 20, "limit_window_seconds": 18000, "reset_at": "soon"});
+        for bad in [
+            json!({"error": "nope"}),
+            json!({"plan_type": "plus", "rate_limit": {}}),
+            json!({"plan_type": "plus", "rate_limit": {"primary": window}}),
+            json!({"plan_type": "plus", "rate_limit": {"primary_window": window}}),
+        ] {
+            assert!(super::parse(&bad, 0).is_none(), "{bad}");
+        }
     }
 }
