@@ -14,6 +14,27 @@
   can't run the agent's own, as `connect` does.
 - **The window that offers an update shows what's new in it**, instead
   of loading its whole GitHub release page.
+- **A limit in dollars is shared by dollars.** Of an OpenRouter key's
+  limit, a session's share, in the panel's Used most and in answers, is its
+  cost over the limit's size, not its part of the cost here, and a last
+  line of an answer says how much of what's used was spent elsewhere with
+  the key.
+- **Whether more hours fit isn't said of a read that's out of date** when
+  your agents have worked on the account since it: `check_limits` and
+  `status --hours` say what was left then, and how long they've worked.
+- **A limit answers to the name the status line shows**, such as `5h`, in
+  `guard`, `usage --limit` and `explain_usage`.
+- **An MCP input given as `""` is taken as not given**, as `null` is.
+- **Of one account, whether more hours fit and how it stands are one
+  line**, with the range and reset the verdict gives; a refused login is
+  said once.
+- **`explain_usage` since a time leaves out the limit of now** unless one
+  is named: its line and shares were of a window that time isn't in.
+- **Usage of credits says which it is and how much of them is used**:
+  this month's for an API key, since credits never reset.
+- **A date in another year shows its year**, and a span of a year or more
+  is in years: `since Jan 1 2020 00:00 (6y ago)`. A table no longer adds
+  up a lone row as "1 more": it's shown by name.
 - **Refresh Limits reads a provider that keeps failing** at once, instead
   of waiting up to 30 minutes for its next try. One that asked to wait is
   still left until then.

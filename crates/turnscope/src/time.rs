@@ -135,13 +135,26 @@ pub fn today(at: i64, now: i64) -> bool {
 }
 
 /// A time to come or gone, as a clock says it: `15:00` today, `Mon 09:30`
-/// within a week, `Oct 12 09:30` beyond.
+/// within a week, `Oct 12 09:30` beyond, and `Jan 1 2020 00:00` in another
+/// year.
 pub fn clock(at: i64, now: i64) -> String {
-    let at = local(at);
-    let format = match (at.date() - local(now).date()).get_days().abs() {
+    let (at, now) = (local(at), local(now));
+    let format = match (at.date() - now.date()).get_days().abs() {
         0 => "%H:%M",
         1..7 => "%a %H:%M",
+        _ if at.year() != now.year() => "%b %-d %Y %H:%M",
         _ => "%b %-d %H:%M",
+    };
+    at.strftime(format).to_string()
+}
+
+/// A time with its day, as a range of usage starts and ends: `Thu Oct 1
+/// 12:00`, and `Wed Jan 1 2020 00:00` in another year.
+pub fn day(at: i64, now: i64) -> String {
+    let at = local(at);
+    let format = match at.year() == local(now).year() {
+        true => "%a %b %-d %H:%M",
+        false => "%a %b %-d %Y %H:%M",
     };
     at.strftime(format).to_string()
 }
@@ -168,11 +181,13 @@ fn told(at: i64, now: i64, in_minute: Ordering) -> String {
     }
 }
 
-/// A length of time: `45m`, `3h 20m`, `2d 4h`.
+/// A length of time: `45m`, `3h 20m`, `2d 4h`, and from a year, the years
+/// passed: `6y`.
 pub fn span(ms: i64) -> String {
     let minutes = ms.unsigned_abs().saturating_add((MINUTE / 2) as u64) / MINUTE as u64;
     let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
     match (days, hours) {
+        (365.., _) => format!("{}y", days / 365),
         (0, 0) => format!("{minutes}m"),
         (0, _) if minutes > 0 => format!("{hours}h {minutes}m"),
         (0, _) => format!("{hours}h"),
@@ -234,6 +249,11 @@ mod tests {
             assert_eq!(ahead(at, now), format!("{} (in 0m)", clock(at, now)));
         }
         assert_eq!(span(2 * DAY + 4 * HOUR + 10 * MINUTE), "2d 4h");
+        // Years back, a date says its year, and how long ago in years.
+        let old = at("2020-01-01");
+        assert_eq!(ago(old, now), "Jan 1 2020 00:00 (6y ago)");
+        assert_eq!(super::day(old, now), "Wed Jan 1 2020 00:00");
+        assert_eq!(clock(at("2026-01-01"), now), "Jan 1 00:00");
     }
 
     /// Each case above works out its expected time in the machine's zone,

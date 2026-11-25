@@ -237,9 +237,12 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
     })
 }
 
-pub fn fold(usage: &mut Usage, shares: Option<&mut Shares>, top: usize) {
-    if usage.rows.len() <= top {
-        return;
+/// Adds up the rows past the `top` in one, and gives back the rows it added
+/// up, each with its share. A lone row is shown by name: its row added up
+/// would hide it in one no shorter.
+pub fn fold(usage: &mut Usage, shares: Option<&mut Shares>, top: usize) -> Vec<(Row, Option<f64>)> {
+    if usage.rows.len() <= top.saturating_add(1) {
+        return Vec::new();
     }
     let time = usage.by.period().is_some();
     let range = if time {
@@ -251,13 +254,20 @@ pub fn fold(usage: &mut Usage, shares: Option<&mut Shares>, top: usize) {
         key: format!("{} {}", range.len(), if time { "earlier" } else { "more" }),
         ..Row::default()
     };
-    for row in usage.rows.drain(range.clone()) {
-        rest.add(&row);
+    let rows: Vec<Row> = usage.rows.drain(range.clone()).collect();
+    for row in &rows {
+        rest.add(row);
     }
     usage.rest = Some(rest);
-    if let Some(shares) = shares {
-        shares.rest = Some(shares.rows.drain(range).sum());
-    }
+    let points: Vec<Option<f64>> = match shares {
+        Some(shares) => {
+            let points: Vec<f64> = shares.rows.drain(range).collect();
+            shares.rest = Some(points.iter().sum());
+            points.into_iter().map(Some).collect()
+        }
+        None => vec![None; rows.len()],
+    };
+    rows.into_iter().zip(points).collect()
 }
 
 pub fn count(number: u64) -> String {
@@ -303,17 +313,30 @@ pub fn share(points: f64) -> String {
     }
 }
 
+/// What `total` cost, as a sentence says it: `$0.50 at list prices over 27
+/// responses, 6 of them with no known price`.
+pub fn spent(total: &Row) -> String {
+    let unpriced = match total.unpriced {
+        0 => String::new(),
+        n => format!(", {} of them with no known price", count(n)),
+    };
+    format!(
+        "{} at list prices over {}{unpriced}",
+        dollars(total.cost_usd),
+        counted(total.responses, "response")
+    )
+}
+
 pub struct Shares {
     pub rows: Vec<f64>,
     pub rest: Option<f64>,
 }
 
-pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>) -> String {
-    let date = |at: i64| time::local(at).strftime("%a %b %-d %H:%M").to_string();
+pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>, now: i64) -> String {
     let mut out = format!(
         "{} to {}: {}, {}\n",
-        date(usage.since),
-        date(usage.until),
+        time::day(usage.since, now),
+        time::day(usage.until, now),
         counted(usage.total.responses, "response"),
         cost(usage.total.cost_usd, usage.total.unpriced),
     );
@@ -392,14 +415,12 @@ pub fn markdown(
         None => format!("| {what} | Cost | Responses |\n|---|--:|--:|\n"),
     };
     let rest_line = usage.rest.as_ref().map(|rest| {
-        // Its key, made in `fold`, counts the rows it adds up: `3 more` or `3 earlier`.
-        let noun = usage.by.noun();
-        let rows = match rest.key.as_str() {
-            "1 more" | "1 earlier" => format!("{} {noun}", rest.key),
-            other => format!("{other} {noun}s"),
-        };
+        // Its key, made in `fold`, counts the rows it adds up: `3 more` or
+        // `3 earlier`, never one.
         let mut line = format!(
-            "| {rows} | {} | {} |",
+            "| {} {}s | {} | {} |",
+            rest.key,
+            usage.by.noun(),
             cost(rest.cost_usd, rest.unpriced),
             count(rest.responses)
         );
@@ -491,10 +512,7 @@ pub fn query(
         since: between
             .map(|(since, _)| since)
             .or(start)
-            .unwrap_or_else(|| match account.kind {
-                crate::providers::Kind::ApiKey => time::start_of(time::Period::Month, now),
-                crate::providers::Kind::Subscription => now - 7 * time::DAY,
-            }),
+            .unwrap_or_else(|| unwindowed(account.kind, now).0),
         until: between.map_or(now, |(_, until)| until),
         by,
         agent: None,
@@ -506,9 +524,54 @@ pub fn query(
     }
 }
 
-/// The points of `limit` each row of `usage` took: its share of the cost,
-/// times the points used. Approximate, as providers say how much of a limit
-/// is used but not by what. None for a window that reset since it was read,
+/// Where usage starts when no window of a limit says, and its words: by the
+/// month for a key's spend, the last week otherwise.
+fn unwindowed(kind: crate::providers::Kind, now: i64) -> (i64, &'static str) {
+    match kind {
+        crate::providers::Kind::ApiKey => (
+            time::start_of(time::Period::Month, now),
+            "this month's usage",
+        ),
+        crate::providers::Kind::Subscription => (now - 7 * time::DAY, "the last 7 days' usage"),
+    }
+}
+
+/// The usage of `limit`, one that never resets, as credits, and what of it
+/// is used: its usage has no window to run from, so it's said which it runs
+/// from, and how to see further back, with `dashes` before `since`: `--` on
+/// the command line.
+pub fn unreset(
+    account: &crate::status::Account,
+    limit: &crate::status::Limit,
+    usage: &Usage,
+    now: i64,
+    dashes: &str,
+) -> String {
+    let (dont, them, are) = match limit.plural() {
+        true => ("don't", "them", "are"),
+        false => ("doesn't", "it", "is"),
+    };
+    let used = match limit.money {
+        Some(money) => dollars(money.size_usd - money.left_usd),
+        None => format!("{}%", 100 - limit.left_percent),
+    };
+    let spent = match usage.total.responses {
+        0 => "nothing yet".to_owned(),
+        _ => spent(&usage.total),
+    };
+    format!(
+        "{} {dont} reset, so this is {}, since {}: {spent}. {used} of {them} {are} used; give \
+         {dashes}since, such as 30d, to see what used {them}.",
+        limit.named(),
+        unwindowed(account.kind, now).1,
+        time::ago(usage.since, now),
+    )
+}
+
+/// The points of `limit` each row of `usage` took. Of a limit in dollars,
+/// its cost over the limit's size. Otherwise its share of the cost, times
+/// the points used: approximate, as providers say how much of a limit is
+/// used but not by what. None for a window that reset since it was read,
 /// as how much of the new one is used isn't known, for usage with no known
 /// price (`unshared`), as a share is of cost, and for usage asked `between`
 /// other times than the window's.
@@ -518,14 +581,42 @@ pub fn shares(
     between: Option<(i64, i64)>,
 ) -> Option<Shares> {
     window(limit, between)?;
-    if usage.total.unpriced > 0 || usage.total.cost_usd <= 0.0 {
+    if usage.total.unpriced > 0 {
         return None;
     }
-    let used = f64::from(100 - limit.left_percent);
-    let points = |row: &Row| row.cost_usd / usage.total.cost_usd * used;
+    // Split by the cost seen, a key's spend elsewhere, which no agent here
+    // made, was given to the sessions here: $0.00 took 45% of $20.
+    let scale = match limit.money {
+        Some(money) => 100.0 / money.size_usd,
+        None if usage.total.cost_usd > 0.0 => {
+            f64::from(100 - limit.left_percent) / usage.total.cost_usd
+        }
+        None => return None,
+    };
+    let points = |row: &Row| row.cost_usd * scale;
     Some(Shares {
         rows: usage.rows.iter().map(points).collect(),
         rest: usage.rest.as_ref().map(points),
+    })
+}
+
+/// Of a key's limit in dollars, how much of what's used the usage here
+/// doesn't account for, when its shares, each of the limit's size, add up
+/// to less.
+pub fn elsewhere(
+    usage: &Usage,
+    limit: &crate::status::Limit,
+    between: Option<(i64, i64)>,
+) -> Option<String> {
+    let money = limit.money.filter(|_| limit.is_key())?;
+    window(limit, between)?;
+    let used = money.size_usd - money.left_usd;
+    let (seen, said) = (dollars(usage.total.cost_usd), dollars(used));
+    (usage.total.unpriced == 0 && usage.total.cost_usd < used && seen != said).then(|| {
+        format!(
+            "Your agents here account for {seen} of the {said} used; the rest was spent \
+             elsewhere with this key."
+        )
     })
 }
 
@@ -763,7 +854,7 @@ mod tests {
             (shares.rows.as_slice(), shares.rest),
             (&[30.0][..], Some(10.0))
         );
-        let text = text(&usage, Some((weekly, &shares)));
+        let text = text(&usage, Some((weekly, &shares)), now);
         assert!(
             text.contains("  2 more                 2  $1.00          10%\n"),
             "{text}"
@@ -773,11 +864,14 @@ mod tests {
             markdown.contains("| 2 more models | $1.00 | 2 | 10% |\n"),
             "{markdown}"
         );
+        // A lone row past the top is shown by name, not added up; a top
+        // past any count, as `--top` takes, folds nothing.
         let (mut usage, _) = breakdown(&db, account, weekly, None, By::Model, now).unwrap();
+        fold(&mut usage, None, usize::MAX);
         fold(&mut usage, None, 2);
         let markdown = super::markdown(&usage, None, None);
         assert!(
-            markdown.contains("| 1 more model | $0.25 | 1 |\n"),
+            markdown.ends_with("| claude-haiku-5 | $0.25 | 1 |\n"),
             "{markdown}"
         );
     }
@@ -879,13 +973,13 @@ mod tests {
             rows: vec![row("codex:7c1d2e3f-4a5b", Some("Fix it"))],
             rest: Some(row("3551 more", None)),
         };
-        let text = text(&usage, None);
+        let text = text(&usage, None, 0);
         assert!(text.contains("  7c1d2e3f Fix it  "), "{text}");
         assert!(text.contains("  3551 more  "), "{text}");
     }
 
     #[test]
-    fn markdown_by_time_puts_earlier_first_with_its_period_name() {
+    fn a_table_by_time_puts_earlier_first_with_its_period_name() {
         let row = |key: &str, cost_usd: f64, responses: u64| Row {
             key: key.to_owned(),
             cost_usd,
@@ -893,7 +987,7 @@ mod tests {
             ..Row::default()
         };
         for (by, rest_key, expected_rest) in [
-            (By::Day, "1 earlier", "| 1 earlier day | $1.00 | 1 |"),
+            (By::Day, "4 earlier", "| 4 earlier days | $1.00 | 1 |"),
             (By::Week, "2 earlier", "| 2 earlier weeks | $1.00 | 1 |"),
             (By::Month, "3 earlier", "| 3 earlier months | $1.00 | 1 |"),
         ] {
@@ -911,6 +1005,13 @@ mod tests {
                 &lines[2..],
                 [expected_rest, "| 2026-10-01 | $2.00 | 1 |"],
                 "{table}"
+            );
+            let text = text(&usage, None, 0);
+            let rows: Vec<&str> = text.lines().skip(3).take(2).collect();
+            assert!(
+                rows[0].starts_with(&format!("  {rest_key} "))
+                    && rows[1].starts_with("  2026-10-01 "),
+                "{text}"
             );
         }
     }

@@ -73,8 +73,9 @@ way.
   lists and tables.
 - There is no `structuredContent`: programs should use the CLI's `--json`.
 - Times are local, on a 24-hour clock: `10:37` today, `Wed 09:00` within a
-  week, `Sep 12 09:30` beyond. A limit's times also say how far off they
-  are: `15:00 (in 3h)`.
+  week, `Sep 12 09:30` beyond, and `Jan 1 2020 00:00` in another year. A
+  limit's times also say how far off they are: `15:00 (in 3h)`, and from a
+  year, in years: `(6y ago)`.
 - Costs are at list prices: what the same tokens cost on the provider's
   API, or the provider's own charge where the agent records one (Grok
   Build). An unknown cost is usage with no known price, not free.
@@ -112,8 +113,8 @@ way.
 | [`check_limits`](#check_limits) | Check limits | See whether planned work fits, before costly work |
 | [`explain_usage`](#explain_usage) | Explain usage | Find out what used a limit or what something cost |
 
-Every input is optional, and one given as `null` is taken as not given. An
-input the schema doesn't list is an error.
+Every input is optional, and one given as `null` or `""` is taken as not
+given. An input the schema doesn't list is an error.
 
 The examples come from `crates/turnscope/tests/snapshots/mcp.json`:
 synthetic accounts and sessions, with the clock at Thu Oct 1 12:00 UTC.
@@ -136,23 +137,30 @@ is not a yes.
 
 The answer has three parts:
 
-1. With `hours`, whether they fit at the work rate: of several
-   accounts, a line for each, named. It goes by the limits an account
-   stands by: those on all its usage, not one model's or one key's, or of
-   the [pool](architecture.md#glossary) it last drew on. Work past a
-   limit's reset counts in the windows after it. A limit with too little
-   work measured, or a window that rolls, as OpenCode Go's 5 hours does,
-   means it can't be told: the answer names the limit, what's left of it
-   and, unless its window rolls, where the clock's pace takes it by its
-   reset, then what the others would leave. An account with no limit read
-   can't be told either, and one not read now says why, such as `its login
-   was refused`.
+1. With `hours`, whether they fit at the work rate: a line for each
+   account, named. It goes by the limits an account stands by: those on
+   all its usage, not one model's or one key's, or of the
+   [pool](architecture.md#glossary) it last drew on. One that runs out
+   says after how much work, with its range and its reset, as the verdict
+   does; one used up says when it's back. Work past a limit's reset counts
+   in the windows after it. A limit with too little work measured, or a
+   window that rolls, as OpenCode Go's 5 hours does, means it can't be
+   told: the answer names the limit, what's left of it and, unless its
+   window rolls, where the clock's pace takes it by its reset, then what
+   the others would leave. An account with no limit read can't be told
+   either, and one not read now says why, such as `its login was
+   refused`. Nor can one whose limits couldn't be read since an earlier
+   read when its agents have worked on it since: the answer says what
+   was left then of the limit it stands by with the fewest hours of work
+   left, of those not reset since, and how long they've worked. Of one
+   account, the line is its verdict too, and the second part is left out.
 2. A one-sentence verdict on the first account: how much work is left
    before which limit runs out, and when that limit resets. When the
    deciding limit has no work rate measured, it says what's left of it
    instead. A used-up account says which limit is used up and when it's
    back: of several, the last back. An API key with no limit read says
-   what it cost this month.
+   what it cost this month. Resting on an earlier read, it says so, and
+   why: `That's as of 11:25: it couldn't be read since`.
 
    When every account is shown, with `all` or because the caller's
    account isn't known, the line names instead the account with the most
@@ -189,10 +197,10 @@ account is hidden, and then to name one with `account`.
 Called with `{"all": true, "hours": 2}`:
 
 ```markdown
-- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work.
-- ChatGPT Plus (me@example.com): Whether 2 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
-- OpenRouter API key: Whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
-- SuperGrok (me@example.com): Whether 2 more hours of work fit can't be told: its login was refused.
+- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 10m); it resets 14:00 (in 2h).
+- ChatGPT Plus (me@example.com): whether 2 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
+- OpenRouter API key: whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
+- SuperGrok (me@example.com): whether 2 more hours of work fit can't be told: its login was refused.
 
 Most room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h).
 
@@ -224,8 +232,8 @@ together, as for "what did I spend across my agents".
 |---|---|---|---|
 | `account` | string | the caller's | One account: its id, or text in its title, label or id. If the text matches several, the error lists them. |
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
-| `limit` | string | the limit that decides how the account stands | Text in a limit's name or key, any case, such as `week` or `5 hours`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
-| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. A `since` at or after now is an error, as it is for the command line's `usage`. |
+| `limit` | string | the limit that decides how the account stands, unless `since` is given | Text in a limit's name or key, any case, such as `week` or `5 hours`, or the name the status line shows, such as `5h`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
+| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. Given without `limit`, the usage is the account's, with no limit's line. A `since` at or after now is an error, as it is for the command line's `usage`. |
 | `until` | string | now | With `since`: up to when, in the same forms. Without `since`, the usage runs to now, and `until` is an error. |
 | `by` | `session`, `project`, `model`, `agent`, `account`, `day`, `week` or `month` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
@@ -234,10 +242,15 @@ The answer:
 
 1. The account, when the usage starts and how long ago, the cost at list
    prices and the number of responses, with how many have no known price.
-2. The limit's line, as `check_limits` gives it.
+2. The limit's line, as `check_limits` gives it. A limit that never
+   resets, as credits, has no window, so in place of both lines one says
+   which usage this is, how much of the limit is used, and to give `since`
+   to see what used it: `Credits don't reset, so this is this month's
+   usage, since 00:00 (12h ago): nothing yet. $15.00 of them are used;
+   give since, such as 30d, to see what used them.`
 3. A table of the top rows, each with its cost, responses and share of the
-   limit in percentage points, with a row adding up the rest (first for
-   time periods, last otherwise). A session
+   limit in percentage points, with a row adding up the rest, two or more
+   (first for time periods, last otherwise). A session
    shows as the first 8 characters of its agent's own id for it, and its
    title in quotes, or `(untitled)`. The caller's own is marked `(yours)`
    when its agent names it, as Claude Code does.
@@ -250,8 +263,12 @@ The usage's start and each row's share are worked out as for the command
 line's `usage --limit` ([cli.md](cli.md#usage)). Shares are
 approximate, and known only over the limit's current window: with any
 other `since`, the column is left out, and a line says from when the
-window runs and to leave `since` out for them. A limit whose window reset
-since it was read gives no shares, so no line says how to get them. Usage
+window runs and to leave `since` out for them. Of a limit in dollars, as
+an OpenRouter key's own, a share is the cost over the limit's size, and
+when the usage here cost less than what's used, a line says so: `Your
+agents here account for $0.00 of the $9.00 used; the rest was spent
+elsewhere with this key.` A limit whose window reset since it was read
+gives no shares, so no line says how to get them. Usage
 with no known price gives none either, as a share is of cost, and a line
 says so. A key's own limit counts only the usage made with that key.
 
