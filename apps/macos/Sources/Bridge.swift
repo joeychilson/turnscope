@@ -27,11 +27,11 @@ func snapshotPanel(_ launch: Launch) -> SnapshotResponse {
               let json = cfgText.withCString({ takeRustString(turnscope_app_snapshot($0)) }),
               let data = json.data(using: .utf8)
         else {
-            return .err("Turnscope: snapshot returned empty response", 1)
+            return .err(error: "Turnscope: snapshot returned empty response", code: 1)
         }
         return try JSONDecoder().decode(SnapshotResponse.self, from: data)
     } catch {
-        return .err("Turnscope: snapshot couldn't be decoded: \(error)", 1)
+        return .err(error: "Turnscope: snapshot couldn't be decoded: \(error)", code: 1)
     }
 }
 

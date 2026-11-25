@@ -29,7 +29,7 @@ struct AccountsTab: View {
 private struct AccountSwitch: View {
     @Environment(Bridge.self) private var bridge
     @Environment(UIState.self) private var ui
-    var account: AccountSwitchModel
+    var account: AccountModel
 
     var body: some View {
         HStack(spacing: Row.gap) {
@@ -48,7 +48,7 @@ private struct AccountSwitch: View {
                     }
                 )
             )
-            .disabled(!account.enabled)
+            .disabled(bridge.panel.stopped)
         }
         .padding(Row.padding)
         .frame(minHeight: Row.setting)

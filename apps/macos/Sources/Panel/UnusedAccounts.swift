@@ -75,7 +75,7 @@ private struct Fold: View {
 
 private struct HiddenRow: View {
     @Environment(Bridge.self) private var bridge
-    var account: HiddenAccountModel
+    var account: AccountModel
 
     var body: some View {
         HStack(spacing: Row.gap) {

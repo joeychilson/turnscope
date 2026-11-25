@@ -121,27 +121,6 @@ enum Effect: Decodable, Equatable {
     case postAlerts(alerts: [AlertNote])
     case removeNotifications(identifiers: [String])
     case savePreferences(menuShows: MenuShows, dismissedConnect: [String])
-
-    private enum CodingKeys: String, CodingKey {
-        case kind, alerts, identifiers, menuShows, dismissedConnect
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        switch try c.decode(String.self, forKey: .kind) {
-        case "postAlerts":
-            self = .postAlerts(alerts: try c.decode([AlertNote].self, forKey: .alerts))
-        case "removeNotifications":
-            self = .removeNotifications(identifiers: try c.decode([String].self, forKey: .identifiers))
-        case "savePreferences":
-            self = .savePreferences(
-                menuShows: try c.decode(MenuShows.self, forKey: .menuShows),
-                dismissedConnect: try c.decode([String].self, forKey: .dismissedConnect)
-            )
-        case let other:
-            throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown effect: \(other)")
-        }
-    }
 }
 
 struct MenuBarSlot: Decodable, Equatable {
@@ -211,13 +190,14 @@ struct AccountRowModel: Decodable, Equatable, Identifiable {
     var usedMost: [UsedMostModel]
 }
 
-struct HiddenAccountModel: Decodable, Equatable, Identifiable {
+struct AccountModel: Decodable, Equatable, Identifiable {
     var id: String
     var provider: String
     var title: String
     var label: String?
     var via: String?
     var called: String
+    var shown: Bool
 }
 
 struct ConnectOfferModel: Decodable, Equatable {
@@ -230,30 +210,11 @@ struct ConnectOfferModel: Decodable, Equatable {
     var help: String
 }
 
-enum FooterNoteModel: Decodable, Equatable {
-    case stale(text: String, help: String, spoken: String)
-    case reading(text: String, help: String, spoken: String)
-    case refreshing(text: String, spoken: String)
-
-    private enum CodingKeys: String, CodingKey {
-        case kind, text, help, spoken
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        let text = try c.decode(String.self, forKey: .text)
-        let spoken = try c.decode(String.self, forKey: .spoken)
-        switch try c.decode(String.self, forKey: .kind) {
-        case "stale":
-            self = .stale(text: text, help: try c.decode(String.self, forKey: .help), spoken: spoken)
-        case "reading":
-            self = .reading(text: text, help: try c.decode(String.self, forKey: .help), spoken: spoken)
-        case "refreshing":
-            self = .refreshing(text: text, spoken: spoken)
-        case let other:
-            throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown footer note: \(other)")
-        }
-    }
+struct FooterNoteModel: Decodable, Equatable {
+    var text: String
+    var help: String?
+    var spoken: String
+    var busy: Bool
 }
 
 struct EmptyMessage: Decodable, Equatable {
@@ -271,17 +232,6 @@ struct AgentRowModel: Decodable, Equatable, Identifiable {
     var enabled: Bool
 }
 
-struct AccountSwitchModel: Decodable, Equatable, Identifiable {
-    var id: String
-    var provider: String
-    var title: String
-    var label: String?
-    var via: String?
-    var called: String
-    var shown: Bool
-    var enabled: Bool
-}
-
 struct SettingsModel: Decodable, Equatable {
     var menuShows: MenuShows
     var notify: NotifySettings?
@@ -290,8 +240,8 @@ struct SettingsModel: Decodable, Equatable {
     var agentsTitle: String
     var agents: [AgentRowModel]
     var accountsEmpty: EmptyMessage?
-    var subscriptions: [AccountSwitchModel]
-    var apiKeys: [AccountSwitchModel]
+    var subscriptions: [AccountModel]
+    var apiKeys: [AccountModel]
 
     static let empty = SettingsModel(
         menuShows: .all, notify: nil, canEditNotify: false,
@@ -309,7 +259,7 @@ struct PanelModel: Decodable, Equatable {
     var inUse: [AccountRowModel]
     var recent: [AccountRowModel]
     var unused: [AccountRowModel]
-    var hidden: [HiddenAccountModel]
+    var hidden: [AccountModel]
     var unusedFoldLabel: String?
     var hiddenFoldLabel: String?
     var connectOffer: ConnectOfferModel?
@@ -351,24 +301,8 @@ struct SnapshotConfig: Encodable {
 }
 
 enum SnapshotResponse: Decodable {
-    case ok(PanelModel)
-    case err(String, Int32)
-
-    private enum CodingKeys: String, CodingKey {
-        case ok, error, code
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        if let panel = try c.decodeIfPresent(PanelModel.self, forKey: .ok) {
-            self = .ok(panel)
-        } else {
-            self = .err(
-                try c.decode(String.self, forKey: .error),
-                try c.decode(Int32.self, forKey: .code)
-            )
-        }
-    }
+    case ok(panel: PanelModel)
+    case err(error: String, code: Int32)
 }
 
 enum AppAction: Encodable {

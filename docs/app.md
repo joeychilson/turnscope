@@ -97,8 +97,8 @@ shows lasts, it's a template image in the menu bar's own color; once one
 needs attention, it's drawn in color. While the data can't be kept
 current, it's dimmed, since it shows the last status. With Settings →
 General → Show set to Most urgent, it shows only the most urgent account.
-VoiceOver reads each account's title and what its figure says, then "not
-up to date" while it's dimmed. Clicking the item opens or closes the
+VoiceOver reads each account's title, with its label where two share
+one, and what its figure says, then "not up to date" while it's dimmed. Clicking the item opens or closes the
 panel. Right-clicking (or Control-clicking) opens a menu with Refresh
 Limits (⌘R), Settings… (⌘,), Check for Updates… (when Sparkle is enabled)
 and Quit Turnscope (⌘Q).
