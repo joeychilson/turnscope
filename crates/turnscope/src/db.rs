@@ -182,8 +182,7 @@ UPDATE session SET project = NULL WHERE project = '';
 /// "TRNS", in the header, so a file that isn't Turnscope's is never written.
 const APPLICATION_ID: i32 = 0x5452_4E53;
 
-/// Open the database in `dir`, creating or migrating it. A new one takes in
-/// what Turnscope 0.1 and 0.2 kept (`import`).
+/// Open the database in `dir`, creating or migrating it.
 ///
 /// One process at a time creates or migrates it, holding `turnscope.lock`
 /// beside it: turning on write-ahead logging, which a new database needs,
@@ -199,6 +198,10 @@ pub fn open(dir: &Path) -> Result<Connection> {
     let mut db = Connection::open(&path)?;
     db.busy_timeout(std::time::Duration::from_secs(10))?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
+    // The write-ahead log is cut back to this once checkpointed: without it,
+    // one large write left a 359 MB log for as long as a connection stayed
+    // open, as the app's does. Above the 4 MB SQLite checkpoints at.
+    db.pragma_update(None, "journal_size_limit", 16 << 20)?;
     let latest = REVISIONS.len() as i64;
     // Read `user_version` before `application_id`: a concurrent creator commits
     // both together, so reading `application_id` first could observe 0 followed
@@ -221,42 +224,19 @@ pub fn open(dir: &Path) -> Result<Connection> {
         return Ok(db);
     }
     db.pragma_update(None, "journal_mode", "WAL")?;
-    let old = dir.join(OLD);
-    // Attached outside the transaction, which SQLite requires.
-    let importing = done == 0 && old.exists();
-    if importing {
-        db.execute("ATTACH DATABASE ?1 AS old", [old.to_string_lossy()])
-            .map_err(|error| untaken(&old, error))?;
-    }
-    // Exclusive locks the old file too, and reads it first.
-    let tx = db
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)
-        .map_err(|error| match importing {
-            true => untaken(&old, error),
-            false => error.into(),
-        })?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
     for (revision, script) in (1..).zip(REVISIONS).skip(done as usize) {
         tx.execute_batch(script)?;
         tx.pragma_update(None, "user_version", revision)?;
     }
     tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-    if importing {
-        import(&tx).map_err(|error| untaken(&old, error))?;
-    }
     tx.commit()?;
-    if importing {
-        db.execute("DETACH DATABASE old", [])?;
-        for leftover in ["serve.log", "serve.lock", "serve.sock"] {
-            let _ = std::fs::remove_file(dir.join(leftover));
-        }
-    }
     Ok(db)
 }
 
 /// The database in `dir` to read, never written: None when it's missing,
 /// or at a revision other than this binary's, as for a status line, which
-/// runs every few seconds and shouldn't be what creates the database or
-/// takes in the old one.
+/// runs every few seconds and shouldn't be what creates or migrates it.
 pub fn read(dir: &Path) -> Option<Connection> {
     let flags =
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -266,110 +246,6 @@ pub fn read(dir: &Path) -> Option<Connection> {
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .ok()?;
     (id == APPLICATION_ID && revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
-}
-
-/// Why the old database at `old` can't be taken in. Unless another process
-/// held it a moment, that lasts, and every process waits on it, so it says
-/// what to do.
-fn untaken(old: &Path, error: rusqlite::Error) -> Error {
-    let busy = matches!(
-        error.sqlite_error_code(),
-        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-    );
-    Error::Failed(format!(
-        "{} can't be taken in: {error}{}",
-        old.display(),
-        if busy {
-            ""
-        } else {
-            ". To start without what it holds, move it elsewhere"
-        }
-    ))
-}
-
-/// The database of Turnscope 0.1 and 0.2, at any of its six revisions.
-const OLD: &str = "turnscope.sqlite";
-const OLD_REVISIONS: i64 = 6;
-
-/// Take in all of the old database, into a new one, by its columns' names:
-/// each revision's columns are a subset or superset of the next's. Its rows
-/// are left as they were. A copy, over a fresh read of the agents' history:
-/// agents delete their own (Claude Code after 30 days), and readings,
-/// prices, sign-ins and alerts exist only here. A made-up 0.2.1 database of
-/// 240 MB took 6.9 s (November 2026), while every process waited.
-///
-/// Its revision is raised past 0.2's last, so a 0.2 still running, as an
-/// agent's MCP server, writes nothing more there and says why. A file with
-/// no revision never held 0.1's or 0.2's data.
-fn import(tx: &Transaction) -> rusqlite::Result<()> {
-    let revision: i64 = tx.query_row("PRAGMA old.user_version", [], |row| row.get(0))?;
-    if revision == 0 {
-        return Ok(());
-    }
-    let has = |table: &str, column: &str| -> rusqlite::Result<bool> {
-        Ok(tx.query_row(
-            "SELECT count(*) FROM pragma_table_info(?1, 'old') WHERE name = ?2",
-            [table, column],
-            |row| row.get::<_, i64>(0),
-        )? > 0)
-    };
-    let or = |table: &str, column: &str, otherwise: &str| -> rusqlite::Result<String> {
-        Ok(match has(table, column)? {
-            true => column.to_owned(),
-            false => otherwise.to_owned(),
-        })
-    };
-    // 0.2 said to sign in again at the first refused login, and 0.3 at the
-    // second in a row (`status`): one 0.2 said it of, 0.3 says it of too.
-    // Before 0.2.0 a parent was a fork's or a continuation's too, and a
-    // session's title was kept whole. 0.2 kept an empty folder as a
-    // project, as revision 2 says of 0.3.1. `chat_history.jsonl` was read for
-    // what was said, and no reader lists it now: a session it alone held
-    // would never be read again.
-    let parent = match has("session", "link")? {
-        true => "iif(link IS 'subagent', parent, NULL)",
-        false => "parent",
-    };
-    let chat = r"path LIKE '%/chat\_history.jsonl' ESCAPE '\'";
-    tx.execute_batch(&format!(
-        "INSERT INTO file (id, path, agent, size, modified, inode, cursor, skipped, failed, readers)
-             SELECT id, path, agent, size, modified, inode, cursor, skipped, {failed}, {readers}
-             FROM old.file WHERE NOT {chat};
-         INSERT INTO session (id, agent, project, title, title_rank, parent)
-             SELECT id, agent, nullif(project, ''), substr(title, 1, 200), title_rank, {parent} FROM old.session;
-         INSERT INTO session_file (session, file)
-             SELECT session, file FROM old.session_file WHERE file IN (SELECT id FROM main.file);
-         INSERT INTO response (agent, id, session, copy, file, folder, at, provider, model,
-             input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-             web_searches, priority, recorded, cost, account)
-             SELECT agent, id, session, copy, file, folder, at, provider, model,
-             input, cache_read, cache_write_5m, cache_write_1h, output, reasoning, prompt,
-             web_searches, priority, recorded, cost, account FROM old.response;
-         INSERT INTO account (id, provider, kind, title, label, hidden, read_at, problem,
-                 full_read_at, checked_at)
-             SELECT id, provider, kind, title, label, hidden, read_at, problem, read_at, read_at
-             FROM old.account;
-         INSERT INTO failing (account, reads)
-             SELECT id, 2 FROM old.account WHERE problem = 'signIn';
-         INSERT INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
-             SELECT account, limit_key, at, name, scope, used, size, starts, resets
-             FROM old.reading;
-         INSERT INTO sign_in (agent, folder, provider, since, account, key)
-             SELECT agent, folder, provider, since, account, key FROM old.sign_in;
-         INSERT INTO alert (id, account, limit_key, kind, window, at, acknowledged, detail)
-             SELECT id, account, limit_key, kind, window, at, acknowledged, detail
-             FROM old.alert;
-         INSERT INTO price (provider, model, since, cost, fast)
-             SELECT provider, model, since, cost, fast FROM old.price;
-         UPDATE state SET (readers, history_at, limits_at, prices_at, settings, version) =
-             (SELECT readers, history_at, limits_at, prices_at, settings, {version} FROM old.state)
-             WHERE EXISTS (SELECT 1 FROM old.state);",
-        failed = or("file", "failed", "NULL")?,
-        readers = or("file", "readers", "0")?,
-        version = or("state", "version", "NULL")?,
-    ))?;
-    tx.execute_batch(&format!("PRAGMA old.user_version = {}", OLD_REVISIONS + 1))?;
-    Ok(())
 }
 
 /// Begin a write: a transaction that holds the write lock from its start,
@@ -429,13 +305,16 @@ fn open_lock(path: &Path) -> Result<File> {
         .create(true)
         .truncate(false)
         .open(path)
-        .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))
+        .map_err(|error| locking(path, error))
+}
+
+fn locking(path: &Path, error: std::io::Error) -> Error {
+    Error::Failed(format!("locking {}: {error}", path.display()))
 }
 
 pub fn lock(path: &Path) -> Result<File> {
     let file = open_lock(path)?;
-    file.lock()
-        .map_err(|error| Error::Failed(format!("locking {}: {error}", path.display())))?;
+    file.lock().map_err(|error| locking(path, error))?;
     Ok(file)
 }
 
@@ -449,12 +328,7 @@ pub fn lock_within(path: &Path, wait: std::time::Duration) -> Result<Option<File
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
-            Err(std::fs::TryLockError::Error(error)) => {
-                return Err(Error::Failed(format!(
-                    "locking {}: {error}",
-                    path.display()
-                )));
-            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(locking(path, error)),
         }
     }
 }
@@ -472,13 +346,10 @@ const VERSION: i64 = number(env!("CARGO_PKG_VERSION_MAJOR")) * 1_000_000
     + number(env!("CARGO_PKG_VERSION_PATCH"));
 
 const fn number(digits: &str) -> i64 {
-    let digits = digits.as_bytes();
-    let (mut number, mut at) = (0, 0);
-    while at < digits.len() {
-        number = number * 10 + (digits[at] - b'0') as i64;
-        at += 1;
+    match i64::from_str_radix(digits, 10) {
+        Ok(number) => number,
+        Err(_) => panic!("a version's part isn't a number"),
     }
-    number
 }
 
 /// Refuses writes once a newer Turnscope version has written here, recording
@@ -644,6 +515,23 @@ mod tests {
     }
 
     #[test]
+    fn the_write_ahead_log_shrinks_after_a_large_write_while_the_data_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(dir.path()).unwrap();
+        let _app = open(dir.path()).unwrap();
+        db.execute_batch(
+            "CREATE TABLE big (data BLOB);
+             WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 32)
+             INSERT INTO big SELECT zeroblob(1 << 20) FROM n;
+             PRAGMA wal_checkpoint;
+             DELETE FROM big;",
+        )
+        .unwrap();
+        let wal = std::fs::metadata(dir.path().join("turnscope.db-wal")).unwrap();
+        assert!(wal.len() <= 16 << 20, "{} bytes", wal.len());
+    }
+
+    #[test]
     fn a_schema_changed_by_a_newer_turnscope_since_it_was_opened_isnt_known() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(dir.path()).unwrap();
@@ -659,219 +547,6 @@ mod tests {
         );
         // One started now doesn't open it.
         assert_eq!(open(dir.path()).unwrap_err().to_string(), error);
-    }
-
-    /// Turnscope 0.1.0's schema, the first of the old database's revisions:
-    /// the oldest a database can be taken in from.
-    const FIRST: &str = "
-        CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, agent TEXT NOT NULL,
-            folder TEXT NOT NULL, size INTEGER NOT NULL, modified INTEGER NOT NULL,
-            inode INTEGER NOT NULL, cursor TEXT NOT NULL, skipped INTEGER NOT NULL DEFAULT 0) STRICT;
-        CREATE TABLE session (id TEXT PRIMARY KEY, agent TEXT NOT NULL, folder TEXT NOT NULL,
-            cwd TEXT, project TEXT, branch TEXT, title TEXT, title_rank INTEGER NOT NULL DEFAULT -1,
-            parent TEXT, link TEXT, started INTEGER, last INTEGER) STRICT;
-        CREATE TABLE session_file (session TEXT NOT NULL, file INTEGER NOT NULL,
-            PRIMARY KEY (session, file)) STRICT, WITHOUT ROWID;
-        CREATE TABLE response (agent TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL,
-            copy INTEGER NOT NULL, file INTEGER NOT NULL, folder TEXT NOT NULL, at INTEGER NOT NULL,
-            provider TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL,
-            cache_read INTEGER NOT NULL, cache_write_5m INTEGER NOT NULL,
-            cache_write_1h INTEGER NOT NULL, output INTEGER NOT NULL, reasoning INTEGER NOT NULL,
-            prompt INTEGER NOT NULL, web_searches INTEGER NOT NULL, priority INTEGER NOT NULL,
-            recorded REAL, cost REAL, account TEXT, PRIMARY KEY (agent, id)) STRICT, WITHOUT ROWID;
-        CREATE TABLE account (id TEXT PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL,
-            title TEXT NOT NULL, label TEXT, hidden INTEGER NOT NULL DEFAULT 0, read_at INTEGER,
-            problem TEXT) STRICT, WITHOUT ROWID;
-        CREATE TABLE reading (account TEXT NOT NULL, limit_key TEXT NOT NULL, at INTEGER NOT NULL,
-            name TEXT NOT NULL, scope TEXT, used REAL NOT NULL, size REAL, starts INTEGER,
-            resets INTEGER, PRIMARY KEY (account, at, limit_key)) STRICT, WITHOUT ROWID;
-        CREATE TABLE sign_in (agent TEXT NOT NULL, folder TEXT NOT NULL, provider TEXT NOT NULL,
-            since INTEGER NOT NULL, account TEXT, key TEXT, PRIMARY KEY (folder, provider, since))
-            STRICT, WITHOUT ROWID;
-        CREATE TABLE alert (id INTEGER PRIMARY KEY, account TEXT NOT NULL, limit_key TEXT NOT NULL,
-            kind TEXT NOT NULL, window INTEGER NOT NULL, at INTEGER NOT NULL,
-            acknowledged INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL,
-            UNIQUE (account, limit_key, kind, window)) STRICT;
-        CREATE TABLE price (provider TEXT NOT NULL, model TEXT NOT NULL, since INTEGER NOT NULL,
-            cost TEXT NOT NULL, fast TEXT, PRIMARY KEY (provider, model, since)) STRICT, WITHOUT ROWID;
-        CREATE TABLE state (id INTEGER PRIMARY KEY CHECK (id = 1), readers INTEGER NOT NULL DEFAULT 0,
-            history_at INTEGER, limits_at INTEGER, prices_at INTEGER, settings TEXT) STRICT;
-        INSERT INTO state (id) VALUES (1);
-        PRAGMA user_version = 1;";
-
-    /// One of each row, as 0.1.0 kept it: a session and a subagent and a
-    /// fork of it, a title of 300 characters, and the file that held only
-    /// what was said.
-    const ROWS: &str = r#"
-        INSERT INTO file (id, path, agent, folder, size, modified, inode, cursor) VALUES
-            (1, '/home/.grok/sessions/a/s1/updates.jsonl', 'grok-build', '/home/.grok', 10, 1, 1, '9'),
-            (2, '/home/.grok/sessions/a/s1/chat_history.jsonl', 'grok-build', '/home/.grok', 1, 1, 2, '');
-        INSERT INTO session (id, agent, folder, project, title, title_rank, parent, link) VALUES
-            ('grok-build:s1', 'grok-build', '/home/.grok', '/work/app', 'Add a flag.', 0, NULL, NULL),
-            ('grok-build:s2', 'grok-build', '/home/.grok', NULL, NULL, -1, 'grok-build:s1', 'subagent'),
-            ('grok-build:s3', 'grok-build', '/home/.grok', '', NULL, -1, 'grok-build:s1', 'fork');
-        INSERT INTO session_file VALUES ('grok-build:s1', 1), ('grok-build:s1', 2);
-        INSERT INTO response VALUES ('grok-build', 'r1', 'grok-build:s1', 0, 1, '/home/.grok', 1000,
-            'xai', 'grok-5', 100, 0, 0, 0, 20, 0, 100, 0, 0, NULL, 0.5, 'xai:user-1');
-        INSERT INTO account VALUES ('xai:user-1', 'xai', 'subscription', 'SuperGrok', NULL, 1, 900, NULL);
-        INSERT INTO reading VALUES ('xai:user-1', 'weekly', 900, 'Weekly', NULL, 40, NULL, 0, 5000);
-        INSERT INTO sign_in VALUES ('grok-build', '/home/.grok', 'xai', 0, 'xai:user-1', NULL);
-        INSERT INTO alert VALUES (7, 'xai:user-1', 'weekly', 'usedUp', 5000, 900, 1, '{}');
-        INSERT INTO price VALUES ('xai', 'grok-5', 0, '{"input":3,"output":15}', NULL);
-        UPDATE state SET readers = 6, history_at = 800, limits_at = 900, prices_at = 700,
-            settings = '{"notify":{"reset":false}}';"#;
-
-    #[test]
-    fn what_turnscope_0_1_kept_is_taken_in_and_left_where_it_was() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = Connection::open(dir.path().join(OLD)).unwrap();
-        old.execute_batch(FIRST).unwrap();
-        old.execute_batch(ROWS).unwrap();
-        // A title of 300 characters and 450 bytes: cut by bytes, it would
-        // keep fewer than 200 characters.
-        let long = "é".repeat(150) + &"a".repeat(150);
-        old.execute(
-            "INSERT INTO session (id, agent, folder, title) VALUES ('grok-build:s4', 'grok-build', '', ?1)",
-            [&long],
-        )
-        .unwrap();
-        drop(old);
-
-        let db = open(dir.path()).unwrap();
-        // The file read only for what was said is left out, and with it
-        // what it held. 0.1 recorded no reader, so the one kept is read
-        // again from the start.
-        assert_eq!(
-            rows(&db, "SELECT * FROM file"),
-            ["1|/home/.grok/sessions/a/s1/updates.jsonl|grok-build|10|1|1|9|0|NULL|0"]
-        );
-        assert_eq!(rows(&db, "SELECT * FROM session_file"), ["grok-build:s1|1"]);
-        // Only a subagent keeps a parent, a title is cut to 200 characters,
-        // and an empty project is none.
-        let cut = "é".repeat(150) + &"a".repeat(50);
-        assert_eq!(
-            rows(
-                &db,
-                "SELECT id, project, title, parent FROM session ORDER BY id"
-            ),
-            [
-                "grok-build:s1|/work/app|Add a flag.|NULL",
-                "grok-build:s2|NULL|NULL|grok-build:s1",
-                "grok-build:s3|NULL|NULL|NULL",
-                &format!("grok-build:s4|NULL|{cut}|NULL"),
-            ]
-        );
-        for (table, row) in [
-            (
-                "response",
-                "grok-build|r1|grok-build:s1|0|1|/home/.grok|1000|xai|grok-5|100|0|0|0|20|0|100|0|0|NULL|0.5|xai:user-1",
-            ),
-            (
-                "account",
-                "xai:user-1|xai|subscription|SuperGrok|NULL|1|900|NULL|900|900",
-            ),
-            (
-                "reading",
-                "xai:user-1|weekly|900|Weekly|NULL|40|NULL|0|5000",
-            ),
-            ("sign_in", "grok-build|/home/.grok|xai|0|xai:user-1|NULL"),
-            ("alert", "7|xai:user-1|weekly|usedUp|5000|900|1|{}"),
-            ("price", r#"xai|grok-5|0|{"input":3,"output":15}|NULL"#),
-            (
-                "state",
-                r#"1|6|800|900|700|{"notify":{"reset":false}}|NULL"#,
-            ),
-        ] {
-            assert_eq!(
-                rows(&db, &format!("SELECT * FROM {table}")),
-                [row],
-                "{table}"
-            );
-        }
-        // The old database's rows are as they were, and its schema is past
-        // what 0.1 and 0.2 can write.
-        let old = Connection::open(dir.path().join(OLD)).unwrap();
-        assert_eq!(rows(&old, "SELECT count(*) FROM file"), ["2"]);
-        assert_eq!(rows(&old, "PRAGMA user_version"), ["7"]);
-        // Opened again, nothing is taken in twice.
-        drop(db);
-        let db = open(dir.path()).unwrap();
-        assert_eq!(rows(&db, "SELECT count(*) FROM response"), ["1"]);
-    }
-
-    /// An old file with no revision, empty or another's, has nothing to take
-    /// in. One that can't be read says what to do, every time it's opened.
-    #[test]
-    fn an_old_file_that_never_held_turnscopes_data_is_passed_over() {
-        for another in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join(OLD), b"").unwrap();
-            if another {
-                Connection::open(dir.path().join(OLD))
-                    .unwrap()
-                    .execute_batch("CREATE TABLE note (text TEXT)")
-                    .unwrap();
-            }
-            let db = open(dir.path()).unwrap();
-            assert_eq!(revision(&db).unwrap(), REVISIONS.len() as i64);
-        }
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(OLD), [7_u8; 8192]).unwrap();
-        for _ in 0..2 {
-            let error = open(dir.path()).unwrap_err().to_string();
-            assert!(
-                error.ends_with(
-                    "turnscope.sqlite can't be taken in: file is not a database. To start \
-                     without what it holds, move it elsewhere"
-                ),
-                "{error}"
-            );
-        }
-    }
-
-    /// 0.2.1's last revision: the columns 0.2.0 dropped are gone, and the
-    /// ones it and 0.2.1 added are there.
-    #[test]
-    fn what_turnscope_0_2_kept_is_taken_in_whole() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = Connection::open(dir.path().join(OLD)).unwrap();
-        old.execute_batch(FIRST).unwrap();
-        old.execute_batch(
-            "ALTER TABLE file ADD COLUMN failed TEXT;
-             ALTER TABLE file ADD COLUMN readers INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE file DROP COLUMN folder;
-             ALTER TABLE session DROP COLUMN link;
-             ALTER TABLE session DROP COLUMN folder;
-             ALTER TABLE state ADD COLUMN version INTEGER;
-             INSERT INTO file (id, path, agent, size, modified, inode, cursor, failed, readers)
-                 VALUES (1, '/home/.claude/projects/-w/s.jsonl', 'claude-code', 5, 2, 3, '4', 'locked', 7);
-             INSERT INTO session (id, agent, title, parent) VALUES ('claude-code:s', 'claude-code', 'Fix.', 'claude-code:p');
-             INSERT INTO account (id, provider, kind, title, problem) VALUES
-                 ('xai:a', 'xai', 'subscription', 'SuperGrok', 'signIn'),
-                 ('openai:b', 'openai', 'subscription', 'ChatGPT Pro', 'unavailable');
-             UPDATE state SET readers = 7, version = 2001;
-             PRAGMA user_version = 6;",
-        )
-        .unwrap();
-        drop(old);
-        // What 0.2's `serve` kept beside it.
-        let serve = ["serve.log", "serve.lock", "serve.sock"].map(|name| dir.path().join(name));
-        for file in &serve {
-            std::fs::write(file, "").unwrap();
-        }
-        let db = open(dir.path()).unwrap();
-        assert!(serve.iter().all(|file| !file.exists()));
-        assert_eq!(
-            rows(&db, "SELECT * FROM file"),
-            ["1|/home/.claude/projects/-w/s.jsonl|claude-code|5|2|3|4|0|locked|7"]
-        );
-        assert_eq!(
-            rows(&db, "SELECT id, parent FROM session"),
-            ["claude-code:s|claude-code:p"]
-        );
-        assert_eq!(rows(&db, "SELECT readers, version FROM state"), ["7|2001"]);
-        // A refused login 0.2 said to sign in again for still says it.
-        assert_eq!(rows(&db, "SELECT account, reads FROM failing"), ["xai:a|2"]);
     }
 
     #[test]

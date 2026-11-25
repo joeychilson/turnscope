@@ -4,6 +4,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::path::Path;
 
 use jiff::tz::TimeZone;
@@ -16,8 +17,9 @@ use crate::time::{self, DAY, HOUR, MINUTE};
 use crate::{Result, agents};
 
 mod text;
-use text::NONE_READ;
-pub use text::{alternate_note, fit, limit_text, line, none, stale, text, verdict};
+pub use text::{
+    NONE_READ, alternate_note, fit, fits, limit_text, line, most_room, none, stale, text, verdict,
+};
 
 /// How recently a response must have drawn on an account for it to be in use.
 pub(crate) const IN_USE: i64 = 30 * MINUTE;
@@ -637,42 +639,70 @@ pub fn in_use(accounts: &[Account], id: &str) -> bool {
         .any(|account| account.used_by.iter().any(|by| by == id))
 }
 
-/// Another non-hidden live account with clear headroom (>= 25% left and not
-/// running out or used up), preferring accounts signed into `agent` when given,
-/// then subscriptions over API keys.
+/// Another live account with room, to name where `current` runs out or is
+/// used up, and its deciding limit: one `agent` is signed in to first.
 pub fn alternate<'a>(
     accounts: &'a [Account],
     current: &Account,
     agent: Option<&str>,
 ) -> Option<(&'a Account, &'a Limit)> {
+    roomy(accounts)
+        .filter(|(account, _)| account.id != current.id)
+        // Of the best, the first listed.
+        .min_by_key(|(account, limit)| {
+            Reverse((
+                signed_in(account, agent),
+                account.kind != Kind::ApiKey,
+                limit.left_percent,
+            ))
+        })
+}
+
+/// The live account with the most left of its deciding limit, and that
+/// limit: of those as roomy, one `agent` is signed in to first. Given
+/// `hours` of work, one they don't fit is left out, and one they fit comes
+/// before one that can't be told.
+fn roomiest<'a>(
+    accounts: &'a [Account],
+    agent: Option<&str>,
+    hours: Option<f64>,
+    now: i64,
+) -> Option<(&'a Account, &'a Limit)> {
+    roomy(accounts)
+        .map(|(account, limit)| {
+            let fits = hours.map(|hours| text::judge(account, hours, now).0);
+            (account, limit, fits)
+        })
+        .filter(|(_, _, fits)| *fits != Some(text::Fits::No))
+        .min_by_key(|(account, limit, fits)| {
+            Reverse((
+                *fits,
+                limit.left_percent,
+                signed_in(account, agent),
+                account.kind != Kind::ApiKey,
+            ))
+        })
+        .map(|(account, limit, _)| (account, limit))
+}
+
+/// The accounts shown and read now whose deciding limit has room: a
+/// quarter or more left, and neither running out nor used up.
+fn roomy(accounts: &[Account]) -> impl Iterator<Item = (&Account, &Limit)> {
     accounts
         .iter()
-        .enumerate()
-        .filter(|(_, account)| {
-            account.id != current.id
-                && !account.hidden
+        .filter(|account| {
+            !account.hidden
                 && matches!(account.state, State::Live { .. })
                 && !account.agents.is_empty()
         })
-        .filter_map(|(rank, account)| {
+        .filter_map(|account| {
             let limit = account.deciding_limit()?;
-            let ok = limit.left_percent >= 25
-                && !matches!(
-                    limit.outlook,
-                    Outlook::UsedUp { .. } | Outlook::RunsOut { .. }
-                );
-            ok.then_some((rank, account, limit))
+            (limit.left_percent >= 25 && limit.urgency() == 0).then_some((account, limit))
         })
-        .max_by_key(|(rank, account, limit)| {
-            let same_agent = agent.is_some_and(|id| account.agents.iter().any(|a| a == id));
-            (
-                same_agent,
-                account.kind != Kind::ApiKey,
-                limit.left_percent,
-                Reverse(*rank),
-            )
-        })
-        .map(|(_, account, limit)| (account, limit))
+}
+
+fn signed_in(account: &Account, agent: Option<&str>) -> bool {
+    agent.is_some_and(|id| account.agents.iter().any(|by| by == id))
 }
 
 /// The agents that drew on any account in the last half hour, from the
@@ -809,18 +839,25 @@ fn limits(
     let mut slots: BTreeMap<(Vec<String>, Option<String>), Vec<i64>> = BTreeMap::new();
     let mut rose = false;
     let mut limits = Vec::new();
-    for Latest {
-        key,
-        at: limit_read_at,
-        name,
-        scope,
-        used,
-        size,
-        starts,
-        resets,
-        history,
-    } in latest
-    {
+    for limit in latest {
+        let reset_since = limit.resets.filter(|resets| *resets <= now);
+        let left = if reset_since.is_some() {
+            100.0
+        } else {
+            (100.0 - limit.used).clamp(0.0, 100.0)
+        };
+        let work = work(db, account, &limit, left, known, &mut slots, now)?;
+        let Latest {
+            key,
+            at: limit_read_at,
+            name,
+            scope,
+            used,
+            size,
+            starts,
+            resets,
+            history,
+        } = limit;
         // Its current window's: those that reset with it.
         let readings: Vec<(i64, f64)> = history
             .iter()
@@ -833,12 +870,6 @@ fn limits(
         if let [.., before, last] = readings.as_slice() {
             rose |= last.1 > before.1 && now - last.0 <= IN_USE;
         }
-        let reset_since = resets.filter(|resets| *resets <= now);
-        let left = if reset_since.is_some() {
-            100.0
-        } else {
-            (100.0 - used).clamp(0.0, 100.0)
-        };
         let stale = reset_since.is_some() || now - limit_read_at > STALE;
         let outlook = match (starts, resets) {
             _ if reset_since.is_none() && used >= 100.0 => Outlook::UsedUp {
@@ -862,49 +893,6 @@ fn limits(
                 reason: Unknown::NoReset,
             },
         };
-        let length = starts.zip(resets).map(|(starts, resets)| resets - starts);
-        // A window that rolls has no start to measure work from.
-        let rate = if starts.is_none() && resets.is_some() {
-            None
-        } else {
-            // By the work on its own models or key: by all the account's, 1h
-            // of Opus that rose Weekly (Opus) 8 points after 3h of Sonnet
-            // read as 2% an hour.
-            let counted = (
-                crate::usage::models(scope.as_deref()),
-                crate::usage::key(&key),
-            );
-            if !slots.contains_key(&counted) {
-                let found = worked(db, account, &counted.0, counted.1.as_deref(), now)?;
-                slots.insert(counted.clone(), found);
-            }
-            // Work is known only for the last two weeks: a rise before then
-            // would count with no hours of work beside it.
-            let walked = &history[history.partition_point(|reading| reading.at < now - WORKED)..];
-            forecast::work_rate(
-                walked,
-                &slots[&counted],
-                known,
-                forecast::enough_work(length),
-            )
-        };
-        let work = rate.map(|rate| {
-            let tenths = |value: f64| (value * 10.0).round() / 10.0;
-            let until = resets
-                .and_then(|resets| hours_to_reset(starts, resets, reset_since.is_some(), now));
-            let left_hours =
-                forecast::work_left(100.0 - left, rate, forecast::work_band(length), until).map(
-                    |(low, likely, high)| HoursLeft {
-                        low: tenths(low),
-                        likely: tenths(likely),
-                        high: tenths(high),
-                    },
-                );
-            Work {
-                rate_per_hour: tenths(rate),
-                left_hours,
-            }
-        });
         limits.push(Limit {
             held_by: keys.get(&key).cloned().unwrap_or_default(),
             key,
@@ -929,6 +917,66 @@ fn limits(
         });
     }
     Ok((limits, rose))
+}
+
+/// The work rate on `limit`, and the work left at it with `left` percent
+/// left. None for a window that rolls, which has no start to measure work
+/// from.
+fn work(
+    db: &rusqlite::Connection,
+    account: &str,
+    limit: &Latest,
+    left: f64,
+    known: Option<i64>,
+    slots: &mut BTreeMap<(Vec<String>, Option<String>), Vec<i64>>,
+    now: i64,
+) -> Result<Option<Work>> {
+    let Latest {
+        key,
+        scope,
+        starts,
+        resets,
+        history,
+        ..
+    } = limit;
+    if starts.is_none() && resets.is_some() {
+        return Ok(None);
+    }
+    // By the work on its own models or key: by all the account's, 1h of Opus
+    // that rose Weekly (Opus) 8 points after 3h of Sonnet read as 2% an hour.
+    let counted = (
+        crate::usage::models(scope.as_deref()),
+        crate::usage::key(key),
+    );
+    let slots = match slots.entry(counted) {
+        Entry::Occupied(slots) => slots.into_mut(),
+        Entry::Vacant(slot) => {
+            let (models, key) = slot.key();
+            let found = worked(db, account, models, key.as_deref(), now)?;
+            slot.insert(found)
+        }
+    };
+    // Work is known only for the last two weeks: a rise before then would
+    // count with no hours of work beside it.
+    let walked = &history[history.partition_point(|reading| reading.at < now - WORKED)..];
+    // Not `Limit::length`, whose reset is rounded to the minute.
+    let length = starts.zip(*resets).map(|(starts, resets)| resets - starts);
+    let Some(rate) = forecast::work_rate(walked, slots, known, forecast::enough_work(length))
+    else {
+        return Ok(None);
+    };
+    let tenths = |value: f64| (value * 10.0).round() / 10.0;
+    let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
+    let left_hours = forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
+        .map(|(low, likely, high)| HoursLeft {
+            low: tenths(low),
+            likely: tenths(likely),
+            high: tenths(high),
+        });
+    Ok(Some(Work {
+        rate_per_hour: tenths(rate),
+        left_hours,
+    }))
 }
 
 /// The start of each slot of work on `account` in the last two weeks, by
@@ -1266,7 +1314,7 @@ mod tests {
             )
         );
         assert_eq!(
-            fit(&account, 1.0, now).unwrap(),
+            fit(&account, 1.0, now),
             "1 more hour of work doesn't fit: Weekly is used up."
         );
         // One with no reset is back at no known time, wherever it's listed.
@@ -1315,7 +1363,7 @@ mod tests {
                 .starts_with("Google AI Ultra: Weekly (Claude and GPT) is used up, back"),
         );
         assert_eq!(
-            fit(&account, 1.0, now).unwrap(),
+            fit(&account, 1.0, now),
             "1 more hour of work doesn't fit: Weekly (Claude and GPT) is used up."
         );
         // Back on Gemini.

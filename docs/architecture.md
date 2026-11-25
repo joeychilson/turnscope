@@ -60,7 +60,8 @@ formats correctly, and the forecast.
 | models.dev | Prices |
 
 Everything is kept in one SQLite file, `turnscope.db`, in the data
-directory. Times are UTC milliseconds and money is dollars. The schema is
+directory, whose write-ahead log is cut back to 16 MiB once checkpointed.
+Times are UTC milliseconds and money is dollars. The schema is
 `db::REVISIONS` in `crates/turnscope/src/db.rs`:
 
 | Table | Holds |
@@ -82,12 +83,6 @@ shipped script is never edited, and a change is a new script at the end.
 Before creating its tables in a file that has none of Turnscope's yet,
 `db::open` checks the file's SQLite application id, so it never writes
 into another program's database.
-
-Turnscope 0.1 and 0.2 kept `turnscope.sqlite`, with six revisions of their
-own. A new `turnscope.db` takes in all of it once, by its columns' names
-(`db::import`), and leaves it as it was. `serve.lock`, `serve.log`
-and `serve.sock`, which their `serve` kept beside it, are removed then. A later release
-removes the import, and the old file with it.
 
 - **History is read incrementally.** Each file keeps its reader's cursor,
   so only what was appended is read, and an unchanged file is only
@@ -204,7 +199,7 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due, and not while an app runs. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, history only while an app runs. |
-| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits more than 5 minutes old, and those whose read failed, right away, at most every 30 s (`limits::refresh`). |
+| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits more than 5 minutes old, and those whose read failed, right away, at most every 30 s (`limits::refresh`); while another process reads them, it waits for that read, then reads those it didn't ask. |
 
 While an app runs, the other processes rarely find anything new to read.
 
@@ -222,16 +217,19 @@ time, and answers after. The panel says the history is being read.
 
 ### Locks
 
-Three files in the data directory keep processes apart:
+Four files in the data directory keep processes apart:
 
 - `turnscope.lock` while the database is created or migrated.
 - `ingest.lock` while history is read, so a first run isn't read twice at
   once.
+- `limits.lock` while limits are read, so no two processes ask a provider
+  at once, and one refused login isn't counted as two. A read asked for
+  waits for it; one as limits come due gives way.
 - `app.lock`, while an app keeps the data current. A second app shows what
   the first writes, and takes over once it's gone.
 
-Limits and prices are claimed with one `UPDATE` of `state`, so no two
-processes ask a provider at once.
+Prices, and limits as they come due, are claimed with one `UPDATE` of
+`state`, so a process doesn't read again what another just read.
 
 SQLite lets one connection write at a time, and another waits up to 10 s
 for its turn. History is written a second at a time, with 110 ms between,
@@ -275,7 +273,8 @@ It's in the engine crate, so an app for another platform only draws.
   command and says why.
 - What goes wrong is added to `app.log` in the data directory, which
   `turnscope doctor` shows: an app is started from its icon, where no one
-  reads its standard error.
+  reads its standard error. Why the data isn't kept current is added once
+  each time it changes, not at each try.
 
 ## Status
 
@@ -344,7 +343,7 @@ over. A response with none of these has an unknown cost, never zero, and
 
 models.dev's catalog is `https://models.dev/api.json`, read as [Catching
 up](#catching-up) says. A catalog with fewer than 1,000 priced models is
-refused. A price that changed is kept from then on beside the one before,
+refused, and why is added to `app.log`. A price that changed is kept from then on beside the one before,
 so each response keeps the price in force when it ran. Usage from before a
 model was first priced takes that first price, and usage with no known
 price is priced again each time the catalog is taken in.
