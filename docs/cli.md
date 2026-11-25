@@ -299,11 +299,11 @@ turnscope doctor
 ```
 
 Lists what can't be read and how to fix it: logins that can't be read or
-were refused, providers that haven't answered, history files and lines
-that couldn't be read, models with no known price, prices not read yet,
-and what was logged in the last day: what went wrong in the app, and why
-an account's limits couldn't be read. When all is well it prints
-`Nothing to fix.`
+were refused, providers that haven't answered, history files still there
+and lines in them that couldn't be read, models with no known price,
+prices not read yet, and what was logged in the last day: what went wrong
+in the app, why an account's limits couldn't be read, and why models.dev's
+catalog was refused. When all is well it prints `Nothing to fix.`
 
 ## MCP
 
@@ -356,9 +356,9 @@ Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at t
 A hook waits for the guard, so it reads no history and no prices. It reads
 the limits only as they come due, and not while the app runs, which reads
 them itself, nor once a newer Turnscope has written to the data: then it
-guards by the limits read before. Nor does it make the database or take in
-0.2's: before Turnscope has, or after an update until the new version has
-opened it, the standing isn't known. Each read of a login's limits gives
+guards by the limits read before. Nor does it make or migrate the
+database: before Turnscope has, or after an update until the new version
+has opened it, the standing isn't known. Each read of a login's limits gives
 up after 15 seconds, whether its provider takes one request or two, or
 after 5 if it can't connect.
 

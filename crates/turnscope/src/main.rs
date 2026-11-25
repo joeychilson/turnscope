@@ -551,10 +551,10 @@ fn limit_of<'a>(
 /// minute, so a hook that read them too would only wait on the provider,
 /// up to 15 s, for what the app reads anyway.
 ///
-/// Nor is it what makes the database, or takes in 0.2's: that took 6.9 s
-/// for a made-up one of 240 MB, while every other process waited. Before
-/// another process has made it, or after an update until the new version
-/// has opened it, the standing isn't known, as for a status line.
+/// Nor is it what makes or migrates the database, which every other process
+/// waits on. Before another process has made it, or after an update until
+/// the new version has opened it, the standing isn't known, as for a status
+/// line.
 fn guard(
     home: &Path,
     data: &Path,
