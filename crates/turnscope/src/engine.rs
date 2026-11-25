@@ -216,13 +216,10 @@ impl Engine {
         });
     }
 
-    /// Record alerts as told, so none is told again.
-    pub fn acknowledge(&self, ids: Vec<i64>) {
-        if ids.is_empty() {
-            return;
-        }
+    /// Record alert `id` as told, so it isn't told again.
+    pub fn acknowledge(&self, id: i64) {
         self.change("acknowledging alerts", None, move |showing| {
-            alerts::acknowledge(&mut showing.db, &ids)
+            alerts::acknowledge(&mut showing.db, id)
         });
     }
 

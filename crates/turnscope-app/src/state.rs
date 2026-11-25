@@ -199,6 +199,12 @@ impl State {
         matches!(self.problem, Some(Stopped::Newer { .. }))
     }
 
+    /// Whether `agent`'s connection can be changed: not while it's changing, from a disk image,
+    /// or once a newer Turnscope wrote to the data.
+    pub fn can_change(&self, agent: &str) -> bool {
+        !self.changing_agents.contains_key(agent) && !self.from_disk_image && !self.stopped()
+    }
+
     /// Whether Refresh Limits can be asked for: without a status, there's nothing to refresh.
     pub fn can_refresh(&self) -> bool {
         self.live() && self.status.is_some() && !self.stopped()
@@ -299,9 +305,6 @@ impl Core {
         let mut calls = Vec::new();
         match event {
             Event::Shown(shown, alerts) => {
-                if self.state.panel_open {
-                    self.animated = true;
-                }
                 let before = self.state.status.take();
                 self.state.take(*shown);
                 let was_refused = |id: &str| {
@@ -321,6 +324,7 @@ impl Core {
                         .push(Effect::RemoveNotifications { identifiers });
                 }
                 if self.state.panel_open {
+                    self.animated = true;
                     calls = self.state.asks(|a| self.state.counts(a));
                 }
                 let mut told = std::mem::take(&mut self.state.alerts_waiting);
@@ -396,11 +400,7 @@ impl Core {
                 }
             }
             Action::SetConnected { id, connecting } => {
-                if self.state.live()
-                    && !self.state.stopped()
-                    && !self.state.from_disk_image
-                    && !self.state.changing_agents.contains_key(&id)
-                {
+                if self.state.live() && self.state.can_change(&id) {
                     let to = if connecting {
                         Connection::Connected
                     } else {

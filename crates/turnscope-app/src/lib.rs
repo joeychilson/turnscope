@@ -57,7 +57,6 @@ enum SnapshotOutput {
 /// Callback invoked from engine threads when the shell should call `turnscope_app_sync`.
 pub type WakeFn = extern "C" fn(*mut c_void);
 
-#[derive(Clone, Copy)]
 struct Wake {
     ctx: *mut c_void,
     cb: WakeFn,
@@ -68,12 +67,6 @@ struct Wake {
 unsafe impl Send for Wake {}
 unsafe impl Sync for Wake {}
 
-impl Wake {
-    fn trigger(self) {
-        (self.cb)(self.ctx);
-    }
-}
-
 /// Never freed: the app quits by exiting, which SQLite's transactions are safe for, and which
 /// lets `app.lock` go.
 pub struct TurnscopeApp {
@@ -82,18 +75,12 @@ pub struct TurnscopeApp {
     data: Option<PathBuf>,
 }
 
-static PANIC_DATA: OnceLock<PathBuf> = OnceLock::new();
-
 fn install_panic_hook(data: PathBuf) {
-    if PANIC_DATA.set(data).is_ok() {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if let Some(dir) = PANIC_DATA.get() {
-                turnscope::engine::log(dir, &format!("panicked: {info}"));
-            }
-            previous(info);
-        }));
-    }
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        turnscope::engine::log(&data, &format!("panicked: {info}"));
+        previous(info);
+    }));
 }
 
 fn read_fixture(path: &Path) -> Result<Shown, String> {
@@ -119,7 +106,7 @@ fn send(engine: Option<&Engine>, calls: Vec<Call>) {
             Call::Hide { account, hidden } => engine.hide(account, hidden),
             Call::Connect { agent, connecting } => engine.connect(agent, connecting),
             Call::SaveSettings(settings) => engine.save_settings(settings),
-            Call::Acknowledge(id) => engine.acknowledge(vec![id]),
+            Call::Acknowledge(id) => engine.acknowledge(id),
         }
     }
 }
@@ -187,8 +174,8 @@ pub fn start(
             if let Some(held) = weak.upgrade() {
                 send(held.get(), calls);
             }
-            if should_wake && let Some(wake) = wake {
-                wake.trigger();
+            if should_wake && let Some(wake) = &wake {
+                (wake.cb)(wake.ctx);
             }
         });
         let _ = engine.set(started);
@@ -203,15 +190,16 @@ pub fn start(
 
 /// Build a plain-text diagnostics report (version, `turnscope::doctor`'s notes and the last
 /// 20 lines of `app.log`) ready to copy into a bug report.
-pub fn diagnostics(data: Option<&Path>, home: Option<&Path>) -> String {
+pub fn diagnostics(config: SnapshotConfig) -> String {
     let mut out = format!("Turnscope {}\n", env!("CARGO_PKG_VERSION"));
-    let (Some(data), Some(home)) = (data, home) else {
+    if config.fixture.is_some() {
         out += "Mode: fixture\n";
         return out;
-    };
+    }
+    let (home, data) = turnscope::places(config.home, config.data);
     out += &format!("Binary: {}\n", binary().display());
-    match turnscope::db::read(data) {
-        Some(db) => match turnscope::doctor(&db, home, turnscope::now()) {
+    match turnscope::db::read(&data) {
+        Some(db) => match turnscope::doctor(&db, &home, turnscope::now()) {
             Ok(notes) if notes.is_empty() => out += "Doctor: Nothing to fix.\n",
             Ok(notes) => {
                 out += "Doctor:\n";
@@ -368,15 +356,7 @@ pub unsafe extern "C" fn turnscope_app_log(app: *mut TurnscopeApp, line: *const 
 /// `config_json` must be null or a valid NUL-terminated UTF-8 C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn turnscope_app_diagnostics(config_json: *const c_char) -> *mut c_char {
-    let report = match unsafe { read_config::<SnapshotConfig>(config_json) } {
-        Ok(config) if config.fixture.is_some() => diagnostics(None, None),
-        Ok(config) => {
-            let (home, data) = turnscope::places(config.home, config.data);
-            diagnostics(Some(&data), Some(&home))
-        }
-        Err(error) => error,
-    };
-    into_c_string(report)
+    into_c_string(unsafe { read_config(config_json) }.map_or_else(|error| error, diagnostics))
 }
 
 /// Return the path to `app.log` (or the data directory if no log exists yet),
@@ -546,7 +526,11 @@ mod tests {
                 .map(|n| report.matches(&format!("sample line {n}.")).count())
                 .collect::<Vec<_>>()
         };
-        let unread = diagnostics(Some(data.path()), Some(home.path()));
+        let unread = diagnostics(SnapshotConfig {
+            fixture: None,
+            data: Some(data.path().into()),
+            home: Some(home.path().into()),
+        });
         assert!(
             unread.contains("Doctor: database not readable yet."),
             "{unread}"
@@ -561,7 +545,12 @@ mod tests {
         unsafe { turnscope_app_free_string(ptr) };
         assert!(report.contains(&format!("Turnscope {}", env!("CARGO_PKG_VERSION"))));
         assert_eq!(logged(&report), [1; 6], "{report}");
-        assert!(diagnostics(None, None).contains("Mode: fixture"));
+        let fixture = SnapshotConfig {
+            fixture: Some("status.json".into()),
+            data: None,
+            home: None,
+        };
+        assert!(diagnostics(fixture).contains("Mode: fixture"));
     }
 
     #[test]
