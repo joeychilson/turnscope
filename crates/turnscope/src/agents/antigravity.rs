@@ -218,15 +218,9 @@ fn programs(home: &Path) -> Vec<PathBuf> {
     ]
 }
 
-/// What the person typed, of a `USER_INPUT` line's `content`: it's in
-/// `<USER_REQUEST>`, then come the blocks Antigravity adds, as
-/// `<ADDITIONAL_METADATA>`.
-fn request(content: &str) -> String {
-    match super::inner(content, "USER_REQUEST") {
-        Some(request) => request.trim().to_owned(),
-        None => super::without_tags(content, &["ADDITIONAL_METADATA", "USER_SETTINGS_CHANGE"]),
-    }
-}
+/// What a `USER_INPUT` line's `content` holds besides what the person typed
+/// in `<USER_REQUEST>`.
+const ADDED: &[&str] = &["ADDITIONAL_METADATA", "USER_SETTINGS_CHANGE"];
 
 /// Read a conversation's database on from `cursor`: where it worked, and
 /// its model calls.
@@ -389,7 +383,7 @@ fn transcript(file: &Path, cursor: &str) -> Result<Read> {
             && line.source.as_deref() == Some("USER_EXPLICIT")
             && let Some(content) = line.content
         {
-            let request = request(&content);
+            let request = super::typed_in(&content, "USER_REQUEST", ADDED);
             if !request.is_empty() {
                 read.session(&session).title(Title::Prompt, &request);
                 cursor.titled = true;
@@ -833,7 +827,10 @@ mod tests {
     #[test]
     fn content_with_no_request_loses_what_antigravity_added() {
         let content = "<USER_SETTINGS_CHANGE>\nThe model is now Gemini 3.8 Flash.\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nThe current local time is: 1970-01-01T00:16:40Z.\n</ADDITIONAL_METADATA>\nRun the tests.";
-        assert_eq!(request(content), "Run the tests.");
+        assert_eq!(
+            super::super::typed_in(content, "USER_REQUEST", super::ADDED),
+            "Run the tests."
+        );
     }
 
     #[test]

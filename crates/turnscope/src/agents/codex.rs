@@ -137,12 +137,9 @@ impl Copy {
     fn holds(&mut self, line: &Line<'_>, payload: &Payload<'_>, thread: &str) -> bool {
         if self.legacy_fork {
             let names = |native: &Option<Cow<'_, str>>| {
-                native.as_deref().is_some_and(|native| {
-                    thread
-                        .strip_prefix(INFO.id)
-                        .and_then(|rest| rest.strip_prefix(':'))
-                        == Some(native)
-                })
+                native
+                    .as_deref()
+                    .is_some_and(|native| INFO.session(native) == thread)
             };
             match (&*line.kind, payload.kind.as_deref()) {
                 ("session_meta", _) if !names(&payload.id) => self.copying = true,
@@ -355,7 +352,7 @@ impl Agent for Codex {
     }
 
     fn folders(&self, home: &Path) -> Vec<PathBuf> {
-        super::own_and_found(home, ".codex", ".codex-", "auth.json")
+        super::own_and_found(home, ".codex", "auth.json")
     }
 
     fn files(&self, folder: &Path) -> Vec<PathBuf> {
@@ -559,6 +556,7 @@ fn open(meta: &Payload<'_>, cursor: &mut Cursor, read: &mut Read) {
         .filter(|provider| !provider.is_empty())
         .map(str::to_owned);
     cursor.copy = Copy::of(meta);
+    read.cwd(&thread, meta.cwd.as_deref());
     let session = read.session(&thread);
     // A subagent's parent. A fork names the thread it was forked from, and
     // is a thread of its own.
@@ -566,11 +564,6 @@ fn open(meta: &Payload<'_>, cursor: &mut Cursor, read: &mut Read) {
         .parent_thread_id
         .as_deref()
         .map(|parent| INFO.session(parent));
-    session.cwd = meta
-        .cwd
-        .as_deref()
-        .filter(|cwd| !cwd.is_empty())
-        .map(str::to_owned);
     if let Some(nickname) = meta.agent_nickname.as_deref() {
         session.title(Title::Task, nickname);
     }

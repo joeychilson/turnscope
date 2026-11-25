@@ -370,7 +370,7 @@ impl Agent for ClaudeCode {
     }
 
     fn folders(&self, home: &Path) -> Vec<PathBuf> {
-        super::own_and_found(home, ".claude", ".claude-", ".claude.json")
+        super::own_and_found(home, ".claude", ".claude.json")
     }
 
     fn files(&self, folder: &Path) -> Vec<PathBuf> {

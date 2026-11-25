@@ -118,12 +118,6 @@ impl Agent for OpenCode {
 }
 
 #[derive(Deserialize)]
-struct UserText<'a> {
-    #[serde(borrow)]
-    text: Option<Cow<'a, str>>,
-}
-
-#[derive(Deserialize)]
 struct MessageData<'a> {
     #[serde(borrow)]
     model: Option<ModelRef<'a>>,
@@ -211,7 +205,7 @@ fn sessions(
         session.parent = parent.map(|parent| INFO.session(parent));
         session.cwd = row.get(2)?;
         if let Some(data) = row.get_ref(5)?.as_str_or_null()?
-            && let Ok(user) = serde_json::from_str::<UserText<'_>>(data)
+            && let Ok(user) = serde_json::from_str::<super::Text<'_>>(data)
             && let Some(text) = user.text
         {
             session.title(Title::Prompt, &text);
