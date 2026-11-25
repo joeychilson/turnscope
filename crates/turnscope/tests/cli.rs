@@ -563,7 +563,7 @@ fn a_command_says_when_it_reads_all_of_history() {
     let said = |args: &[&str]| {
         let output = turnscope(data.path(), args);
         assert!(output.status.success(), "{args:?}");
-        String::from_utf8_lossy(&output.stderr).into_owned()
+        String::from_utf8_lossy_owned(output.stderr)
     };
     let reading = "Reading your agents' history…\n";
     // One that reports no data reads no history.

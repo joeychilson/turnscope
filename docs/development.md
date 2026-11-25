@@ -7,7 +7,7 @@ the rules and what to update when you change something.
 ## Requirements
 
 - macOS 26, on Apple silicon or Intel. It's the app's deployment target.
-- Rust 1.98.1. `rust-toolchain.toml` pins it with clippy, rustfmt and both
+- Rust 1.100.0. `rust-toolchain.toml` pins it with clippy, rustfmt and both
   Mac targets, and rustup installs it on first use.
 - Xcode 26, to build and bundle the macOS app: `swiftc` compiles the
   SwiftUI shell against `libturnscope_app.a` and `actool` compiles its
