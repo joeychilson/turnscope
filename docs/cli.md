@@ -393,7 +393,8 @@ turnscope statusline [--account <name>]
 
 `statusline` prints one line for an agent's status line: the account it
 draws on, the limits it stands by (those on all its usage, or of the
-[pool](architecture.md#glossary) it last drew on), and any other limit
+[pool](architecture.md#glossary) it last drew on, or an API key's
+deciding key limit when it has no other), and any other limit
 running out or used up. When one it stands by is used up, only those show.
 `--account` takes the first account it names.
 

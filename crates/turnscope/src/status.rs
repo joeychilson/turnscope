@@ -202,15 +202,16 @@ impl Account {
 
     /// Whether it stands by `limit`, for whether it can be used and how
     /// long: a limit on all its usage, or where it has none, one of the
-    /// pool its deciding limit is in (`pool`).
+    /// pool its deciding limit is in (`pool`), or else its deciding key's.
     pub fn stands_by(&self, limit: &Limit) -> bool {
         if self.limits.iter().any(Limit::whole) {
             return limit.whole();
         }
-        limit.scope.is_some()
-            && self
-                .deciding_limit()
-                .is_some_and(|deciding| deciding.scope == limit.scope)
+        self.deciding_limit()
+            .is_some_and(|deciding| match limit.scope {
+                Some(_) => deciding.scope == limit.scope,
+                None => deciding.key == limit.key,
+            })
     }
 
     /// Its login was refused, at its last read or every one.

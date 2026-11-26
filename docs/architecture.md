@@ -322,7 +322,8 @@ megabytes.
   isn't known yet.
 - A **fit** (`status --hours`, `check_limits` with `hours`) and
   `check_limits`' verdict go by the limit the account stands by (on all its
-  usage, or of its pool) with the fewest likely hours of work left. A limit
+  usage, or of its pool, or an API key's deciding key limit when it has no
+  other) with the fewest likely hours of work left. A limit
   that reset since it was read counts, with a new window's work left. A fit
   counts work past a limit's reset in the windows after it, and can't be
   told while a limit it stands by has no work rate measured. The verdict
