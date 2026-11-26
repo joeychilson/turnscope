@@ -64,7 +64,7 @@ final class MenuBarItem {
                     return NSColor.black.withAlphaComponent(fraction)
                 }
                 return switch standing {
-                case .lasts: NSColor.labelColor.withAlphaComponent(fraction)
+                case .lasts: NSColor.labelColor.withAlphaComponent(0.85 * fraction)
                 case .runningOut: amberColor
                 case .usedUp: redColor
                 }

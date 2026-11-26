@@ -29,24 +29,21 @@ extension View {
 
 struct Floating: View {
     static let gutter: CGFloat = 28
-    @Environment(UIState.self) private var ui
 
     var body: some View {
-        if ui.isOpen {
-            Panel()
-                .panelEdge()
-                .background {
-                    // Keep hit-testing on the material so WindowServer's event shape covers the whole
-                    // panel; disabling it makes closed rows and row gaps click-through to windows behind.
-                    panelShape
-                        .fill(.regularMaterial)
-                        .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
-                }
-                .materialActiveAppearance(.active)
-                .padding(.horizontal, Floating.gutter)
-                .padding(.bottom, Floating.gutter * 2)
-                .frame(maxHeight: .infinity, alignment: .top)
-        }
+        Panel()
+            .panelEdge()
+            .background {
+                // Keep hit-testing on the material so WindowServer's event shape covers the whole
+                // panel; disabling it makes closed rows and row gaps click-through to windows behind.
+                panelShape
+                    .fill(.regularMaterial)
+                    .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
+            }
+            .materialActiveAppearance(.active)
+            .padding(.horizontal, Floating.gutter)
+            .padding(.bottom, Floating.gutter * 2)
+            .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -79,6 +76,12 @@ struct Panel: View {
         }
         .frame(width: panelWidth)
         .fixedSize(horizontal: false, vertical: true)
+        .background {
+            // Keep ⌘Q active on both FirstPage and SettingsPage since the app has no main menu bar.
+            Button("Quit Turnscope") { NSApp.terminate(nil) }
+                .keyboardShortcut("q", modifiers: .command)
+                .hiddenShortcut()
+        }
     }
 }
 

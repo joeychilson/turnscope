@@ -22,7 +22,7 @@ private struct AgentRow: View {
     var body: some View {
         HStack(spacing: Row.gap) {
             Logo(agent: agent.id, size: Row.logo)
-            AgentLabel(name: agent.name, note: agent.note, configuredHelp: agent.configuredHelp)
+            AgentLabel(name: agent.name, note: agent.note, configured: agent.configured)
             if let changing = agent.changing {
                 Text(changing)
                     .font(.small)
@@ -51,7 +51,7 @@ private struct AgentRow: View {
 struct AgentLabel: View {
     var name: String
     var note: String?
-    var configuredHelp: String?
+    var configured: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -62,7 +62,7 @@ struct AgentLabel: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                    .optionalHelp(configuredHelp)
+                    .optionalHelp(configured.map { "Configured to run \($0)" })
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

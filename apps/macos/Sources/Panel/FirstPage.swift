@@ -96,7 +96,11 @@ struct Waiting: View {
 
     var body: some View {
         if let problem = model.problem {
-            Message(headline: problem.headline, detail: problem.detail, footnote: problem.footnote)
+            Message(
+                headline: "Turnscope can't read its data",
+                detail: problem,
+                footnote: model.retries ? "It tries again on its own." : nil
+            )
         } else {
             VStack(spacing: 8) {
                 Spinner()
@@ -140,7 +144,7 @@ private struct ConnectNudge: View {
     var body: some View {
         HStack(spacing: Row.gap) {
             Logo(agent: offer.id, size: Row.logo)
-            AgentLabel(name: offer.name, note: offer.note, configuredHelp: offer.configuredHelp)
+            AgentLabel(name: offer.name, note: offer.note, configured: offer.configured)
             if offer.changing {
                 Spinner()
                     .accessibilityElement()
@@ -181,12 +185,11 @@ private struct Footer: View {
     var body: some View {
         HStack(spacing: 2) {
             if let note = bridge.panel.footerNote {
-                let text = updater.waiting ? (note.compactText ?? note.text) : note.text
                 HStack(spacing: 6) {
                     if note.busy {
                         Spinner()
                     }
-                    Text(text)
+                    Text(note.text)
                         .font(.small)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -195,10 +198,10 @@ private struct Footer: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(note.spoken)
                 .padding(.leading, 12)
-                .id(text)
+                .id(note.text)
                 .transition(appears)
             }
-            Spacer()
+            Spacer(minLength: 4)
             Button("Close", action: closePanel)
                 .keyboardShortcut(.cancelAction)
                 .hiddenShortcut()

@@ -35,7 +35,9 @@ struct GeneralTab: View {
                 isOn: Binding(
                     get: { login.status.isOn },
                     set: { on in
-                        login.set(on, isLive: bridge.isLive) { bridge.log($0) }
+                        withMotion {
+                            login.set(on, isLive: bridge.isLive) { bridge.log($0) }
+                        }
                     }
                 )
             )
@@ -55,8 +57,7 @@ struct GeneralTab: View {
 
     /// Shown once the settings are read: before, a switch would show a guess.
     @ViewBuilder private var notifications: some View {
-        let options = bridge.panel.settings.notifyOptions
-        if !options.isEmpty {
+        if let current = bridge.panel.settings.notify {
             SettingGroup(title: "Notify me when") {
                 if notifier.denied {
                     SettingRow(title: "Notifications are off for Turnscope") {
@@ -69,8 +70,23 @@ struct GeneralTab: View {
                     }
                     .transition(appears)
                 }
-                ForEach(options) { option in
-                    SettingRow(option.title, help: option.help, isOn: notify(option.kind, in: options))
+                Group {
+                    SettingRow(
+                        "A limit will run out",
+                        help: "Before it resets, at your pace",
+                        isOn: notify(\.runningOut, in: current)
+                    )
+                    SettingRow("A limit is used up", isOn: notify(\.usedUp, in: current))
+                    SettingRow(
+                        "A limit is back",
+                        help: "After it was used up, once the account can be used again",
+                        isOn: notify(\.reset, in: current)
+                    )
+                    SettingRow(
+                        "An account needs signing in",
+                        help: "Its login was refused, so its limits can't be read",
+                        isOn: notify(\.signIn, in: current)
+                    )
                 }
                 .disabled(bridge.panel.stopped)
             }
@@ -96,7 +112,6 @@ struct GeneralTab: View {
                             updater.check()
                         }
                         .buttonStyle(PillButton())
-                        .disabled(!updater.canCheckForUpdates)
                         .accessibilityLabel("Check for updates now")
                     }
                 }
@@ -109,12 +124,10 @@ struct GeneralTab: View {
             }
             .contextMenu {
                 Button("Copy Diagnostics", action: copyDiagnostics)
-                if bridge.isLive {
+                if let logURL = bridge.logURL() {
                     Button("Reveal Log in Finder") {
                         closePanel()
-                        if let logURL = bridge.logURL() {
-                            NSWorkspace.shared.activateFileViewerSelecting([logURL])
-                        }
+                        NSWorkspace.shared.activateFileViewerSelecting([logURL])
                     }
                 }
             }
@@ -138,19 +151,13 @@ struct GeneralTab: View {
         }
     }
 
-    private func notify(_ kind: NotifyKind, in options: [NotifyOptionModel]) -> Binding<Bool> {
-        let isOn: (NotifyKind) -> Bool = { target in
-            options.first(where: { $0.kind == target })?.enabled ?? false
-        }
-        return Binding(
-            get: { isOn(kind) },
+    private func notify(_ keyPath: WritableKeyPath<NotifySettings, Bool>, in notify: NotifySettings) -> Binding<Bool> {
+        Binding(
+            get: { notify[keyPath: keyPath] },
             set: { value in
-                bridge.send(.setNotify(notify: NotifySettings(
-                    runningOut: kind == .runningOut ? value : isOn(.runningOut),
-                    usedUp: kind == .usedUp ? value : isOn(.usedUp),
-                    reset: kind == .reset ? value : isOn(.reset),
-                    signIn: kind == .signIn ? value : isOn(.signIn)
-                )))
+                var changed = notify
+                changed[keyPath: keyPath] = value
+                bridge.send(.setNotify(notify: changed))
             }
         )
     }

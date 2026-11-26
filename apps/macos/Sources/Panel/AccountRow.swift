@@ -30,19 +30,17 @@ struct AccountRow: View {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
-                    HStack(alignment: .center, spacing: 0) {
+                    HStack(alignment: .center, spacing: 6) {
                         AccountTitle(title: row.title, label: row.label, labelStyle: .secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .allowsHitTesting(false)
                             .accessibilityHidden(true)
+                        // Always given its layout slot so showing it on hover never shifts text.
                         Button(action: hide) { Image(systemName: "eye.slash") }
                             .buttonStyle(IconButton(width: 22, height: 16))
                             .disabled(stopped)
                             .focused($hideFocused)
-                            .frame(width: showHide ? 22 : 0, height: 16)
-                            .padding(.leading, showHide ? 6 : 0)
                             .opacity(showHide ? 1 : 0)
-                            .clipped()
                             .allowsHitTesting(showHide)
                             .accessibilityHidden(!showHide)
                             .help("Hide \(row.called) from the menu bar and the panel")
@@ -56,7 +54,6 @@ struct AccountRow: View {
                                 .font(.figure)
                                 .contentTransition(.numericText())
                                 .fixedSize()
-                                .padding(.leading, 6)
                                 .transition(quickFade)
                                 .allowsHitTesting(false)
                                 .accessibilityHidden(true)
@@ -320,7 +317,7 @@ private struct UsedMostRow: View {
         .help(used.projectPath != nil ? "Click to copy project path" : "Click to copy session title")
         .contextMenu {
             if let path = used.projectPath {
-                if used.exists {
+                if FileManager.default.fileExists(atPath: path) {
                     Button("Open Project in Finder") {
                         closePanel()
                         NSWorkspace.shared.open(URL(fileURLWithPath: path))

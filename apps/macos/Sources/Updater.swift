@@ -9,28 +9,18 @@ import Sparkle
 @Observable
 final class Updater: NSObject, SPUStandardUserDriverDelegate {
     private var controller: SPUStandardUpdaterController?
-    private var canCheckObservation: NSKeyValueObservation?
     var available: Bool { controller != nil }
-    private(set) var canCheckForUpdates = false
     private(set) var waiting = false
     private(set) var checksAutomatically = false
 
     func start() {
         let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String ?? ""
         guard !key.isEmpty else { return }
-        let controller = SPUStandardUpdaterController(
+        controller = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
             userDriverDelegate: self
         )
-        self.controller = controller
-        canCheckForUpdates = controller.updater.canCheckForUpdates
-        canCheckObservation = controller.updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, change in
-            let canCheck = change.newValue ?? false
-            Task { @MainActor [weak self] in
-                self?.canCheckForUpdates = canCheck
-            }
-        }
         refreshAutomatic()
     }
 
