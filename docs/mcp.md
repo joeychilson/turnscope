@@ -141,19 +141,19 @@ The answer has three parts:
    account, named. It goes by the limits an account stands by: those on
    all its usage, not one model's or one key's, or of the
    [pool](architecture.md#glossary) it last drew on. One that runs out
-   says after how much work, with its range and its reset, as the verdict
-   does; one used up says when it's back. Work past a limit's reset counts
-   in the windows after it. A limit with too little work measured, or a
-   window that rolls, as OpenCode Go's 5 hours does, means it can't be
-   told: the answer names the limit, what's left of it and, unless its
-   window rolls, where the clock's pace takes it by its reset, then what
-   the others would leave. An account with no limit read can't be told
-   either, and one not read now says why, such as `its login was
+   says after how much work, with how little it could be and its reset, as
+   the verdict does; one used up says when it's back. Work past a limit's
+   reset counts in the windows after it. A limit with too little work
+   measured, or a window that rolls, as OpenCode Go's 5 hours does, means
+   it can't be told: the answer names the limit, what's left of it and,
+   unless its window rolls, where the clock's pace takes it by its reset,
+   then what the others would leave. An account with no limit read can't
+   be told either, and one not read now says why, such as `its login was
    refused`. Nor can one whose limits couldn't be read since an earlier
-   read when its agents have worked on it since: the answer says what
-   was left then of the limit it stands by with the fewest hours of work
-   left, of those not reset since, and how long they've worked. Of one
-   account, the line is its verdict too, and the second part is left out.
+   read when its agents have worked on it since: the answer says what was
+   left then of the limit it stands by with the fewest hours of work left,
+   of those not reset since, and how long they've worked. Of one account,
+   the line is its verdict too, and the second part is left out.
 2. A one-sentence verdict on the first account: how much work is left
    before which limit runs out, and when that limit resets. When the
    deciding limit has no work rate measured, it says what's left of it
@@ -197,7 +197,7 @@ account is hidden, and then to name one with `account`.
 Called with `{"all": true, "hours": 2}`:
 
 ```markdown
-- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 40m); it resets 14:00 (in 2h).
+- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h).
 - ChatGPT Plus (me@example.com): whether 2 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
 - OpenRouter API key: whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
 - SuperGrok (me@example.com): whether 2 more hours of work fit can't be told: its login was refused.
@@ -205,11 +205,11 @@ Called with `{"all": true, "hours": 2}`:
 Most room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h).
 
 Claude Max (me@example.com) · via Claude Code · yours · in use
-  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (20m–1h 40m), at 40.9% an hour of work.
-  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (7h 50m–53h), at 3% an hour of work.
+  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (as little as 20m), at 40.9% an hour of work.
+  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset. About 19h of work left (as little as 7h 50m), at 3% an hour of work.
 
 ChatGPT Plus (me@example.com) · via Codex
-  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (as little as 0%).
+  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset.
 
 OpenRouter API key · via Pi
   Credits: $35.00 of $50.00 left. Doesn't reset.
@@ -295,7 +295,7 @@ Called with `{"account": "claude", "limit": "week", "by": "model"}`:
 
 ```markdown
 Usage of Claude Max (me@example.com) since Mon 00:00 (3d 12h ago): $0.50 at list prices over 27 responses.
-Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (7h 50m–53h), at 3% an hour of work.
+Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset. About 19h of work left (as little as 7h 50m), at 3% an hour of work.
 
 | Model | Cost | Responses | % of Weekly |
 |---|--:|--:|--:|

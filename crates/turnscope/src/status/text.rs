@@ -190,7 +190,9 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             Some(Spread { likely: 0, .. }) => {
                 "At this pace it runs out about when it resets.".to_owned()
             }
-            Some(Spread { low, likely }) if low == likely => {
+            // A least of 0% was half the forecasts of weeks and months, and
+            // 21% of those ran out, against 16% of the rest: it told nothing.
+            Some(Spread { low, likely }) if low == likely || *low == 0 => {
                 format!("Lasts, with about {likely}% left at the reset.")
             }
             Some(Spread { low, likely }) => {
@@ -236,7 +238,7 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             Some(left) => format!(
                 " {} of work left{}, at {rate}% an hour of work.",
                 capital(&about(left.likely)),
-                range(limit, &left, now)
+                fewest(&left)
             ),
             None => {
                 format!(" More work left than time until the reset, at {rate}% an hour of work.")
@@ -246,18 +248,13 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
     out
 }
 
-/// The 80% range of the hours of work `limit` has left, after the likely
-/// hours: ` (1h 10m–3h)`, or ` (1h 10m or more)` when its slow end is held
-/// at the reset. Nothing where it says no more: its ends read the same, or
-/// it's "under 10m or more", which is any amount.
-fn range(limit: &Limit, left: &MinutesLeft, now: i64) -> String {
-    let until = limit.hours_to_reset(now);
-    let (low, high) = (worked(left.low), worked(left.high));
-    match until.is_some_and(|until| left.high >= minutes(until)) {
-        true if low == UNDER => String::new(),
-        true => format!(" ({low} or more)"),
-        false if low == high => String::new(),
-        false => format!(" ({low}–{high})"),
+/// The fewest hours of work left, at the fast end of the work rate, after
+/// the likely hours: ` (as little as 1h 10m)`, or nothing for "under 10m",
+/// which is no amount.
+fn fewest(left: &MinutesLeft) -> String {
+    match worked(left.low) {
+        low if low == UNDER => String::new(),
+        low => format!(" (as little as {low})"),
     }
 }
 
@@ -433,9 +430,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
     }
     if let Some((limit, at, within)) = out {
         let run = agree(limit, "runs", "run");
-        let within = within.map_or(String::new(), |left| {
-            range(limit, &left, now) + &resets(limit, now)
-        });
+        let within = within.map_or(String::new(), |left| fewest(&left) + &resets(limit, now));
         return (
             Fits::No,
             format!(
@@ -552,7 +547,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
         return format!(
             "{title}: {} of work left{} before {} {} out{}.",
             about(left.likely),
-            range(limit, &left, now),
+            fewest(&left),
             limit.named(),
             agree(limit, "runs", "run"),
             resets(limit, now)
@@ -750,42 +745,40 @@ mod tests {
         let now = example["at"].as_i64().unwrap();
         let claude = &example["accounts"][0];
         // Claude Max's 5 hours with half an hour of work left: said with its
-        // range and reset, as the verdict says them.
+        // fewest and reset, as the verdict says them.
         let mut account = claude.clone();
-        account["limits"][0]["work"]["leftMinutes"] =
-            serde_json::json!({"low": 20, "likely": 30, "high": 60});
+        account["limits"][0]["work"]["leftMinutes"] = serde_json::json!({"low": 20, "likely": 30});
         let account: Account = serde_json::from_value(account).unwrap();
         let resets = time::ahead(account.limits[0].resets().unwrap(), now);
         assert_eq!(
             fit(&account, 1.0, now),
             format!(
-                "1 more hour of work doesn't fit: 5 hours runs out after about 30m of work (20m–1h); it resets {resets}."
+                "1 more hour of work doesn't fit: 5 hours runs out after about 30m of work (as little as 20m); it resets {resets}."
             )
         );
         assert_eq!(
             fit(&account, 2.0, now),
             format!(
-                "2 more hours of work don't fit: 5 hours runs out after about 30m of work (20m–1h); it resets {resets}."
+                "2 more hours of work don't fit: 5 hours runs out after about 30m of work (as little as 20m); it resets {resets}."
             )
         );
         // Its Weekly with 40 minutes of work left and 5 hours with 1h 20m:
         // the first out decides, by its likely hours, as the verdict says.
         let mut account = claude.clone();
         account["limits"][0]["work"]["leftMinutes"]["likely"] = 80.into();
-        account["limits"][1]["work"]["leftMinutes"] =
-            serde_json::json!({"low": 20, "likely": 40, "high": 90});
+        account["limits"][1]["work"]["leftMinutes"] = serde_json::json!({"low": 20, "likely": 40});
         let account: Account = serde_json::from_value(account).unwrap();
         let resets = time::ahead(account.limits[1].resets().unwrap(), now);
         assert_eq!(
             fit(&account, 2.0, now),
             format!(
-                "2 more hours of work don't fit: Weekly runs out after about 40m of work (20m–1h 30m); it resets {resets}."
+                "2 more hours of work don't fit: Weekly runs out after about 40m of work (as little as 20m); it resets {resets}."
             )
         );
         let said = verdict(&account, now);
         assert!(
             said.starts_with(
-                "Claude Max (me@example.com): about 40m of work left (20m–1h 30m) before Weekly runs out; it resets "
+                "Claude Max (me@example.com): about 40m of work left (as little as 20m) before Weekly runs out; it resets "
             ),
             "{said}"
         );
@@ -796,17 +789,16 @@ mod tests {
         five["resetSince"] = (now - 10 * MINUTE).into();
         five["leftPercent"] = 100.into();
         five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "stale"});
-        five["work"]["leftMinutes"] = serde_json::json!({"low": 110, "likely": 180, "high": 300});
+        five["work"]["leftMinutes"] = serde_json::json!({"low": 110, "likely": 180});
         account["deciding"] = "seven_day".into();
         let account: Account = serde_json::from_value(account).unwrap();
         assert_eq!(
             fit(&account, 4.0, now),
-            "4 more hours of work don't fit: 5 hours runs out after about 3h of work (1h 50m or more)."
+            "4 more hours of work don't fit: 5 hours runs out after about 3h of work (as little as 1h 50m)."
         );
-        // Its slow end lasts the new window, as long as the one read.
         assert_eq!(
             verdict(&account, now),
-            "Claude Max (me@example.com): about 3h of work left (1h 50m or more) before 5 hours runs out."
+            "Claude Max (me@example.com): about 3h of work left (as little as 1h 50m) before 5 hours runs out."
         );
         // At 10% an hour of work, 6 hours fit, and the new window ends with
         // half left: 5 hours of work count, not 6.
@@ -853,7 +845,7 @@ mod tests {
         );
         account["state"] = serde_json::json!({"kind": "asOf", "readAt": now - 35 * MINUTE, "why": "readFailed", "workedMinutes": 40});
         account["limits"][1]["work"]["leftMinutes"] =
-            serde_json::json!({"low": 1200, "likely": 2400, "high": 3600});
+            serde_json::json!({"low": 1200, "likely": 2400});
         let dated: Account = serde_json::from_value(account).unwrap();
         let said = fit(&dated, 1.0, now);
         assert!(
@@ -883,8 +875,7 @@ mod tests {
             five["leftPercent"] = 100.into();
             five["window"]["resets"]["at"] = (now - MINUTE).into();
             five["window"]["startsAt"] = (now - MINUTE - 5 * time::HOUR).into();
-            five["work"]["leftMinutes"] =
-                serde_json::json!({"low": 240, "likely": 240, "high": 240});
+            five["work"]["leftMinutes"] = serde_json::json!({"low": 110, "likely": 240});
             serde_json::from_value::<Account>(account).unwrap()
         };
         assert_eq!(
@@ -893,7 +884,7 @@ mod tests {
         );
         assert_eq!(
             fit(&after_reset, 6.0, now),
-            "6 more hours of work don't fit: 5 hours runs out after about 4h of work."
+            "6 more hours of work don't fit: 5 hours runs out after about 4h of work (as little as 1h 50m)."
         );
         // 2 hours fit: an hour and a half of it in the window after.
         assert_eq!(
@@ -939,14 +930,32 @@ mod tests {
     }
 
     #[test]
+    fn a_least_of_zero_left_at_the_reset_is_not_said() {
+        let example = example();
+        let now = example["at"].as_i64().unwrap();
+        let mut account = example["accounts"][0].clone();
+        let weekly: Limit = serde_json::from_value(account["limits"][1].clone()).unwrap();
+        let line = limit_text(&weekly, now);
+        assert!(
+            line.contains("Lasts, with about 43% left at the reset (as little as 2%)."),
+            "{line}"
+        );
+        account["limits"][1]["outlook"]["leftAtReset"]["low"] = 0.into();
+        let weekly: Limit = serde_json::from_value(account["limits"][1].clone()).unwrap();
+        let line = limit_text(&weekly, now);
+        assert!(
+            line.contains("Lasts, with about 43% left at the reset."),
+            "{line}"
+        );
+    }
+
+    #[test]
     fn under_ten_minutes_of_work_is_said_once_and_not_about() {
         let example = example();
         let now = example["at"].as_i64().unwrap();
-        // Claude Max's 5 hours with 6 minutes of work left, and as much at
-        // the slow end.
+        // Claude Max's 5 hours with 6 minutes of work left.
         let mut account = example["accounts"][0].clone();
-        account["limits"][0]["work"]["leftMinutes"] =
-            serde_json::json!({"low": 0, "likely": 6, "high": 6});
+        account["limits"][0]["work"]["leftMinutes"] = serde_json::json!({"low": 0, "likely": 6});
         let few: Account = serde_json::from_value(account.clone()).unwrap();
         let line = limit_text(&few.limits[0], now);
         assert!(
@@ -967,20 +976,12 @@ mod tests {
             ),
             "{said}"
         );
-        // A slow end of ten minutes or more is still said.
-        account["limits"][0]["work"]["leftMinutes"]["high"] = 20.into();
-        let more: Account = serde_json::from_value(account.clone()).unwrap();
+        // Nor is a fewest under ten minutes, which is no amount.
+        account["limits"][0]["work"]["leftMinutes"]["likely"] = 20.into();
+        let more: Account = serde_json::from_value(account).unwrap();
         let line = limit_text(&more.limits[0], now);
         assert!(
-            line.ends_with(". Under 10m of work left (under 10m–20m), at 25% an hour of work."),
-            "{line}"
-        );
-        // Under ten minutes or as much as there's time for is any amount.
-        account["limits"][0]["window"]["resets"]["at"] = (now + 20 * MINUTE).into();
-        let any: Account = serde_json::from_value(account).unwrap();
-        let line = limit_text(&any.limits[0], now);
-        assert!(
-            line.ends_with(". Under 10m of work left, at 25% an hour of work."),
+            line.ends_with(". About 20m of work left, at 25% an hour of work."),
             "{line}"
         );
     }
@@ -1214,7 +1215,6 @@ mod tests {
             left_minutes: Some(MinutesLeft {
                 low: 720,
                 likely: 960,
-                high: 1200,
             }),
         });
         let chatgpt = &mut status.accounts[1];
@@ -1236,7 +1236,6 @@ mod tests {
             left_minutes: Some(MinutesLeft {
                 low: 120,
                 likely: 140,
-                high: 180,
             }),
         });
         assert!(room(&status, Some(5.0)).unwrap().starts_with(claude));

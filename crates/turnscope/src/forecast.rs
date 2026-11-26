@@ -1,8 +1,8 @@
 //! Where a limit's window is headed, by the clock and by the work done:
 //! what it will have used by its reset and when it runs out if it does,
-//! likely and at the fast end, and how many hours of work are left, as an
-//! 80% range. The pace was chosen, and its fast end measured, by replaying
-//! this Mac's real limit history (the `backtest` test).
+//! likely and at the fast end, and how many hours of work are left, likely
+//! and at the fast end. The pace was chosen, and its fast end measured, by
+//! replaying this Mac's real limit history (the `backtest` test).
 
 use crate::time::{DAY, HOUR, MINUTE};
 
@@ -216,38 +216,28 @@ pub fn enough_work(length: Option<i64>) -> f64 {
     }
 }
 
-/// The 80% range of what the next hours of work used over the rate
-/// measured, for a window of `length`. Measured by `work_backtest` on
-/// Anthropic's 5-hour and weekly limits from 2026-10-10 to 2026-11-25, 3,006
-/// and 11,495 forecasts, rounded outward. Other limits had too few windows of
-/// work, except OpenCode Go's, which swung too far for any range: one week rose
-/// 44 points in 36 minutes of work, the week before 1 point in 4 hours.
-pub fn work_band(length: Option<i64>) -> (f64, f64) {
+/// The fast end of the work rate, for a window of `length`: what the next
+/// hours of work used, over the rate measured, stayed under it 90% of the
+/// time. Measured by `work_backtest` on Anthropic's 5-hour and weekly limits
+/// from 2026-10-10 to 2026-11-26, 3,006 and 11,555 forecasts, rounded up.
+/// Other limits had too few windows of work, except OpenCode Go's, which
+/// swung too far: one week rose 44 points in 36 minutes of work, the week
+/// before 1 point in 4 hours. A slow end was dropped: the most hours it gave
+/// reached the reset on 97% of 5-hour forecasts and 44% of weekly ones.
+pub fn work_fast(length: Option<i64>) -> f64 {
     match length {
-        Some(length) if length <= DAY => (0.35, 2.15),
-        _ => (0.35, 2.4),
+        Some(length) if length <= DAY => 2.15,
+        _ => 2.4,
     }
 }
 
 /// Hours of work left at `rate` with `left` percent left: the fewest, at
-/// the fast end of `band`; the likely; and the most, at the slow end but no
-/// more than `until`, the hours to its reset. `None` when the likely hours
-/// reach `until`: it lasts until its reset even with work all the time.
-pub fn work_left(
-    left: f64,
-    rate: f64,
-    (low, high): (f64, f64),
-    until: Option<f64>,
-) -> Option<(f64, f64, f64)> {
+/// `fast` times the rate, and the likely. `None` when the likely hours reach
+/// `until`, the hours to its reset: it lasts until its reset even with work
+/// all the time.
+pub fn work_left(left: f64, rate: f64, fast: f64, until: Option<f64>) -> Option<(f64, f64)> {
     let likely = left / rate;
-    let until = until.unwrap_or(f64::INFINITY);
-    (likely < until).then(|| {
-        (
-            left / (rate * high),
-            likely,
-            (left / (rate * low)).min(until),
-        )
-    })
+    (likely < until.unwrap_or(f64::INFINITY)).then(|| (likely / fast, likely))
 }
 
 #[cfg(test)]
@@ -367,21 +357,16 @@ mod tests {
             .flat_map(|(hours, slots)| (1..=slots).map(move |slot| at(hours) + slot * SLOT))
             .collect();
         assert_eq!(work_rate(&readings, &worked, None, 5.0), Some(6.0));
-        let (slow, fast) = work_band(Some(at(168.0)));
-        let (low, likely, high) = work_left(86.0, 4.0, (slow, fast), Some(164.0)).unwrap();
-        assert_eq!(likely, 21.5);
-        assert!((low - 21.5 / fast).abs() < 1e-9 && (high - 21.5 / slow).abs() < 1e-9);
+        let fast = work_fast(Some(at(168.0)));
+        assert_eq!(
+            work_left(86.0, 4.0, fast, Some(164.0)),
+            Some((21.5 / fast, 21.5))
+        );
         // More work left than hours to the reset lasts until it, even
         // working all the time.
         assert_eq!(
-            work_left(86.0, 4.0, work_band(Some(at(5.0))), Some(3.0)),
+            work_left(86.0, 4.0, work_fast(Some(at(5.0))), Some(3.0)),
             None
-        );
-        // Less runs out first, its slow end no later than the reset.
-        let (slow, fast) = work_band(Some(at(5.0)));
-        assert_eq!(
-            work_left(10.0, 4.0, (slow, fast), Some(4.0)),
-            Some((10.0 / 4.0 / fast, 2.5, 4.0))
         );
     }
 
@@ -530,7 +515,7 @@ mod tests {
     }
 
     /// Replay each limit's readings in a copy of a data directory and score
-    /// [`work_band`]: at every reading, the work rate as the status measures
+    /// [`work_fast`]: at every reading, the work rate as the status measures
     /// it, against what the next hours of work in the window used.
     #[test]
     #[ignore = "replays a copy of real history: TURNSCOPE_BACKTEST=<data dir>"]
@@ -561,7 +546,7 @@ mod tests {
             limits.entry(limit).or_default().push(reading);
         }
         // By provider, limit and scope: what the next hours of work used over
-        // the rate measured, and whether its band held it.
+        // the rate measured, and whether its fast end held it.
         let mut scores: std::collections::BTreeMap<String, Vec<(f64, bool)>> = Default::default();
         for ((account, key, scope), readings) in &limits {
             let (models, fingerprint) = crate::usage::of_limit(key, scope.as_deref());
@@ -608,8 +593,7 @@ mod tests {
                 }
                 if hours(slots_next) >= 1.0 {
                     let ratio = rose / hours(slots_next) / rate;
-                    let (slow, fast) = work_band(length);
-                    ratios.push((ratio, (slow..=fast).contains(&ratio)));
+                    ratios.push((ratio, ratio <= work_fast(length)));
                 }
             }
         }
@@ -617,12 +601,10 @@ mod tests {
             let held = ratios.iter().filter(|(_, held)| *held).count();
             let mut sorted: Vec<f64> = ratios.iter().map(|(ratio, _)| *ratio).collect();
             sorted.sort_by(f64::total_cmp);
-            let share = |of: f64| sorted[((sorted.len() - 1) as f64 * of).round() as usize];
+            let ninety = sorted[((sorted.len() - 1) as f64 * 0.9).round() as usize];
             println!(
-                "{limit}: {} forecasts, 80% from {:.2} to {:.2} times the rate measured, band held {:.0}%",
+                "{limit}: {} forecasts, 90% under {ninety:.2} times the rate measured, fast end held {:.0}%",
                 ratios.len(),
-                share(0.1),
-                share(0.9),
                 100.0 * held as f64 / ratios.len() as f64,
             );
         }

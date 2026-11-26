@@ -146,8 +146,8 @@ built app draw it.
 
 `forecast::tests::backtest` replays real limit history and scores the
 forecast: its point error, how often its fast end holds, and how often it
-declines to forecast. `work_backtest` scores the range of work left, by
-limit. It needs weeks of history to say much. Run it on a
+declines to forecast. `work_backtest` scores the fast end of work left,
+by limit. It needs weeks of history to say much. Run it on a
 copy of a data directory, never the real one:
 
 ```sh

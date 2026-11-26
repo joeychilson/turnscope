@@ -1122,8 +1122,8 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
 }
 
 /// `check_limits` of one account says whether the hours fit and how it
-/// stands in one line, the verdict's range and reset in it, before the
-/// account's lines.
+/// stands in one line, the verdict's fewest hours and reset in it, before
+/// the account's lines.
 #[test]
 fn check_limits_of_one_account_says_its_fit_and_verdict_in_one_line() {
     let data = store();
@@ -1136,7 +1136,7 @@ fn check_limits_of_one_account_says_its_fit_and_verdict_in_one_line() {
     );
     assert!(
         answers[0].starts_with(
-            "Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 40m); it resets 14:00 (in 2h).\n\nClaude Max (me@example.com) · via"
+            "Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h).\n\nClaude Max (me@example.com) · via"
         ),
         "{}",
         answers[0]

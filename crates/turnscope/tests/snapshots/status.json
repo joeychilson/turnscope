@@ -40,7 +40,6 @@
           },
           "work": {
             "leftMinutes": {
-              "high": 100,
               "likely": 40,
               "low": 20
             },
@@ -72,7 +71,6 @@
           },
           "work": {
             "leftMinutes": {
-              "high": 3180,
               "likely": 1140,
               "low": 470
             },
