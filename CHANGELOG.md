@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A notification clicked as the panel opens shows its account once the
+  limits are read**, even if Settings was opened meanwhile. The account
+  opened on its own later instead.
 - **`turnscope guard` passes while the standing isn't known**: before any
   account is read, or while none of its limits are. It exited 1 with an
   error, which a hook shows at every tool call.
