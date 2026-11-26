@@ -85,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func handleSync(_ sync: AppSync) {
         drawItem(sync.menuBar)
         updateTicker(counting: sync.counting)
-        if sync.panel.hasStatus {
+        if sync.panel.verdict != nil {
             if let opening = initialOpening {
                 initialOpening = nil
                 whenPlaced { [self] in
@@ -271,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Opens a clicked notification's account once there's a status to open it in.
     private func openPending() {
-        guard panelOpen, bridge.panel.hasStatus, let account = ui.pendingAccount else { return }
+        guard panelOpen, bridge.panel.verdict != nil, let account = ui.pendingAccount else { return }
         ui.pendingAccount = nil
         ui.openInPlace(account, panel: bridge.panel)
     }

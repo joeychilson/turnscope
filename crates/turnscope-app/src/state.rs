@@ -5,11 +5,11 @@
 use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
-use turnscope::alerts::{Alert, Notify, Settings, replaces};
+use turnscope::alerts::{Notify, Settings, replaces};
 use turnscope::engine::{Event, Shown, Stopped, UsedMost};
 use turnscope::status::{Account, Agent, Connection, Standing, Status};
 
-use crate::view::{AppSync, build_sync};
+use crate::view::{self, AppSync};
 use crate::words::{self, AlertNote, Words};
 
 /// What the menu bar shows: every account in use, or only the most urgent.
@@ -311,7 +311,14 @@ impl State {
                     self.animated = true;
                     calls = self.asks(|a| self.counts(a));
                 }
-                self.post(alerts);
+                if !alerts.is_empty() {
+                    let words = self.words_now();
+                    let alerts = alerts
+                        .into_iter()
+                        .map(|alert| words.note(alert, self.all()))
+                        .collect();
+                    self.effects.push(Effect::PostAlerts { alerts });
+                }
                 (calls, true)
             }
             Event::Kept(stopped) => {
@@ -439,20 +446,6 @@ impl State {
         calls
     }
 
-    /// Posts notifications for `alerts`, if any; whether there were.
-    fn post(&mut self, alerts: Vec<Alert>) -> bool {
-        if alerts.is_empty() {
-            return false;
-        }
-        let words = self.words_now();
-        let alerts = alerts
-            .into_iter()
-            .map(|alert| words.note(alert, self.all()))
-            .collect();
-        self.effects.push(Effect::PostAlerts { alerts });
-        true
-    }
-
     fn save_preferences(&mut self) {
         if !self.live() {
             return;
@@ -464,9 +457,13 @@ impl State {
     }
 
     pub fn sync(&mut self) -> AppSync {
-        let animated = std::mem::take(&mut self.animated);
-        let effects = std::mem::take(&mut self.effects);
-        build_sync(self, animated, effects)
+        AppSync {
+            animated: std::mem::take(&mut self.animated),
+            effects: std::mem::take(&mut self.effects),
+            counting: self.counting(),
+            menu_bar: view::build_menu_bar(self),
+            panel: view::build_panel(self),
+        }
     }
 }
 
@@ -498,16 +495,6 @@ pub(crate) mod tests {
             account.recent = false;
         }
         shown
-    }
-
-    #[test]
-    fn a_fixture_is_shown_as_of_its_own_time() {
-        let example = example();
-        let at = example.status.at;
-        let state = State::fixed(example);
-        assert_eq!(state.words().now, at);
-        assert_eq!(state.words_now().now, at);
-        assert!(!state.counting());
     }
 
     #[test]

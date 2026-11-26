@@ -249,7 +249,6 @@ struct SettingsModel: Decodable, Equatable {
 
 struct PanelModel: Decodable, Equatable {
     var version: String
-    var hasStatus: Bool
     var stopped: Bool
     var canRefresh: Bool
     var waiting: WaitingModel?
@@ -265,7 +264,7 @@ struct PanelModel: Decodable, Equatable {
     var settings: SettingsModel
 
     static let empty = PanelModel(
-        version: "", hasStatus: false, stopped: false, canRefresh: false,
+        version: "", stopped: false, canRefresh: false,
         waiting: WaitingModel(reading: "", problem: nil, retries: false),
         verdict: nil, inUse: [], recent: [], unused: [], hidden: [],
         unusedFoldLabel: nil, hiddenFoldLabel: nil, connectOffer: nil,

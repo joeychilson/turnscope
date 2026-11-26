@@ -397,6 +397,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
+    /// A string the core returned, freed.
+    unsafe fn taken(ptr: *mut c_char) -> String {
+        let text = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        unsafe { turnscope_app_free_string(ptr) };
+        text
+    }
+
     #[test]
     fn ffi_round_trip_with_fixture_builds_panel_and_handles_actions() {
         let fixture =
@@ -416,11 +423,7 @@ mod tests {
         assert!(err.is_null());
 
         let sync_ptr = unsafe { turnscope_app_sync(app) };
-        let sync_json = unsafe { CStr::from_ptr(sync_ptr) }
-            .to_str()
-            .unwrap()
-            .to_owned();
-        unsafe { turnscope_app_free_string(sync_ptr) };
+        let sync_json = unsafe { taken(sync_ptr) };
         let sync: serde_json::Value = serde_json::from_str(&sync_json).unwrap();
         assert_eq!(
             sync["panel"]["verdict"]["headline"],
@@ -428,15 +431,13 @@ mod tests {
         );
         assert_eq!(sync["panel"]["verdict"]["standing"], "runningOut");
         assert_eq!(sync["menuBar"]["slots"].as_array().unwrap().len(), 1);
+        // As of the fixture's time too, not the clock's.
+        assert_eq!(sync["menuBar"]["slots"][0]["figure"], "50m");
 
         let hide_action =
             CString::new(r#"{"setHidden":{"id":"anthropic:acct-1:org-1","hidden":true}}"#).unwrap();
         let after_ptr = unsafe { turnscope_app_action(app, hide_action.as_ptr()) };
-        let after_json = unsafe { CStr::from_ptr(after_ptr) }
-            .to_str()
-            .unwrap()
-            .to_owned();
-        unsafe { turnscope_app_free_string(after_ptr) };
+        let after_json = unsafe { taken(after_ptr) };
         let after: serde_json::Value = serde_json::from_str(&after_json).unwrap();
         assert_eq!(after["panel"]["inUse"].as_array().unwrap().len(), 0);
         assert_eq!(after["panel"]["hidden"].as_array().unwrap().len(), 2);
@@ -486,13 +487,9 @@ mod tests {
         }
         assert!(WAKES.load(Ordering::Acquire) > 0);
         let sync_ptr = unsafe { turnscope_app_sync(app) };
-        let sync_json = unsafe { CStr::from_ptr(sync_ptr) }
-            .to_str()
-            .unwrap()
-            .to_owned();
-        unsafe { turnscope_app_free_string(sync_ptr) };
+        let sync_json = unsafe { taken(sync_ptr) };
         let sync: serde_json::Value = serde_json::from_str(&sync_json).unwrap();
-        assert_eq!(sync["panel"]["hasStatus"], true);
+        assert!(sync["panel"]["verdict"].is_object());
     }
 
     /// `scripts/screenshots.sh` draws the panel this way.
@@ -541,8 +538,7 @@ mod tests {
         let cfg = serde_json::json!({ "data": data.path(), "home": home.path() }).to_string();
         let cfg_c = CString::new(cfg).unwrap();
         let ptr = unsafe { turnscope_app_diagnostics(cfg_c.as_ptr()) };
-        let report = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        unsafe { turnscope_app_free_string(ptr) };
+        let report = unsafe { taken(ptr) };
         assert!(report.contains(&format!("Turnscope {}", env!("CARGO_PKG_VERSION"))));
         assert_eq!(logged(&report), [1; 6], "{report}");
         let fixture = SnapshotConfig {
@@ -634,7 +630,6 @@ mod tests {
             },
             panel: PanelModel {
                 version: "0.3.2".into(),
-                has_status: true,
                 stopped: false,
                 can_refresh: true,
                 waiting: Some(WaitingModel {
