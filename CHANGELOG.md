@@ -5,8 +5,8 @@
 - **`guard`, `statusline` and the MCP tools find the calling agent's
   account sooner** when the agent doesn't name its session, as Codex, or
   its session isn't read yet. On a made-up year of heavy use, `guard` in a
-  new Claude Code session took 119 ms instead of 543 ms, and in Codex
-  112 ms instead of 187 ms.
+  new Claude Code session took 65 ms instead of 280 ms, and in Codex 66 ms
+  instead of 109 ms.
 - **Hiding an account or changing a setting works while history is read
   again after an update.** Taking out what the older version had read held
   the database for up to 75 s on a made-up year of heavy use, so the change
