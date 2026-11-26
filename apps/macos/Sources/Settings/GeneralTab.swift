@@ -33,15 +33,15 @@ struct GeneralTab: View {
             SettingRow(
                 "Open at login",
                 isOn: Binding(
-                    get: { login.status.isOn },
+                    get: { bridge.panel.settings.openAtLogin != .off },
                     set: { on in
                         withMotion {
-                            login.set(on, isLive: bridge.isLive) { bridge.log($0) }
+                            _ = login.set(on)
                         }
                     }
                 )
             )
-            if login.status == .needsApproval {
+            if bridge.panel.settings.openAtLogin == .needsApproval {
                 SettingRow(title: "Allow it in System Settings") {
                     Button("Open") {
                         closePanel()

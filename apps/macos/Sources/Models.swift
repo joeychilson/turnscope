@@ -100,6 +100,10 @@ enum MenuShows: String, Codable {
     case all, one
 }
 
+enum OpenAtLogin: String, Codable {
+    case off, on, needsApproval
+}
+
 struct NotifySettings: Codable, Equatable {
     var runningOut: Bool
     var usedUp: Bool
@@ -120,7 +124,7 @@ struct AlertNote: Decodable, Equatable {
 enum Effect: Decodable, Equatable {
     case postAlerts(alerts: [AlertNote])
     case removeNotifications(identifiers: [String])
-    case savePreferences(menuShows: MenuShows, dismissedConnect: [String])
+    case savePreferences(menuShows: MenuShows, dismissedConnect: [String], dismissedOpenAtLogin: Bool)
 }
 
 struct MenuBarSlot: Decodable, Equatable {
@@ -233,6 +237,7 @@ struct AgentRowModel: Decodable, Equatable, Identifiable {
 
 struct SettingsModel: Decodable, Equatable {
     var menuShows: MenuShows
+    var openAtLogin: OpenAtLogin
     var notify: NotifySettings?
     var agentsEmpty: EmptyMessage?
     var agentsTitle: String
@@ -241,7 +246,7 @@ struct SettingsModel: Decodable, Equatable {
     var apiKeys: [AccountModel]
 
     static let empty = SettingsModel(
-        menuShows: .all, notify: nil,
+        menuShows: .all, openAtLogin: .off, notify: nil,
         agentsEmpty: nil, agentsTitle: "", agents: [],
         subscriptions: [], apiKeys: []
     )
@@ -260,6 +265,7 @@ struct PanelModel: Decodable, Equatable {
     var unusedFoldLabel: String?
     var hiddenFoldLabel: String?
     var connectOffer: ConnectOfferModel?
+    var offerOpenAtLogin: Bool
     var footerNote: FooterNoteModel?
     var settings: SettingsModel
 
@@ -268,7 +274,7 @@ struct PanelModel: Decodable, Equatable {
         waiting: WaitingModel(reading: "", problem: nil, retries: false),
         verdict: nil, inUse: [], recent: [], unused: [], hidden: [],
         unusedFoldLabel: nil, hiddenFoldLabel: nil, connectOffer: nil,
-        footerNote: nil, settings: .empty
+        offerOpenAtLogin: false, footerNote: nil, settings: .empty
     )
 }
 
@@ -289,6 +295,7 @@ struct StartConfig: Encodable {
     var fromDiskImage: Bool
     var menuShows: MenuShows
     var dismissedConnect: [String]
+    var dismissedOpenAtLogin: Bool
 }
 
 struct SnapshotConfig: Encodable {
@@ -310,6 +317,8 @@ enum AppAction: Encodable {
     case setNotify(notify: NotifySettings)
     case setMenuShows(shows: MenuShows)
     case dismissConnect(id: String)
+    case openAtLoginRead(status: OpenAtLogin)
+    case dismissOpenAtLogin
     case acknowledgeAlert(id: Int64, signInAccount: String?)
     case refreshNow
     case tick

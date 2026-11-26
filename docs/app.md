@@ -71,10 +71,10 @@ does.
   amber or red. Amber and red are 4.5:1 or more against an open row in
   light and dark, and 7:1 with Increase Contrast.
 - **Run from its disk image**, or from the copy macOS runs it from there
-  (App Translocation), the app offers to connect no agent, and Settings →
-  Agents turns off its switches and says to move Turnscope to
-  Applications. An agent connected there would run a `turnscope` that's
-  gone once the image is ejected.
+  (App Translocation), the app offers to connect no agent nor to open at
+  login, and Settings → Agents turns off its switches and says to move
+  Turnscope to Applications. An agent connected there would run a
+  `turnscope` that's gone once the image is ejected.
 
 Countdowns move with the clock. The panel's words are as of `State::now`,
 set when the panel opens and each minute while it's open. The menu bar
@@ -122,7 +122,14 @@ The panel is 340 points wide. From the top:
    or runs another copy of Turnscope: Connect (or Reconnect), and a button
    that stops offering it for that agent. Hovering "Uses another Turnscope"
    shows the binary path it's currently configured to run.
-6. **The footer**: "Not up to date" and why while the data can't be kept
+6. **An offer to open at login**, while macOS doesn't open Turnscope at
+   login and no agent is offered: "Alerts come only while Turnscope runs.",
+   with Turn on and Not now. It waits for the first read of history to end
+   and an account to show, and isn't shown while the data can't be kept
+   current. Either button puts it away for good, as does macOS opening
+   Turnscope at login, even if that's turned off later
+   ([Opening at login](#opening-at-login)).
+7. **The footer**: "Not up to date" and why while the data can't be kept
    current, "Reading your agents' history…" during the first read, or
    "Refreshing limits…" until a refresh ⌘R forced has read the limits.
    Then "Update available" (shortened to "Update" beside a footer note)
@@ -190,6 +197,7 @@ Where each setting is kept:
 |---|---|---|
 | Show (menu bar) | The app's defaults, `menuShows`: `all` or `one` | |
 | Offers to connect put away | The app's defaults, `dismissedConnect`: agent ids joined by commas | |
+| Offer to open at login put away | The app's defaults, `dismissedOpenAtLogin`: `true` once put away | |
 | Open at login | macOS's login items (`SMAppService.mainApp`) | System Settings |
 | Notify me when | The engine's settings, in the database | |
 | Hidden accounts | The database | `turnscope accounts hide\|show` |
@@ -251,10 +259,12 @@ there, which only the release sets
 
 ## Opening at login
 
-Settings → General → Open at login registers the app with
-`SMAppService.mainApp`. If macOS holds it for approval, the switch stays on
-and a row offers to open Login Items in System Settings. If registering
-fails, the Mac beeps.
+Settings → General → Open at login, and Turn on in the panel's offer,
+register the app with `SMAppService.mainApp`. The app reads what macOS says
+as it starts and as the panel opens, so the switch shows a change made in
+System Settings. If macOS holds it for approval, the switch stays on and a
+row offers to open Login Items in System Settings; Turn on opens them
+itself. If registering fails, the Mac beeps.
 
 ## Logos
 
@@ -291,13 +301,15 @@ as an option's value, so `--open --data <dir>` opens nothing in the panel.
   the status's `at`, so it reads the same whenever it's drawn. Changes made
   in it show on screen and go nowhere: nothing is written to the app's
   defaults, the login items or Sparkle's settings, and neither Sparkle nor
-  notifications start.
+  notifications start. Opening at login starts off, as nothing of the Mac's
+  is read.
 - **`--snapshot`** draws the status in `--fixture`, or else the status the
   engine works out from `--data` and `--home`, reading only: it makes no
   database, raises no alert and catches nothing up. With `--open`, it
   opens a row or the fold first, or draws Settings at the tab named. It
   draws the window background where the panel has glass, the panel at its
-  full height, and no sessions under an open account.
+  full height, no sessions under an open account, and no offer to open at
+  login.
 
 The engine runs in the app, so `TURNSCOPE_OFFLINE` and `TURNSCOPE_NOW`
 apply to it as to the command line ([cli.md](cli.md#environment)). The app

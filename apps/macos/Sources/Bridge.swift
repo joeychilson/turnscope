@@ -156,7 +156,8 @@ final class Bridge {
             home: launch.home,
             fromDiskImage: fromDiskImage,
             menuShows: preferences.menuShows,
-            dismissedConnect: preferences.dismissedConnect
+            dismissedConnect: preferences.dismissedConnect,
+            dismissedOpenAtLogin: preferences.dismissedOpenAtLogin
         ))
         var errorPtr: UnsafeMutablePointer<CChar>?
         let ctx = Unmanaged.passUnretained(self).toOpaque()

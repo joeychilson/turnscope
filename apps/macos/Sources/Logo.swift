@@ -1,5 +1,5 @@
-// Account and agent logos: flat SVGs drawn in the color of the text next to them.
-// Copied from `assets/logos/` into `Contents/Resources/logos/`.
+// Account and agent logos, flat SVGs copied from `assets/logos/` into
+// `Contents/Resources/logos/`, and Turnscope's mark: drawn in the color of the text next to them.
 
 import AppKit
 import SwiftUI
@@ -16,6 +16,39 @@ struct Logo: View {
     init(agent: String, size: CGFloat) {
         image = Logo.svg("agents/\(agent)") ?? Logo.symbol("terminal.fill")
         self.size = size
+    }
+
+    /// Turnscope's own.
+    init(size: CGFloat) {
+        image = Logo.mark
+        self.size = size
+    }
+
+    /// Two thirds of its box, as the menu bar item draws it beside providers' logos.
+    @MainActor private static let mark = NSImage(size: NSSize(width: 21, height: 21), flipped: false) { rect in
+        drawMark(in: rect.insetBy(dx: 3.5, dy: 3.5), color: .black)
+        return true
+    }
+
+    /// Turnscope's mark as `Turnscope.icon` draws it: a ring around a 235° wedge in 530 units.
+    nonisolated static func drawMark(in rect: NSRect, color: NSColor) {
+        let unit = rect.width / 530
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        func circle(_ radius: CGFloat) -> NSBezierPath {
+            let r = radius * unit
+            return NSBezierPath(ovalIn: NSRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2))
+        }
+        color.set()
+        let ring = circle(265)
+        ring.append(circle(207))
+        ring.windingRule = .evenOdd
+        ring.fill()
+
+        let slice = NSBezierPath()
+        slice.move(to: center)
+        slice.appendArc(withCenter: center, radius: 169 * unit, startAngle: 90, endAngle: -145, clockwise: true)
+        slice.close()
+        slice.fill()
     }
 
     @MainActor private static var svgs: [String: NSImage?] = [:]

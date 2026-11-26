@@ -21,10 +21,22 @@ pub enum MenuShows {
     One,
 }
 
+/// Whether macOS opens the app at login, as the shell reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenAtLogin {
+    #[default]
+    Off,
+    On,
+    /// Turned on, until the person allows it in System Settings.
+    NeedsApproval,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Preferences {
     pub menu_shows: MenuShows,
     pub dismissed_connect: BTreeSet<String>,
+    pub dismissed_open_at_login: bool,
 }
 
 /// What the shell does once, after it next syncs.
@@ -40,6 +52,7 @@ pub enum Effect {
     SavePreferences {
         menu_shows: MenuShows,
         dismissed_connect: Vec<String>,
+        dismissed_open_at_login: bool,
     },
 }
 
@@ -66,6 +79,11 @@ pub enum Action {
     DismissConnect {
         id: String,
     },
+    /// What macOS says, read as the app starts, as the panel opens, and after a change.
+    OpenAtLoginRead {
+        status: OpenAtLogin,
+    },
+    DismissOpenAtLogin {},
     AcknowledgeAlert {
         id: i64,
         sign_in_account: Option<String>,
@@ -101,6 +119,8 @@ pub struct State {
     pub frozen: Option<i64>,
     pub from_disk_image: bool,
     pub preferences: Preferences,
+    /// Unknown until the shell reads it, and so always for `--snapshot`.
+    pub open_at_login: Option<OpenAtLogin>,
     /// The minute the open panel's words are as of: set as it opens, and each minute after.
     pub now: i64,
     pub panel_open: bool,
@@ -233,6 +253,17 @@ impl State {
                 && a.connection != Connection::Connected
                 && !self.preferences.dismissed_connect.contains(&a.id)
         })
+    }
+
+    /// Once, at a calm moment (docs/app.md#the-panel).
+    pub fn offers_open_at_login(&self) -> bool {
+        self.open_at_login == Some(OpenAtLogin::Off)
+            && !self.preferences.dismissed_open_at_login
+            && !self.from_disk_image
+            && self.problem.is_none()
+            && !self.reading()
+            && self.all().iter().any(|a| !a.hidden)
+            && self.to_connect().is_none()
     }
 
     pub fn used_most(&self, account: &Account) -> &[UsedMost] {
@@ -417,6 +448,14 @@ impl State {
                     self.save_preferences();
                 }
             }
+            Action::OpenAtLoginRead { status } => {
+                self.open_at_login = Some(status);
+                // Once on, the person knows of it: turned off later, it isn't offered again.
+                if status != OpenAtLogin::Off {
+                    self.dismiss_open_at_login();
+                }
+            }
+            Action::DismissOpenAtLogin {} => self.dismiss_open_at_login(),
             Action::AcknowledgeAlert {
                 id,
                 sign_in_account,
@@ -446,6 +485,13 @@ impl State {
         calls
     }
 
+    fn dismiss_open_at_login(&mut self) {
+        if !self.preferences.dismissed_open_at_login {
+            self.preferences.dismissed_open_at_login = true;
+            self.save_preferences();
+        }
+    }
+
     fn save_preferences(&mut self) {
         if !self.live() {
             return;
@@ -453,6 +499,7 @@ impl State {
         self.effects.push(Effect::SavePreferences {
             menu_shows: self.preferences.menu_shows,
             dismissed_connect: self.preferences.dismissed_connect.iter().cloned().collect(),
+            dismissed_open_at_login: self.preferences.dismissed_open_at_login,
         });
     }
 
@@ -712,14 +759,59 @@ pub(crate) mod tests {
                 Effect::SavePreferences {
                     menu_shows: MenuShows::One,
                     dismissed_connect: vec![],
+                    dismissed_open_at_login: false,
                 },
                 Effect::SavePreferences {
                     menu_shows: MenuShows::One,
                     dismissed_connect: vec!["codex".into()],
+                    dismissed_open_at_login: false,
                 },
             ]
         );
         assert_eq!(changed(State::fixed(example())), []);
+    }
+
+    #[test]
+    fn opening_at_login_is_offered_once_while_macos_doesnt_and_nothing_else_is_going_on() {
+        let read = |status| Action::OpenAtLoginRead { status };
+        let offered = |shown: Shown, change: &dyn Fn(&mut State)| {
+            let mut core = State::default();
+            core.took(Event::Shown(Box::new(shown), Vec::new()));
+            change(&mut core);
+            core.sync().panel.offer_open_at_login
+        };
+        let off = |core: &mut State| {
+            core.apply(read(OpenAtLogin::Off), 0);
+        };
+        assert!(!offered(example(), &|_| {}));
+        assert!(offered(example(), &off));
+        assert!(!offered(first_launch(), &off));
+        let mut connect = example();
+        connect.agents[1].in_use = true;
+        assert!(!offered(connect, &off));
+        assert!(!offered(example(), &|core| {
+            off(core);
+            core.took(Event::Kept(Some(Stopped::Failing("Offline".into()))));
+        }));
+        // Turned on and off again, it's known: not offered again.
+        assert!(!offered(example(), &|core| {
+            core.apply(read(OpenAtLogin::On), 0);
+            off(core);
+        }));
+
+        let mut core = shown(example());
+        off(&mut core);
+        core.apply(Action::DismissOpenAtLogin {}, 0);
+        let sync = core.sync();
+        assert!(!sync.panel.offer_open_at_login);
+        assert_eq!(
+            sync.effects,
+            [Effect::SavePreferences {
+                menu_shows: MenuShows::All,
+                dismissed_connect: vec![],
+                dismissed_open_at_login: true,
+            }]
+        );
     }
 
     #[test]

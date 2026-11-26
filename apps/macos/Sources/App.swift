@@ -31,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let ui = UIState()
     private let notifier = Notifier()
     private let updater = Updater()
-    private let login = Login()
+    private let login: Login
     private let menuBar = MenuBarItem()
 
     private var initialOpening: Opening?
@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     init(_ launch: Launch) {
         self.bridge = Bridge(launch: launch, fromDiskImage: Self.fromDiskImage, preferences: .read())
+        self.login = Login(bridge: bridge)
         self.initialOpening = launch.opening
         super.init()
     }
@@ -78,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             updater.start()
             observeWake()
         }
+        login.read()
         bridge.sync()
     }
 
@@ -113,8 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 notifier.post(alerts)
             case let .removeNotifications(identifiers):
                 notifier.remove(identifiers)
-            case let .savePreferences(menuShows, dismissedConnect):
-                Preferences.save(menuShows: menuShows, dismissedConnect: dismissedConnect)
+            case let .savePreferences(menuShows, dismissedConnect, dismissedOpenAtLogin):
+                Preferences.save(
+                    menuShows: menuShows,
+                    dismissedConnect: dismissedConnect,
+                    dismissedOpenAtLogin: dismissedOpenAtLogin
+                )
             }
         }
     }
@@ -311,7 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if bridge.isLive {
             notifier.check()
-            login.check()
+            login.read()
             updater.refreshAutomatic()
         }
         place(panel)

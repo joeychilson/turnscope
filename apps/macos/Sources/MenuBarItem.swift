@@ -71,7 +71,7 @@ final class MenuBarItem {
             }
 
             if parts.isEmpty {
-                Self.drawMark(
+                Logo.drawMark(
                     in: NSRect(
                         x: 1,
                         y: (Self.height - Self.markSize) / 2,
@@ -131,27 +131,6 @@ final class MenuBarItem {
             return true
         }
         tinted.draw(in: dest)
-    }
-
-    /// Turnscope's mark as `Turnscope.icon` draws it: a ring around a 235° wedge in 530 units.
-    private nonisolated static func drawMark(in rect: NSRect, color: NSColor) {
-        let unit = rect.width / 530
-        let center = NSPoint(x: rect.midX, y: rect.midY)
-        func circle(_ radius: CGFloat) -> NSBezierPath {
-            let r = radius * unit
-            return NSBezierPath(ovalIn: NSRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2))
-        }
-        color.set()
-        let ring = circle(265)
-        ring.append(circle(207))
-        ring.windingRule = .evenOdd
-        ring.fill()
-
-        let slice = NSBezierPath()
-        slice.move(to: center)
-        slice.appendArc(withCenter: center, radius: 169 * unit, startAngle: 90, endAngle: -145, clockwise: true)
-        slice.close()
-        slice.fill()
     }
 
     private static func dynamicColor(_ hexes: [UInt32], alpha: CGFloat) -> NSColor {

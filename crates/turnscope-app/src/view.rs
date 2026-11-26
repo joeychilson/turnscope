@@ -5,7 +5,7 @@ use turnscope::alerts::Notify;
 use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{Account, Agent, Connection, Limit, Standing};
 
-use crate::state::{Effect, MenuShows, State};
+use crate::state::{Effect, MenuShows, OpenAtLogin, State};
 use crate::words::{self, Words};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -49,6 +49,7 @@ pub struct PanelModel {
     pub unused_fold_label: Option<String>,
     pub hidden_fold_label: Option<String>,
     pub connect_offer: Option<ConnectOfferModel>,
+    pub offer_open_at_login: bool,
     pub footer_note: Option<FooterNoteModel>,
     pub settings: SettingsModel,
 }
@@ -174,6 +175,7 @@ pub struct AgentRowModel {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsModel {
     pub menu_shows: MenuShows,
+    pub open_at_login: OpenAtLogin,
     pub notify: Option<Notify>,
     pub agents_empty: Option<EmptyMessage>,
     pub agents_title: String,
@@ -271,6 +273,7 @@ pub fn build_panel(s: &State) -> PanelModel {
         unused_fold_label,
         hidden_fold_label,
         connect_offer,
+        offer_open_at_login: s.offers_open_at_login(),
         footer_note: build_footer_note(s),
         settings: build_settings(s),
     }
@@ -405,6 +408,7 @@ fn build_settings(s: &State) -> SettingsModel {
 
     SettingsModel {
         menu_shows: s.preferences.menu_shows,
+        open_at_login: s.open_at_login.unwrap_or_default(),
         notify: s.status.as_ref().map(|status| status.settings.notify),
         agents_empty,
         agents_title,
