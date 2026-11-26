@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`turnscope guard` passes while the standing isn't known**: before any
+  account is read, or while none of its limits are. It exited 1 with an
+  error, which a hook shows at every tool call.
 - **"Refreshing limits…" shows until the limits are read.** Hiding an
   account, changing a setting or connecting an agent meanwhile ended it
   early, and ⌘R could start another refresh.

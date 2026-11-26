@@ -347,12 +347,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
         false => (format!("{hours} more hours"), "fit", "don't fit"),
     };
     let untold = |why: &str| format!("whether {more} of work {fit} can't be told: {why}.");
-    // No limit read: an account not read now says why. One read with none,
-    // as a key whose provider Turnscope doesn't ask, may still draw on
-    // credit or a spend cap.
-    if account.limits.is_empty()
-        && let Some(why) = account.state.why()
-    {
+    if let Some(why) = account.unread() {
         return (Fits::Untold, untold(unread(why)), true);
     }
     if let Some((limit, back)) = used_up(account) {
