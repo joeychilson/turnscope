@@ -152,7 +152,7 @@ jobs:
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 7200 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
-          (umask 077 && base64 --decode <<< "$DEVELOPER_ID_CERTIFICATE" > "$RUNNER_TEMP/developer-id.p12")
+          base64 --decode <<< "$DEVELOPER_ID_CERTIFICATE" > "$RUNNER_TEMP/developer-id.p12"
           security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign
           rm -f "$RUNNER_TEMP/developer-id.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
@@ -189,7 +189,7 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2> /dev/null || true
-          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/developer-id.p12"
+          rm -f "$RUNNER_TEMP/notary.p8"
       # The signatures were verified and both files stapled; this runs the
       # app as it will ship.
       - name: Check the built app runs

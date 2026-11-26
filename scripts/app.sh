@@ -65,19 +65,14 @@ trap 'rm -rf "$built"' EXIT
 case "${1:-}" in
   "")
     app=target/debug/Turnscope.app
-    # Separate builds keep turnscope's default cli feature out of libturnscope_app.a.
-    cargo build --locked -p turnscope
-    cargo build --locked -p turnscope-app
+    cargo build --locked -p turnscope -p turnscope-app
     cp "$target_dir/debug/turnscope" "$built/turnscope"
     compile_swift "$(uname -m)" "$target_dir/debug/libturnscope_app.a" "$built/turnscope-app" debug
     ;;
   --release)
     app=target/dist/Turnscope.app
     # Each binary for both architectures, joined into one universal file.
-    # Separate builds keep turnscope's default cli feature out of libturnscope_app.a.
-    cargo build --locked --release -p turnscope \
-      --target aarch64-apple-darwin --target x86_64-apple-darwin
-    cargo build --locked --release -p turnscope-app \
+    cargo build --locked --release -p turnscope -p turnscope-app \
       --target aarch64-apple-darwin --target x86_64-apple-darwin
     compile_swift arm64 "$target_dir/aarch64-apple-darwin/release/libturnscope_app.a" "$built/turnscope-app-arm64" release
     compile_swift x86_64 "$target_dir/x86_64-apple-darwin/release/libturnscope_app.a" "$built/turnscope-app-x86_64" release
