@@ -96,6 +96,11 @@ struct Model {
     priority: Option<Charged>,
 }
 
+/// Models whose fast mode excludes prompts over 272K tokens, which are
+/// billed at Standard rates (openai.com/api-priority-processing, read
+/// 2026-11-26).
+const STANDARD_PAST_TIER: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+
 pub struct Prices(HashMap<String, HashMap<String, History<Model>>>);
 
 impl Prices {
@@ -153,9 +158,11 @@ impl Prices {
             .rev()
             .find(|(above, _)| response.prompt > *above)
             .map(|(_, rates)| *rates);
-        let rates = match model.priority.filter(|_| response.priority) {
-            Some(priority) => tier.map_or(priority, |tier| priority.past(model.base, tier)),
-            None => tier.unwrap_or(model.base),
+        let rates = match (model.priority.filter(|_| response.priority), tier) {
+            (Some(_), Some(tier)) if STANDARD_PAST_TIER.contains(&response.model.as_str()) => tier,
+            (Some(priority), Some(tier)) => priority.past(model.base, tier),
+            (Some(priority), None) => priority,
+            (None, tier) => tier.unwrap_or(model.base),
         };
         let tokens = &response.tokens;
         let dollars = tokens.input as f64 * rates.input
@@ -408,8 +415,8 @@ mod tests {
             "openai",
             "gpt-6-astra",
             0,
-            r#"{"input":10,"output":50,"cache_read":1,"tiers":[{"input":20,"output":75,"cache_read":2,"tier":{"type":"context","size":272000}}]}"#,
-            Some(r#"{"input":20,"output":100,"cache_read":2}"#),
+            r#"{"input":10,"output":50,"cache_read":1,"cache_write":12.5,"tiers":[{"input":20,"output":75,"cache_read":2,"cache_write":25,"tier":{"type":"context","size":272000}}]}"#,
+            Some(r#"{"input":20,"output":100,"cache_read":2,"cache_write":25}"#),
         )]);
         let tokens = Tokens {
             input: 100_000,
@@ -426,9 +433,34 @@ mod tests {
         used.priority = true;
         assert!((prices.cost("claude-code", &used).unwrap() - 2.5).abs() < 1e-9);
         // Priority past 272K: OpenAI's Fast long-context rates for
-        // gpt-6-astra, $40 input, $4 cached and $150 output.
+        // gpt-6-astra, $40 input, $4 cached and $150 output, and its cache
+        // write scaled alike, $25 to $50.
         used.prompt = 300_000;
-        assert!((prices.cost("claude-code", &used).unwrap() - 4.95).abs() < 1e-9);
+        used.tokens.cache_write_5m = 10_000;
+        assert!((prices.cost("claude-code", &used).unwrap() - 5.45).abs() < 1e-9);
+    }
+
+    /// gpt-5.5's fast mode leaves out a prompt over 272K tokens, which costs
+    /// Standard's long-context rates.
+    #[test]
+    fn a_long_prompt_a_fast_mode_excludes_costs_standard() {
+        let prices = priced(&[(
+            "openai",
+            "gpt-5.5",
+            0,
+            r#"{"input":5,"output":30,"cache_read":0.5,"tiers":[{"input":10,"output":45,"cache_read":1,"tier":{"type":"context","size":272000}}]}"#,
+            Some(r#"{"input":12.5,"output":75,"cache_read":1.25}"#),
+        )]);
+        let tokens = Tokens {
+            input: 20_000,
+            cache_read: 280_000,
+            output: 4_000,
+            ..Tokens::default()
+        };
+        let mut used = response("openai", "gpt-5.5", tokens);
+        used.priority = true;
+        // 20,000×10 + 280,000×1 + 4,000×45.
+        assert!((prices.cost("codex", &used).unwrap() - 0.66).abs() < 1e-9);
     }
 
     #[test]
