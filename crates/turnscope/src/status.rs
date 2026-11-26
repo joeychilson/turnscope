@@ -534,11 +534,13 @@ pub struct Spend {
 }
 
 impl Spend {
-    /// The forecast, where it says more than what's spent: late in a month,
-    /// one rounded to two figures can come out below it.
+    /// The forecast, where it says more than what's spent, to the cent: late
+    /// in a month, one rounded to two figures can come out below it, and
+    /// under 10 cents two figures are finer than a cent.
     pub fn pace(&self) -> Option<f64> {
+        let cents = |usd: f64| (usd * 100.0).round();
         self.forecast_usd
-            .filter(|pace| *pace > two_figures(self.month_usd))
+            .filter(|pace| cents(*pace) > cents(two_figures(self.month_usd)))
     }
 }
 

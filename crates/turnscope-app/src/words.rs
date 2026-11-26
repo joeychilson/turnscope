@@ -1592,6 +1592,12 @@ mod tests {
             partial: false,
         };
         assert_eq!(pace(&late), None);
+        let cent = Spend {
+            month_usd: 0.011,
+            forecast_usd: Some(0.014),
+            partial: false,
+        };
+        assert_eq!(pace(&cent), None);
         // One never read has no limits known.
         let unread = Account {
             state: State::Unread {
