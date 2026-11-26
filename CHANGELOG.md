@@ -10,8 +10,7 @@
   reveals a row's Hide button on focus.
 - **Reduce Motion now stops every spring animation** in the panel,
   including row expansion, folds, list reordering, and switches.
-- **Settings → General aligns its Show choice with the switches below**
-  and titles the version section "About" when Sparkle isn't enabled,
+- **Settings → General aligns its Show choice with the switches below**,
   Settings → Accounts labels read at secondary contrast, and the footer's
   "Update available" pill shortens to "Update" beside a status note.
 - **A limit that reset since it was last read says it's full since the

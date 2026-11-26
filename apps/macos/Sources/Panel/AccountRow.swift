@@ -31,7 +31,7 @@ struct AccountRow: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(alignment: .center, spacing: 6) {
-                        AccountTitle(title: row.title, label: row.label, labelStyle: .secondary)
+                        AccountTitle(title: row.title, label: row.label)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .allowsHitTesting(false)
                             .accessibilityHidden(true)
@@ -344,7 +344,6 @@ struct AccountTitle: View {
     var title: String
     var label: String?
     var titleStyle: HierarchicalShapeStyle = .primary
-    var labelStyle: HierarchicalShapeStyle = .secondary
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -357,7 +356,7 @@ struct AccountTitle: View {
             if let label {
                 Text(label)
                     .font(.small)
-                    .foregroundStyle(labelStyle)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(label)
@@ -375,7 +374,7 @@ struct AccountName: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            AccountTitle(title: title, label: label, titleStyle: titleStyle, labelStyle: .secondary)
+            AccountTitle(title: title, label: label, titleStyle: titleStyle)
             if let via {
                 Text(via)
                     .font(.small)

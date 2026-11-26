@@ -94,7 +94,7 @@ struct GeneralTab: View {
     }
 
     private var updates: some View {
-        SettingGroup(title: updater.available ? "Updates" : "About") {
+        SettingGroup(title: "Updates") {
             SettingRow(
                 title: "Turnscope \(bridge.panel.version)",
                 help: "Right-click to copy diagnostics or reveal the log"
