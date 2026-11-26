@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Work that runs a limit out no longer reads as fitting.** `status
+  --hours` and `check_limits` went by the work left as it's said, rounded
+  to 10 minutes or to the hour, so 37 minutes of work "fit" a 5 hours with
+  36.7 minutes left, "leaving under 1%". `status --json` gives
+  `leftMinutes` and `workedMinutes` unrounded.
+- **Work left is rounded down**, as percent left is, so it's never
+  overstated: 36.7 minutes read "about 30m", not "about 40m", and a limit
+  never runs out "after about 40m of work" of 37 minutes asked.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that
