@@ -147,6 +147,13 @@ impl Info {
     }
 }
 
+/// The agent's own id of a `session` [`Info::session`] made.
+pub fn native(session: &str) -> &str {
+    session
+        .split_once(':')
+        .map_or(session, |(_, native)| native)
+}
+
 /// What one read of a file found.
 #[derive(Default)]
 pub struct Read {

@@ -677,8 +677,7 @@ pub fn session_account(db: &Connection, id: &str) -> rusqlite::Result<Option<Str
 /// First 8 chars of the agent's native id (over the full ~45-char id): only
 /// disambiguates duplicate titles.
 fn start(id: &str) -> String {
-    let native = id.split_once(':').map_or(id, |(_, native)| native);
-    native.chars().take(8).collect()
+    crate::agents::native(id).chars().take(8).collect()
 }
 
 fn short(text: &str, most: usize) -> String {
