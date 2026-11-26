@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -359,9 +359,8 @@ impl Inner {
             if self.showing().is_none() {
                 match Showing::open(&self.data, &self.home, &self.binary) {
                     Ok(opened) => {
-                        *self.showing() = Some(opened);
                         // Before the first status, whose alerts aren't pending.
-                        self.pending();
+                        self.pending(self.showing().insert(opened));
                         self.give(Tell::Always);
                     }
                     Err(error) => {
@@ -429,11 +428,11 @@ impl Inner {
     // Report current only once a catch-up reads every agent (not on lock or
     // limit read), so persistent failures like an unwritable lock stay visible.
     fn caught(&self, caught: Caught) -> bool {
-        let (new, always) = match caught {
+        let (new, forced) = match caught {
             Caught::Limits => (true, false),
             Caught::Read { new, forced } => {
                 self.kept(None);
-                (new || forced, forced)
+                (new, forced)
             }
             Caught::Failed { error, forced } => {
                 if self.stopped(error) {
@@ -442,16 +441,12 @@ impl Inner {
                 (true, forced)
             }
         };
-        if new {
-            self.give(if always {
-                Tell::Always
-            } else {
-                Tell::IfChanged
-            });
-        }
-        if always {
+        if forced {
+            self.give(Tell::Always);
             self.forcing.store(false, Ordering::Release);
             (self.tell)(Event::Refreshed);
+        } else if new {
+            self.give(Tell::IfChanged);
         }
         !self.ended() && self.newer().is_none()
     }
@@ -524,11 +519,10 @@ impl Inner {
         }
     }
 
-    fn pending(&self) {
-        let pending = match self.showing().as_ref() {
-            Some(showing) => showing.pending(crate::now()),
-            None => return,
-        };
+    fn pending(&self, showing: &Showing) {
+        let now = crate::now();
+        let pending = status::status(&showing.db, now)
+            .and_then(|status| alerts::pending(&showing.db, &status, now));
         match pending {
             Ok(alerts) if !alerts.is_empty() => (self.tell)(Event::Pending(alerts)),
             Ok(_) => {}
@@ -605,23 +599,7 @@ fn keep(
     if ended.load(Ordering::Acquire) {
         return Ok(());
     }
-    // Any write, not only to history: macOS reports a write when its file
-    // is closed, and Codex and OpenCode keep theirs open while they work.
-    // Not a SQLite `-shm` file, which opening a database writes: counted, a
-    // database that failed every read started a catch-up every 5 s (21 in
-    // 100 s, measured 2026-11-11). An agent's writes are in its `-wal`.
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let paths = event.as_ref().map_or(&[][..], |event| &event.paths[..]);
-        let ours = !paths.is_empty()
-            && paths
-                .iter()
-                .all(|path| path.to_string_lossy().ends_with("-shm"));
-        let login = paths.iter().any(|path| agents::login_file(path));
-        if !ours {
-            let _ = changed.send(if login { Wake::Asked } else { Wake::Written });
-        }
-    })
-    .map_err(|error| Error::Failed(error.to_string()))?;
+    let mut watcher = watcher(changed)?;
     let mut watched: Vec<PathBuf> = Vec::new();
     let mut watch = |watcher: &mut notify::RecommendedWatcher| {
         for agent in agents::ALL {
@@ -654,11 +632,6 @@ fn keep(
     }
     // Limits asked for and not read yet, and when they last were.
     let (mut asked, mut asked_at) = (None::<Ask>, None::<Instant>);
-    let due = |asked: Option<Ask>, at: Option<Instant>| match asked {
-        Some(Ask::Force) => true,
-        Some(_) => at.is_none_or(|at| at.elapsed() >= ASKED),
-        None => false,
-    };
     loop {
         if ended.load(Ordering::Acquire) {
             return Ok(());
@@ -690,40 +663,79 @@ fn keep(
                 Caught::Failed { error, forced }
             }
         };
-        if !told(caught) {
+        if !told(caught) || !wait(&changes, &mut asked, asked_at)? {
             return Ok(());
         }
-        // A write waits for a burst of writes to settle, a second at most,
-        // and out the gap: the next catch-up reads what's written meanwhile.
-        // Limits asked for are read at once, unless read under `ASKED` ago:
-        // waiting out the gap, they were read 5 s later.
-        let waited = Instant::now();
-        let (mut first, mut settled) = (None::<Instant>, false);
-        loop {
-            let wait = match first {
-                None => Duration::from_secs(60),
-                Some(_) if !settled => Duration::from_millis(250),
-                Some(_) => GAP.saturating_sub(waited.elapsed()),
-            };
-            match changes.recv_timeout(wait) {
-                Ok(Wake::Stop) => return Ok(()),
-                Ok(Wake::Force) => asked = Some(Ask::Force),
-                Ok(wake) => {
-                    if wake == Wake::Asked {
-                        asked.get_or_insert(Ask::Opened);
-                    }
-                    let first = *first.get_or_insert_with(Instant::now);
-                    settled |= first.elapsed() >= Duration::from_secs(1);
+    }
+}
+
+/// A watcher sending `changed` each write: `Wake::Asked` for a login,
+/// `Wake::Written` for anything else. Any write, not only to history: macOS
+/// reports a write when its file is closed, and Codex and OpenCode keep
+/// theirs open while they work. Not a SQLite `-shm` file, which opening a
+/// database writes: counted, a database that failed every read started a
+/// catch-up every 5 s (21 in 100 s, measured 2026-11-11). An agent's writes
+/// are in its `-wal`.
+fn watcher(changed: Sender<Wake>) -> Result<notify::RecommendedWatcher> {
+    notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let paths = event.as_ref().map_or(&[][..], |event| &event.paths[..]);
+        let ours = !paths.is_empty()
+            && paths
+                .iter()
+                .all(|path| path.to_string_lossy().ends_with("-shm"));
+        let login = paths.iter().any(|path| agents::login_file(path));
+        if !ours {
+            let _ = changed.send(if login { Wake::Asked } else { Wake::Written });
+        }
+    })
+    .map_err(|error| Error::Failed(error.to_string()))
+}
+
+/// Whether limits `asked` for, last read `at`, are read now (`wait`).
+fn due(asked: Option<Ask>, at: Option<Instant>) -> bool {
+    match asked {
+        Some(Ask::Force) => true,
+        Some(_) => at.is_none_or(|at| at.elapsed() >= ASKED),
+        None => false,
+    }
+}
+
+/// Wait for the next catch-up, noting in `asked` the limits asked for
+/// meanwhile; whether to go on. A write waits for a burst of writes to
+/// settle, a second at most, and out the gap: the next catch-up reads what's
+/// written meanwhile. Limits asked for are read at once, unless read under
+/// `ASKED` ago: waiting out the gap, they were read 5 s later.
+fn wait(
+    changes: &Receiver<Wake>,
+    asked: &mut Option<Ask>,
+    asked_at: Option<Instant>,
+) -> Result<bool> {
+    let waited = Instant::now();
+    let (mut first, mut settled) = (None::<Instant>, false);
+    loop {
+        let timeout = match first {
+            None => Duration::from_secs(60),
+            Some(_) if !settled => Duration::from_millis(250),
+            Some(_) => GAP.saturating_sub(waited.elapsed()),
+        };
+        match changes.recv_timeout(timeout) {
+            Ok(Wake::Stop) => return Ok(false),
+            Ok(Wake::Force) => *asked = Some(Ask::Force),
+            Ok(wake) => {
+                if wake == Wake::Asked {
+                    asked.get_or_insert(Ask::Opened);
                 }
-                Err(RecvTimeoutError::Timeout) if first.is_none() || settled => break,
-                Err(RecvTimeoutError::Timeout) => settled = true,
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(Error::Failed("the agents' folders can't be watched".into()));
-                }
+                let first = *first.get_or_insert_with(Instant::now);
+                settled |= first.elapsed() >= Duration::from_secs(1);
             }
-            if due(asked, asked_at) {
-                break;
+            Err(RecvTimeoutError::Timeout) if first.is_none() || settled => return Ok(true),
+            Err(RecvTimeoutError::Timeout) => settled = true,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(Error::Failed("the agents' folders can't be watched".into()));
             }
+        }
+        if due(*asked, asked_at) {
+            return Ok(true);
         }
     }
 }
@@ -807,11 +819,6 @@ impl Showing {
                 Ok(Some((shown, Vec::new())))
             }
         }
-    }
-
-    fn pending(&self, now: i64) -> Result<Vec<Alert>> {
-        let status = status::status(&self.db, now)?;
-        alerts::pending(&self.db, &status, now)
     }
 
     fn used_most(&self, account: &str, limit: &str, now: i64) -> Result<Vec<UsedMost>> {
