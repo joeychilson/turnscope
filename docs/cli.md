@@ -223,7 +223,9 @@ limit whose window reset since it was read counts from the reset, or from
 one window's length ago when the reset is longer ago than that, and its
 rows get no share either: how much of the new window is used isn't known.
 Nor do they while some of the usage has no known price, since a share is
-of cost: a line says so. A key's own limit counts only the usage made
+of cost, or when the account's last read is out of date and your agents
+have worked on it since, which that read doesn't hold: a line says so. A
+key's own limit counts only the usage made
 with that key. With `--json`, `sharePercents` holds each row's share in
 the rows' order, and `restSharePercent` the share of the row adding up
 the rest, each `null` when rows get none.
@@ -243,8 +245,10 @@ Costs are at list prices: what the same tokens cost on each provider's API.
 Shares are approximate. Providers say how much of a limit is used, not by
 what, so each row's share is its part of the cost. Of a limit in dollars,
 as an OpenRouter key's own, a row's share is its cost over the limit's
-size, and when the rows' cost is less than what's used, a last line says
-so: the rest was spent elsewhere with the key. A limit on some models,
+size. When the rows' cost is less than what's used, a last line says so:
+the rest was spent elsewhere with the key. When it's more, as when some
+was spent since the key's last read, a last line gives both. A limit on
+some models,
 such as `Weekly (Opus)` or a [pool](architecture.md#glossary) such as
 `Weekly (Claude and GPT)`, counts only the responses of models whose id
 names one of them, such as `claude-opus-5`.

@@ -400,7 +400,7 @@ fn cmd_usage_limit(
                     shares.as_ref().map(|shares| (limit, shares)),
                     status.at,
                 );
-            if let Some(note) = usage::footnote(&used, limit, between) {
+            if let Some(note) = usage::footnote(&used, account, limit, between, status.at) {
                 text += &format!("\n{note}");
             }
             text
