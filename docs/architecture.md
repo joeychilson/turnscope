@@ -311,12 +311,12 @@ megabytes.
   stands by one pool: the one its latest response drew on, or with none,
   the first listed (`status::pool`). Its deciding limit is that pool's.
   Otherwise, as an API key with no credits read, it's chosen from all its
-  limits. The most urgent
-  wins (used up, then running out), then the soonest out, then the least
-  left (at the reset for a limit that lasts, where that's forecast, or else
-  now). Of several used up, the last back wins, since the account can't be
-  used until then; one with no reset counts as later than any. When every
-  limit reset since, it's the last to reset.
+  limits. The most urgent wins (used up, then running out), then the
+  soonest out, then the least left (at the reset for a limit that lasts,
+  where that's forecast, or else now), then one on all its usage over one
+  on some models. Of several used up, the last back wins, since the
+  account can't be used until then; one with no reset counts as later
+  than any. When every limit reset since, it's the last to reset.
 - **Accounts are listed** in use first (the most urgent, soonest out and
   least left first), then the rest (the most left first), then those whose
   login was refused, then those with nothing to show. Until the first read

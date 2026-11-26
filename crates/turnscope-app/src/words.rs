@@ -1142,10 +1142,10 @@ mod tests {
         assert_eq!(name(&held), "Codex and Pi's key");
         let guardrail = Limit {
             key: "key-1-guardrail-g".into(),
-            name: "Weekly key guardrail".into(),
+            name: "Key guardrail".into(),
             ..held.clone()
         };
-        assert_eq!(name(&guardrail), "Codex and Pi's weekly key guardrail");
+        assert_eq!(name(&guardrail), "Codex and Pi's key guardrail");
 
         let spent = Limit {
             left_percent: 0,

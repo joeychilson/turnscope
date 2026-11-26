@@ -5,7 +5,7 @@
 - **OpenRouter shows its guardrails and workspace budgets** beside credits
   and the key's limit: "Daily guardrail: $3.00 of $4.00 left, resets Fri
   00:00". A guardrail on one key is the key's, as its own limit is: "Pi's
-  weekly key guardrail" stops only that key.
+  key guardrail" stops only that key.
 - **OpenRouter shows free models' requests today**: "Daily (Free models):
   98% left, resets Fri 00:00", by the UTC day. `usage --limit free` lists
   the responses of `:free` models.

@@ -119,38 +119,37 @@ fn own_limit(answer: &Value, key: &str, now: i64) -> Option<Option<Reading>> {
         Some(remaining) => limit - remaining,
         None => data[used_in].as_f64()?,
     };
-    Some(Some(money(
-        key.to_owned(),
-        "key limit",
-        period,
-        spent,
-        limit,
-        now,
-    )))
+    let name = named("key limit", period);
+    Some(Some(money(key.to_owned(), name, period, spent, limit, now)))
 }
 
 /// A budget besides the key's own limit: a guardrail's or a workspace's.
 /// One of a scope or interval not known is passed over.
 fn budget(budget: &Value, fingerprint: &str, now: i64) -> Option<Reading> {
     let id = |field: &str| budget[field].as_str().filter(|id| !id.is_empty());
+    let period = period(&budget["reset_interval"])?;
     // A guardrail on keys holds each key to its own spend, so it's the
-    // key's limit; one on members, every key of theirs to their spend
-    // together.
-    let (what, key) = match budget["scope"].as_str()? {
+    // key's limit, named for the key with its period left to its reset:
+    // "Pi's key guardrail". One on members holds every key of theirs to
+    // their spend together.
+    let (key, name) = match budget["scope"].as_str()? {
         "api_key" | "workspace_default_key" => (
-            "key guardrail",
             super::key_limit_on(fingerprint, &format!("guardrail-{}", id("guardrail_id")?)),
+            "Key guardrail".to_owned(),
         ),
-        "member" | "workspace_default_member" => {
-            ("guardrail", format!("guardrail-{}", id("guardrail_id")?))
-        }
-        "workspace" => ("workspace budget", format!("budget-{}", id("budget_id")?)),
+        "member" | "workspace_default_member" => (
+            format!("guardrail-{}", id("guardrail_id")?),
+            named("guardrail", period),
+        ),
+        "workspace" => (
+            format!("budget-{}", id("budget_id")?),
+            named("workspace budget", period),
+        ),
         _ => return None,
     };
     let limit = budget["limit_usd"].as_f64().filter(|limit| *limit > 0.0)?;
     let spent = budget["spend_usd"].as_f64()?;
-    let period = period(&budget["reset_interval"])?;
-    Some(money(key, what, period, spent, limit, now))
+    Some(money(key, name, period, spent, limit, now))
 }
 
 /// The account's requests to free models today: a count, not money, so the
@@ -188,22 +187,26 @@ fn period(value: &Value) -> Option<Option<Period>> {
     }
 }
 
-/// `spent` of a limit of `limit` dollars, named for what it is and its
-/// period: "Daily key limit", or "Key limit" for one that never resets.
+/// What and its period: "Daily key limit", or "Key limit" for one that
+/// never resets.
+fn named(what: &str, period: Option<Period>) -> String {
+    match period {
+        None => what[..1].to_uppercase() + &what[1..],
+        Some(Period::Day) => format!("Daily {what}"),
+        Some(Period::Week) => format!("Weekly {what}"),
+        Some(Period::Month) => format!("Monthly {what}"),
+    }
+}
+
+/// `spent` of a limit of `limit` dollars, its window by `period`.
 fn money(
     key: String,
-    what: &str,
+    name: String,
     period: Option<Period>,
     spent: f64,
     limit: f64,
     now: i64,
 ) -> Reading {
-    let name = match period {
-        None => what[..1].to_uppercase() + &what[1..],
-        Some(Period::Day) => format!("Daily {what}"),
-        Some(Period::Week) => format!("Weekly {what}"),
-        Some(Period::Month) => format!("Monthly {what}"),
-    };
     let window = period.map(|period| time::window(period, now, &TimeZone::UTC));
     Reading {
         key,
@@ -364,14 +367,14 @@ mod tests {
                 // On the key alone, so the key's.
                 money(
                     "key-0123456789abcdef-guardrail-gr_3",
-                    "Weekly key guardrail",
+                    "Key guardrail",
                     25.0,
                     10.0,
                     week
                 ),
                 money(
                     "key-0123456789abcdef-guardrail-gr_4",
-                    "Monthly key guardrail",
+                    "Key guardrail",
                     25.0,
                     10.0,
                     month

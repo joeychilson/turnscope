@@ -1196,11 +1196,14 @@ fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
                 } => spread.likely,
                 _ => limit.left_percent,
             };
+            // Of limits as urgent, one on all usage first: a limit on
+            // models an API key may not use never stands before its own.
             (
                 Reverse(limit.standing()),
                 Reverse(limit.back()),
                 limit.runs_out().unwrap_or(i64::MAX),
                 least,
+                limit.scope.is_some(),
             )
         })
         .or_else(|| standing.into_iter().max_by_key(|limit| limit.reset_since))
@@ -1748,17 +1751,25 @@ mod tests {
     }
 
     #[test]
-    fn a_key_used_up_decides_over_a_limit_on_some_models() {
-        let account = key_account(&[
-            ("key-abc", "Daily key limit", None, 100.0),
+    fn a_key_limit_decides_over_a_limit_on_some_models_no_more_urgent() {
+        let free = |used| {
             (
                 "free_model_daily_requests",
                 "Daily",
                 Some("Free models"),
-                12.0,
-            ),
-        ]);
-        assert_eq!(account.deciding.as_deref(), Some("key-abc"));
+                used,
+            )
+        };
+        let decides = |key: f64, free_used: f64| {
+            key_account(&[("key-abc", "Daily key limit", None, key), free(free_used)]).deciding
+        };
+        // Used up; and as urgent, both with none used.
+        assert_eq!(decides(100.0, 12.0).as_deref(), Some("key-abc"));
+        assert_eq!(decides(0.0, 0.0).as_deref(), Some("key-abc"));
+        assert_eq!(
+            decides(10.0, 100.0).as_deref(),
+            Some("free_model_daily_requests")
+        );
     }
 
     #[test]
@@ -1766,16 +1777,20 @@ mod tests {
         let account = key_account(&[
             ("credits", "Credits", None, 50.0),
             ("key-abc", "Daily key limit", None, 10.0),
-            ("key-abc-guardrail-g1", "Daily key guardrail", None, 100.0),
+            ("key-abc-guardrail-g1", "Key guardrail", None, 100.0),
         ]);
         // Used up, it stops the key, not the account.
         assert_eq!(account.deciding.as_deref(), Some("credits"));
         let guardrail = &account.limits[2];
-        assert_eq!(guardrail.named(), "Pi's daily key guardrail");
+        assert_eq!(guardrail.named(), "Pi's key guardrail");
         // `pi` and `key limit` name the key's own limit.
         for name in ["pi", "key limit"] {
             assert_eq!(account.limit(name).unwrap().key, "key-abc");
         }
+        assert_eq!(
+            account.limit("key guardrail").unwrap().key,
+            "key-abc-guardrail-g1"
+        );
     }
 
     #[test]

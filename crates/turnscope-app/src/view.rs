@@ -290,7 +290,12 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
         format!("{called}, {status}, {figure_spoken}")
     };
 
-    let limits = a.limits.iter().map(|l| build_limit_line(w, l)).collect();
+    let limits = a
+        .limits
+        .iter()
+        .filter(|l| listed(a, l))
+        .map(|l| build_limit_line(w, l))
+        .collect();
     let sessions = s.used_most(a);
     let used_most = build_used_most(sessions);
     let used_most_heading = a.deciding_limit().map(words::used_most_heading);
@@ -313,6 +318,17 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
         used_most_heading,
         used_most,
     }
+}
+
+/// Whether an account's row lists `limit`. An API key pays for what it
+/// uses, so its limit on some models says nothing while none of it is used,
+/// unless it's back since it was read or decides how the account stands.
+fn listed(a: &Account, limit: &Limit) -> bool {
+    a.kind != turnscope::providers::Kind::ApiKey
+        || limit.scope.is_none()
+        || limit.left_percent < 100
+        || limit.reset_since.is_some()
+        || a.deciding.as_ref() == Some(&limit.key)
 }
 
 fn build_limit_line(w: &Words, limit: &Limit) -> LimitLineModel {
@@ -469,6 +485,41 @@ mod tests {
         early.status.at = early.status.accounts[0].limits[0].started().unwrap() + 5 * MINUTE;
         let panel = build_panel(&State::fixed(early));
         assert_eq!(panel.in_use[0].limits[0].time_left_fraction, None);
+    }
+
+    #[test]
+    fn a_keys_limit_on_models_it_hasnt_used_isnt_listed() {
+        let mut shown = example();
+        let account = shown
+            .status
+            .accounts
+            .iter_mut()
+            .find(|a| a.kind == turnscope::providers::Kind::ApiKey && !a.limits.is_empty())
+            .unwrap();
+        let id = account.id.clone();
+        let mut free = account.limits[0].clone();
+        (free.key, free.scope, free.money, free.left_percent) =
+            ("free".into(), Some("Free models".into()), None, 100);
+        account.limits.push(free);
+        let listed = |shown: &Shown| {
+            let panel = build_panel(&State::fixed(shown.clone()));
+            let row = [panel.in_use, panel.recent, panel.unused]
+                .into_iter()
+                .flatten()
+                .find(|row| row.id == id)
+                .unwrap();
+            row.limits.iter().any(|limit| limit.key == "free")
+        };
+        assert!(!listed(&shown));
+        // Once some are used.
+        let account = shown
+            .status
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .unwrap();
+        account.limits.last_mut().unwrap().left_percent = 98;
+        assert!(listed(&shown));
     }
 
     #[test]
