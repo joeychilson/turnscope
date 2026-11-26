@@ -28,6 +28,10 @@
 - **"Refreshing limits…" shows until the limits are read.** Hiding an
   account, changing a setting or connecting an agent meanwhile ended it
   early, and ⌘R could start another refresh.
+- **Hours of work left are rounded once**, so 33 minutes reads "about
+  30m", not "about 40m". `status --json` gives them as `leftMinutes` and
+  `workedMinutes`, in minutes as they're said, in place of `leftHours` and
+  `workedHours`.
 - **Copy Diagnostics lists each line of `app.log` once.** The latest were
   in doctor's notes, then again after them.
 - **A key's limit says whose key it is** in `turnscope status` and agents'

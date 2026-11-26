@@ -1288,7 +1288,7 @@ mod tests {
             state: State::AsOf {
                 read_at: noon(),
                 why: Stale::SignedOut,
-                worked_hours: 0.0,
+                worked_minutes: 0,
             },
             agents: vec![],
             ..backup
@@ -1359,7 +1359,7 @@ mod tests {
             state: State::AsOf {
                 read_at: noon(),
                 why: Stale::ReadFailed,
-                worked_hours: 0.0,
+                worked_minutes: 0,
             },
             ..account(vec![week.clone()])
         };
@@ -1605,7 +1605,7 @@ mod tests {
             state: State::AsOf {
                 read_at: at,
                 why,
-                worked_hours: 0.0,
+                worked_minutes: 0,
             },
             ..account(vec![limit])
         };
