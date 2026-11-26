@@ -10,9 +10,10 @@
   reveals a row's Hide button on focus.
 - **Reduce Motion now stops every spring animation** in the panel,
   including row expansion, folds, list reordering, and switches.
-- **Settings → General aligns its Show choice with the switches below**,
-  Settings → Accounts labels read at secondary contrast, and the footer's
-  "Update available" pill shortens to "Update" beside a status note.
+- **Settings' tabs and its Show choice are segmented controls**, and the
+  Show choice lines up with the switches below. Settings → Accounts labels
+  read at secondary contrast, and the footer's "Update available" pill
+  shortens to "Update" beside a status note.
 - **A limit that reset since it was last read says it's full since the
   reset** in the panel's headline detail instead of "As last read, ...
   has 100% left".
