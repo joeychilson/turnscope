@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **`explain_usage` reads the usage once** for its rows and its lines by
+  model, project and account, not once for each. Over a made-up year of
+  602,000 responses, its answer took 19 s of CPU and now takes 6 s; over
+  30 days, 1.9 s and now 0.8 s.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

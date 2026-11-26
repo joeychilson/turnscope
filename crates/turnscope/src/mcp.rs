@@ -745,7 +745,13 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
             }
         }
     };
-    let mut used = usage::usage(ask.db, &query)?;
+    // By model and project, and by account when it's every account's, the
+    // top three of each, so one call says what used it.
+    let others: Vec<By> = [By::Model, By::Project, By::Account]
+        .into_iter()
+        .filter(|by| *by != query.by && (*by != By::Account || query.account.is_none()))
+        .collect();
+    let (mut used, by_others) = usage::usage(ask.db, &query, &others)?;
     let (mut shares, line) = match account.zip(limit) {
         Some((account, limit)) => usage::shares(&used, account, limit, between, status.at),
         None => (None, None),
@@ -813,24 +819,8 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
             time::ago(start, minute),
         );
     }
-    out += &by_others(ask.db, &query)?;
-    Ok(out.trim_end().to_owned())
-}
-
-/// What `query` asked by model and project, and by account when it's every
-/// account's, the top three of each, so one call says what used it.
-fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
-    let mut out = String::new();
-    for by in [By::Model, By::Project, By::Account] {
-        if by == query.by || (by == By::Account && query.account.is_some()) {
-            continue;
-        }
-        let other = usage::Query {
-            by,
-            ..query.clone()
-        };
-        let listed: Vec<String> = usage::usage(db, &other)?
-            .rows
+    for (by, rows) in others.into_iter().zip(by_others) {
+        let listed: Vec<String> = rows
             .iter()
             .take(3)
             .map(|row| {
@@ -842,7 +832,7 @@ fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
             out += &format!("\nBy {}: {}.", by.noun(), listed.join("; "));
         }
     }
-    Ok(out)
+    Ok(out.trim_end().to_owned())
 }
 
 #[cfg(test)]
