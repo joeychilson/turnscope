@@ -40,7 +40,7 @@ compile_swift() {
   local swift_arch=$1 rust_lib=$2 out=$3 mode=$4
   local opt_flags=()
   if [ "$mode" = release ]; then
-    opt_flags=(-O -whole-module-optimization)
+    opt_flags=(-O -whole-module-optimization -Xlinker -dead_strip)
   else
     opt_flags=(-Onone -g)
   fi
@@ -65,14 +65,19 @@ trap 'rm -rf "$built"' EXIT
 case "${1:-}" in
   "")
     app=target/debug/Turnscope.app
-    cargo build --locked -p turnscope -p turnscope-app
+    # Separate builds keep turnscope's default cli feature out of libturnscope_app.a.
+    cargo build --locked -p turnscope
+    cargo build --locked -p turnscope-app
     cp "$target_dir/debug/turnscope" "$built/turnscope"
     compile_swift "$(uname -m)" "$target_dir/debug/libturnscope_app.a" "$built/turnscope-app" debug
     ;;
   --release)
     app=target/dist/Turnscope.app
     # Each binary for both architectures, joined into one universal file.
-    cargo build --locked --release -p turnscope -p turnscope-app \
+    # Separate builds keep turnscope's default cli feature out of libturnscope_app.a.
+    cargo build --locked --release -p turnscope \
+      --target aarch64-apple-darwin --target x86_64-apple-darwin
+    cargo build --locked --release -p turnscope-app \
       --target aarch64-apple-darwin --target x86_64-apple-darwin
     compile_swift arm64 "$target_dir/aarch64-apple-darwin/release/libturnscope_app.a" "$built/turnscope-app-arm64" release
     compile_swift x86_64 "$target_dir/x86_64-apple-darwin/release/libturnscope_app.a" "$built/turnscope-app-x86_64" release
@@ -105,7 +110,8 @@ cp "$built/turnscope" "$app/Contents/Helpers/turnscope"
 cp assets/logos/agents/*.svg "$app/Contents/Resources/logos/agents/"
 cp assets/logos/providers/*.svg "$app/Contents/Resources/logos/providers/"
 ditto target/sparkle/Sparkle.framework "$app/Contents/Frameworks/Sparkle.framework"
-xcrun actool "$assets/Turnscope.icon" --compile "$app/Contents/Resources" --app-icon Turnscope \
+# Absolute paths keep Xcode's shared ibtoold daemon from resolving against another worktree.
+xcrun actool "$PWD/$assets/Turnscope.icon" --compile "$PWD/$app/Contents/Resources" --app-icon Turnscope \
   --platform macosx --target-device mac --minimum-deployment-target "$minimum" \
   --output-partial-info-plist "$built/icon.plist" --output-format human-readable-text > /dev/null
 

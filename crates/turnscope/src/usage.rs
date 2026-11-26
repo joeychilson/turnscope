@@ -11,7 +11,8 @@ use crate::agents::{self, Tokens};
 use crate::time::{self, Period};
 use crate::{Error, Result};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
 pub enum By {
     Day,

@@ -197,6 +197,7 @@ SWIFT
   # `sparkle:descriptionFormat` its SUAppcastItem.h names, which it ignores and
   # shows the Markdown raw.
   notes=$(scripts/release-notes.sh "$version")
+  notes=${notes//]]>/]]]]><![CDATA[>}
   releases=https://github.com/joeychilson/turnscope/releases
   cat > "$dist/appcast.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
