@@ -107,6 +107,19 @@ struct NotifySettings: Codable, Equatable {
     var signIn: Bool
 }
 
+enum NotifyKind: String, Codable, Hashable {
+    case runningOut, usedUp, reset, signIn
+}
+
+struct NotifyOptionModel: Decodable, Equatable, Identifiable {
+    var kind: NotifyKind
+    var title: String
+    var help: String?
+    var enabled: Bool
+
+    var id: NotifyKind { kind }
+}
+
 struct AlertNote: Decodable, Equatable {
     var id: Int64
     var account: String
@@ -120,7 +133,6 @@ struct AlertNote: Decodable, Equatable {
 enum Effect: Decodable, Equatable {
     case postAlerts(alerts: [AlertNote])
     case removeNotifications(identifiers: [String])
-    case savePreferences(menuShows: MenuShows, dismissedConnect: [String])
 }
 
 struct MenuBarSlot: Decodable, Equatable {
@@ -135,10 +147,15 @@ struct MenuBarModel: Decodable, Equatable {
     var outOfDate: Bool
 }
 
+struct WaitingProblem: Decodable, Equatable {
+    var headline: String
+    var detail: String
+    var footnote: String?
+}
+
 struct WaitingModel: Decodable, Equatable {
     var reading: String
-    var problem: String?
-    var retries: Bool
+    var problem: WaitingProblem?
 }
 
 struct VerdictModel: Decodable, Equatable {
@@ -168,6 +185,7 @@ struct UsedMostModel: Decodable, Equatable, Identifiable {
     var title: String
     var detail: String
     var projectPath: String?
+    var exists: Bool
 }
 
 struct AccountRowModel: Decodable, Equatable, Identifiable {
@@ -203,7 +221,7 @@ struct ConnectOfferModel: Decodable, Equatable {
     var id: String
     var name: String
     var note: String?
-    var configured: String?
+    var configuredHelp: String?
     var changing: Bool
     var verb: String
     var help: String
@@ -211,6 +229,7 @@ struct ConnectOfferModel: Decodable, Equatable {
 
 struct FooterNoteModel: Decodable, Equatable {
     var text: String
+    var compactText: String?
     var help: String?
     var spoken: String
     var busy: Bool
@@ -225,7 +244,7 @@ struct AgentRowModel: Decodable, Equatable, Identifiable {
     var id: String
     var name: String
     var note: String?
-    var configured: String?
+    var configuredHelp: String?
     var changing: String?
     var connected: Bool
     var enabled: Bool
@@ -233,7 +252,7 @@ struct AgentRowModel: Decodable, Equatable, Identifiable {
 
 struct SettingsModel: Decodable, Equatable {
     var menuShows: MenuShows
-    var notify: NotifySettings?
+    var notifyOptions: [NotifyOptionModel]
     var agentsEmpty: EmptyMessage?
     var agentsTitle: String
     var agents: [AgentRowModel]
@@ -241,7 +260,7 @@ struct SettingsModel: Decodable, Equatable {
     var apiKeys: [AccountModel]
 
     static let empty = SettingsModel(
-        menuShows: .all, notify: nil,
+        menuShows: .all, notifyOptions: [],
         agentsEmpty: nil, agentsTitle: "", agents: [],
         subscriptions: [], apiKeys: []
     )
@@ -265,7 +284,7 @@ struct PanelModel: Decodable, Equatable {
 
     static let empty = PanelModel(
         version: "", stopped: false, canRefresh: false,
-        waiting: WaitingModel(reading: "", problem: nil, retries: false),
+        waiting: WaitingModel(reading: "", problem: nil),
         verdict: nil, inUse: [], recent: [], unused: [], hidden: [],
         unusedFoldLabel: nil, hiddenFoldLabel: nil, connectOffer: nil,
         footerNote: nil, settings: .empty
@@ -275,8 +294,10 @@ struct PanelModel: Decodable, Equatable {
 struct AppSync: Decodable {
     var animated: Bool
     var counting: Bool
+    var hasStatus: Bool
+    var canRefresh: Bool
     var menuBar: MenuBarModel
-    var panel: PanelModel
+    var panel: PanelModel?
     var effects: [Effect]
 }
 
@@ -286,9 +307,7 @@ struct StartConfig: Encodable {
     var fixture: String?
     var data: String?
     var home: String?
-    var fromDiskImage: Bool
-    var menuShows: MenuShows
-    var dismissedConnect: [String]
+    var connectDisabledReason: String?
 }
 
 struct SnapshotConfig: Encodable {

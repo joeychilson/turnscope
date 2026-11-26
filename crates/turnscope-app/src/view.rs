@@ -1,11 +1,11 @@
-//! What the macOS shell draws, built from `State`.
+//! What the shell draws, built from `State`.
 
-use serde::Serialize;
-use turnscope::alerts::Notify;
-use turnscope::engine::{Stopped, UsedMost};
+use serde::{Deserialize, Serialize};
+use turnscope::alerts::Kind as AlertKind;
+use turnscope::engine::Stopped;
 use turnscope::status::{Account, Agent, Connection, Limit, Standing};
 
-use crate::state::{Effect, MenuShows, State};
+use crate::state::{Effect, MenuShows, State, UsedSession};
 use crate::words::{self, Words};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -13,8 +13,10 @@ use crate::words::{self, Words};
 pub struct AppSync {
     pub animated: bool,
     pub counting: bool,
+    pub has_status: bool,
+    pub can_refresh: bool,
     pub menu_bar: MenuBarModel,
-    pub panel: PanelModel,
+    pub panel: Option<PanelModel>,
     pub effects: Vec<Effect>,
 }
 
@@ -55,11 +57,18 @@ pub struct PanelModel {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WaitingProblem {
+    pub headline: String,
+    pub detail: String,
+    pub footnote: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WaitingModel {
     /// Said beside a spinner while there's no problem.
     pub reading: String,
-    pub problem: Option<String>,
-    pub retries: bool,
+    pub problem: Option<WaitingProblem>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -114,6 +123,7 @@ pub struct UsedMostModel {
     pub title: String,
     pub detail: String,
     pub project_path: Option<String>,
+    pub exists: bool,
 }
 
 /// An account by name, as Settings and the hidden fold list it.
@@ -135,7 +145,7 @@ pub struct ConnectOfferModel {
     pub id: String,
     pub name: String,
     pub note: Option<String>,
-    pub configured: Option<String>,
+    pub configured_help: Option<String>,
     pub changing: bool,
     pub verb: String,
     pub help: String,
@@ -145,6 +155,8 @@ pub struct ConnectOfferModel {
 #[serde(rename_all = "camelCase")]
 pub struct FooterNoteModel {
     pub text: String,
+    /// Shorter wording used when an update pill shares the footer row.
+    pub compact_text: Option<String>,
     pub help: Option<String>,
     pub spoken: String,
     /// Whether a spinner goes before it.
@@ -164,9 +176,27 @@ pub struct AgentRowModel {
     pub id: String,
     pub name: String,
     pub note: Option<String>,
-    pub configured: Option<String>,
+    pub configured_help: Option<String>,
     pub changing: Option<String>,
     pub connected: bool,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotifyKind {
+    RunningOut,
+    UsedUp,
+    Reset,
+    SignIn,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyOptionModel {
+    pub kind: NotifyKind,
+    pub title: String,
+    pub help: Option<String>,
     pub enabled: bool,
 }
 
@@ -174,7 +204,7 @@ pub struct AgentRowModel {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsModel {
     pub menu_shows: MenuShows,
-    pub notify: Option<Notify>,
+    pub notify_options: Vec<NotifyOptionModel>,
     pub agents_empty: Option<EmptyMessage>,
     pub agents_title: String,
     pub agents: Vec<AgentRowModel>,
@@ -182,9 +212,7 @@ pub struct SettingsModel {
     pub api_keys: Vec<AccountModel>,
 }
 
-pub fn build_menu_bar(s: &State) -> MenuBarModel {
-    let words = s.words_now();
-    let shown = s.in_menu_bar();
+pub fn build_menu_bar(s: &State, words: &Words, shown: &[&Account]) -> MenuBarModel {
     let out_of_date = s.problem.is_some();
     MenuBarModel {
         slots: shown
@@ -195,25 +223,28 @@ pub fn build_menu_bar(s: &State) -> MenuBarModel {
                 figure: words.figure(a),
             })
             .collect(),
-        spoken: words.spoken_item(&shown, s.all(), out_of_date),
+        spoken: words.spoken_item(shown, s.all(), out_of_date),
         out_of_date,
     }
 }
 
-pub fn build_panel(s: &State) -> PanelModel {
+pub fn build_panel(s: &State, w: &Words) -> PanelModel {
     let has_status = s.status.is_some();
-    let w = s.words();
     let in_use_accounts = s.in_use();
     let headlined = in_use_accounts.first().copied();
 
     let waiting = (!has_status).then(|| WaitingModel {
         reading: words::READING_TEXT.to_owned(),
-        problem: s.problem.as_ref().map(ToString::to_string),
-        retries: matches!(s.problem, Some(Stopped::Failing(_))),
+        problem: s.problem.as_ref().map(|problem| WaitingProblem {
+            headline: words::WAITING_PROBLEM_HEADLINE.to_owned(),
+            detail: problem.to_string(),
+            footnote: matches!(problem, Stopped::Failing(_))
+                .then(|| words::WAITING_RETRIES_FOOTNOTE.to_owned()),
+        }),
     });
 
     let verdict = has_status.then(|| {
-        let (headline, detail) = s.verdict(&w);
+        let (headline, detail) = s.verdict(w, headlined);
         VerdictModel {
             headline,
             detail,
@@ -224,7 +255,7 @@ pub fn build_panel(s: &State) -> PanelModel {
     let rows = |accounts: Vec<&Account>| -> Vec<AccountRowModel> {
         accounts
             .into_iter()
-            .map(|a| build_account_row(s, &w, a, headlined.is_some_and(|h| h.id == a.id)))
+            .map(|a| build_account_row(s, w, a, headlined.is_some_and(|h| h.id == a.id)))
             .collect()
     };
     let in_use = rows(in_use_accounts);
@@ -251,7 +282,7 @@ pub fn build_panel(s: &State) -> PanelModel {
             name: row.name,
             // Settings leaves out that it isn't connected, beside its switch.
             note: row.note.or_else(|| words::connection(agent)),
-            configured: row.configured,
+            configured_help: row.configured_help,
             changing: row.changing.is_some(),
             verb: verb.to_owned(),
             help,
@@ -320,7 +351,10 @@ fn build_limit_line(w: &Words, limit: &Limit) -> LimitLineModel {
         .started()
         .zip(limit.resets())
         .filter(|(start, reset)| reset > start)
-        .map(|(start, reset)| ((reset - w.now) as f64 / (reset - start) as f64).clamp(0.0, 1.0))
+        .map(|(start, reset)| {
+            (reset.saturating_sub(w.now) as f64 / reset.saturating_sub(start) as f64)
+                .clamp(0.0, 1.0)
+        })
         .filter(|fraction| (0.02..=0.98).contains(fraction));
     LimitLineModel {
         key: limit.key.clone(),
@@ -336,12 +370,15 @@ fn build_limit_line(w: &Words, limit: &Limit) -> LimitLineModel {
     }
 }
 
-fn build_used_most(sessions: &[UsedMost]) -> Vec<UsedMostModel> {
-    let first = sessions.first().map(|u| u.agent.as_str());
-    let agents = sessions.iter().any(|u| Some(u.agent.as_str()) != first);
+fn build_used_most(sessions: &[UsedSession]) -> Vec<UsedMostModel> {
+    let first = sessions.first().map(|s| s.used.agent.as_str());
+    let agents = sessions
+        .iter()
+        .any(|s| Some(s.used.agent.as_str()) != first);
     sessions
         .iter()
-        .map(|used| {
+        .map(|entry| {
+            let used = &entry.used;
             // Copied, the agent's own id works with `claude --resume`.
             let session_id = turnscope::agents::native(&used.session).to_owned();
             UsedMostModel {
@@ -353,6 +390,7 @@ fn build_used_most(sessions: &[UsedMost]) -> Vec<UsedMostModel> {
                     .unwrap_or_else(|| words::UNTITLED_SESSION.to_owned()),
                 detail: words::used(used, agents),
                 project_path: used.project_path.clone(),
+                exists: entry.exists,
             }
         })
         .collect()
@@ -362,9 +400,10 @@ fn build_footer_note(s: &State) -> Option<FooterNoteModel> {
     if s.status.is_some()
         && let Some(problem) = &s.problem
     {
-        let (text, help, spoken) = words::stale_footer(problem);
+        let (text, compact_text, help, spoken) = words::stale_footer(problem);
         return Some(FooterNoteModel {
             text,
+            compact_text,
             help: Some(help),
             spoken,
             busy: false,
@@ -373,6 +412,7 @@ fn build_footer_note(s: &State) -> Option<FooterNoteModel> {
     if s.reading() && !s.all().is_empty() {
         return Some(FooterNoteModel {
             text: words::READING_TEXT.to_owned(),
+            compact_text: None,
             help: Some(words::READING_HELP.to_owned()),
             spoken: words::READING_SPOKEN.to_owned(),
             busy: true,
@@ -380,6 +420,7 @@ fn build_footer_note(s: &State) -> Option<FooterNoteModel> {
     }
     s.refreshing.then(|| FooterNoteModel {
         text: words::REFRESHING_TEXT.to_owned(),
+        compact_text: None,
         help: None,
         spoken: words::REFRESHING_SPOKEN.to_owned(),
         busy: true,
@@ -392,11 +433,39 @@ fn build_settings(s: &State) -> SettingsModel {
         let (headline, detail) = words::welcome(&[], &s.agent_names(), false);
         EmptyMessage { headline, detail }
     });
-    let agents_title = words::agents_title(s.from_disk_image).to_owned();
+    let agents_title = s
+        .connect_disabled_reason
+        .clone()
+        .unwrap_or_else(|| words::AGENTS_TITLE.to_owned());
     let agents = installed
         .iter()
         .map(|agent| build_agent_row(s, agent))
         .collect();
+
+    let notify_options = s
+        .status
+        .as_ref()
+        .map(|status| {
+            let n = status.settings.notify;
+            [
+                (AlertKind::RunningOut, NotifyKind::RunningOut, n.running_out),
+                (AlertKind::UsedUp, NotifyKind::UsedUp, n.used_up),
+                (AlertKind::Reset, NotifyKind::Reset, n.reset),
+                (AlertKind::SignIn, NotifyKind::SignIn, n.sign_in),
+            ]
+            .into_iter()
+            .map(|(alert, kind, enabled)| {
+                let (title, help) = words::notify_option(alert);
+                NotifyOptionModel {
+                    kind,
+                    title: title.to_owned(),
+                    help: help.map(str::to_owned),
+                    enabled,
+                }
+            })
+            .collect()
+        })
+        .unwrap_or_default();
 
     let (api_keys, subscriptions) = s
         .all()
@@ -405,7 +474,7 @@ fn build_settings(s: &State) -> SettingsModel {
 
     SettingsModel {
         menu_shows: s.preferences.menu_shows,
-        notify: s.status.as_ref().map(|status| status.settings.notify),
+        notify_options,
         agents_empty,
         agents_title,
         agents,
@@ -437,7 +506,7 @@ fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
         id: agent.id.clone(),
         name: agent.name.clone(),
         note,
-        configured: agent.configured.clone(),
+        configured_help: agent.configured.as_deref().map(words::configured_help),
         changing: changing.map(|to| words::agent_changing(to).to_owned()),
         connected: changing.unwrap_or(agent.connection) == Connection::Connected,
         enabled: s.can_change(&agent.id),
@@ -448,13 +517,17 @@ fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
 mod tests {
     use super::*;
     use crate::state::tests::example;
-    use turnscope::engine::Shown;
+    use turnscope::engine::{Shown, UsedMost};
     use turnscope::time::MINUTE;
+
+    fn panel_of(state: &State) -> PanelModel {
+        build_panel(state, &Words::new(state.frozen.unwrap()))
+    }
 
     #[test]
     fn time_left_fraction_is_set_only_for_fixed_active_windows() {
         let state = State::fixed(example());
-        let panel = build_panel(&state);
+        let panel = panel_of(&state);
         // Claude Max 5 hours: 3h left of 5h -> 0.60.
         let five = &panel.in_use[0].limits[0];
         assert!((five.time_left_fraction.unwrap() - 0.6).abs() < 1e-6);
@@ -467,15 +540,24 @@ mod tests {
         // Nor 5 minutes into 5 hours, where the tick would sit on the bar's end.
         let mut early = example();
         early.status.at = early.status.accounts[0].limits[0].started().unwrap() + 5 * MINUTE;
-        let panel = build_panel(&State::fixed(early));
+        let panel = panel_of(&State::fixed(early));
         assert_eq!(panel.in_use[0].limits[0].time_left_fraction, None);
+        // Extreme window timestamps in a fixture never panic on subtraction.
+        let mut extreme = example();
+        let win = extreme.status.accounts[0].limits[0]
+            .window
+            .as_mut()
+            .unwrap();
+        win.starts_at = Some(i64::MIN);
+        win.resets.at = i64::MAX;
+        let _ = panel_of(&State::fixed(extreme));
     }
 
     #[test]
     fn the_fold_says_what_it_holds_and_folds_hidden_accounts_only_beside_others() {
         let mut shown = example();
         let folds = |shown: &Shown| {
-            let panel = build_panel(&State::fixed(shown.clone()));
+            let panel = panel_of(&State::fixed(shown.clone()));
             (panel.unused_fold_label, panel.hidden_fold_label)
         };
         assert_eq!(
@@ -492,7 +574,7 @@ mod tests {
     fn a_row_shows_its_label_only_beside_another_account_with_its_title() {
         let mut shown = example();
         let label = |shown: &Shown| {
-            let panel = build_panel(&State::fixed(shown.clone()));
+            let panel = panel_of(&State::fixed(shown.clone()));
             panel.in_use[0].label.clone()
         };
         assert_eq!(label(&shown), None);
@@ -503,12 +585,13 @@ mod tests {
     #[test]
     fn the_footer_says_why_the_status_is_old_before_what_is_read() {
         let mut state = State::fixed(example());
-        let note = |state: &State| build_panel(state).footer_note;
+        let note = |state: &State| panel_of(state).footer_note;
         state.refreshing = true;
         assert_eq!(
             note(&state),
             Some(FooterNoteModel {
                 text: "Refreshing limits…".into(),
+                compact_text: None,
                 help: None,
                 spoken: "Refreshing limits".into(),
                 busy: true,
@@ -519,6 +602,7 @@ mod tests {
             note(&state),
             Some(FooterNoteModel {
                 text: "Reading your agents' history…".into(),
+                compact_text: None,
                 help: Some(
                     "Turnscope reads your agents' history once, when it first runs. \
                      Limits show up as soon as they are read."
@@ -533,10 +617,16 @@ mod tests {
             note(&state),
             Some(FooterNoteModel {
                 text: "Not up to date · trying again".into(),
+                compact_text: None,
                 help: Some("Offline".into()),
                 spoken: "Not up to date: Offline. Trying again.".into(),
                 busy: false,
             })
+        );
+        state.problem = Some(Stopped::Newer { replaced: false });
+        assert_eq!(
+            note(&state).and_then(|n| n.compact_text),
+            Some("Not up to date".into())
         );
     }
 
@@ -553,7 +643,7 @@ mod tests {
             why: turnscope::status::Stale::SignIn,
         };
         let spoken = |shown: &turnscope::engine::Shown, title: &str| {
-            let panel = build_panel(&State::fixed(shown.clone()));
+            let panel = panel_of(&State::fixed(shown.clone()));
             let row = panel.unused.into_iter().find(|r| r.title == title).unwrap();
             (row.figure, row.collapsed_spoken)
         };
@@ -576,17 +666,31 @@ mod tests {
     }
 
     #[test]
-    fn used_most_strips_agent_prefix_from_copied_session_id() {
-        let built = build_used_most(&[UsedMost {
-            session: "claude-code:0f6e-1234".into(),
-            project: Some("turnscope".into()),
-            project_path: Some("/tmp/turnscope".into()),
-            title: None,
-            agent: "claude-code".into(),
-            share_percent: Some(40.0),
-        }]);
+    fn used_most_strips_agent_prefix_and_carries_existence() {
+        let existing = tempfile::tempdir().unwrap();
+        let missing = existing.path().join("gone");
+        let built = build_used_most(&crate::state::resolve_used(vec![
+            UsedMost {
+                session: "claude-code:0f6e-1234".into(),
+                project: Some("turnscope".into()),
+                project_path: Some(existing.path().to_string_lossy().into_owned()),
+                title: None,
+                agent: "claude-code".into(),
+                share_percent: Some(40.0),
+            },
+            UsedMost {
+                session: "codex:abcd".into(),
+                project: Some("gone".into()),
+                project_path: Some(missing.to_string_lossy().into_owned()),
+                title: Some("Old".into()),
+                agent: "codex".into(),
+                share_percent: None,
+            },
+        ]));
         assert_eq!(built[0].id, "claude-code:0f6e-1234");
         assert_eq!(built[0].session_id, "0f6e-1234");
         assert_eq!(built[0].title, words::UNTITLED_SESSION);
+        assert!(built[0].exists);
+        assert!(!built[1].exists);
     }
 }

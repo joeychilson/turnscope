@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **The panel keeps focus, state, and smooth scrolling when a row expands
+  past the screen height**, and no longer skips keyboard focus or clips
+  ⌘C/⌘A on selectable text. VoiceOver can choose between All in use and
+  Most urgent in Settings, can hide non-openable rows, and no longer reads
+  switch labels twice.
+- **Reduce Motion now stops every spring animation** in the panel,
+  including row expansion, folds, list reordering, and switches.
+- **Long account labels no longer leave an empty gap before their figure**,
+  Settings → Accounts labels read at full secondary contrast, Settings →
+  General aligns its segmented choice with the switches below and titles
+  the version section "About" when Sparkle isn't enabled, and the footer's
+  "Update available" pill shortens to "Update" beside a status note so
+  notes don't truncate.
+- **Menu bar placement and countdowns stay accurate** across MacBook Pro
+  notches, display and Space changes, sleep/wake, and clock or time zone
+  changes, and healthy menu bar items stay at full brightness when another
+  account is amber or red.
+- **App preferences (`Show` and dismissed connect offers) are stored in
+  `preferences.json` in the data directory**, keeping `--data` runs
+  isolated from real settings.
+- **A limit that reset since it was last read says it's full since the
+  reset** in the panel's verdict instead of "As last read, ... has 100%
+  left", dates in another year show their year, and login prompts name all
+  signed-in agents.
 - **Codex's responses after fast mode is turned off cost the standard
   rate**, not the fast one. The history is read again once, to price them
   anew.

@@ -35,9 +35,7 @@ struct GeneralTab: View {
                 isOn: Binding(
                     get: { login.status.isOn },
                     set: { on in
-                        withAnimation(spring) {
-                            login.set(on, isLive: bridge.isLive) { bridge.log($0) }
-                        }
+                        login.set(on, isLive: bridge.isLive) { bridge.log($0) }
                     }
                 )
             )
@@ -57,7 +55,8 @@ struct GeneralTab: View {
 
     /// Shown once the settings are read: before, a switch would show a guess.
     @ViewBuilder private var notifications: some View {
-        if let current = bridge.panel.settings.notify {
+        let options = bridge.panel.settings.notifyOptions
+        if !options.isEmpty {
             SettingGroup(title: "Notify me when") {
                 if notifier.denied {
                     SettingRow(title: "Notifications are off for Turnscope") {
@@ -70,23 +69,8 @@ struct GeneralTab: View {
                     }
                     .transition(appears)
                 }
-                Group {
-                    SettingRow(
-                        "A limit will run out",
-                        help: "Before it resets, at your pace",
-                        isOn: notify(\.runningOut, in: current)
-                    )
-                    SettingRow("A limit is used up", isOn: notify(\.usedUp, in: current))
-                    SettingRow(
-                        "A limit is back",
-                        help: "After it was used up, once the account can be used again",
-                        isOn: notify(\.reset, in: current)
-                    )
-                    SettingRow(
-                        "An account needs signing in",
-                        help: "Its login was refused, so its limits can't be read",
-                        isOn: notify(\.signIn, in: current)
-                    )
+                ForEach(options) { option in
+                    SettingRow(option.title, help: option.help, isOn: notify(option.kind, in: options))
                 }
                 .disabled(bridge.panel.stopped)
             }
@@ -94,8 +78,11 @@ struct GeneralTab: View {
     }
 
     private var updates: some View {
-        SettingGroup(title: "Updates") {
-            SettingRow(title: "Turnscope \(bridge.panel.version)") {
+        SettingGroup(title: updater.available ? "Updates" : "About") {
+            SettingRow(
+                title: "Turnscope \(bridge.panel.version)",
+                help: "Right-click to copy diagnostics or reveal the log"
+            ) {
                 HStack(spacing: 8) {
                     if copiedDiagnostics {
                         Text("Copied")
@@ -109,12 +96,12 @@ struct GeneralTab: View {
                             updater.check()
                         }
                         .buttonStyle(PillButton())
+                        .disabled(!updater.canCheckForUpdates)
                         .accessibilityLabel("Check for updates now")
                     }
                 }
             }
             .contentShape(Rectangle())
-            .help("Right-click to copy diagnostics or reveal the log")
             .onTapGesture {
                 if NSEvent.modifierFlags.contains(.option) {
                     copyDiagnostics()
@@ -122,10 +109,12 @@ struct GeneralTab: View {
             }
             .contextMenu {
                 Button("Copy Diagnostics", action: copyDiagnostics)
-                if let logURL = bridge.logURL() {
+                if bridge.isLive {
                     Button("Reveal Log in Finder") {
                         closePanel()
-                        NSWorkspace.shared.activateFileViewerSelecting([logURL])
+                        if let logURL = bridge.logURL() {
+                            NSWorkspace.shared.activateFileViewerSelecting([logURL])
+                        }
                     }
                 }
             }
@@ -149,13 +138,19 @@ struct GeneralTab: View {
         }
     }
 
-    private func notify(_ keyPath: WritableKeyPath<NotifySettings, Bool>, in notify: NotifySettings) -> Binding<Bool> {
-        Binding(
-            get: { notify[keyPath: keyPath] },
+    private func notify(_ kind: NotifyKind, in options: [NotifyOptionModel]) -> Binding<Bool> {
+        let isOn: (NotifyKind) -> Bool = { target in
+            options.first(where: { $0.kind == target })?.enabled ?? false
+        }
+        return Binding(
+            get: { isOn(kind) },
             set: { value in
-                var changed = notify
-                changed[keyPath: keyPath] = value
-                bridge.send(.setNotify(notify: changed))
+                bridge.send(.setNotify(notify: NotifySettings(
+                    runningOut: kind == .runningOut ? value : isOn(.runningOut),
+                    usedUp: kind == .usedUp ? value : isOn(.usedUp),
+                    reset: kind == .reset ? value : isOn(.reset),
+                    signIn: kind == .signIn ? value : isOn(.signIn)
+                )))
             }
         )
     }

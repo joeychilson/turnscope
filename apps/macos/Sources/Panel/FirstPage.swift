@@ -96,11 +96,7 @@ struct Waiting: View {
 
     var body: some View {
         if let problem = model.problem {
-            Message(
-                headline: "Turnscope can't read its data",
-                detail: problem,
-                footnote: model.retries ? "It tries again on its own." : nil
-            )
+            Message(headline: problem.headline, detail: problem.detail, footnote: problem.footnote)
         } else {
             VStack(spacing: 8) {
                 Spinner()
@@ -144,14 +140,14 @@ private struct ConnectNudge: View {
     var body: some View {
         HStack(spacing: Row.gap) {
             Logo(agent: offer.id, size: Row.logo)
-            AgentLabel(name: offer.name, note: offer.note, configured: offer.configured)
+            AgentLabel(name: offer.name, note: offer.note, configuredHelp: offer.configuredHelp)
             if offer.changing {
                 Spinner()
                     .accessibilityElement()
                     .accessibilityLabel("Connecting \(offer.name)")
             } else {
                 Button(offer.verb) {
-                    withAnimation(spring) {
+                    withMotion {
                         bridge.send(.setConnected(id: offer.id, connecting: true))
                     }
                 }
@@ -161,7 +157,7 @@ private struct ConnectNudge: View {
                 .help(offer.help)
             }
             Button {
-                withAnimation(spring) {
+                withMotion {
                     bridge.send(.dismissConnect(id: offer.id))
                 }
             } label: {
@@ -185,20 +181,21 @@ private struct Footer: View {
     var body: some View {
         HStack(spacing: 2) {
             if let note = bridge.panel.footerNote {
+                let text = updater.waiting ? (note.compactText ?? note.text) : note.text
                 HStack(spacing: 6) {
                     if note.busy {
                         Spinner()
                     }
-                    Text(note.text)
+                    Text(text)
                         .font(.small)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                .help(note.help ?? "")
+                .optionalHelp(note.help)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(note.spoken)
                 .padding(.leading, 12)
-                .id(note.text)
+                .id(text)
                 .transition(appears)
             }
             Spacer()
@@ -207,7 +204,7 @@ private struct Footer: View {
                 .hiddenShortcut()
             if bridge.panel.canRefresh {
                 Button("Refresh Limits") {
-                    withAnimation(spring) {
+                    withMotion {
                         bridge.send(.refreshNow)
                     }
                 }
@@ -215,12 +212,13 @@ private struct Footer: View {
                 .hiddenShortcut()
             }
             if updater.waiting {
-                Button("Update available") {
+                Button(bridge.panel.footerNote != nil ? "Update" : "Update available") {
                     closePanel()
                     updater.check()
                 }
                 .buttonStyle(PillButton())
                 .help("Shows what's new, and asks before installing it")
+                .accessibilityLabel("Update available")
                 .padding(.trailing, 4)
                 .transition(appears)
             }

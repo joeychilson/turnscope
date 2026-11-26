@@ -11,6 +11,7 @@ use turnscope::status::{
     Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, Standing, State,
     Unknown, agent_names, list,
 };
+use turnscope::time::MINUTE;
 use turnscope::usage::counted;
 
 /// A notification, as the shell posts it.
@@ -49,7 +50,7 @@ impl Words {
 
     /// Past is "0m": a status can be minutes old, as only one that changed is told.
     fn until(&self, at: i64) -> String {
-        turnscope::time::span((at - self.now).max(0))
+        turnscope::time::span(at.saturating_sub(self.now).max(0))
     }
 
     fn at(&self, moment: &Moment) -> String {
@@ -64,7 +65,7 @@ impl Words {
                 let z = self.zoned(at);
                 format!("{} {}", self.day(&z, full), fmt_time(&z))
             }
-            Horizon::Later => fmt_month_day(&self.zoned(at), full),
+            Horizon::Later => self.month_day(&self.zoned(at), full),
         }
     }
 
@@ -80,18 +81,24 @@ impl Words {
 
     fn ago(&self, ms: i64) -> String {
         let z = self.zoned(ms);
-        let date = z.date();
         let time = fmt_time(&z);
-        if date == self.today {
-            return time;
+        match (self.today - z.date()).get_days() {
+            0 => time,
+            1 => format!("yesterday {time}"),
+            2..7 => format!("{} {time}", fmt_weekday(&z, false)),
+            _ => self.month_day(&z, false),
         }
-        if self.today.yesterday().ok() == Some(date) {
-            return format!("yesterday {time}");
-        }
-        if ms < self.now && self.now - ms < 6 * 86_400_000 {
-            return format!("{} {time}", fmt_weekday(&z, false));
-        }
-        fmt_month_day(&z, false)
+    }
+
+    /// "Oct 30" (or "October 30" if `full`), with the year when not this year.
+    fn month_day(&self, z: &ZonedDateTime, full: bool) -> String {
+        let format = match (full, z.year() != self.today.year()) {
+            (true, false) => "%B %-d",
+            (false, false) => "%b %-d",
+            (true, true) => "%B %-d, %Y",
+            (false, true) => "%b %-d, %Y",
+        };
+        z.strftime(format).to_string()
     }
 
     /// "tomorrow", or the weekday of a day later than that.
@@ -127,8 +134,8 @@ impl Words {
     }
 
     fn short(&self, limit: &Limit) -> String {
-        let (named, plural) = short_name(limit);
-        let s = if plural { "" } else { "s" };
+        let (named, is_plural) = short_name(limit);
+        let s = agree(is_plural, "s", "");
         match &limit.outlook {
             Outlook::UsedUp { back: Some(back) } => format!("{named} back {}", self.at(back)),
             Outlook::UsedUp { back: None } => format!("{named} used up"),
@@ -255,7 +262,7 @@ impl Words {
                     .map_or("It isn't known when it's back.".into(), |b| {
                         format!("Back {}.", self.at(b))
                     });
-                let is = if plural { "are" } else { "is" };
+                let is = agree(plural, "is", "are");
                 (format!("{subject} {is} used up"), with_alternate(after))
             }
             Outlook::RunsOut { likely, .. } => {
@@ -263,7 +270,7 @@ impl Words {
                     Horizon::Soon | Horizon::Later => self.at(likely),
                     Horizon::Today | Horizon::ThisWeek => self.when(likely.at),
                 };
-                let runs = if plural { "run" } else { "runs" };
+                let runs = agree(plural, "runs", "run");
                 let headline = format!("{subject} {runs} out {}", unbroken(&when));
                 let back = limit
                     .window
@@ -318,14 +325,14 @@ impl Words {
             Outlook::UsedUp { back } => format!(
                 "{sentence} {} {} used up{}.",
                 name(other),
-                if plural(other) { "are" } else { "is" },
+                agree(plural(other), "is", "are"),
                 back.as_ref()
                     .map_or(String::new(), |b| format!(", back {}", self.at(b)))
             ),
             Outlook::RunsOut { likely, .. } => format!(
                 "{sentence} {} {} out {}.",
                 name(other),
-                if plural(other) { "run" } else { "runs" },
+                agree(plural(other), "runs", "run"),
                 self.at(likely)
             ),
             _ => sentence,
@@ -341,7 +348,7 @@ impl Words {
             return Some(trouble);
         }
         if refilled(account) {
-            return Some("Full since the reset, unless used on the web or another device.".into());
+            return Some(RESET_FULL.into());
         }
         if !account.limits.is_empty() {
             return None;
@@ -350,34 +357,36 @@ impl Words {
     }
 
     fn trouble(&self, account: &Account) -> Option<String> {
-        let with = first_agent(account);
-        match &account.state {
-            State::Unread { why } => Some(match why {
-                Stale::SignIn => sign_in(account),
-                Stale::Expired => format!("Its login expired; it's read when {with} runs."),
-                Stale::ReadFailed => "It couldn't be read yet.".into(),
-                Stale::SignedOut => "No agent here is signed in to it.".into(),
-            }),
+        let (why, read_at) = match &account.state {
+            State::Live { .. } => return None,
+            State::Unread { why } => (*why, None),
             State::AsOf { read_at, why, .. } => {
                 if *why == Stale::SignedOut && refilled(account) {
                     return None;
                 }
-                let ago = self.ago(*read_at);
-                Some(match why {
-                    Stale::SignIn => format!("Last read {ago}. {}", sign_in(account)),
-                    Stale::ReadFailed => format!("It couldn't be read since {ago}."),
-                    Stale::Expired => {
-                        format!(
-                            "Last read {ago}. Its login expired; it's read again when {with} runs."
-                        )
-                    }
-                    Stale::SignedOut => {
-                        format!("Last read {ago}. No agent here is signed in to it.")
-                    }
-                })
+                (*why, Some(*read_at))
             }
-            State::Live { .. } => None,
+        };
+        if why == Stale::ReadFailed {
+            return Some(match read_at {
+                Some(at) => format!("It couldn't be read since {}.", self.ago(at)),
+                None => "It couldn't be read yet.".into(),
+            });
         }
+        let detail = match why {
+            Stale::SignIn => sign_in(account),
+            Stale::Expired => format!(
+                "Its login expired; it's read {}when {} runs.",
+                if read_at.is_some() { "again " } else { "" },
+                account_agents(account)
+            ),
+            Stale::SignedOut => "No agent here is signed in to it.".into(),
+            Stale::ReadFailed => unreachable!(),
+        };
+        Some(match read_at {
+            Some(at) => format!("Last read {}. {detail}", self.ago(at)),
+            None => detail,
+        })
     }
 
     pub fn figure(&self, account: &Account) -> String {
@@ -435,7 +444,8 @@ impl Words {
     }
 
     fn spoken(&self, at: i64) -> String {
-        let minutes = (((at - self.now).max(0) + 30_000) / 60_000) as u64;
+        let delta = at.saturating_sub(self.now).max(0);
+        let minutes = (delta.saturating_add(MINUTE / 2) / MINUTE) as u64;
         let (hours, rest) = (minutes / 60, minutes % 60);
         if hours == 0 {
             return counted(rest, "minute");
@@ -462,11 +472,9 @@ impl Words {
             .map(name)
             .or_else(|| alert.limit_name.clone())
             .unwrap_or("A limit".into());
-        let (runs, be) = if limit.is_some_and(plural) {
-            ("run", "are")
-        } else {
-            ("runs", "is")
-        };
+        let is_plural = limit.is_some_and(plural);
+        let runs = agree(is_plural, "runs", "run");
+        let be = agree(is_plural, "is", "are");
         let back = || {
             alert
                 .resets
@@ -503,6 +511,10 @@ impl Words {
     }
 }
 
+fn agree<'a>(plural: bool, one: &'a str, many: &'a str) -> &'a str {
+    if plural { many } else { one }
+}
+
 fn fmt_time(z: &ZonedDateTime) -> String {
     let format = if z.minute() == 0 {
         "%-I %p"
@@ -514,12 +526,6 @@ fn fmt_time(z: &ZonedDateTime) -> String {
 
 fn fmt_weekday(z: &ZonedDateTime, full: bool) -> String {
     z.strftime(if full { "%A" } else { "%a" }).to_string()
-}
-
-/// "Oct 30", or "October 30" if `full`.
-fn fmt_month_day(z: &ZonedDateTime, full: bool) -> String {
-    z.strftime(if full { "%B %-d" } else { "%b %-d" })
-        .to_string()
 }
 
 fn dollars(value: f64, down: bool) -> String {
@@ -685,6 +691,9 @@ pub fn row_figure_spoken(account: &Account) -> String {
 }
 
 fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
+    if reason == Unknown::Stale && limit.reset_since.is_some() {
+        return RESET_FULL.into();
+    }
     let what = if limit.money.is_none() {
         format!("{} left {}", left(limit), of(limit))
     } else {
@@ -739,12 +748,38 @@ pub fn hidden(count: usize) -> String {
     format!("{count} hidden")
 }
 
+const RESET_FULL: &str = "Full since the reset, unless used on the web or another device.";
 pub const UNTITLED_SESSION: &str = "Untitled session";
 pub const READING_TEXT: &str = "Reading your agents' history…";
 pub const READING_HELP: &str = "Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.";
 pub const READING_SPOKEN: &str = "Reading your agents' history";
 pub const REFRESHING_TEXT: &str = "Refreshing limits…";
 pub const REFRESHING_SPOKEN: &str = "Refreshing limits";
+pub const WAITING_PROBLEM_HEADLINE: &str = "Turnscope can't read its data";
+pub const WAITING_RETRIES_FOOTNOTE: &str = "It tries again on its own.";
+pub const AGENTS_TITLE: &str = "Let these agents check their limits";
+
+pub fn configured_help(path: &str) -> String {
+    format!("Configured to run {path}")
+}
+
+pub fn notify_option(kind: AlertKind) -> (&'static str, Option<&'static str>) {
+    match kind {
+        AlertKind::RunningOut => (
+            "A limit will run out",
+            Some("Before it resets, at your pace"),
+        ),
+        AlertKind::UsedUp => ("A limit is used up", None),
+        AlertKind::Reset => (
+            "A limit is back",
+            Some("After it was used up, once the account can be used again"),
+        ),
+        AlertKind::SignIn => (
+            "An account needs signing in",
+            Some("Its login was refused, so its limits can't be read"),
+        ),
+    }
+}
 
 pub fn connection(agent: &Agent) -> Option<String> {
     match agent.connection {
@@ -771,14 +806,6 @@ pub fn connect_action(agent: &Agent) -> (&'static str, String) {
     }
 }
 
-pub fn agents_title(from_disk_image: bool) -> &'static str {
-    if from_disk_image {
-        "Move Turnscope to Applications to connect agents"
-    } else {
-        "Let these agents check their limits"
-    }
-}
-
 pub fn agent_changing(to: Connection) -> &'static str {
     if to == Connection::Connected {
         "Connecting…"
@@ -787,14 +814,23 @@ pub fn agent_changing(to: Connection) -> &'static str {
     }
 }
 
-pub fn stale_footer(problem: &Stopped) -> (String, String, String) {
-    let (said, then) = match problem {
-        Stopped::Failing(_) => ("Not up to date · trying again", " Trying again."),
-        Stopped::Newer { replaced: true } => ("Not up to date · start Turnscope again", ""),
-        Stopped::Newer { replaced: false } => ("Not up to date · update Turnscope", ""),
+pub fn stale_footer(problem: &Stopped) -> (String, Option<String>, String, String) {
+    let (said, compact, then) = match problem {
+        Stopped::Failing(_) => ("Not up to date · trying again", None, " Trying again."),
+        Stopped::Newer { replaced: true } => (
+            "Not up to date · start Turnscope again",
+            Some("Not up to date"),
+            "",
+        ),
+        Stopped::Newer { replaced: false } => (
+            "Not up to date · update Turnscope",
+            Some("Not up to date"),
+            "",
+        ),
     };
     (
         said.to_owned(),
+        compact.map(str::to_owned),
         problem.to_string(),
         format!("Not up to date: {problem}.{then}"),
     )
@@ -843,16 +879,17 @@ fn plural(limit: &Limit) -> bool {
     limit.held_by.is_empty() && limit.plural()
 }
 
-fn first_agent(account: &Account) -> &str {
-    account
-        .agents
-        .first()
-        .map_or("its agent", |a| turnscope::agents::name(a))
+fn account_agents(account: &Account) -> String {
+    if account.agents.is_empty() {
+        "its agent".into()
+    } else {
+        agent_names(&account.agents, "or")
+    }
 }
 
-/// "Open Claude Code to sign in.": the agent whose login was refused renews it.
+/// "Open Claude Code, OpenCode or Pi to sign in.": an agent whose login was refused renews it.
 fn sign_in(account: &Account) -> String {
-    format!("Open {} to sign in.", first_agent(account))
+    format!("Open {} to sign in.", account_agents(account))
 }
 
 fn refilled(account: &Account) -> bool {
@@ -1026,8 +1063,20 @@ mod tests {
         assert_eq!(w.when(at("2026-09-30T18:00:00Z")), "this evening");
         assert_eq!(w.ago(at("2026-09-30T00:00:00Z")), "12 AM");
         assert_eq!(w.ago(at("2026-09-29T23:59:00Z")), "yesterday 11:59 PM");
+        // Calendar days, not 24h multiples: 6 days back is a weekday, 7 days back is month/day.
+        assert_eq!(w.ago(at("2026-09-24T00:05:00Z")), "Thu 12:05 AM");
+        assert_eq!(w.ago(at("2026-09-23T23:55:00Z")), "Sep 23");
+        // Dates in another year include the year.
+        assert_eq!(w.ago(at("2025-12-15T12:00:00Z")), "Dec 15, 2025");
+        assert_eq!(w.at(&moment("2027-01-05T12:00:00Z", Later)), "Jan 5, 2027");
+        assert_eq!(
+            w.clock(&moment("2027-01-05T12:00:00Z", Later), true),
+            "January 5, 2027"
+        );
         assert_eq!(w.until(w.now + 52 * 3_600_000), "2d 4h");
         assert_eq!(w.until(w.now - 60_000), "0m");
+        assert_eq!(w.until(i64::MIN), "0m");
+        assert!(!w.spoken(i64::MAX).is_empty());
 
         let chicago = TimeZone::get("America/Chicago").unwrap();
         let local = Words::in_zone(noon(), chicago.clone());
@@ -1168,6 +1217,13 @@ mod tests {
         assert_eq!(
             w.opened(&full, false).as_deref(),
             Some("Full since the reset, unless used on the web or another device.")
+        );
+        assert_eq!(
+            w.verdict(Some(&full), false, &[]),
+            (
+                "You can keep going".into(),
+                "Full since the reset, unless used on the web or another device.".into()
+            )
         );
     }
 
@@ -1679,6 +1735,26 @@ mod tests {
         assert_eq!(
             w.opened(&refused, false).as_deref(),
             Some("Open Claude Code to sign in.")
+        );
+        let multi_agent = Account {
+            agents: vec!["claude-code".into(), "opencode".into(), "pi".into()],
+            state: State::Unread { why: Stale::SignIn },
+            ..account(vec![])
+        };
+        assert_eq!(
+            w.opened(&multi_agent, false).as_deref(),
+            Some("Open Claude Code, OpenCode or Pi to sign in.")
+        );
+        let multi_expired = Account {
+            agents: vec!["claude-code".into(), "opencode".into(), "pi".into()],
+            state: State::Unread {
+                why: Stale::Expired,
+            },
+            ..account(vec![])
+        };
+        assert_eq!(
+            w.opened(&multi_expired, false).as_deref(),
+            Some("Its login expired; it's read when Claude Code, OpenCode or Pi runs.")
         );
         assert_eq!(w.opened(&account(vec![limit(runs_out())]), false), None);
         assert_eq!(w.opened(&api_key(vec![], None), false), None);

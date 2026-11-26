@@ -13,6 +13,7 @@ struct AccountRow: View {
     @Environment(UIState.self) private var ui
     var row: AccountRowModel
     var focus: FocusState<PanelFocus?>.Binding
+    @FocusState private var hideFocused: Bool
     @State private var hover = false
 
     var body: some View {
@@ -21,25 +22,29 @@ struct AccountRow: View {
         let used = open && !row.usedMost.isEmpty
         let stopped = bridge.panel.stopped
         let focused = focus.wrappedValue == .account(row.id)
+        let showHide = hover || hideFocused
 
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: Row.gap) {
                 Logo(provider: row.provider, size: Row.logo)
                     .allowsHitTesting(false)
-                    .accessibilityHidden(row.openable)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
-                    HStack(alignment: .center, spacing: 6) {
+                    HStack(alignment: .center, spacing: 0) {
                         AccountTitle(title: row.title, label: row.label, labelStyle: .secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .allowsHitTesting(false)
-                            .accessibilityHidden(row.openable)
-                        // Always given its layout slot so showing it on hover never shifts text.
+                            .accessibilityHidden(true)
                         Button(action: hide) { Image(systemName: "eye.slash") }
                             .buttonStyle(IconButton(width: 22, height: 16))
                             .disabled(stopped)
-                            .opacity(hover ? 1 : 0)
-                            .allowsHitTesting(hover)
-                            .accessibilityHidden(!hover)
+                            .focused($hideFocused)
+                            .frame(width: showHide ? 22 : 0, height: 16)
+                            .padding(.leading, showHide ? 6 : 0)
+                            .opacity(showHide ? 1 : 0)
+                            .clipped()
+                            .allowsHitTesting(showHide)
+                            .accessibilityHidden(!showHide)
                             .help("Hide \(row.called) from the menu bar and the panel")
                             .accessibilityLabel("Hide \(row.called)")
                         if !lines {
@@ -51,10 +56,10 @@ struct AccountRow: View {
                                 .font(.figure)
                                 .contentTransition(.numericText())
                                 .fixedSize()
+                                .padding(.leading, 6)
                                 .transition(quickFade)
                                 .allowsHitTesting(false)
-                                .accessibilityHidden(row.openable || row.figureSpoken.isEmpty)
-                                .accessibilityLabel(row.figureSpoken)
+                                .accessibilityHidden(true)
                         }
                     }
                     if !lines {
@@ -64,7 +69,7 @@ struct AccountRow: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .transition(quickFade)
                             .allowsHitTesting(false)
-                            .accessibilityHidden(row.openable)
+                            .accessibilityHidden(true)
                     }
                 }
             }
@@ -112,9 +117,13 @@ struct AccountRow: View {
                 .accessibilityLabel(lines ? row.called : row.collapsedSpoken)
                 .accessibilityHint(open ? "Closes it" : "Opens it")
                 .accessibilityAction(named: "Hide") { if !stopped { hide() } }
-                .help(row.label != nil ? row.called : "")
+                .optionalHelp(row.label != nil ? row.called : nil)
             } else {
                 RowSurface(active: hover)
+                    .accessibilityElement()
+                    .accessibilityLabel(row.collapsedSpoken)
+                    .accessibilityAction(named: "Hide") { if !stopped { hide() } }
+                    .optionalHelp(row.label != nil ? row.called : nil)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Row.radius, style: .continuous))
@@ -126,7 +135,7 @@ struct AccountRow: View {
     }
 
     private func hide() {
-        withAnimation(spring) {
+        withMotion {
             ui.didHide(row.id)
             bridge.send(.setHidden(id: row.id, hidden: true))
         }
@@ -311,7 +320,7 @@ private struct UsedMostRow: View {
         .help(used.projectPath != nil ? "Click to copy project path" : "Click to copy session title")
         .contextMenu {
             if let path = used.projectPath {
-                if FileManager.default.fileExists(atPath: path) {
+                if used.exists {
                     Button("Open Project in Finder") {
                         closePanel()
                         NSWorkspace.shared.open(URL(fileURLWithPath: path))
@@ -338,7 +347,7 @@ struct AccountTitle: View {
     var title: String
     var label: String?
     var titleStyle: HierarchicalShapeStyle = .primary
-    var labelStyle: HierarchicalShapeStyle = .tertiary
+    var labelStyle: HierarchicalShapeStyle = .secondary
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -369,7 +378,7 @@ struct AccountName: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            AccountTitle(title: title, label: label, titleStyle: titleStyle, labelStyle: .tertiary)
+            AccountTitle(title: title, label: label, titleStyle: titleStyle, labelStyle: .secondary)
             if let via {
                 Text(via)
                     .font(.small)

@@ -54,13 +54,14 @@ does.
 - **`State::took`** handles engine events on the engine thread, queues
   one-shot `Effect`s (alerts to post, sign-in alerts to clear), and
   invokes the host's wake callback. `State::apply`, for what the person
-  does, queues preference saves. The
-  status is kept until a newer one arrives, even while the data can't be
-  kept current, so the panel never goes empty.
+  does, saves changed preferences to `preferences.json` in the data
+  directory. The status is kept until a newer one arrives, even while the
+  data can't be kept current, so the panel never goes empty.
 - **`State` and `view.rs`** (in `crates/turnscope-app`) split the accounts
   into `in_use`, `recent`, `unused`, and `hidden`, hold changing agents
   and `used_most` sessions, and build flat serializable `MenuBarModel`
-  and `PanelModel` values.
+  and `PanelModel` values (`PanelModel` is built only while the panel is
+  open).
 - **`words.rs`** (in `crates/turnscope-app`) writes every figure and
   sentence made from the status: what's left, times, a limit's line, the
   headline, the menu bar's figures, notifications and what VoiceOver says.
@@ -76,12 +77,13 @@ does.
   Applications. An agent connected there would run a `turnscope` that's
   gone once the image is ejected.
 
-Countdowns move with the clock. The panel's words are as of `State::now`,
-set when the panel opens and each minute while it's open. The menu bar
-item is redrawn each minute only while the panel is open or the item shows
-an account running out or used up, and as the Mac wakes; otherwise the app
-doesn't wake. The app counts from the minute it is, as the engine does, so
-at 12:00:40 a reset at 14:00 is in 2h.
+Countdowns move with the clock. Each sync builds both the menu bar and the
+open panel from the same minute, so they never disagree across a minute
+boundary. The app ticks each minute only while the panel is open or the
+menu bar item shows an account running out or used up, and re-anchors the
+minute timer when the Mac wakes or the system clock or time zone changes;
+otherwise the app doesn't wake. The app counts from the minute it is, as
+the engine does, so at 12:00:40 a reset at 14:00 is in 2h.
 
 ## The menu bar item
 
@@ -125,8 +127,9 @@ The panel is 340 points wide. From the top:
 6. **The footer**: "Not up to date" and why while the data can't be kept
    current, "Reading your agents' history…" during the first read, or
    "Refreshing limits…" until a refresh ⌘R forced has read the limits.
-   Then "Update available" when a scheduled check found one
-   ([Updates](#updates)), Settings (⌘,) and Quit (⌘Q).
+   Then "Update available" (shortened to "Update" beside a footer note)
+   when a scheduled check found one ([Updates](#updates)), Settings (⌘,)
+   and Quit (⌘Q).
 
 On a first launch, the headline says "Getting your limits" until the
 engine has read them. The accounts show then, while the footer says the
@@ -179,7 +182,7 @@ agents and accounts are off, and so are the panel's Hide and Show.
 
 | Tab | Holds |
 |---|---|
-| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version (right-click for Copy Diagnostics and Reveal Log in Finder, or Option-click to copy diagnostics), Check now and Check automatically |
+| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates** (or **About** when Sparkle isn't enabled): the version (right-click for Copy Diagnostics and Reveal Log in Finder, or Option-click to copy diagnostics), Check now and Check automatically |
 | Agents | Each installed agent, with a switch that connects or disconnects it, and under its name that it runs another copy of Turnscope (hover to see the configured path) or why connecting failed |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 
@@ -187,16 +190,16 @@ Where each setting is kept:
 
 | Setting | Kept in | Also changed by |
 |---|---|---|
-| Show (menu bar) | The app's defaults, `menuShows`: `all` or `one` | |
-| Offers to connect put away | The app's defaults, `dismissedConnect`: agent ids joined by commas | |
+| Show (menu bar) | `preferences.json` in the data directory (`menuShows`: `all` or `one`) | |
+| Offers to connect put away | `preferences.json` in the data directory (`dismissedConnect`: list of agent ids) | |
 | Open at login | macOS's login items (`SMAppService.mainApp`) | System Settings |
 | Notify me when | The engine's settings, in the database | |
 | Hidden accounts | The database | `turnscope accounts hide\|show` |
 | Connected agents | Each agent's own configuration | `turnscope connect`, `turnscope disconnect` |
 | Check automatically | Sparkle's defaults | |
 
-An app preference goes in `Preferences.swift` (and `state::Preferences` in
-`crates/turnscope-app`); a setting the engine acts on goes in
+An app preference goes in `state::Preferences` (in `crates/turnscope-app`,
+saved to `preferences.json`); a setting the engine acts on goes in
 `alerts::Settings`, sent through `Action::SetNotify`.
 
 ## Notifications
@@ -288,9 +291,9 @@ as an option's value, so `--open --data <dir>` opens nothing in the panel.
 - **`--fixture`** reads a status as
   `crates/turnscope/tests/fixtures/status.json` has it. Its words are as of
   the status's `at`, so it reads the same whenever it's drawn. Changes made
-  in it show on screen and go nowhere: nothing is written to the app's
-  defaults, the login items or Sparkle's settings, and neither Sparkle nor
-  notifications start.
+  in it show on screen and go nowhere: nothing is written to
+  `preferences.json`, the login items or Sparkle's settings, and neither
+  Sparkle nor notifications start.
 - **`--snapshot`** draws the status in `--fixture`, or else the status the
   engine works out from `--data` and `--home`, reading only: it makes no
   database, raises no alert and catches nothing up. With `--open`, it

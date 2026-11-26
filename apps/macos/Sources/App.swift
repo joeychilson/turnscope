@@ -46,13 +46,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var ticker: Timer?
 
     init(_ launch: Launch) {
-        self.bridge = Bridge(launch: launch, fromDiskImage: Self.fromDiskImage, preferences: .read())
+        self.bridge = Bridge(launch: launch, connectDisabledReason: Self.connectDisabledReason)
         self.initialOpening = launch.opening
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         startedAt = .now
+        installMainMenu()
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked)
@@ -71,13 +73,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         notifier.onAcknowledged = { [weak self] id, signInAccount in
             self?.bridge.send(.acknowledgeAlert(id: id, signInAccount: signInAccount))
         }
+        notifier.onLog = { [weak self] line in
+            self?.bridge.log(line)
+        }
 
+        observeEnvironment()
         if bridge.isLive {
             notifier.start()
             updater.start()
-            observeWake()
+            observeClockChanges()
         }
         bridge.sync()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        ticker?.invalidate()
+        ticker = nil
+        if let outsideMonitor {
+            NSEvent.removeMonitor(outsideMonitor)
+            self.outsideMonitor = nil
+        }
+        bridge.stop()
+    }
+
+    /// Minimal main menu so ⌘C, ⌘A and ⌘Q work natively on selectable text in an `.accessory` app.
+    private func installMainMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(
+            NSMenuItem(title: "Quit Turnscope", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        )
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+
+        NSApp.mainMenu = main
     }
 
     // MARK: - Sync & Effects
@@ -85,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func handleSync(_ sync: AppSync) {
         drawItem(sync.menuBar)
         updateTicker(counting: sync.counting)
-        if sync.panel.verdict != nil {
+        if sync.hasStatus {
             if let opening = initialOpening {
                 initialOpening = nil
                 whenPlaced { [self] in
@@ -100,8 +137,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 notifier.post(alerts)
             case let .removeNotifications(identifiers):
                 notifier.remove(identifiers)
-            case let .savePreferences(menuShows, dismissedConnect):
-                Preferences.save(menuShows: menuShows, dismissedConnect: dismissedConnect)
             }
         }
     }
@@ -112,8 +147,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func updateTicker(counting: Bool) {
-        guard counting != (ticker != nil) else { return }
+    private func updateTicker(counting: Bool, reanchor: Bool = false) {
+        guard reanchor || counting != (ticker != nil) else { return }
         ticker?.invalidate()
         ticker = nil
         guard counting else { return }
@@ -132,25 +167,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ticker = timer
     }
 
-    private func observeWake() {
+    private func observeClockChanges() {
+        let onClockShift: @Sendable (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.ticker != nil {
+                    self.updateTicker(counting: true, reanchor: true)
+                }
+                self.bridge.send(.tick)
+            }
+        }
         _ = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main,
+            using: onClockShift
+        )
+        for name in [Notification.Name.NSSystemClockDidChange, Notification.Name.NSSystemTimeZoneDidChange] {
+            _ = NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main,
+                using: onClockShift
+            )
+        }
+    }
+
+    private func observeEnvironment() {
+        _ = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.bridge.send(.tick)
+                guard let self, self.panelOpen, let panel = self.panel else { return }
+                self.place(panel)
+            }
+        }
+        _ = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.close()
             }
         }
     }
 
     // MARK: - Status Item Placement
 
-    /// The status item's window and screen once macOS has placed it in the top half of a screen.
+    /// The status item's window and screen once macOS has placed it visibly in the top half of a screen.
     private var placedItemWindow: (NSWindow, NSScreen)? {
         guard let window = item?.button?.window, let screen = window.screen else { return nil }
         let frame = screen.frame
-        guard window.frame.origin.y > frame.origin.y + frame.size.height / 2 else { return nil }
+        guard frame.intersects(window.frame),
+              window.frame.origin.y > frame.origin.y + frame.size.height / 2
+        else { return nil }
         return (window, screen)
     }
 
@@ -219,7 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if bridge.isLive {
             let refresh = NSMenuItem(title: "Refresh Limits", action: #selector(menuRefreshLimits), keyEquivalent: "r")
             refresh.target = self
-            refresh.isEnabled = bridge.panel.canRefresh
+            refresh.isEnabled = bridge.canRefresh
             menu.addItem(refresh)
             menu.addItem(.separator())
         }
@@ -229,6 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if updater.available {
             let check = NSMenuItem(title: "Check for Updates…", action: #selector(menuCheckForUpdates), keyEquivalent: "")
             check.target = self
+            check.isEnabled = updater.canCheckForUpdates
             menu.addItem(check)
         }
         menu.addItem(.separator())
@@ -271,7 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Opens a clicked notification's account once there's a status to open it in.
     private func openPending() {
-        guard panelOpen, bridge.panel.verdict != nil, let account = ui.pendingAccount else { return }
+        guard panelOpen, bridge.hasStatus, let account = ui.pendingAccount else { return }
         ui.pendingAccount = nil
         ui.openInPlace(account, panel: bridge.panel)
     }
@@ -282,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !alreadyOpen {
             panelOpen = true
             ui.reset()
+            ui.isOpen = true
             bridge.send(.panelOpened)
         }
         if let opening {
@@ -339,6 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self, !self.panelOpen else { return }
                 panel.orderOut(nil)
+                self.ui.isOpen = false
                 self.ui.reset()
             }
         })
@@ -359,8 +435,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             visible = screen.visibleFrame
             midX = at.midX
             underY = at.minY
-        } else if let primary = NSScreen.screens.first ?? NSScreen.main {
-            visible = primary.visibleFrame
+        } else if let screen = NSScreen.main ?? NSScreen.screens.first {
+            visible = screen.visibleFrame
             midX = visible.maxX
             underY = visible.maxY
         } else {
@@ -379,11 +455,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
     }
 
-    /// True when running from a mounted DMG or App Translocation path, whose bundled
+    /// Non-nil when running from a mounted DMG or App Translocation path, whose bundled
     /// `turnscope` path vanishes after eject or quit.
-    private static var fromDiskImage: Bool {
+    private static var connectDisabledReason: String? {
         let bundle = Bundle.main.bundleURL
         let readOnly = (try? bundle.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly
-        return readOnly == true || bundle.path.contains("/AppTranslocation/")
+        if readOnly == true || bundle.path.contains("/AppTranslocation/") {
+            return "Move Turnscope to Applications to connect agents"
+        }
+        return nil
     }
 }

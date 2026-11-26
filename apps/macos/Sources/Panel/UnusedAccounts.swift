@@ -42,6 +42,7 @@ private struct Fold: View {
     var focus: FocusState<PanelFocus?>.Binding
     var target: PanelFocus
     var toggle: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hover = false
 
     var body: some View {
@@ -56,6 +57,7 @@ private struct Fold: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
                     .rotationEffect(.degrees(open ? 90 : 0))
+                    .animation(reduceMotion ? nil : spring, value: open)
             }
             .padding(Row.padding)
         }
@@ -87,7 +89,7 @@ private struct HiddenRow: View {
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             Button("Show") {
-                withAnimation(spring) {
+                withMotion {
                     bridge.send(.setHidden(id: account.id, hidden: false))
                 }
             }

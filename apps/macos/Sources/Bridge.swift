@@ -40,6 +40,7 @@ private func rustWakeCallback(_ ctx: UnsafeMutableRawPointer?) {
 @MainActor
 @Observable
 final class UIState {
+    var isOpen = false
     var page: Page = .main
     var tab: SettingsTab = .general
     var openAccount: String?
@@ -87,13 +88,13 @@ final class UIState {
     }
 
     func toggleAccount(_ id: String) {
-        withAnimation(spring) {
+        withMotion {
             openAccount = (openAccount == id) ? nil : id
         }
     }
 
     func toggleUnused(panel: PanelModel) {
-        withAnimation(spring) {
+        withMotion {
             unusedOpen.toggle()
             if !unusedOpen {
                 if let open = openAccount, panel.unused.contains(where: { $0.id == open }) {
@@ -105,19 +106,19 @@ final class UIState {
     }
 
     func toggleHidden() {
-        withAnimation(spring) {
+        withMotion {
             hiddenShown.toggle()
         }
     }
 
     func go(_ page: Page) {
-        withAnimation(spring) {
+        withMotion(fade: true) {
             self.page = page
         }
     }
 
     func setTab(_ tab: SettingsTab) {
-        withAnimation(spring) {
+        withMotion(fade: true) {
             self.tab = tab
         }
     }
@@ -135,6 +136,8 @@ final class UIState {
 @Observable
 final class Bridge {
     private(set) var panel: PanelModel = .empty
+    private(set) var hasStatus = false
+    private(set) var canRefresh = false
     /// Visible height of the screen the panel opens on, for overflow scroll caps.
     var screenHeight: CGFloat = 800
 
@@ -147,16 +150,14 @@ final class Bridge {
     private let decoder = JSONDecoder()
 
     /// Initialize for live or `--fixture` mode. Exits with code 2 if `--fixture` can't be read.
-    init(launch: Launch, fromDiskImage: Bool, preferences: Preferences) {
+    init(launch: Launch, connectDisabledReason: String?) {
         self.isLive = launch.fixture == nil
         self.location = SnapshotConfig(fixture: launch.fixture, data: launch.data, home: launch.home)
         let config = json(StartConfig(
             fixture: launch.fixture,
             data: launch.data,
             home: launch.home,
-            fromDiskImage: fromDiskImage,
-            menuShows: preferences.menuShows,
-            dismissedConnect: preferences.dismissedConnect
+            connectDisabledReason: connectDisabledReason
         ))
         var errorPtr: UnsafeMutablePointer<CChar>?
         let ctx = Unmanaged.passUnretained(self).toOpaque()
@@ -176,6 +177,14 @@ final class Bridge {
         self.isLive = false
         self.location = SnapshotConfig(fixture: "snapshot", data: nil, home: nil)
         self.panel = snapshot
+        self.hasStatus = snapshot.verdict != nil
+        self.canRefresh = snapshot.canRefresh
+    }
+
+    func stop() {
+        guard let handle else { return }
+        self.handle = nil
+        turnscope_app_stop(handle)
     }
 
     func sync() {
@@ -245,13 +254,17 @@ final class Bridge {
     }
 
     private func apply(_ sync: AppSync) {
-        let update = {
-            if self.panel != sync.panel { self.panel = sync.panel }
-        }
-        if sync.animated {
-            withAnimation(spring, update)
-        } else {
-            update()
+        hasStatus = sync.hasStatus
+        canRefresh = sync.canRefresh
+        if let panel = sync.panel {
+            let update = {
+                if self.panel != panel { self.panel = panel }
+            }
+            if sync.animated {
+                withMotion(update)
+            } else {
+                update()
+            }
         }
         onSync?(sync)
     }
