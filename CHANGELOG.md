@@ -13,6 +13,9 @@
 - **A login refused or expired names its agents as a list**: "open Claude
   Code, OpenCode or Pi to sign in again", not "open Claude Code or
   OpenCode or Pi".
+- **A refused login is told again after a read that worked in between**,
+  however soon. One within 5 minutes of the last read that worked before
+  was taken for the same refusal.
 - **`turnscope disconnect` says the command to run by hand** when it
   can't run the agent's own, as `connect` does.
 - **The window that offers an update shows what's new in it**, instead
