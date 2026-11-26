@@ -653,12 +653,14 @@ fn report(
 
 /// The limits a `token_count` gives, keyed as the provider's answer keys
 /// them, so each takes the place of the one read before: the plan's own
-/// windows, or with a `limit_name` those on some models. None of another
-/// limit with no name, which would be taken for the plan's own.
+/// windows (`limit_id` `"codex"`, or none), or with a `limit_name` those on
+/// some models. None of another limit with no name, which would be taken for
+/// the plan's own.
 fn in_band(limits: RateLimits, cursor: &Cursor, at: i64) -> Option<InBand> {
     let scope = match (limits.limit_name.as_deref(), limits.limit_id.as_deref()) {
+        (_, Some("codex")) => None,
         (Some(name), _) if !name.is_empty() => Some(name),
-        (_, None | Some("" | "codex")) => None,
+        (_, None | Some("")) => None,
         _ => return None,
     };
     let readings: Vec<_> = [
@@ -1206,6 +1208,52 @@ mod tests {
                 ("secondary_window", "Weekly", None, 6.0),
                 ("primary_window:Spark", "5 hours", Some("Spark"), 40.0),
                 ("secondary_window:Spark", "Weekly", Some("Spark"), 10.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_limit_id_stays_unscoped_even_with_a_limit_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let window = |used: f64, minutes: i64| json!({"used_percent": used, "window_minutes": minutes, "resets_at": 1_790_870_000});
+        let file = rollout(
+            dir.path(),
+            "t1",
+            &[
+                line(
+                    0,
+                    "session_meta",
+                    json!({"id": "t1", "model_provider": "openai"}),
+                ),
+                line(
+                    1,
+                    "event_msg",
+                    json!({
+                        "type": "token_count",
+                        "info": null,
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "limit_name": "Codex",
+                            "plan_type": "plus",
+                            "primary": window(25.0, 300),
+                            "secondary": window(8.0, 10080),
+                        }
+                    }),
+                ),
+            ],
+        );
+        let read = Codex.read(&file, "").unwrap();
+        let readings: Vec<_> = read
+            .limits
+            .iter()
+            .flat_map(|limits| &limits.readings)
+            .map(|reading| (reading.key.as_str(), reading.scope.as_deref(), reading.used))
+            .collect();
+        assert_eq!(
+            readings,
+            [
+                ("primary_window", None, 25.0),
+                ("secondary_window", None, 8.0),
             ]
         );
     }

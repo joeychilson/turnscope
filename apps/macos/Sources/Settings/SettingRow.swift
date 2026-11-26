@@ -20,6 +20,7 @@ struct SettingGroup<Content: View>: View {
 struct SettingRow<Control: View>: View {
     var title: String
     var help: String?
+    var titleAccessibilityHidden = false
     @ViewBuilder var control: () -> Control
 
     var body: some View {
@@ -28,18 +29,18 @@ struct SettingRow<Control: View>: View {
                 .font(.name)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(titleAccessibilityHidden)
             control()
         }
         .padding(Row.padding)
         .frame(minHeight: Row.setting)
-        .accessibilityElement(children: .combine)
-        .help(help ?? "")
+        .optionalHelp(help)
     }
 }
 
 extension SettingRow where Control == Switch {
     init(_ title: String, help: String? = nil, isOn: Binding<Bool>) {
-        self.init(title: title, help: help) { Switch(label: title, on: isOn) }
+        self.init(title: title, help: help, titleAccessibilityHidden: true) { Switch(label: title, on: isOn) }
     }
 }
 
