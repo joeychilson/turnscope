@@ -452,10 +452,15 @@ impl Agent for Codex {
 }
 
 fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
-    let Some(payload) = &line.payload else { return };
+    let empty = Payload::default();
+    let payload = line.payload.as_ref().unwrap_or(&empty);
     let Some(thread) = cursor.thread.as_deref() else {
-        if line.kind == "session_meta" {
-            open(payload, cursor, read);
+        match (&*line.kind, payload.kind.as_deref()) {
+            ("session_meta", _) => open(payload, cursor, read),
+            // Usage of a thread that no `session_meta` has named.
+            ("token_usage_record", _) => read.skipped += 1,
+            ("event_msg", Some("token_count")) if payload.info.is_some() => read.skipped += 1,
+            _ => {}
         }
         return;
     };
@@ -1077,6 +1082,40 @@ mod tests {
         assert!(read.responses.keys().eq(["resp_3"]));
         assert_eq!(read.responses["resp_3"].tokens.input, 300);
         assert_eq!(read.skipped, 3);
+    }
+
+    #[test]
+    fn usage_of_no_known_thread_or_with_no_payload_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = line(
+            2,
+            "token_usage_record",
+            json!({"response_id": "resp_1", "usage": usage(100, 0, 10)}),
+        );
+        let unnamed = rollout(
+            dir.path(),
+            "t1",
+            &[
+                line(0, "session_meta", json!({"thread_id": "t1"})),
+                line(1, "turn_context", json!({"model": "gpt-5.5"})),
+                record.clone(),
+                total(3, usage(100, 0, 10), usage(100, 0, 10)),
+                // A count before any usage holds none.
+                line(4, "event_msg", json!({"type": "token_count", "info": null})),
+            ],
+        );
+        let mut renamed = record;
+        let payload = renamed.as_object_mut().unwrap().remove("payload").unwrap();
+        renamed["data"] = payload;
+        let unloaded = rollout(
+            dir.path(),
+            "t2",
+            &[line(0, "session_meta", json!({"id": "t2"})), renamed],
+        );
+        for (file, skipped) in [(unnamed, 2), (unloaded, 1)] {
+            let read = Codex.read(&file, "").unwrap();
+            assert_eq!((read.responses.len(), read.skipped), (0, skipped));
+        }
     }
 
     #[test]

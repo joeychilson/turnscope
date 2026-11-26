@@ -110,7 +110,7 @@ struct Update<'a> {
 #[derive(Deserialize)]
 struct TurnUsage<'a> {
     #[serde(rename = "modelUsage", borrow)]
-    models: Option<HashMap<Cow<'a, str>, &'a RawValue>>,
+    models: HashMap<Cow<'a, str>, &'a RawValue>,
 }
 
 impl<'a> Line<'a> {
@@ -120,14 +120,16 @@ impl<'a> Line<'a> {
 }
 
 impl<'a> Update<'a> {
-    /// Each model's usage in a finished turn: `None` for one that can't be
-    /// read.
-    fn used(&self) -> impl Iterator<Item = (Cow<'a, str>, Option<Used>)> {
-        super::parsed::<TurnUsage<'a>>(self.usage)
-            .and_then(|usage| usage.models)
-            .into_iter()
-            .flatten()
-            .map(|(model, used)| (model, serde_json::from_str::<Used>(used.get()).ok()))
+    /// Each model's usage in a finished turn, `None` for one that can't be
+    /// read; or `None` if the turn's usage can't be.
+    fn used(&self) -> Option<impl Iterator<Item = (Cow<'a, str>, Option<Used>)>> {
+        let usage = super::parsed::<TurnUsage<'a>>(self.usage)?;
+        Some(
+            usage
+                .models
+                .into_iter()
+                .map(|(model, used)| (model, serde_json::from_str::<Used>(used.get()).ok())),
+        )
     }
 }
 
@@ -231,13 +233,14 @@ fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> 
             return Ok(ControlFlow::Continue(()));
         };
         match update.kind.as_deref() {
-            Some("turn_completed") => {
-                if let Some(at) = at {
+            Some("turn_completed") => match at {
+                Some(at) => {
                     let theirs = subagents.used(&cursor.subagents, cursor.ended, at)?;
                     turn(&update, at, session, &theirs, read);
                     cursor.ended = Some(at);
                 }
-            }
+                None => read.skipped += 1,
+            },
             Some("subagent_spawned") => {
                 if let Some(child) = update.child_session_id.filter(|child| !child.is_empty()) {
                     read.session(&INFO.session(&child)).parent = Some(session.to_owned());
@@ -365,6 +368,8 @@ impl Subagents<'_> {
             if update.kind.as_deref() == Some("turn_completed") {
                 let used = update
                     .used()
+                    .into_iter()
+                    .flatten()
                     .filter_map(|(model, used)| Some((model.into_owned(), used?)))
                     .collect();
                 turns.push((at, used));
@@ -381,10 +386,11 @@ fn turn(
     subagents: &[(String, Used)],
     read: &mut Read,
 ) {
-    let Some(prompt) = update.prompt_id.as_deref() else {
+    let (Some(prompt), Some(models)) = (update.prompt_id.as_deref(), update.used()) else {
+        read.skipped += 1;
         return;
     };
-    for (model, used) in update.used() {
+    for (model, used) in models {
         let Some(used) = used else {
             read.skipped += 1;
             continue;
@@ -441,6 +447,29 @@ mod tests {
 
     fn update(at: i64, update: Value) -> Value {
         json!({"timestamp": at, "params": {"update": update}})
+    }
+
+    #[test]
+    fn a_turn_without_its_prompt_time_or_usage_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = json!({"modelUsage": {"grok-4.6-build": used(30000, 20000, 3, 133_892_000)}});
+        let file = updates(
+            dir.path(),
+            "s1",
+            &[
+                update(
+                    1_790_000_060,
+                    json!({"sessionUpdate": "turn_completed", "promptId": "p1", "usage": usage}),
+                ),
+                json!({"params": {"update": {"sessionUpdate": "turn_completed", "prompt_id": "p2", "usage": usage}}}),
+                update(
+                    1_790_000_120,
+                    json!({"sessionUpdate": "turn_completed", "prompt_id": "p3", "usage": {"models": usage["modelUsage"]}}),
+                ),
+            ],
+        );
+        let read = GrokBuild.read(&file, "").unwrap();
+        assert_eq!((read.responses.len(), read.skipped), (0, 3));
     }
 
     #[test]

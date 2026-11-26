@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`doctor` shows usage an agent writes without a field Turnscope needs.**
+  A Codex thread with no id, a Grok Build turn with no prompt id or time, a
+  Pi session with no id or a reply with no provider, a Claude Code reply
+  with no message, or an OpenCode reply with a token count renamed was left
+  out of usage with nothing said. Each such line now shows in `doctor` as
+  one that couldn't be read.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

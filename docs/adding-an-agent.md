@@ -190,6 +190,11 @@ Rules:
   taken as the agent's only where the text opens with it: further in, the
   user typed it, and what follows is theirs. A command of the agent's
   own, such as `/clear`, asks for no work, so it's no title.
+- **What can't be counted shows.** A line that holds usage but lacks a
+  field the reader needs to count it, such as a count, the response's id,
+  its time or its session, adds to `read.skipped`, so `doctor` says the
+  agent may write a newer format. Only a field the agent leaves out on
+  purpose, as a count before any usage, is passed over without a word.
 - **Growing files.** Reading a file in two parts, the second from the
   cursor the first returned, gives what reading it whole does.
 - **Changing a reader later.** If a change would read a file already read
