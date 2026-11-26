@@ -51,7 +51,6 @@ struct SettingsPage: View {
                 tabShortcut(.agents, key: "2")
                 tabShortcut(.accounts, key: "3")
             }
-            .hiddenShortcut()
         }
         .focusable()
         .focusEffectDisabled()
@@ -64,6 +63,7 @@ struct SettingsPage: View {
     private func tabShortcut(_ tab: SettingsTab, key: KeyEquivalent) -> some View {
         Button(tab.title) { ui.setTab(tab) }
             .keyboardShortcut(key, modifiers: .command)
+            .hiddenShortcut()
     }
 
     private func stepTab(_ delta: Int) -> KeyPress.Result {

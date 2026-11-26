@@ -18,10 +18,30 @@ extension View {
             withAnimation(.easeOut(duration: 0.16)) { copied.wrappedValue = false }
         }
     }
+
+    /// Attaches a tooltip only when non-nil, so an empty string never shadows an ancestor's help.
+    @ViewBuilder
+    func optionalHelp(_ text: String?) -> some View {
+        if let text, !text.isEmpty {
+            help(text)
+        } else {
+            self
+        }
+    }
 }
 
 /// Just under critically damped: it overshoots by under 0.1%, so nothing visibly wobbles.
 let spring = Animation.spring(response: 0.25, dampingFraction: 0.92)
+
+/// Uses `spring` normally; under Reduce Motion, suppresses movement (`nil`) or uses a short
+/// fade for opacity-only page/tab transitions (`docs/app.md#the-panel`).
+@MainActor
+func withMotion<Result>(fade: Bool = false, _ body: () throws -> Result) rethrows -> Result {
+    let animation: Animation? = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        ? (fade ? .easeOut(duration: 0.12) : nil)
+        : spring
+    return try withAnimation(animation, body)
+}
 
 /// Expanded content fades in right as layout opens, and fades out at once.
 @MainActor let appears = AnyTransition.asymmetric(
@@ -134,6 +154,8 @@ struct PillButton: ButtonStyle {
             let active = isEnabled && (filled || hover)
             configuration.label
                 .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .foregroundStyle(active ? .primary : .secondary)
                 .padding(.horizontal, 10)
                 .frame(height: 22)
@@ -165,21 +187,59 @@ struct RoundButton: ButtonStyle {
     }
 }
 
+private struct SegmentButton: ButtonStyle {
+    var selected: Bool
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        Hover { hover in
+            let active = isEnabled && (selected || hover)
+            configuration.label
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .foregroundStyle(active ? .primary : .secondary)
+                .padding(.horizontal, 9)
+                .frame(height: 20)
+                .background {
+                    if selected {
+                        Capsule()
+                            .fill(scheme == .dark
+                                ? Color.white.opacity(contrast == .increased ? 0.24 : 0.16)
+                                : Color.white.opacity(contrast == .increased ? 1.0 : 0.92))
+                            .shadow(color: .black.opacity(scheme == .dark ? 0.22 : 0.10), radius: 1, y: 0.5)
+                    } else if hover || configuration.isPressed {
+                        Capsule()
+                            .fill(Color.primary.opacity(configuration.isPressed ? 0.12 : 0.06))
+                    }
+                }
+                .opacity(isEnabled ? 1 : 0.5)
+        }
+    }
+}
+
 struct Choice<Value: Hashable>: View {
     var label: String
     var options: [(value: Value, title: String)]
     var selection: Value
     var onSelect: (Value) -> Void
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options.indices, id: \.self) { index in
                 let (value, title) = options[index]
                 Button(title) { onSelect(value) }
-                    .buttonStyle(PillButton(filled: value == selection))
+                    .buttonStyle(SegmentButton(selected: value == selection))
                     .accessibilityAddTraits(value == selection ? .isSelected : [])
             }
         }
+        .padding(2)
+        .background(
+            Capsule().fill(Color.primary.opacity(contrast == .increased ? 0.10 : 0.06))
+        )
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
     }
@@ -226,6 +286,7 @@ struct Switch: View {
     var label: String
     @Binding var on: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button { on.toggle() } label: {
@@ -238,7 +299,7 @@ struct Switch: View {
                         .shadow(color: .black.opacity(0.18), radius: 1, y: 0.5)
                         .padding(2)
                 }
-                .animation(spring, value: on)
+                .animation(reduceMotion ? nil : spring, value: on)
                 .opacity(isEnabled ? 1 : 0.5)
         }
         .buttonStyle(.plain)
