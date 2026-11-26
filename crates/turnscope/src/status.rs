@@ -495,13 +495,12 @@ pub struct Work {
     pub left_minutes: Option<MinutesLeft>,
 }
 
-/// Minutes of work left, as they're said (`minutes`): the fewest and the
-/// most of the 80% range, and the likely.
+/// Minutes of work left, as they're said (`minutes`): the fewest, at the
+/// fast end of the work rate, and the likely.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MinutesLeft {
     pub low: i64,
     pub likely: i64,
-    pub high: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1039,13 +1038,13 @@ fn work(
         return Ok(None);
     };
     let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
-    let left_minutes = forecast::work_left(left, rate, forecast::work_band(length), until).map(
-        |(low, likely, high)| MinutesLeft {
-            low: minutes(low),
-            likely: minutes(likely),
-            high: minutes(high),
-        },
-    );
+    let left_minutes =
+        forecast::work_left(left, rate, forecast::work_fast(length), until).map(|(low, likely)| {
+            MinutesLeft {
+                low: minutes(low),
+                likely: minutes(likely),
+            }
+        });
     Ok(Some(Work {
         rate_per_hour: tenths(rate),
         left_minutes,
@@ -1558,8 +1557,7 @@ mod tests {
     }
 
     /// Three hours of Sonnet, then one of Opus, over which Weekly (Opus)
-    /// rose 8 points: 8% an hour of work, not 2%. Its reset, 54m 40s off,
-    /// holds the most work left, which reads as lasting to it.
+    /// rose 8 points: 8% an hour of work, not 2%.
     #[test]
     fn a_limit_on_one_model_is_worked_by_that_models_responses() {
         let dir = tempfile::tempdir().unwrap();
@@ -1595,7 +1593,7 @@ mod tests {
         assert_eq!(work.left_minutes.unwrap().likely, 30);
         let said = limit_text(&status.accounts[0].limits[0], now);
         assert!(
-            said.contains("About 30m of work left (10m or more)"),
+            said.contains("About 30m of work left (as little as 10m)"),
             "{said}"
         );
     }

@@ -367,11 +367,14 @@ says how to run it). `status.rs` applies it.
   or when the run-out is too far off to tell.
 - **The fast end** is the pace times `FAST`, which the pace that followed
   stayed under 90% of the time in the backtest. It gives the least left at
-  the reset and the soonest a limit runs out. There's no slow end: use
-  often stops.
+  the reset and the soonest a limit runs out. A least of 0% isn't said:
+  it was half the forecasts of weeks and months, and 21% of those ran out
+  against 16% of the rest. There's no slow end: use often stops.
 - **Work left** divides what's left by the work rate, measured over recent
-  hours of work on the account. Its range is the rate times `work_band`,
-  which the next hours of work stayed within 80% of the time in the backtest.
+  hours of work on the account. The fewest hours are at the rate times
+  `work_fast`, which the next hours of work stayed under 90% of the time in
+  the backtest. There's no slow end: the most hours it gave reached the
+  reset on 97% of 5-hour forecasts.
 
 ## Alerts
 

@@ -42,8 +42,7 @@
             "ratePerHour": 25.0,
             "leftMinutes": {
               "low": 40,
-              "likely": 70,
-              "high": 130
+              "likely": 70
             }
           }
         },

@@ -129,11 +129,11 @@ zero or more, decimals too.
 ```console
 $ turnscope status
 Claude Max (me@example.com) · via Claude Code · in use
-  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (20m–1h 40m), at 40.9% an hour of work.
-  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (7h 50m–53h), at 3% an hour of work.
+  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (as little as 20m), at 40.9% an hour of work.
+  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset. About 19h of work left (as little as 7h 50m), at 3% an hour of work.
 
 ChatGPT Plus (me@example.com) · via Codex
-  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset (as little as 0%).
+  Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset.
 
 OpenRouter API key · via Pi
   Credits: $35.00 of $50.00 left. Doesn't reset.
@@ -146,9 +146,8 @@ SuperGrok (me@example.com) · via Grok Build
 
 "At this pace" uses clock time, breaks included. "Of work" counts only the
 hours your agents were working: the work rate, `40.9% an hour of work`, is
-how much of the limit an hour of it uses. Ranges of work left are 80%
-ranges; "as little as" and "as soon as" are at a pace that went faster
-only 1 time in 10.
+how much of the limit an hour of it uses. "As little as" and "as soon as"
+are at a pace that went faster only 1 time in 10.
 [architecture.md](architecture.md#forecast) says how both are worked out.
 
 With no account to show, it says why in one line: no account's limits have
@@ -162,7 +161,7 @@ account, named. With `--json`, `fit` is a list of each account's
 
 ```console
 $ turnscope status --hours 3
-- Claude Max (me@example.com): 3 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 40m); it resets 14:00 (in 2h).
+- Claude Max (me@example.com): 3 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h).
 - ChatGPT Plus (me@example.com): whether 3 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
 - OpenRouter API key: whether 3 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
 - SuperGrok (me@example.com): whether 3 more hours of work fit can't be told: its login was refused.
@@ -233,7 +232,7 @@ the rest, each `null` when rows get none.
 
 ```console
 $ turnscope usage --account claude --limit week
-Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset (as little as 0%). About 19h of work left (7h 50m–53h), at 3% an hour of work.
+Claude Max (me@example.com) · Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset. About 19h of work left (as little as 7h 50m), at 3% an hour of work.
 Mon Sep 28 00:00 to Thu Oct 1 12:00: 27 responses, $0.50
 
   Session                                                   Responses   Cost  % of Weekly

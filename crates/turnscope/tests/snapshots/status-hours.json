@@ -40,7 +40,6 @@
           },
           "work": {
             "leftMinutes": {
-              "high": 100,
               "likely": 40,
               "low": 20
             },
@@ -72,7 +71,6 @@
           },
           "work": {
             "leftMinutes": {
-              "high": 3180,
               "likely": 1140,
               "low": 470
             },
@@ -96,7 +94,7 @@
   "fit": [
     {
       "account": "anthropic:acct-1:org-1",
-      "fit": "3 more hours of work don't fit: 5 hours runs out after about 40m of work (20m–1h 40m); it resets 14:00 (in 2h)."
+      "fit": "3 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h)."
     }
   ]
 }
