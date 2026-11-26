@@ -62,9 +62,7 @@ const SELECT_REPRICED: &str = concat!(
     response_columns!(),
     ", agent, cost FROM response
      WHERE cost IS NULL OR EXISTS (
-         SELECT 1 FROM repriced
-         WHERE repriced.provider = response.provider
-           AND repriced.model = response.model
+         SELECT 1 FROM repriced WHERE repriced.model = response.model
      )"
 );
 
@@ -573,27 +571,20 @@ impl Derived {
     }
 }
 
-/// Price again, in `tx`, every response of `models` (by provider and
-/// model), priced for the first time in it, and every response with no
-/// known cost, which may take a model's maker's price (`prices::Prices::cost`).
-/// A model's usage from before its first price takes it: kept, an agent's
-/// own estimate left an OpenCode response of 1M input tokens at $0.001,
-/// where a fresh read gave $2.00.
+/// Price again, in `tx`, every response whose model is in `models`, priced
+/// for the first time in it (under any provider, since a response may take its
+/// model's maker's price via `prices::Prices::cost`), and every response with
+/// no known cost. A model's usage from before its first price takes it: kept,
+/// an agent's own estimate left an OpenCode response of 1M input tokens at
+/// $0.001, where a fresh read gave $2.00.
 pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> {
     // One scan, over a query per model, as `response` has no index on
     // `(provider, model)`: 12 ms against 72 ms on 50,000 responses and 20
     // models (2026-11-20).
-    tx.execute(
-        "CREATE TEMP TABLE repriced (
-             provider TEXT NOT NULL,
-             model TEXT NOT NULL,
-             PRIMARY KEY (provider, model)
-         )",
-        [],
-    )?;
-    let mut add = tx.prepare("INSERT OR IGNORE INTO repriced (provider, model) VALUES (?1, ?2)")?;
-    for (provider, model) in models {
-        add.execute(params![provider, model])?;
+    tx.execute("CREATE TEMP TABLE repriced (model TEXT PRIMARY KEY)", [])?;
+    let mut add = tx.prepare("INSERT OR IGNORE INTO repriced (model) VALUES (?1)")?;
+    for (_, model) in models {
+        add.execute([model])?;
     }
     drop(add);
     let rows: Vec<(String, Option<f64>, Response)> = tx
@@ -1302,5 +1293,40 @@ mod tests {
         write(now - 30_000, 90.0);
         assert!(ingest(&mut db, home.path(), None).unwrap());
         assert_eq!(left(&db), (true, vec![70, 85]));
+    }
+
+    #[test]
+    fn price_again_reprices_maker_fallback_responses_with_an_agent_estimate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        db.execute(
+            "INSERT INTO price VALUES
+                 ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL)",
+            [],
+        )
+        .unwrap();
+        // Recorded under Google (Antigravity) with an agent estimate before
+        // models.dev listed Anthropic's price for the model.
+        response(
+            &db,
+            ("antigravity", "/g", "google", None),
+            "r1",
+            0,
+            "claude-opus-5-5",
+            Some(0.001),
+        );
+        db.execute("UPDATE response SET recorded = 0.001 WHERE id = 'r1'", [])
+            .unwrap();
+        let tx = crate::db::write(&mut db).unwrap();
+        price_again(
+            &tx,
+            &[("anthropic".to_owned(), "claude-opus-5-5".to_owned())],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            one::<f64>(&db, "SELECT cost FROM response WHERE id = 'r1'"),
+            5.0
+        );
     }
 }
