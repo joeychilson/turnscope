@@ -149,6 +149,13 @@ impl Account {
         }
     }
 
+    /// Why none of its limits are known: none were read, and it isn't read
+    /// now. One read with none, as a key whose provider Turnscope doesn't
+    /// ask, may still draw on credit or a spend cap.
+    pub fn unread(&self) -> Option<Stale> {
+        self.limits.is_empty().then(|| self.state.why()).flatten()
+    }
+
     /// Its limit `name` names, or an error naming the limits it has.
     pub fn limit(&self, name: &str) -> crate::Result<&Limit> {
         self.limits

@@ -569,6 +569,9 @@ fn guard(
         read_db
     };
     let status = status::status(&db, now())?;
+    if status.accounts.is_empty() {
+        return Ok(None);
+    }
     let account = match account {
         Some(name) => status::one_account(&status, name)?,
         None => match mcp::Caller::detect().account(&db, home, &status)? {
@@ -576,6 +579,9 @@ fn guard(
             None => return Ok(None),
         },
     };
+    if account.unread().is_some() {
+        return Ok(None);
+    }
     let found = account.limit(limit)?;
     if found.left_percent >= below {
         return Ok(None);
