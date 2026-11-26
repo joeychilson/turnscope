@@ -263,6 +263,10 @@ impl State {
             && self.problem.is_none()
             && !self.reading()
             && self.all().iter().any(|a| !a.hidden)
+            && self
+                .in_use()
+                .iter()
+                .all(|a| a.standing() == Standing::Lasts)
             && self.to_connect().is_none()
     }
 
@@ -517,6 +521,7 @@ impl State {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use turnscope::status::Outlook;
 
     const CLAUDE: &str = "anthropic:acct-1:org-1";
     const CODEX: &str = "openai:acct-2";
@@ -783,24 +788,33 @@ pub(crate) mod tests {
         let off = |core: &mut State| {
             core.apply(read(OpenAtLogin::Off), 0);
         };
-        assert!(!offered(example(), &|_| {}));
-        assert!(offered(example(), &off));
-        assert!(!offered(first_launch(), &off));
-        let mut connect = example();
+        // The example's Claude Max runs out: with its 5 hours lasting, every account in use does.
+        let mut calm = example();
+        calm.status.accounts[0].limits[0].outlook = Outlook::Lasts {
+            left_at_reset: None,
+        };
+        assert!(!offered(calm.clone(), &|_| {}));
+        assert!(offered(calm.clone(), &off));
+        assert!(!offered(example(), &off));
+        let mut reading = calm.clone();
+        reading.status.history_read = false;
+        assert!(!offered(reading, &off));
+        let mut connect = calm.clone();
         connect.agents[1].in_use = true;
         assert!(!offered(connect, &off));
-        assert!(!offered(example(), &|core| {
+        assert!(!offered(calm.clone(), &|core| {
             off(core);
             core.took(Event::Kept(Some(Stopped::Failing("Offline".into()))));
         }));
         // Turned on and off again, it's known: not offered again.
-        assert!(!offered(example(), &|core| {
+        assert!(!offered(calm.clone(), &|core| {
             core.apply(read(OpenAtLogin::On), 0);
             off(core);
         }));
 
-        let mut core = shown(example());
+        let mut core = shown(calm);
         off(&mut core);
+        assert!(core.sync().panel.offer_open_at_login);
         core.apply(Action::DismissOpenAtLogin {}, 0);
         let sync = core.sync();
         assert!(!sync.panel.offer_open_at_login);

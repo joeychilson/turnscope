@@ -125,10 +125,10 @@ The panel is 340 points wide. From the top:
 6. **An offer to open at login**, while macOS doesn't open Turnscope at
    login and no agent is offered: "Alerts come only while Turnscope runs.",
    with Turn on and Not now. It waits for the first read of history to end
-   and an account to show, and isn't shown while the data can't be kept
-   current. Either button puts it away for good, as does macOS opening
-   Turnscope at login, even if that's turned off later
-   ([Opening at login](#opening-at-login)).
+   and an account to show, and isn't shown while an account in use is
+   running out or used up, or while the data can't be kept current. Either
+   button puts it away for good, as does macOS opening Turnscope at login,
+   even if that's turned off later ([Opening at login](#opening-at-login)).
 7. **The footer**: "Not up to date" and why while the data can't be kept
    current, "Reading your agents' history…" during the first read, or
    "Refreshing limits…" until a refresh ⌘R forced has read the limits.
