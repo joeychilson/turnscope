@@ -17,6 +17,8 @@
 - **A limit that reset since it was last read says it's full since the
   reset** in the panel's headline detail instead of "As last read, ...
   has 100% left".
+- **The macOS app binary is 3.6 MiB smaller** (10.0 MiB instead of 13.6 MiB
+  universal): release builds strip dead code when linking.
 - **Codex's responses after fast mode is turned off cost the standard
   rate**, not the fast one. The history is read again once, to price them
   anew.
