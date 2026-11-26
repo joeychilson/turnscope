@@ -57,8 +57,9 @@ wait for it, and after a second say
   `opus` names Weekly (Opus). The name the [status line](#status-line)
   shows names a limit too: `5h`. A model's limit takes its model after its
   name, as `status` shows it, or before it, as the app does:
-  `"weekly (opus)"` or `"opus weekly"`. A limit is named as a sentence
-  says it too, as `guard` does: `"5-hour limit"`, `"weekly limit"`. A
+  `"weekly (opus)"` or `"opus weekly"`. Where no limit's name holds the
+  name as given, it's read as a sentence says it, as `guard` does:
+  `"5-hour limit"` names 5 hours, and `"weekly limit"` Weekly. A
   key's limit is named by the agents that hold the key too: `pi` names
   Pi's key limit. A name that fits several limits names the first by key.
 - **Agents** are named by id: `claude-code`, `codex`, `opencode`, `pi`,

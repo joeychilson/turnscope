@@ -772,6 +772,38 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
     // above names it.
     assert_eq!(guard("claude", "5h", "50").status.code(), Some(2));
     assert_eq!(guard("claude", "5-hour limit", "50").status.code(), Some(2));
+    // Nothing is left of "-limit" to name a limit by: not even "limit",
+    // which the key's own limit's name holds.
+    let args = [
+        "guard",
+        "--account",
+        "openrouter",
+        "--limit=-limit",
+        "--below",
+        "100",
+    ];
+    let refused = turnscope(data.path(), &args);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("has no limit named -limit;"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    // A guardrail on the OpenRouter key, as its "weekly key guardrail
+    // limit", sorts before the key's own limit, which "key limit" names.
+    turnscope::db::open(data.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO reading (account, limit_key, at, name, used, size, starts, resets)
+                 VALUES ('openrouter:api', 'budget-api_key-gr_2-0123456789abcdef', ?1, 'Weekly key guardrail', 80, 25, ?2, ?3)",
+            [NOW - HOUR / 6, NOW - 60 * HOUR, NOW + 108 * HOUR],
+        )
+        .unwrap();
+    let key = guard("openrouter", "key limit", "100");
+    assert_eq!(
+        String::from_utf8_lossy(&key.stderr).trim(),
+        "OpenRouter API key's weekly key limit has 55% left, under 100%. It resets Tue 00:00 (in 4d 12h)."
+    );
     // One it can't follow blocks nothing.
     assert_eq!(guard("claude", "month", "50").status.code(), Some(1));
     // Nor does one mistyped.
@@ -806,9 +838,6 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
     assert_eq!(quiet(turnscope(none.path(), &args)), (Some(0), true));
 }
 
-/// A new session isn't read yet, as a status line never catches up: its
-/// agent's own account shows, not that of whichever agent ran last in its
-/// folder.
 /// A limit named as Turnscope writes it in a sentence, and a time in any
 /// case, answer as the names `status` shows and the times `--help` lists.
 #[test]
@@ -846,6 +875,9 @@ fn explain_usage_reads_names_and_times_as_turnscope_writes_them() {
     }
 }
 
+/// A new session isn't read yet, as a status line never catches up: its
+/// agent's own account shows, not that of whichever agent ran last in its
+/// folder.
 #[test]
 fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
     let data = store();
