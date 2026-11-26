@@ -1150,6 +1150,29 @@ fn check_limits_of_one_account_says_its_fit_and_verdict_in_one_line() {
     );
 }
 
+/// Claude Max's 5 hours has 25% left at 40.9% an hour of work: 36.7
+/// minutes, said as about 40m. 37 minutes of work run it out, and 36 fit.
+#[test]
+fn hours_of_work_fit_by_the_minutes_left_not_as_they_are_said() {
+    let data = store();
+    let fit = |hours: &str| {
+        let output = turnscope(
+            data.path(),
+            &["status", "--account", "claude", "--hours", hours],
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        text.lines().next().unwrap().to_owned()
+    };
+    assert_eq!(
+        fit("0.62"),
+        "Claude Max (me@example.com): 0.62 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h)."
+    );
+    assert_eq!(
+        fit("0.6"),
+        "Claude Max (me@example.com): 0.6 more hours of work fit at your work rate, leaving under 1% of 5 hours, about 54% of Weekly."
+    );
+}
+
 /// Pi's OpenRouter key: $9.00 of its $20.00 weekly limit used, by $0.00 of
 /// Pi's usage here.
 #[test]

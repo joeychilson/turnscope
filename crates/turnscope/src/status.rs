@@ -228,8 +228,7 @@ pub enum State {
     #[serde(rename_all = "camelCase")]
     Live { read_at: i64 },
     /// As of an earlier read, why not since, and the minutes agents here
-    /// worked on it since, as they're said (`minutes`): what they used
-    /// isn't in that read.
+    /// worked on it since: what they used isn't in that read.
     #[serde(rename_all = "camelCase")]
     AsOf {
         read_at: i64,
@@ -496,12 +495,13 @@ pub struct Work {
     pub left_minutes: Option<MinutesLeft>,
 }
 
-/// Minutes of work left, as they're said (`minutes`): the fewest, at the
-/// fast end of the work rate, and the likely.
+/// Minutes of work left: the fewest, at the fast end of the work rate, and
+/// the likely. Unrounded, as whether hours of work fit is told by them:
+/// rounded as they're said, 36.7 minutes were 40, and 37 minutes of work fit.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MinutesLeft {
-    pub low: i64,
-    pub likely: i64,
+    pub low: f64,
+    pub likely: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -646,13 +646,14 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             (Some(read_at), why) => State::AsOf {
                 read_at,
                 why: why.unwrap_or(Stale::ReadFailed),
-                worked_minutes: minutes(forecast::hours(forecast::slots_worked(
+                worked_minutes: forecast::slots_worked(
                     // Strictly after `read_at`, so a response at `read_at`
                     // doesn't hide later work in the same 5-minute slot.
                     &worked(db, &id, &[], None, read_at + 1)?,
                     read_at,
                     now,
-                ))),
+                ) * forecast::SLOT
+                    / MINUTE,
             },
             (None, why) => State::Unread {
                 why: why.unwrap_or(Stale::ReadFailed),
@@ -1044,8 +1045,8 @@ fn work(
     let left_minutes =
         forecast::work_left(left, rate, forecast::work_fast(length), until).map(|(low, likely)| {
             MinutesLeft {
-                low: minutes(low),
-                likely: minutes(likely),
+                low: low * 60.0,
+                likely: likely * 60.0,
             }
         });
     Ok(Some(Work {
@@ -1056,21 +1057,6 @@ fn work(
 
 fn tenths(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
-}
-
-/// `hours` of work in minutes, as they're said: to the minute under ten
-/// minutes, to ten minutes under ten hours, then to the hour. Rounded once:
-/// to a tenth of an hour first, 33 minutes was said as "about 40m".
-fn minutes(hours: f64) -> i64 {
-    let minutes = hours * 60.0;
-    let step = if minutes < 9.5 {
-        1.0
-    } else if minutes < 595.0 {
-        10.0
-    } else {
-        60.0
-    };
-    ((minutes / step).round() * step) as i64
 }
 
 /// The start of each slot of work on `account` from `since`, by the
@@ -1599,7 +1585,7 @@ mod tests {
         let work = status.accounts[0].limits[0].work.unwrap();
         assert_eq!(work.rate_per_hour, 8.0);
         // 4.4% left is 33 minutes of work.
-        assert_eq!(work.left_minutes.unwrap().likely, 30);
+        assert_eq!(work.left_minutes.unwrap().likely.round(), 33.0);
         let said = limit_text(&status.accounts[0].limits[0], now);
         assert!(
             said.contains("About 30m of work left (as little as 10m)"),

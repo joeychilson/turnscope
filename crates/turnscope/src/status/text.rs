@@ -4,25 +4,28 @@
 
 use super::{
     Account, Horizon, Limit, MinutesLeft, Moment, Outlook, Spend, Spread, Stale, Standing, State,
-    Status, Unknown, Work, minutes,
+    Status, Unknown, Work,
 };
 use crate::agents;
 use crate::time::{self, MINUTE};
 
 const UNDER: &str = "under 10m";
 
-/// Minutes of work as `minutes` rounds them: `1h 50m`, `26h`.
-fn worked(minutes: i64) -> String {
-    match minutes {
-        ..10 => UNDER.to_owned(),
-        10..600 => time::span(minutes * MINUTE),
-        _ => format!("{}h", minutes / 60),
+/// Minutes of work as people say them, rounded once: to ten minutes, `1h
+/// 50m`, and from ten hours, to the hour, `26h`.
+fn worked(minutes: f64) -> String {
+    if minutes < 9.5 {
+        UNDER.to_owned()
+    } else if minutes < 595.0 {
+        time::span((minutes / 10.0).round() as i64 * 10 * MINUTE)
+    } else {
+        format!("{}h", (minutes / 60.0).round())
     }
 }
 
 /// The likely minutes of work left, as a sentence says them: `about 1h 50m`,
 /// or `under 10m` alone, which is already no exact amount.
-fn about(minutes: i64) -> String {
+fn about(minutes: f64) -> String {
     match worked(minutes) {
         under if under == UNDER => under,
         amount => format!("about {amount}"),
@@ -292,16 +295,16 @@ fn first_out(account: &Account) -> Option<(&Limit, MinutesLeft)> {
         .iter()
         .filter(|limit| account.stands_by(limit))
         .filter_map(|limit| Some((limit, limit.work?.left_minutes?)))
-        .min_by_key(|(_, left)| left.likely)
+        .min_by(|(_, a), (_, b)| a.likely.total_cmp(&b.likely))
 }
 
 /// The likely minutes of work left before `limit` runs out, endless where
 /// that isn't measured.
-fn likely_left(limit: &Limit) -> i64 {
+fn likely_left(limit: &Limit) -> f64 {
     limit
         .work
         .and_then(|work| work.left_minutes)
-        .map_or(i64::MAX, |left| left.likely)
+        .map_or(f64::INFINITY, |left| left.likely)
 }
 
 /// Whether `hours` more of work fit each of `accounts`, after its title: a
@@ -376,7 +379,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
                     .limits
                     .iter()
                     .filter(still)
-                    .min_by_key(|limit| likely_left(limit))
+                    .min_by(|a, b| likely_left(a).total_cmp(&likely_left(b)))
             });
         let then = match limit {
             Some(limit) => format!(
@@ -389,11 +392,11 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
         };
         let why = format!(
             "{then}, and your agents have worked {} since",
-            about(worked_minutes)
+            about(worked_minutes as f64)
         );
         return (Fits::Untold, untold(&why), true);
     }
-    let mut out: Option<(&Limit, i64, Option<MinutesLeft>)> = None;
+    let mut out: Option<(&Limit, f64, Option<MinutesLeft>)> = None;
     let mut after = Vec::new();
     let mut untold_why = None;
     for limit in account
@@ -468,7 +471,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
 enum End {
     /// Out after these minutes of work, and the minutes it has left where
     /// that's before its reset.
-    Out(i64, Option<MinutesLeft>),
+    Out(f64, Option<MinutesLeft>),
     /// With this percent left.
     Leaves(f64),
 }
@@ -481,7 +484,7 @@ fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
     let rate = work.rate_per_hour;
     // Out before its reset, as forecast with the spread of work's pace.
     if let Some(left) = work.left_minutes
-        && (left.likely as f64) < hours * 60.0
+        && left.likely < hours * 60.0
     {
         return End::Out(left.likely, Some(left));
     }
@@ -502,7 +505,7 @@ fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
         None => (past, past),
     };
     match first * rate >= 100.0 {
-        true => End::Out(minutes(until + 100.0 / rate), None),
+        true => End::Out((until + 100.0 / rate) * 60.0, None),
         false => End::Leaves((100.0 - rate * last).max(0.0)),
     }
 }
@@ -1223,8 +1226,8 @@ mod tests {
         claude.limits[0].work = Some(Work {
             rate_per_hour: 3.8,
             left_minutes: Some(MinutesLeft {
-                low: 720,
-                likely: 960,
+                low: 720.0,
+                likely: 960.0,
             }),
         });
         let chatgpt = &mut status.accounts[1];
@@ -1244,8 +1247,8 @@ mod tests {
         status.accounts[1].limits[1].work = Some(Work {
             rate_per_hour: 41.6,
             left_minutes: Some(MinutesLeft {
-                low: 120,
-                likely: 140,
+                low: 120.0,
+                likely: 140.0,
             }),
         });
         assert!(room(&status, Some(5.0)).unwrap().starts_with(claude));
