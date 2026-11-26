@@ -43,7 +43,7 @@ struct AccountRow: View {
                             .help("Hide \(row.called) from the menu bar and the panel")
                             .accessibilityLabel("Hide \(row.called)")
                         if !lines {
-                            let left = Text(row.figure).foregroundStyle(row.standing.ink(lasting: .primary))
+                            let left = Text(row.figure).foregroundStyle(row.standing.color)
                             let then = Text(row.figureThen.map { " \($0)" } ?? "")
                                 .font(.name)
                                 .foregroundStyle(.secondary)
@@ -60,7 +60,7 @@ struct AccountRow: View {
                     if !lines {
                         Text(row.status)
                             .font(.small)
-                            .foregroundStyle(row.standing.ink(lasting: .secondary))
+                            .foregroundStyle(Urgency(standing: row.standing, lasting: .secondary))
                             .fixedSize(horizontal: false, vertical: true)
                             .transition(quickFade)
                             .allowsHitTesting(false)
@@ -155,7 +155,7 @@ private struct LimitLine: View {
         }
         let left = Text(limit.left)
             .fontWeight(.medium)
-            .foregroundStyle(limit.standing.ink(lasting: .primary))
+            .foregroundStyle(limit.standing.color)
         let size = Text(limit.size.map { " \($0)" } ?? "").foregroundStyle(.secondary)
 
         VStack(alignment: .leading, spacing: 5) {
@@ -199,7 +199,7 @@ struct Bar: View {
             .fill(.quaternary)
             .overlay(
                 BarFill(fraction: shown ? level : 0, nonZero: level > 0)
-                    .fill(standing.ink(lasting: .secondary))
+                    .fill(Urgency(standing: standing, lasting: .secondary))
             )
             .overlay {
                 if let tick = timeLeftFraction {

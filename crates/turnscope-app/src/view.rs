@@ -38,7 +38,6 @@ pub struct MenuBarSlot {
 #[serde(rename_all = "camelCase")]
 pub struct PanelModel {
     pub version: String,
-    pub has_status: bool,
     pub stopped: bool,
     pub can_refresh: bool,
     pub waiting: Option<WaitingModel>,
@@ -183,17 +182,7 @@ pub struct SettingsModel {
     pub api_keys: Vec<AccountModel>,
 }
 
-pub fn build_sync(s: &State, animated: bool, effects: Vec<Effect>) -> AppSync {
-    AppSync {
-        animated,
-        counting: s.counting(),
-        menu_bar: build_menu_bar(s),
-        panel: build_panel(s),
-        effects,
-    }
-}
-
-fn build_menu_bar(s: &State) -> MenuBarModel {
+pub fn build_menu_bar(s: &State) -> MenuBarModel {
     let words = s.words_now();
     let shown = s.in_menu_bar();
     let out_of_date = s.problem.is_some();
@@ -271,7 +260,6 @@ pub fn build_panel(s: &State) -> PanelModel {
 
     PanelModel {
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        has_status,
         stopped: s.stopped(),
         can_refresh: s.can_refresh(),
         waiting,

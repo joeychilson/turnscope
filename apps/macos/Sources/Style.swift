@@ -72,20 +72,17 @@ enum UrgencyHex {
 
 extension Standing {
     var color: Urgency { Urgency(standing: self) }
-
-    func ink(lasting: Color) -> AnyShapeStyle {
-        self == .lasts ? AnyShapeStyle(lasting) : AnyShapeStyle(color)
-    }
 }
 
 struct Urgency: ShapeStyle {
     var standing: Standing
+    var lasting: Color = .primary
 
     func resolve(in environment: EnvironmentValues) -> Color {
         let index = (environment.colorScheme == .dark ? 1 : 0)
             + (environment.colorSchemeContrast == .increased ? 2 : 0)
         return switch standing {
-        case .lasts: .primary
+        case .lasts: lasting
         case .runningOut: Color(hex: UrgencyHex.amber[index])
         case .usedUp: Color(hex: UrgencyHex.red[index])
         }
