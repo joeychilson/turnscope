@@ -581,9 +581,7 @@ fn apply(model: Option<&str>, tier: Option<&str>, cursor: &mut Cursor, read: &mu
             waiting.model = model.to_owned();
             read.respond(waiting);
         }
-        if cursor.model.as_deref() != Some(model) {
-            cursor.model = Some(model.to_owned());
-        }
+        cursor.model = Some(model.to_owned());
     }
 }
 
