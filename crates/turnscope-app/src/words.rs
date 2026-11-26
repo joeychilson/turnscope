@@ -5,7 +5,7 @@ use jiff::ZonedDateTime;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use serde::Serialize;
-use turnscope::alerts::{Alert, Kind as AlertKind};
+use turnscope::alerts::{Alert, Kind as AlertKind, replaces};
 use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{
     Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, Standing, State,
@@ -493,8 +493,8 @@ impl Words {
         };
         AlertNote {
             id: alert.id,
+            replaces: replaces(&alert.account, alert.limit.as_deref()),
             account: alert.account,
-            replaces: alert.replaces,
             sign_in: alert.kind == AlertKind::SignIn,
             title,
             subtitle,
@@ -1694,7 +1694,6 @@ mod tests {
             account_title: "Claude Max (me@example.com)".into(),
             limit: Some("five_hour".into()),
             limit_name: Some("5 hours".into()),
-            replaces: "limit:anthropic:a:five_hour".into(),
             resets: Some(moment("2026-09-30T15:00:00Z", Soon)),
             runs_out: Some(moment("2026-09-30T14:00:00Z", Soon)),
         };
@@ -1771,7 +1770,6 @@ mod tests {
             account_title: "OpenRouter API key".into(),
             limit: Some("credits".into()),
             limit_name: Some("Credits".into()),
-            replaces: "limit:openrouter:api:credits".into(),
             resets: None,
             runs_out: None,
             ..make_alert(kind)

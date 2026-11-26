@@ -599,7 +599,6 @@ pub(crate) mod tests {
             account_title: "OpenCode Go".into(),
             limit: None,
             limit_name: None,
-            replaces: format!("account:{OPENCODE_GO}"),
             resets: None,
             runs_out: None,
         };
@@ -833,7 +832,7 @@ pub(crate) mod tests {
         let panel = stopped.sync().panel;
         assert_eq!(panel.in_use[0].id, CLAUDE);
         assert_eq!(panel.settings.notify, Some(notify));
-        assert!(!panel.settings.can_edit_notify && !panel.can_refresh);
+        assert!(panel.stopped && !panel.can_refresh);
     }
 
     #[test]

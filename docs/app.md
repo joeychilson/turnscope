@@ -244,7 +244,8 @@ skipped or put off.
 
 Sparkle is bundled in `Contents/Frameworks/Sparkle.framework` and linked
 via `@executable_path/../Frameworks`. `Updater` starts it only when
-`SUPublicEDKey` is set, which only the release build does
+`SUPublicEDKey` is set: `scripts/app.sh` writes `SPARKLE_PUBLIC_KEY`
+there, which only the release sets
 ([development.md](development.md#release)).
 
 ## Opening at login

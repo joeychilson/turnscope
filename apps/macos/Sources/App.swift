@@ -92,10 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     show(opening: opening)
                 }
             }
-            if panelOpen, ui.page == .main, let pending = ui.pendingAccount {
-                ui.pendingAccount = nil
-                ui.openInPlace(pending, panel: sync.panel)
-            }
+            openPending()
         }
         for effect in sync.effects {
             switch effect {
@@ -272,6 +269,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// Opens a clicked notification's account once there's a status to open it in.
+    private func openPending() {
+        guard panelOpen, bridge.panel.hasStatus, let account = ui.pendingAccount else { return }
+        ui.pendingAccount = nil
+        ui.openInPlace(account, panel: bridge.panel)
+    }
+
     private func show(opening: Opening? = nil, account: String? = nil) {
         guard let panel else { return }
         let alreadyOpen = panelOpen
@@ -284,12 +288,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ui.apply(opening, panel: bridge.panel)
         }
         if let account {
-            if bridge.panel.hasStatus {
-                ui.pendingAccount = nil
-                ui.openInPlace(account, panel: bridge.panel)
-            } else {
-                ui.pendingAccount = account
-            }
+            ui.pendingAccount = account
+            openPending()
         }
         if alreadyOpen {
             panel.makeKeyAndOrderFront(nil)

@@ -20,7 +20,7 @@ use crate::{Error, Result};
 /// next found, moved too: read again only at its path, a thread Codex
 /// archives kept what the older reader made of it. A file never found
 /// again, as one its agent deleted, keeps what it made.
-const READERS: i64 = 9;
+const READERS: i64 = 10;
 
 /// How long a transaction writes history before it lets the write lock go,
 /// and for how long: another process's write waits 10 s (`db::open`), and
@@ -309,11 +309,6 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     // Again: a newer one may have written while this waited for the lock.
     crate::db::writing(db)?;
 
-    let (readers, first): (i64, bool) =
-        db.query_row("SELECT readers, history_at IS NULL FROM state", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-
     let due = due(db, home)?;
     let mut wrote = false;
     let mut projects = HashMap::new();
@@ -335,9 +330,15 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
                     }
                 }
             });
+            // Between shares too: started at once, the next share's write
+            // kept another process's waiting through both, up to 1.9 s.
+            let mut committed: Option<Instant> = None;
             for (share, read) in reads {
                 let mut files = share.iter().zip(read).peekable();
                 while files.peek().is_some() {
+                    if let Some(at) = committed {
+                        std::thread::sleep(PAUSE.saturating_sub(at.elapsed()));
+                    }
                     let tx = crate::db::write(db)?;
                     let derived = Derived::load(&tx)?;
                     // Each folder's logins, read once a write: Codex writes
@@ -354,9 +355,7 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
                         }
                     }
                     tx.commit()?;
-                    if files.peek().is_some() {
-                        std::thread::sleep(PAUSE);
-                    }
+                    committed = Some(Instant::now());
                 }
             }
             Ok(())
@@ -370,7 +369,7 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     // it ran. `readers` says, after `READERS` was raised, that all was read
     // again: raised before, a read cut short would go on at the next with
     // no word that it reads all (`waits`).
-    if first || readers != READERS {
+    if !all_read(db)? {
         let tx = crate::db::write(db)?;
         tx.execute(
             "UPDATE state SET history_at = coalesce(history_at, ?1), readers = ?2",

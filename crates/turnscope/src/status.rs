@@ -593,7 +593,8 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
         "SELECT id, provider, kind, title, label, hidden, read_at, problem,
              EXISTS (SELECT 1 FROM response WHERE account = a.id AND at >= ?2),
              (SELECT reads FROM failing WHERE account = a.id),
-             full_read_at, checked_at, {}
+             full_read_at, checked_at, {},
+             (SELECT min(since) FROM sign_in WHERE account = a.id)
          FROM account a",
         Account::in_use_sql()
     ))?;
@@ -605,6 +606,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
         let failed: Option<i64> = row.get(9)?;
         let full_read_at: Option<i64> = row.get(10)?;
         let checked_at: Option<i64> = row.get(11)?;
+        let known: Option<i64> = row.get(13)?;
         // Readings an agent wrote after the read that failed, as Codex does
         // as it works, are current (`limits::record_in_band`).
         let problem = problem.filter(|_| {
@@ -623,18 +625,18 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             (Some(read_at), why) => State::AsOf {
                 read_at,
                 why: why.unwrap_or(Stale::ReadFailed),
-                worked_minutes: minutes(forecast::hours(
+                worked_minutes: minutes(forecast::hours(forecast::slots_worked(
                     &worked(db, &id, &[], None, read_at)?,
                     read_at,
                     now,
-                )),
+                ))),
             },
             (None, why) => State::Unread {
                 why: why.unwrap_or(Stale::ReadFailed),
             },
         };
         let limits = match read_at {
-            Some(read_at) => limits(db, &id, read_at, full_read_at, &keys, now)?,
+            Some(read_at) => limits(db, &id, read_at, full_read_at, known, &keys, now)?,
             None => Vec::new(),
         };
         let kind: Kind = row.get(2)?;
@@ -851,9 +853,10 @@ fn latest(db: &rusqlite::Connection, account: &str, since: i64, now: i64) -> Res
     // is last in `reading`'s primary key, so each such query reads every
     // limit's rows. With five limits read every 5 minutes for 30 days, made
     // up, that took 6.6 ms an account, and this 2.7 ms.
-    let from = latest.iter().fold(now - WORKED, |from, limit| {
-        from.min(limit.starts.unwrap_or(limit.at - DAY))
-    });
+    let from = latest
+        .iter()
+        .filter_map(|limit| limit.starts)
+        .fold(now - WORKED, i64::min);
     let mut rows = db.prepare_cached(
         "SELECT limit_key, at, used, starts, resets FROM reading
          WHERE account = ?1 AND at >= ?2 ORDER BY at",
@@ -881,6 +884,7 @@ fn limits(
     account: &str,
     read_at: i64,
     full_read_at: Option<i64>,
+    known: Option<i64>,
     keys: &BTreeMap<String, Vec<String>>,
     now: i64,
 ) -> Result<Vec<Limit>> {
@@ -889,11 +893,6 @@ fn limits(
     if latest.is_empty() {
         return Ok(Vec::new());
     }
-    let known: Option<i64> = db.query_row(
-        "SELECT min(since) FROM sign_in WHERE account = ?1",
-        [account],
-        |row| row.get(0),
-    )?;
     // The slots of work, by the models and key whose responses count.
     let mut slots: BTreeMap<(Vec<String>, Option<String>), Vec<i64>> = BTreeMap::new();
     let mut limits = Vec::new();
@@ -916,15 +915,6 @@ fn limits(
             resets,
             history,
         } = limit;
-        // Its current window's: those that reset with it.
-        let readings: Vec<(i64, f64)> = history
-            .iter()
-            .filter(|reading| {
-                reading.at >= starts.unwrap_or(limit_read_at - DAY)
-                    && forecast::same_reset(resets, reading.resets)
-            })
-            .map(|reading| (reading.at, reading.used))
-            .collect();
         let stale = reset_since.is_some() || now - limit_read_at > STALE;
         let outlook = match (starts, resets) {
             _ if reset_since.is_none() && used >= 100.0 => Outlook::UsedUp {
@@ -937,7 +927,15 @@ fn limits(
                 &Window {
                     starts,
                     resets,
-                    readings,
+                    // Its current window's: those that reset with it.
+                    readings: history
+                        .iter()
+                        .filter(|reading| {
+                            reading.at >= starts
+                                && forecast::same_reset(Some(resets), reading.resets)
+                        })
+                        .map(|reading| (reading.at, reading.used))
+                        .collect(),
                 },
                 now,
             ),
@@ -1017,12 +1015,13 @@ fn work(
         return Ok(None);
     };
     let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
-    let left_minutes = forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
-        .map(|(low, likely, high)| MinutesLeft {
+    let left_minutes = forecast::work_left(left, rate, forecast::work_band(length), until).map(
+        |(low, likely, high)| MinutesLeft {
             low: minutes(low),
             likely: minutes(likely),
             high: minutes(high),
-        });
+        },
+    );
     Ok(Some(Work {
         rate_per_hour: tenths(rate),
         left_minutes,

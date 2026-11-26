@@ -28,13 +28,9 @@ impl Kind {
     }
 
     fn parse(text: &str) -> Option<Kind> {
-        match text {
-            "runningOut" => Some(Kind::RunningOut),
-            "usedUp" => Some(Kind::UsedUp),
-            "reset" => Some(Kind::Reset),
-            "signIn" => Some(Kind::SignIn),
-            _ => None,
-        }
+        [Kind::RunningOut, Kind::UsedUp, Kind::Reset, Kind::SignIn]
+            .into_iter()
+            .find(|kind| kind.as_str() == text)
     }
 }
 
@@ -54,9 +50,6 @@ pub struct Alert {
     pub limit: Option<String>,
     /// The limit's name. None for `signIn`.
     pub limit_name: Option<String>,
-    /// The notification it takes the place of: `limit:<account>:<key>` or
-    /// `account:<account>`, so a reset replaces the warning before it.
-    pub replaces: String,
     /// When the limit's window resets. None for `signIn`, and for a limit
     /// that never resets, such as credits.
     pub resets: Option<Moment>,
@@ -285,7 +278,6 @@ fn alert(id: i64, kind: Kind, account: &str, limit: &str, detail: Detail, now: i
     Alert {
         id,
         kind,
-        replaces: replaces(account, limit.as_deref()),
         account: account.to_owned(),
         account_title: detail.account_title,
         limit,
@@ -390,7 +382,7 @@ mod tests {
         let used_up = status(DAY, 0, Outlook::UsedUp { back: None });
         let raised = raise(&mut db, &used_up).unwrap();
         assert_eq!(kinds(&raised), [Kind::UsedUp]);
-        assert_eq!(raised[0].replaces, "limit:anthropic:acct-1:org-1:five_hour");
+        assert_eq!(raised[0].limit.as_deref(), Some("five_hour"));
         assert!(raise(&mut db, &used_up).unwrap().is_empty(), "told once");
         assert_eq!(pending(&db, &used_up, DAY).unwrap().len(), 1);
         acknowledge(&mut db, raised[0].id).unwrap();
@@ -429,7 +421,7 @@ mod tests {
         let used_up = credits(DAY, 1000.0, 0.0);
         let raised = raise(&mut db, &used_up).unwrap();
         assert_eq!(kinds(&raised), [Kind::UsedUp]);
-        assert_eq!(raised[0].replaces, "limit:openrouter:api:credits");
+        assert_eq!(raised[0].limit.as_deref(), Some("credits"));
         assert_eq!(raised[0].resets, None);
         assert!(raise(&mut db, &used_up).unwrap().is_empty(), "told once");
         // Still used up at $1,010 bought, with more used than bought: a size

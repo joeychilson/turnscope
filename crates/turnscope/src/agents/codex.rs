@@ -264,8 +264,6 @@ struct Payload<'a> {
     #[serde(borrow)]
     model: Option<Cow<'a, str>>,
     #[serde(borrow)]
-    service_tier: Option<Cow<'a, str>>,
-    #[serde(borrow)]
     thread_settings: Option<&'a RawValue>,
     // token_count
     #[serde(borrow)]
@@ -468,12 +466,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
             if !copied {
                 read.cwd(thread, payload.cwd.as_deref());
             }
-            apply(
-                payload.model.as_deref(),
-                payload.service_tier.as_deref(),
-                cursor,
-                read,
-            );
+            apply(payload.model.as_deref(), cursor, read);
         }
         // Before any usage, a count has no `info`.
         ("event_msg", Some("token_count")) => {
@@ -491,10 +484,13 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
                 read.in_band(snapshot);
             }
         }
+        // The only line with the tier, in a snapshot of every setting: fast
+        // mode is `priority`, and once it's off there's no `service_tier`
+        // (openai/codex at `rust-v0.172.0`).
         ("event_msg", Some("thread_settings_applied")) => {
             if let Some(settings) = super::parsed::<Settings>(payload.thread_settings) {
-                let (model, tier) = (settings.model.as_deref(), settings.service_tier.as_deref());
-                apply(model, tier, cursor, read);
+                cursor.priority = settings.service_tier.as_deref() == Some("priority");
+                apply(settings.model.as_deref(), cursor, read);
             }
         }
         ("token_usage_record", _) => {
@@ -572,18 +568,13 @@ fn open(meta: &Payload<'_>, cursor: &mut Cursor, read: &mut Read) {
     cursor.thread = Some(thread);
 }
 
-fn apply(model: Option<&str>, tier: Option<&str>, cursor: &mut Cursor, read: &mut Read) {
-    if let Some(tier) = tier {
-        cursor.priority = tier == "priority";
-    }
+fn apply(model: Option<&str>, cursor: &mut Cursor, read: &mut Read) {
     if let Some(model) = model.filter(|model| !model.is_empty()) {
         for mut waiting in cursor.waiting.drain(..) {
             waiting.model = model.to_owned();
             read.respond(waiting);
         }
-        if cursor.model.as_deref() != Some(model) {
-            cursor.model = Some(model.to_owned());
-        }
+        cursor.model = Some(model.to_owned());
     }
 }
 
@@ -739,6 +730,14 @@ mod tests {
             "output_tokens": output, "reasoning_output_tokens": output / 2, "total_tokens": input + output})
     }
 
+    fn settings(ordinal: i64, settings: Value) -> Value {
+        line(
+            ordinal,
+            "event_msg",
+            json!({"type": "thread_settings_applied", "thread_settings": settings}),
+        )
+    }
+
     fn total(ordinal: i64, total: Value, last: Value) -> Value {
         line(
             ordinal,
@@ -759,24 +758,22 @@ mod tests {
             "t1",
             &[
                 line(0, "session_meta", json!({"id": "t1", "cwd": "/work/api"})),
-                line(
-                    1,
-                    "turn_context",
-                    json!({"model": "gpt-5.5", "service_tier": "priority"}),
-                ),
+                settings(1, json!({"model": "gpt-5.5", "service_tier": "priority"})),
                 line(
                     2,
                     "token_usage_record",
                     json!({"response_id": "resp_1", "usage": usage(1000, 600, 40)}),
                 ),
                 total(3, usage(1000, 600, 40), usage(1000, 600, 40)),
+                // Fast mode turned off.
+                settings(4, json!({"model": "gpt-5.5"})),
                 // A compaction's request: recorded, and left out of the total.
                 line(
-                    4,
+                    5,
                     "token_usage_record",
                     json!({"response_id": "resp_2", "usage": usage(500, 0, 10)}),
                 ),
-                total(5, usage(1000, 600, 40), usage(0, 0, 0)),
+                total(6, usage(1000, 600, 40), usage(0, 0, 0)),
             ],
         );
         let read = Codex.read(&file, "").unwrap();
@@ -797,6 +794,7 @@ mod tests {
             (first.model.as_str(), first.priority, first.session.as_str()),
             ("gpt-5.5", true, "codex:t1")
         );
+        assert!(!read.responses["resp_2"].priority);
         assert_eq!(read.sessions["codex:t1"].cwd.as_deref(), Some("/work/api"));
     }
 
@@ -928,11 +926,7 @@ mod tests {
                 line(3, "response_item", message("user", "Plan the migration.")),
                 total(4, usage(9000, 0, 90), usage(9000, 0, 90)),
                 // As a Codex before 2026-08-29 wrote it, naming no thread.
-                line(
-                    5,
-                    "event_msg",
-                    json!({"type": "thread_settings_applied", "thread_settings": {"model": "gpt-5.5"}}),
-                ),
+                settings(5, json!({"model": "gpt-5.5"})),
                 line(6, "response_item", message("user", "Check the indexes.")),
                 total(7, usage(9500, 0, 95), usage(500, 0, 5)),
             ],

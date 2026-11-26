@@ -88,7 +88,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 shellcheck scripts/*.sh
 actionlint
 cargo deny check advisories
+scripts/app.sh && scripts/check-app.sh target/debug/Turnscope.app
 ```
+
+The last line is the `app` job, built for this Mac only: CI builds the
+release for Apple silicon and Intel, from the same Swift.
 
 CI runs the tests in the `America/Chicago` time zone, so a test that takes
 local time for UTC fails there. Run `TZ=America/Chicago cargo test` to see
@@ -189,10 +193,10 @@ versions at least 7 days old. Sparkle is pinned to a version and checksum
 in `scripts/sparkle.sh`, and actionlint and cargo-deny to a version and
 checksum in `ci.yml`. These are updated by hand.
 
-The `rust` and `app` jobs and the release use Xcode 26.6, named in both
-workflows: `rust` compiles the app's wire models for the Rust–Swift
-contract test. A newer Xcode comes in a pull request that changes all
-three, once
+The `rust` and `app` jobs and the release's `build` and `publish` use
+Xcode 26.6, named in each: `rust` compiles the app's wire models for the
+Rust–Swift contract test. A newer Xcode comes in a pull request that
+changes all four, once
 [GitHub's macOS 26 image](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)
 has it.
 
@@ -235,7 +239,7 @@ The tag starts **Release** (`.github/workflows/release.yml`):
 |---|---|
 | `check` | Checks that the tag matches `Cargo.toml`, is on `main` and isn't released yet; that `CHANGELOG.md` has the version's notes; and that every secret and the variable are set |
 | `verify` | All of Verify |
-| `build` | Runs `scripts/app.sh --release` while `verify` runs, and hands the app to `publish`, which waits for both, as an artifact |
+| `build` | Runs `scripts/app.sh --release`, and hands the app to `publish`, which also waits for `verify`, as an artifact |
 | `publish` | Fetches Sparkle's tools with `scripts/sparkle.sh`, imports the certificate into a keychain made for the run, runs `scripts/sign-release.sh` with the keys, removes the keychain and the notary key, runs `scripts/check-app.sh` on the result, and publishes the release with the disk image and `appcast.xml` |
 
 The build and the keys are on separate runners. Whatever the build runs,

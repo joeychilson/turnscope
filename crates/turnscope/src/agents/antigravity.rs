@@ -266,48 +266,32 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
         let idx: i64 = row.get(0)?;
         let data = row.get_ref(1)?.as_bytes_or_null()?.unwrap_or(&[]);
         cursor.calls = idx + 1;
-        let mut chat = None;
-        let mut named = None;
-        for (n, value) in Fields(data) {
-            match (n, value) {
-                (1, Field::Bytes(bytes)) if chat.is_none() => chat = Some(bytes),
-                (2, Field::Bytes(mut steps)) if named.is_none() => named = varint(&mut steps),
-                (2, Field::Number(step)) if named.is_none() => named = Some(step),
-                _ => {}
-            }
-        }
-        let Some(chat) = chat else { continue };
-        let mut usage = None;
-        let mut model = None;
-        for (n, value) in Fields(chat) {
-            match (n, value) {
-                (4, Field::Bytes(bytes)) if usage.is_none() => usage = Some(bytes),
-                (19, Field::Bytes(bytes)) if model.is_none() => {
-                    model = std::str::from_utf8(bytes).ok().filter(|m| !m.is_empty());
-                }
-                _ => {}
-            }
-        }
-        let Some(usage) = usage else { continue };
-        let mut tokens = Tokens::default();
-        let mut message_id = None;
-        for (n, value) in Fields(usage) {
-            match (n, value) {
-                (2, Field::Number(v)) => tokens.input = v,
-                (3, Field::Number(v)) => tokens.output = v,
-                (4, Field::Number(v)) => tokens.cache_write_5m = v,
-                (5, Field::Number(v)) => tokens.cache_read = v,
-                (7, Field::Bytes(bytes)) if message_id.is_none() => {
-                    message_id = std::str::from_utf8(bytes).ok().filter(|id| !id.is_empty());
-                }
-                (9, Field::Number(v)) => tokens.reasoning = v,
-                _ => {}
-            }
-        }
+        let Some(chat) = bytes(data, 1) else { continue };
+        let Some(usage) = bytes(chat, 4) else {
+            continue;
+        };
+        let count = |n| number(usage, n).unwrap_or(0);
+        let tokens = Tokens {
+            input: count(2),
+            output: count(3),
+            cache_write_5m: count(4),
+            cache_read: count(5),
+            reasoning: count(9),
+            cache_write_1h: 0,
+        };
         // Still running, or failed: read again, not skipped.
         if tokens == Tokens::default() {
             continue;
         }
+        let (model, message_id) = (
+            bytes(chat, 19).and_then(text),
+            bytes(usage, 7).and_then(text),
+        );
+        let named = match field(data, 2) {
+            Some(Field::Bytes(mut steps)) => varint(&mut steps),
+            Some(Field::Number(step)) => Some(step),
+            None => None,
+        };
         let at = match named.and_then(|named| i64::try_from(named).ok()) {
             Some(named) => step
                 .query_row([named], |row| {
@@ -533,6 +517,12 @@ fn bytes(message: &[u8], field_number: u64) -> Option<&[u8]> {
         Field::Bytes(bytes) => Some(bytes),
         Field::Number(_) => None,
     }
+}
+
+fn text(bytes: &[u8]) -> Option<&str> {
+    std::str::from_utf8(bytes)
+        .ok()
+        .filter(|text| !text.is_empty())
 }
 
 fn within<'a>(message: &'a [u8], path: &[u64]) -> Option<&'a [u8]> {
