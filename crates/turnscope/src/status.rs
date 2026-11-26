@@ -622,11 +622,11 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             (Some(read_at), why) => State::AsOf {
                 read_at,
                 why: why.unwrap_or(Stale::ReadFailed),
-                worked_hours: tenths(forecast::hours(
+                worked_hours: tenths(forecast::hours(forecast::slots_worked(
                     &worked(db, &id, &[], None, read_at)?,
                     read_at,
                     now,
-                )),
+                ))),
             },
             (None, why) => State::Unread {
                 why: why.unwrap_or(Stale::ReadFailed),
