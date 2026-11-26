@@ -80,7 +80,7 @@ and `until`, take:
 | A count back | `24h`, `7d`, `4w` | That many hours, days or weeks before now |
 | A date | `2026-10-01` | From midnight that day |
 | A time | `2026-10-01T09:00:00Z` | RFC 3339, with `Z` or an offset such as `-05:00` |
-| Now | `now` | Now |
+| Now | `now` | Now (`--until` / `until` only) |
 
 Times are read and shown in the Mac's time zone, or the one `TZ` names. A
 date in another year than now's shows its year, `Jan 1 2020 00:00`, and a

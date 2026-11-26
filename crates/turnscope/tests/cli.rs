@@ -1618,3 +1618,166 @@ fn guard_and_mcp_leave_limits_to_the_app() {
         .unwrap();
     assert_eq!(claimed, (None, None));
 }
+
+#[test]
+fn caller_resolves_from_active_sign_in_for_new_and_switched_folders() {
+    let data = store();
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    let work_folder = format!("{}/.codex-work", home().display());
+    db.execute(
+        "INSERT INTO account (id, provider, kind, title, label, read_at)
+         VALUES ('openai:work', 'openai', 'subscription', 'ChatGPT Team', 'work@example.com', ?1)",
+        [NOW - HOUR / 6],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+         VALUES ('openai:work', 'secondary_window', ?1, 'Weekly', 10, ?2, ?3)",
+        [NOW - HOUR / 6, NOW - 60 * HOUR, NOW + 108 * HOUR],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('codex', ?1, 'openai', ?2, 'openai:work')",
+        params![&work_folder, NOW - HOUR],
+    )
+    .unwrap();
+    // Brand-new folder with no responses resolves from active `sign_in`.
+    let out = command_as("codex", data.path(), &["statusline"])
+        .env("CODEX_HOME", &work_folder)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "ChatGPT Team · weekly 90%"
+    );
+    let guarded = command_as(
+        "codex",
+        data.path(),
+        &["guard", "--limit", "week", "--below", "95"],
+    )
+    .env("CODEX_HOME", &work_folder)
+    .output()
+    .unwrap();
+    assert_eq!(guarded.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&guarded.stderr)
+            .starts_with("ChatGPT Team's weekly limit has 90% left, under 95%."),
+        "{}",
+        String::from_utf8_lossy(&guarded.stderr)
+    );
+    let answer = tools(
+        command_as("codex", data.path(), &["mcp"]).env("CODEX_HOME", &work_folder),
+        &[("check_limits", "{}")],
+    )
+    .remove(0);
+    assert!(
+        answer.starts_with("ChatGPT Team (work@example.com): Weekly has 90% left"),
+        "{answer}"
+    );
+    // Switching sign-in in an existing folder picks the new account before any
+    // response is recorded on it.
+    let default_codex = format!("{}/.codex", home().display());
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('codex', ?1, 'openai', ?2, 'openai:work')",
+        params![&default_codex, NOW - HOUR / 6],
+    )
+    .unwrap();
+    let out = command_as("codex", data.path(), &["statusline"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "ChatGPT Team · weekly 90%"
+    );
+    // Signing out of Codex keeps its latest response's account rather than
+    // falling back to another agent's account in statusline, usage, or guard.
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('codex', ?1, 'openai', ?2, NULL)",
+        params![&default_codex, NOW],
+    )
+    .unwrap();
+    let codex_out = command_as("codex", data.path(), &["statusline"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&codex_out.stdout)
+            .trim()
+            .starts_with("ChatGPT Plus · "),
+        "{}",
+        String::from_utf8_lossy(&codex_out.stdout)
+    );
+    let codex_usage = command_as("codex", data.path(), &["usage", "--limit", "week"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&codex_usage.stdout).starts_with("ChatGPT Plus"),
+        "{}",
+        String::from_utf8_lossy(&codex_usage.stdout)
+    );
+    let codex_guard = command_as(
+        "codex",
+        data.path(),
+        &["guard", "--limit", "week", "--below", "95"],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(codex_guard.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&codex_guard.stderr)
+            .starts_with("ChatGPT Plus's weekly limit has "),
+        "{}",
+        String::from_utf8_lossy(&codex_guard.stderr)
+    );
+    // Multi-provider folder keeps its latest response's provider while still
+    // signed in, switches to another active sign-in in that folder once signed
+    // out, and keeps its latest response's account when signed out of all.
+    let pi_folder = format!("{}/.pi/agent", home().display());
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('pi', ?1, 'openai', ?2, 'openai:work')",
+        params![&pi_folder, NOW - HOUR / 6],
+    )
+    .unwrap();
+    let pi_still = command_as("pi", data.path(), &["statusline"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&pi_still.stdout)
+            .trim()
+            .starts_with("OpenRouter API key · "),
+        "{}",
+        String::from_utf8_lossy(&pi_still.stdout)
+    );
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('pi', ?1, 'openrouter', ?2, NULL)",
+        params![&pi_folder, NOW],
+    )
+    .unwrap();
+    let pi_fallback = command_as("pi", data.path(), &["statusline"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&pi_fallback.stdout).trim(),
+        "ChatGPT Team · weekly 90%"
+    );
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('pi', ?1, 'openai', ?2, NULL)",
+        params![&pi_folder, NOW],
+    )
+    .unwrap();
+    let pi_signed_out = command_as("pi", data.path(), &["statusline"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&pi_signed_out.stdout)
+            .trim()
+            .starts_with("OpenRouter API key · "),
+        "{}",
+        String::from_utf8_lossy(&pi_signed_out.stdout)
+    );
+}

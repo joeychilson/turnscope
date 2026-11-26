@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **An agent in a new or switched account folder resolves to its signed-in
+  account** before its first response there, in `statusline`, `guard`,
+  `usage --limit` and the MCP tools.
+- **`--since` / `since` help no longer lists `now`**, which is refused as a
+  start time; `now` is listed under `--until` / `until`.
 - **Hidden accounts and limits that have recovered aren't alerted on
   launch.** Unacknowledged alerts from before hiding an account or before
   use was given back early were still sent when the app reopened.

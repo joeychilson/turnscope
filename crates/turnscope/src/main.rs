@@ -98,10 +98,10 @@ enum Command {
 
 #[derive(clap::Args)]
 struct UsageArgs {
-    /// From when [default: 30 days back]: today, yesterday, week (since Monday), month (since the 1st), 24h, 7d, 4w, a date, an RFC 3339 time, or now
+    /// From when [default: 30 days back]: today, yesterday, week (since Monday), month (since the 1st), 24h, 7d, 4w, a date or an RFC 3339 time
     #[arg(long)]
     since: Option<String>,
-    /// Until when [default: now], in the same forms
+    /// Until when [default: now], in the same forms or now
     #[arg(long)]
     until: Option<String>,
     /// How to group the rows [default: day, or session with --limit]
