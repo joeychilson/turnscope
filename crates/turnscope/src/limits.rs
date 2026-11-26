@@ -891,17 +891,16 @@ fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
         "UPDATE sign_in SET account = ?2 WHERE account = ?1",
         "UPDATE response SET account = ?2 WHERE account = ?1",
         "UPDATE OR IGNORE reading SET account = ?2 WHERE account = ?1",
-        "UPDATE OR IGNORE alert SET account = ?2 WHERE account = ?1",
         "UPDATE account SET hidden = hidden AND coalesce((SELECT hidden FROM account WHERE id = ?1), hidden)
          WHERE id = ?2",
     ] {
         tx.execute(moved, params![other, first])?;
     }
-    // Readings and alerts left over duplicate the first's, and how its
-    // reads went is the first's to say.
+    crate::alerts::merge(tx, other, first)?;
+    // Readings left over duplicate the first's, and how its reads went is
+    // the first's to say.
     for left in [
         "DELETE FROM reading WHERE account = ?1",
-        "DELETE FROM alert WHERE account = ?1",
         "DELETE FROM failing WHERE account = ?1",
         "DELETE FROM account WHERE id = ?1",
     ] {
