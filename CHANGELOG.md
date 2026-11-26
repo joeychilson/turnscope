@@ -1,156 +1,161 @@
 # Changelog
 
-## Unreleased
+## 0.4.2
 
-- **An agent in a new or switched account folder resolves to its signed-in
-  account** before its first response there, in `statusline`, `guard`,
-  `usage --limit` and the MCP tools.
-- **`--since` / `since` help no longer lists `now`**, which is refused as a
-  start time; `now` is listed under `--until` / `until`.
-- **Hidden accounts and limits that have recovered aren't alerted on
-  launch.** Unacknowledged alerts from before hiding an account or before
-  use was given back early were still sent when the app reopened.
-- **A second open copy of the app sends no alerts.** Only the copy keeping
-  the data current raises and sends notifications, so alerts aren't sent
-  twice.
-- **Opening the panel or pressing ⌘R shows fresh limits right away**,
-  without waiting for history to finish reading.
-- **Responses priced from their maker's catalog replace earlier estimates
-  once that model is first listed.** Usage recorded under another
-  provider with an agent's own estimate, as in OpenCode or Pi, kept that
-  estimate instead of taking the maker's price.
-- **`connect` and `disconnect` show an agent's error when it writes to
-  standard output**, instead of a blank message, and aren't thrown off
-  when a login shell prints text on exit.
-- **A model limit no longer decides an account after its whole-account
-  limits reset**: when 5 hours and Weekly have both reset since the last
-  read, one of them stays the deciding limit instead of Weekly (Opus).
-- **An OpenRouter API key with only key limits shows its limit on the
-  status line** instead of its title alone, and says when that key limit
-  is used up instead of "$0.00 left".
-- **`status --hours` and `check_limits` no longer say work fits with
-  "about 0%" left**: when under 1% stays they say "under 1%", and exact
-  100% consumption after a reset doesn't fit.
-- **Work right after a read in the same 5-minute slot counts as work
-  since the read**, so `status --hours` and usage shares don't miss it
-  when a response shares the read's timestamp.
-- **Codex's own limits stay the plan's own** when a rollout names them in
-  `limit_name`, instead of showing as separate model limits.
-- **The panel keeps focus and smooth scrolling when a row expands past
-  the screen height**, lets ⌘C and ⌘A copy selectable text, and no longer
-  adds invisible Tab stops for hidden shortcuts. VoiceOver can choose
-  between All in use and Most urgent in Settings, can hide non-openable
-  rows, and no longer reads switch labels twice; Full Keyboard Access
-  reveals a row's Hide button on focus.
-- **Reduce Motion now stops every spring animation** in the panel,
-  including row expansion, folds, list reordering, and switches.
-- **Settings' tabs and its Show choice are segmented controls**, and the
-  Show choice lines up with the switches below. Settings → Accounts labels
-  read at secondary contrast, and the footer's "Update available" pill
-  shortens to "Update" beside a status note.
-- **A limit that reset since it was last read says it's full since the
-  reset** in the panel's headline detail instead of "As last read, ...
-  has 100% left".
-- **The macOS app binary is 3.6 MiB smaller** (10.0 MiB instead of 13.6 MiB
-  universal): release builds strip dead code when linking.
-- **Codex's responses after fast mode is turned off cost the standard
-  rate**, not the fast one. The history is read again once, to price them
-  anew.
-- **`turnscope guard` passes while the standing isn't known**: before any
-  account is read, while none of its limits are, or for a key with none,
-  as an Anthropic API key has. It exited 1 with an error, which a hook
-  shows at every tool call.
-- **A notification clicked as the panel opens shows its account once the
-  limits are read**, even if Settings was opened meanwhile. The account
-  opened on its own later instead.
-- **An API key whose limits were never read doesn't say it has none.** The
-  panel says they couldn't be read yet, as `turnscope status` does, not
-  "No limit" and "You can keep going".
-- **Settings shows the notification switches once it knows them.** Before
-  the first read, all four showed on, whatever you had set.
-- **A key's pace isn't said once it rounds below what's spent**, late in a
-  month: "$155 this month" no longer comes with "On pace for about $150".
+- **A forecast says how bad it could get, not a range.** A limit that
+  lasts says "about 44% left at the reset (as little as 30%)", and one that
+  runs out says how soon, not how late. On real limit history, the old 80%
+  ranges held 62–71% of the time; the new bound holds 85–89%. A least of
+  0% isn't said: it was half the forecasts of weeks and months, and 21% of
+  those ran out against 16% of the rest. `status --json` drops
+  `leftAtReset.high` and a running-out limit's `latest`.
+- **Work left says how little it could be, not a range**: "About 19h of
+  work left (as little as 7h 50m)". On real limit history, that held 90–92%
+  of the time for Claude's limits; the range it replaces, as "(20m–1h
+  10m)", held 65–78%.
+- **Hours of work left are rounded once**, so 33 minutes reads "about
+  30m", not "about 40m". `status --json` gives them as `leftMinutes`, in
+  minutes as they're said, in place of `leftHours` and its `high`, and an
+  out-of-date read's `state` adds `workedMinutes`.
 - **Hours of work left are told once an hour of work is measured.** Work
   in several stretches could add up to just under an hour, and say there
   was too little to tell.
-- **Credits used up say so** in their row, not "Credits back later": they
-  come back only when bought.
-- **A limit used up again after its use was given back is told again**,
-  and told back when its window ends. Only the first time was.
+- **Opening the panel or pressing ⌘R shows fresh limits right away**,
+  without waiting for history to finish reading.
+- **Refresh Limits reads a provider that keeps failing** at once, instead
+  of waiting up to 30 minutes for its next try. One that asked to wait is
+  still left until then.
 - **"Refreshing limits…" shows until the limits are read.** Hiding an
   account, changing a setting or connecting an agent meanwhile ended it
   early, and ⌘R could start another refresh.
-- **Hours of work left are rounded once**, so 33 minutes reads "about
-  30m", not "about 40m". `status --json` gives them as `leftMinutes` and
-  `workedMinutes`, in minutes as they're said, in place of `leftHours` and
-  `workedHours`.
-- **Copy Diagnostics lists each line of `app.log` once.** The latest were
-  in doctor's notes, then again after them.
-- **A key's limit says whose key it is** in `turnscope status` and agents'
-  answers: "Pi's weekly key limit", not "Weekly key limit", which two keys
-  with the same period both said. `--limit pi` names it.
-- **A login refused or expired names its agents as a list**: "open Claude
-  Code, OpenCode or Pi to sign in again", not "open Claude Code or
-  OpenCode or Pi".
-- **A ChatGPT plan is read even when one of its model limits isn't
-  understood.** That limit is left out, instead of the whole plan reading
-  as failed.
-- **A refused login is told again after a read that worked in between**,
-  however soon. One within 5 minutes of the last read that worked before
-  was taken for the same refusal.
-- **`turnscope disconnect` says the command to run by hand** when it
-  can't run the agent's own, as `connect` does.
-- **The window that offers an update shows what's new in it**, instead
-  of loading its whole GitHub release page.
-- **A limit in dollars is shared by dollars.** Of an OpenRouter key's
-  limit, a session's share, in the panel's Used most and in answers, is its
-  cost over the limit's size, not its part of the cost here, and a last
-  line of an answer says how much of what's used was spent elsewhere with
-  the key.
+- **Limits are read again after the Mac's clock is set back** during a
+  wait between reads, instead of not until the clock caught up. An
+  OpenRouter key with no limit of its own waits as long as its credits ask
+  when they answer busy.
+- **A limit that reset since it was last read says it's full since the
+  reset** in the panel's headline detail instead of "As last read, ...
+  has 100% left".
+- **A model limit no longer decides an account after its whole-account
+  limits reset**: when 5 hours and Weekly have both reset since the last
+  read, one of them stays the deciding limit instead of Weekly (Opus).
+- **Whether more hours fit isn't said of a read that's out of date** when
+  your agents have worked on the account since it: `check_limits` and
+  `status --hours` say what was left then, and how long they've worked.
 - **No shares of a limit are given from a read that's out of date** while
   your agents have worked on it since, in `usage --limit`,
   `explain_usage` and the panel's Used most, as `check_limits` already
   can't tell then. The answers say why, unless nothing was used. Before,
   the last read's use was spread over work it doesn't hold. A limit in
   dollars still gives them: a share of it is cost over its size.
+- **`status --hours` and `check_limits` no longer say work fits with
+  "about 0%" left**: they say "under 1%", and work that would use all of
+  a new window doesn't fit.
+- **Work just after a limit read counts as work since it** when a
+  response came at the read's own time, so `status --hours` and usage
+  shares don't miss it.
+- **Of one account, whether more hours fit and how it stands are one
+  line**, with the range and reset the verdict gives; a refused login is
+  said once.
+- **A limit in dollars is shared by dollars.** Of an OpenRouter key's
+  limit, a session's share, in the panel's Used most and in answers, is its
+  cost over the limit's size, not its part of the cost here, and a last
+  line of an answer says how much of what's used was spent elsewhere with
+  the key.
 - **A key's sessions that cost more than its last read says is used say
   both**: "Your agents here account for $12.00; the last read, at 11:50,
   says $9.00 is used." So do they from a read that's out of date, while
   your agents have worked since.
-- **Whether more hours fit isn't said of a read that's out of date** when
-  your agents have worked on the account since it: `check_limits` and
-  `status --hours` say what was left then, and how long they've worked.
-- **A limit answers to the name the status line shows**, such as `5h`, in
-  `guard`, `usage --limit` and `explain_usage`.
-- **An MCP input given as `""` is taken as not given**, as `null` is.
-- **Of one account, whether more hours fit and how it stands are one
-  line**, with the range and reset the verdict gives; a refused login is
-  said once.
-- **`explain_usage` since a time leaves out the limit of now** unless one
-  is named: its line and shares were of a window that time isn't in.
+- **A key's limit says whose key it is** in `turnscope status` and agents'
+  answers: "Pi's weekly key limit", not "Weekly key limit", which two keys
+  with the same period both said. `--limit pi` names it.
+- **An OpenRouter API key with only key limits goes by its key limit** on
+  the status line, instead of its title alone, and in `status --hours` and
+  `check_limits`, instead of "no limit on all its usage was read". It says
+  when that key limit is used up instead of "$0.00 left".
+- **A key's pace isn't said once it rounds below what's spent**, late in a
+  month: "$155 this month" no longer comes with "On pace for about $150".
+- **Credits used up say so** in their row, not "Credits back later": they
+  come back only when bought.
+- **OpenRouter's credits stay shown when only they couldn't be read**,
+  as of their last read, instead of going missing until the next read.
 - **Usage of credits says which it is and how much of them is used**:
   this month's for an API key, since credits never reset.
-- **A date in another year shows its year**, and a span of a year or more
-  is in years: `since Jan 1 2020 00:00 (6y ago)`. A table no longer adds
-  up a lone row as "1 more": it's shown by name.
+- **An API key whose limits were never read doesn't say it has none.** The
+  panel says they couldn't be read yet, as `turnscope status` does, not
+  "No limit" and "You can keep going".
+- **`turnscope guard` passes while the standing isn't known**: before any
+  account is read, while none of its limits are, or for a key with none,
+  as an Anthropic API key has. It exited 1 with an error, which a hook
+  shows at every tool call.
+- **A limit answers to the name the status line shows**, such as `5h`, in
+  `guard`, `usage --limit` and `explain_usage`.
+- **Hidden accounts and limits that have recovered aren't alerted on
+  launch.** Alerts waiting from before you hid an account, or before use
+  was given back early, were still sent when the app reopened.
+- **A second open copy of the app sends no alerts.** Only the copy keeping
+  the data current raises and sends notifications, so alerts aren't sent
+  twice.
+- **A limit used up again after its use was given back is told again**,
+  and told back when its window ends. Only the first time was.
+- **A refused login is told again after a read that worked in between**,
+  however soon. One within 5 minutes of the last read that worked before
+  was taken for the same refusal.
+- **A login refused or expired names its agents as a list**: "open Claude
+  Code, OpenCode or Pi to sign in again", not "open Claude Code or
+  OpenCode or Pi".
+- **A notification clicked as the panel opens shows its account once the
+  limits are read**, even if Settings was opened meanwhile. The account
+  opened on its own later instead.
+- **Settings shows the notification switches once it knows them.** Before
+  the first read, all four showed on, whatever you had set.
+- **Codex's responses after fast mode is turned off cost the standard
+  rate**, not the fast one. The history is read again once, to price them
+  anew.
+- **A model's cost updates once its maker's price is first listed.**
+  OpenCode or Pi usage of a model served by another provider kept the
+  agent's own estimate instead of taking the maker's price.
+- **Codex's 5-hour and weekly limits stay the plan's own** when Codex
+  names them, instead of showing as a model's limits.
+- **A ChatGPT plan is read even when one of its model limits isn't
+  understood.** That limit is left out, instead of the whole plan reading
+  as failed.
 - **An answer from ChatGPT or Claude that isn't understood keeps the
   last limits**, shown as of their read, instead of a plan without limits
   or without its 5-hour window, as a renamed field read.
-- **OpenRouter's credits stay shown when only they couldn't be read**,
-  as of their last read, instead of going missing until the next read.
-- **Refresh Limits reads a provider that keeps failing** at once, instead
-  of waiting up to 30 minutes for its next try. One that asked to wait is
-  still left until then.
-- **A forecast says how bad it could get, not a range.** A limit that
-  lasts says "about 44% left at the reset (as little as 30%)", and one that
-  runs out says how soon, not how late. On real limit history, the old 80%
-  ranges held 62–71% of the time; the new bound holds 85–89%. A least of
-  0% isn't said: it was half the forecasts of weeks and months, and 21% of
-  those ran out against 16% of the rest.
-- **Work left says how little it could be, not a range**: "About 19h of
-  work left (as little as 7h 50m)". On real limit history, that held 90–92%
-  of the time for Claude's limits; the range it replaces, as "(20m–1h
-  10m)", held 65–78%.
+- **An agent in a new or switched account folder goes by the account
+  it's signed in to** before its first response there, in `statusline`,
+  `guard`, `usage --limit` and the MCP tools.
+- **`explain_usage` since a time leaves out the limit of now** unless one
+  is named: its line and shares were of a window that time isn't in.
+- **An MCP input given as `""` is taken as not given**, as `null` is.
+- **`--since` / `since` help no longer lists `now`**, which is refused as a
+  start time; `now` is listed under `--until` / `until`.
+- **A date in another year shows its year**, and a span of a year or more
+  is in years: `since Jan 1 2020 00:00 (6y ago)`. A table no longer adds
+  up a lone row as "1 more": it's shown by name.
+- **`connect` and `disconnect` show an agent's error when it writes to
+  standard output**, instead of a blank message, and aren't thrown off
+  when a login shell prints text on exit.
+- **`turnscope disconnect` says the command to run by hand** when it
+  can't run the agent's own, as `connect` does.
+- **The window that offers an update shows what's new in it**, instead
+  of loading its whole GitHub release page.
+- **Copy Diagnostics lists each line of `app.log` once.** The latest were
+  in doctor's notes, then again after them.
+- **⌘C and ⌘A copy selected text in the panel**, and the panel keeps
+  focus and scrolls smoothly when a row opens past the screen's height.
+- **VoiceOver and Full Keyboard Access reach more of the panel and
+  Settings.** VoiceOver can choose between All in use and Most urgent,
+  can hide a row that doesn't open, and reads each switch's label once.
+  Tab no longer stops on hidden shortcuts, and a row shows its Hide
+  button when it has keyboard focus.
+- **Reduce Motion now stops every spring animation** in the panel,
+  including row expansion, folds, list reordering, and switches.
+- **Settings' tabs and its Show choice are segmented controls**, and the
+  Show choice lines up with the switches below. Settings → Accounts labels
+  read at secondary contrast, and the footer's "Update available" pill
+  shortens to "Update" beside a status note.
+- **The app is 3.6 MiB smaller**: 10.1 MiB instead of 13.7 MiB.
 
 ## 0.4.1
 

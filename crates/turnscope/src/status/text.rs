@@ -623,7 +623,7 @@ pub fn line(account: &Account, now: i64) -> String {
         .iter()
         .filter(|limit| account.stands_by(limit) && limit.standing() == Standing::UsedUp)
         .collect();
-    let mut shown: Vec<&Limit> = if blocking.is_empty() {
+    let shown: Vec<&Limit> = if blocking.is_empty() {
         account
             .limits
             .iter()
@@ -632,9 +632,6 @@ pub fn line(account: &Account, now: i64) -> String {
     } else {
         blocking
     };
-    if shown.is_empty() {
-        shown.extend(account.deciding_limit());
-    }
     parts.extend(shown.iter().map(|limit| short(limit, now)));
     match (&account.state, &account.spend) {
         (State::Unread { why }, None) => parts.push(
@@ -1257,13 +1254,17 @@ mod tests {
     }
 
     #[test]
-    fn a_key_only_account_shows_its_limit_on_the_status_line_and_says_when_used_up() {
+    fn a_key_only_account_stands_by_its_key_limit_in_every_answer() {
         let example = example();
         let now = example["at"].as_i64().unwrap();
         let mut raw = example["accounts"][2].clone();
         raw["state"] = serde_json::json!({"kind": "live", "readAt": now});
         let account: Account = serde_json::from_value(raw.clone()).unwrap();
         assert_eq!(line(&account, now), "OpenRouter API key · key limit $8.70");
+        assert_eq!(
+            fit(&account, 1.0, now),
+            "Whether 1 more hour of work fits can't be told: Pi's key limit has $8.70 of $30.00 left, but too little work on it has been measured."
+        );
 
         // Used up with no reset.
         raw["limits"][0]["leftPercent"] = 0.into();
@@ -1273,6 +1274,10 @@ mod tests {
         assert_eq!(
             verdict(&used_up, now),
             "OpenRouter API key: Pi's key limit is used up."
+        );
+        assert_eq!(
+            fit(&used_up, 1.0, now),
+            "1 more hour of work doesn't fit: Pi's key limit is used up."
         );
 
         // Used up with a reset.
