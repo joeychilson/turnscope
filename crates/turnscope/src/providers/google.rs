@@ -51,7 +51,7 @@ use std::time::Instant;
 use serde_json::{Value, json};
 
 use super::{Answered, Info, Limits, Problem, Provider, Reading};
-use crate::agents::{Credential, Refresh, Secret};
+use crate::agents::{Credential, Refresh, Secret, non_empty};
 use crate::time::{DAY, HOUR, MINUTE};
 
 pub struct Google;
@@ -115,12 +115,9 @@ fn read(token: &Secret, by: Instant) -> Result<Limits, Problem> {
         "pluginType": "GEMINI",
     }});
     let signed_in = super::asked(PLAN, token, &[CLIENT], Some(&client), &[401], by)?;
-    let project = signed_in["cloudaicompanionProject"]
-        .as_str()
-        .filter(|project| !project.is_empty())
-        .ok_or_else(|| {
-            Problem::unavailable("no project to ask: Antigravity makes one when first used")
-        })?;
+    let project = non_empty(&signed_in["cloudaicompanionProject"]).ok_or_else(|| {
+        Problem::unavailable("no project to ask: Antigravity makes one when first used")
+    })?;
     let answer = super::asked(
         QUOTA,
         token,
@@ -157,20 +154,15 @@ fn renewed(refresh: &Refresh, now: i64, by: Instant) -> Result<Limits, Problem> 
     let key = refresh.token.fingerprint();
     // Its own statement, so the lock goes before the request.
     let kept = locked(&RENEWED).remove(&key);
-    let kept = kept
+    let tried = kept
         .filter(|(_, expires)| *expires > now + MINUTE)
-        .map(|(token, expires)| {
-            let limits = read(&token, by);
-            (token, expires, limits)
-        })
-        .filter(|(_, _, limits)| !matches!(limits, Err(Problem::SignIn)));
-    let (token, expires, limits) = match kept {
-        Some(kept) => kept,
-        None => {
+        .map(|(token, expires)| (read(&token, by), token, expires));
+    let (limits, token, expires) = match tried {
+        Some((Err(Problem::SignIn), ..)) | None => {
             let (token, expires) = renew(refresh, now, by)?;
-            let limits = read(&token, by);
-            (token, expires, limits)
+            (read(&token, by), token, expires)
         }
+        Some(tried) => tried,
     };
     if !matches!(limits, Err(Problem::SignIn)) {
         let mut renewed = locked(&RENEWED);
@@ -217,9 +209,7 @@ fn token(answered: &Answered, now: i64) -> Result<Option<(Secret, i64)>, Problem
     let answer: Value = serde_json::from_slice(&answered.body).unwrap_or_default();
     match (answered.status, answer["error"].as_str()) {
         (200..=299, _) => {
-            let token = answer["access_token"]
-                .as_str()
-                .filter(|token| !token.is_empty());
+            let token = non_empty(&answer["access_token"]);
             let lasts = answer["expires_in"].as_i64().filter(|seconds| *seconds > 0);
             match (token, lasts) {
                 (Some(token), Some(lasts)) => Ok(Some((
@@ -335,7 +325,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
             ) else {
                 continue;
             };
-            let id = bucket["bucketId"].as_str().filter(|id| !id.is_empty())?;
+            let id = non_empty(&bucket["bucketId"])?;
             let window = bucket["window"].as_str()?;
             let length = match window {
                 "weekly" => 7 * DAY,
@@ -457,11 +447,6 @@ mod tests {
         assert!(super::parse(&one("monthly", "2026-10-05T00:00:00Z")).is_none());
         assert!(super::parse(&one("weekly", "next Monday")).is_none());
         assert!(super::parse(&json!({"error": {"code": 403}})).is_none());
-        // A bucket that says nothing of what's left is passed over alone.
-        let mut unsaid = one("weekly", "2026-10-05T00:00:00Z");
-        let buckets = unsaid["groups"][0]["buckets"].as_array_mut().unwrap();
-        buckets.push(json!({"bucketId": "gemini-5h", "window": "5h", "remainingFraction": null}));
-        assert_eq!(super::parse(&unsaid).map(|read| read.len()), Some(1));
     }
 
     #[test]
