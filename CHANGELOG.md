@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Codex's own limits stay the plan's own** when a rollout names them in
+  `limit_name`, instead of showing as separate model limits.
 - **The panel keeps focus and smooth scrolling when a row expands past
   the screen height**, lets ⌘C and ⌘A copy selectable text, and no longer
   adds invisible Tab stops for hidden shortcuts. VoiceOver can choose

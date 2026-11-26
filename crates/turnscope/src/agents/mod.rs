@@ -61,6 +61,11 @@ pub fn login_file(path: &Path) -> bool {
     })
 }
 
+/// The client of the agent that signs in to `provider`, if any.
+pub fn client(provider: &str) -> Option<&'static Client> {
+    ALL.iter().find_map(|agent| agent.client(provider))
+}
+
 pub trait Agent: Sync {
     fn info(&self) -> &'static Info;
 
@@ -109,6 +114,12 @@ pub trait Agent: Sync {
     /// The command that `folder`'s configuration runs for Turnscope's MCP
     /// server, if any. Each of its folders keeps its own.
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String>;
+
+    /// How the agent names itself to `provider` and reads its OAuth client,
+    /// where the provider expects the agent's client.
+    fn client(&self, _provider: &str) -> Option<&'static Client> {
+        None
+    }
 }
 
 /// What Turnscope knows of an agent as a program.
@@ -422,6 +433,21 @@ impl Credential {
 pub struct Refresh {
     pub token: Secret,
     pub programs: Vec<PathBuf>,
+}
+
+/// How an agent names itself to a provider whose API requires the agent's
+/// own client, and reads the OAuth client its sign-in is renewed with.
+pub struct Client {
+    /// The agent's name, as people know it.
+    pub agent: &'static str,
+    /// The `User-Agent` header value the provider expects.
+    pub user_agent: &'static str,
+    /// The `ideType` the provider's metadata names.
+    pub ide_type: &'static str,
+    /// The OAuth client id its sign-in is renewed with.
+    pub oauth_id: &'static str,
+    /// Reads the OAuth client secrets from one of the agent's programs.
+    pub secrets: fn(&Path) -> Option<Vec<Secret>>,
 }
 
 /// A token or key. It can't be printed, serialized or cloned, so it can't
