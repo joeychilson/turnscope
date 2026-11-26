@@ -455,7 +455,7 @@ fn reading(path: &Path, error: impl Display) -> Error {
     Error::Failed(format!("reading {}: {error}", path.display()))
 }
 
-fn non_empty(value: &Value) -> Option<&str> {
+pub(crate) fn non_empty(value: &Value) -> Option<&str> {
     value.as_str().filter(|text| !text.is_empty())
 }
 

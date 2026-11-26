@@ -12,7 +12,7 @@ use std::time::Instant;
 use serde_json::Value;
 
 use super::{Account, Info, Limits, Problem, Provider, Reading};
-use crate::agents::{Credential, claims};
+use crate::agents::{Credential, claims, non_empty};
 
 pub struct OpenAi;
 
@@ -53,12 +53,7 @@ impl Provider for OpenAi {
 /// or else as the agent keeps them beside it.
 fn workspace(credential: &Credential) -> Option<(String, Option<String>)> {
     let claims = claims(credential.secret.expose());
-    let said = |value: &Value| {
-        value
-            .as_str()
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-    };
+    let said = |value: &Value| non_empty(value).map(str::to_owned);
     let kept = credential.identity.as_ref();
     let workspace = said(&claims["https://api.openai.com/auth"]["chatgpt_account_id"])
         .or_else(|| kept.map(|(workspace, _)| workspace.clone()))?;
@@ -80,7 +75,7 @@ fn parse(answer: &Value, now: i64) -> Option<Limits> {
         .flatten()
     {
         // One without a name can't be told from the plan's own windows.
-        if let Some(scope) = extra["limit_name"].as_str().filter(|name| !name.is_empty()) {
+        if let Some(scope) = non_empty(&extra["limit_name"]) {
             readings.extend(windows(&extra["rate_limit"], Some(scope), now)?);
         }
     }

@@ -60,7 +60,6 @@ pub trait Provider: Sync {
     fn account_limits(
         &self,
         _credential: &Credential,
-        _now: i64,
         _by: Instant,
     ) -> Result<Vec<Reading>, Problem> {
         Ok(Vec::new())
@@ -259,44 +258,50 @@ fn asked(
     refused: &[u16],
     by: Instant,
 ) -> Result<Value, Problem> {
-    let left = time_left(url, by)?;
     let authorization = format!("Authorization: Bearer {}", token.expose());
     let mut lines = vec![authorization.as_str()];
     if body.is_some() {
         lines.push("Content-Type: application/json");
     }
     lines.extend(headers);
+    // A line break would add a header of its own.
+    if lines.iter().any(|line| line.contains(['\r', '\n'])) {
+        return Err(Problem::unanswered(format!(
+            "{url}: a header holds a line break, so nothing was sent"
+        )));
+    }
+    let request: String = lines.iter().map(|line| format!("{line}\n")).collect();
     let body = body.map(Value::to_string);
-    let answered = requested(url, &lines, body.as_deref(), left)
-        .map_err(|why| Problem::unanswered(format!("{url}: {why}")))?;
-    answer(url, &answered, refused)
+    let mut args = vec!["--header", "@-"];
+    if let Some(body) = &body {
+        args.extend(["--data-raw", body]);
+    }
+    answer(url, &sent(url, &args, request.as_bytes(), by)?, refused)
 }
 
-/// Under 1 ms, curl's `--max-time` formats as `0.000` (no limit).
-fn time_left(url: &str, by: Instant) -> Result<Duration, Problem> {
+/// Run curl for `url` by `by`. Under 1 ms, curl's `--max-time` formats as
+/// `0.000` (no limit), so nothing is sent.
+fn sent(url: &str, args: &[&str], input: &[u8], by: Instant) -> Result<Answered, Problem> {
     let left = by.saturating_duration_since(Instant::now());
     if left < Duration::from_millis(1) {
         return Err(Problem::unanswered(format!(
             "{url}: not asked, as the read's time was spent"
         )));
     }
-    Ok(left)
+    curl(url, args, input, left).map_err(|why| Problem::unanswered(format!("{url}: {why}")))
 }
 
 /// POST `fields` to `url` as a form, by `by`. The form goes to curl on
 /// standard input, as headers do, so a secret among its fields is in no
 /// process listing.
 fn post_form(url: &str, fields: &[(&str, &str)], by: Instant) -> Result<Answered, Problem> {
-    let left = time_left(url, by)?;
-    let form = form_encode(fields);
     let args = [
         "--header",
         "Content-Type: application/x-www-form-urlencoded",
         "--data-binary",
         "@-",
     ];
-    curl(url, &args, form.as_bytes(), left)
-        .map_err(|why| Problem::unanswered(format!("{url}: {why}")))
+    sent(url, &args, form_encode(fields).as_bytes(), by)
 }
 
 /// `fields` as `application/x-www-form-urlencoded`.
@@ -355,24 +360,6 @@ pub fn get(url: &str, seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
     curl(url, &[], &[], Duration::from_secs(seconds.into()))
         .map(|answered| (answered.status, answered.body))
         .map_err(|why| Error::Failed(format!("asking {url}: {why}")))
-}
-
-fn requested(
-    url: &str,
-    headers: &[&str],
-    body: Option<&str>,
-    time: Duration,
-) -> std::result::Result<Answered, String> {
-    // A line break would add a header of its own.
-    if headers.iter().any(|header| header.contains(['\r', '\n'])) {
-        return Err("a header holds a line break, so nothing was sent".to_owned());
-    }
-    let mut args = vec!["--header", "@-"];
-    if let Some(body) = body {
-        args.extend(["--data-raw", body]);
-    }
-    let request: String = headers.iter().map(|header| format!("{header}\n")).collect();
-    curl(url, &args, request.as_bytes(), time)
 }
 
 /// Run curl for `url` with `args`, writing `input` to its standard input,
@@ -654,10 +641,11 @@ mod tests {
         // Bigger than the pipe buffer, so `write_all` fails if curl exits
         // before reading `--header @-`.
         let big = format!("X-Test: {}", "a".repeat(256 * 1024));
-        let error = super::requested(
+        let request = format!("{big}\n");
+        let error = super::curl(
             "https://example.invalid/",
-            &[&big],
-            None,
+            &["--header", "@-"],
+            request.as_bytes(),
             std::time::Duration::MAX,
         )
         .err()

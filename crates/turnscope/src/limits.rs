@@ -985,7 +985,7 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
             .collect();
         let shared = scope.spawn(|| {
             for key in keys {
-                match provider.account_limits(key, now, by) {
+                match provider.account_limits(key, by) {
                     Err(Problem::SignIn) => {}
                     read => return read,
                 }
@@ -1140,7 +1140,6 @@ mod tests {
         fn account_limits(
             &self,
             credential: &Credential,
-            _now: i64,
             _by: Instant,
         ) -> std::result::Result<Vec<Reading>, Problem> {
             self.asked.lock().unwrap().push("credits".to_owned());

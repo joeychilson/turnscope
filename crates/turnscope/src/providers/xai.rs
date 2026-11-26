@@ -12,7 +12,7 @@ use std::time::Instant;
 use serde_json::Value;
 
 use super::{Account, Info, Limits, Problem, Provider, Reading};
-use crate::agents::{Credential, claims};
+use crate::agents::{Credential, claims, non_empty};
 use crate::time::millis;
 
 pub struct Xai;
@@ -36,7 +36,7 @@ impl Provider for Xai {
             credential.identity.clone().or_else(|| {
                 // Where the agent's files don't say, the token's `sub`.
                 let claims = claims(credential.secret.expose());
-                let sub = claims["sub"].as_str().filter(|sub| !sub.is_empty())?;
+                let sub = non_empty(&claims["sub"])?;
                 Some((sub.to_owned(), None))
             })
         })
@@ -62,38 +62,17 @@ impl Provider for Xai {
     }
 }
 
-/// `None` when the period doesn't read, or there's neither a period nor how
-/// much is used.
+/// `None` when the period doesn't read.
 fn parse(answer: &Value) -> Option<Reading> {
     let config = answer.get("config")?;
-    let period = match &config["currentPeriod"] {
-        Value::Null => None,
-        period => {
-            let starts = millis(period["start"].as_str()?)?;
-            let resets = millis(period["end"].as_str()?)?;
-            if resets <= starts {
-                return None;
-            }
-            Some((starts, resets))
-        }
+    let period = &config["currentPeriod"];
+    let starts = millis(period["start"].as_str()?)?;
+    let resets = millis(period["end"].as_str()?)?;
+    let used = match config.get("creditUsagePercent") {
+        Some(used) => used.as_f64()?,
+        None => 0.0,
     };
-    let used = match (config.get("creditUsagePercent"), period) {
-        (Some(used), _) => used.as_f64()?,
-        (None, Some(_)) => 0.0,
-        (None, None) => return None,
-    };
-    Some(Reading {
-        key: "pool".to_owned(),
-        name: period.map_or_else(
-            || "Usage".to_owned(),
-            |(starts, resets)| super::window_name(resets - starts),
-        ),
-        scope: None,
-        used,
-        size: None,
-        starts: period.map(|(starts, _)| starts),
-        resets: period.map(|(_, resets)| resets),
-    })
+    (resets > starts).then(|| super::window("pool", None, used, resets - starts, Some(resets)))
 }
 
 #[cfg(test)]
