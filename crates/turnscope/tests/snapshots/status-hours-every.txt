@@ -12,7 +12,7 @@ ChatGPT Plus (me@example.com) · via Codex
 
 OpenRouter API key · via Pi
   Credits: $35.00 of $50.00 left. Doesn't reset.
-  Weekly key limit: $11.00 of $20.00 left, resets Tue 00:00 (in 4d 12h). No forecast yet.
+  Pi's weekly key limit: $11.00 of $20.00 left, resets Tue 00:00 (in 4d 12h). No forecast yet.
   This month, across its keys: $0.00.
 
 SuperGrok (me@example.com) · via Grok Build

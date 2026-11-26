@@ -32,9 +32,15 @@
   `workedHours`.
 - **Copy Diagnostics lists each line of `app.log` once.** The latest were
   in doctor's notes, then again after them.
+- **A key's limit says whose key it is** in `turnscope status` and agents'
+  answers: "Pi's weekly key limit", not "Weekly key limit", which two keys
+  with the same period both said. `--limit pi` names it.
 - **A login refused or expired names its agents as a list**: "open Claude
   Code, OpenCode or Pi to sign in again", not "open Claude Code or
   OpenCode or Pi".
+- **A ChatGPT plan is read even when one of its model limits isn't
+  understood.** That limit is left out, instead of the whole plan reading
+  as failed.
 - **A refused login is told again after a read that worked in between**,
   however soon. One within 5 minutes of the last read that worked before
   was taken for the same refusal.

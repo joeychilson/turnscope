@@ -74,9 +74,13 @@ fn parse(answer: &Value, now: i64) -> Option<Limits> {
         .into_iter()
         .flatten()
     {
-        // One without a name can't be told from the plan's own windows.
-        if let Some(scope) = non_empty(&extra["limit_name"]) {
-            readings.extend(windows(&extra["rate_limit"], Some(scope), now)?);
+        // One without a name can't be told from the plan's own windows. One
+        // that doesn't read is passed over: a limit on some models shouldn't
+        // leave the plan unread.
+        if let Some(scope) = non_empty(&extra["limit_name"])
+            && let Some(windows) = windows(&extra["rate_limit"], Some(scope), now)
+        {
+            readings.extend(windows);
         }
     }
     Some(Limits {
@@ -129,7 +133,10 @@ mod tests {
                 "primary_window": {"used_percent": 20, "limit_window_seconds": 18000, "reset_at": 1_790_000_000},
                 "secondary_window": {"used_percent": 5, "limit_window_seconds": 604800, "reset_at": 0, "reset_after_seconds": 3600}
             },
-            "additional_rate_limits": [{"limit_name": "GPT-5.3-Codex-Spark", "rate_limit": {"primary_window": {"used_percent": 1, "limit_window_seconds": 18000, "reset_at": 1_790_000_000}}}]
+            "additional_rate_limits": [
+                {"limit_name": "GPT-5.3-Codex-Spark", "rate_limit": {"primary_window": {"used_percent": 1, "limit_window_seconds": 18000, "reset_at": 1_790_000_000}}},
+                {"limit_name": "Unread", "rate_limit": {"primary_window": {"used_percent": 1, "limit_window_seconds": 0}}}
+            ]
         });
         let limits = super::parse(&answer, 1_789_000_000_000).unwrap();
         assert_eq!(limits.plan.as_deref(), Some("plus"));

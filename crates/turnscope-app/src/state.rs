@@ -101,8 +101,6 @@ pub struct State {
     pub frozen: Option<i64>,
     pub from_disk_image: bool,
     pub preferences: Preferences,
-    /// Held until the first status arrives so notifications can name accounts and agents.
-    pub alerts_waiting: Vec<Alert>,
     /// The minute the open panel's words are as of: set as it opens, and each minute after.
     pub now: i64,
     pub panel_open: bool,
@@ -313,16 +311,9 @@ impl State {
                     self.animated = true;
                     calls = self.asks(|a| self.counts(a));
                 }
-                let mut told = std::mem::take(&mut self.alerts_waiting);
-                told.extend(alerts);
-                self.post(told);
+                self.post(alerts);
                 (calls, true)
             }
-            Event::Pending(alerts) if self.status.is_none() => {
-                self.alerts_waiting.extend(alerts);
-                (calls, false)
-            }
-            Event::Pending(alerts) => (calls, self.post(alerts)),
             Event::Kept(stopped) => {
                 self.problem = stopped;
                 (calls, true)
@@ -482,7 +473,6 @@ impl State {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use turnscope::alerts::Kind as AlertKind;
 
     const CLAUDE: &str = "anthropic:acct-1:org-1";
     const CODEX: &str = "openai:acct-2";
@@ -587,34 +577,6 @@ pub(crate) mod tests {
                     .into(),
             )
         );
-    }
-
-    #[test]
-    fn alerts_told_before_the_first_status_wait_for_it() {
-        let mut core = State::default();
-        let alert = Alert {
-            id: 1,
-            kind: AlertKind::SignIn,
-            account: OPENCODE_GO.into(),
-            account_title: "OpenCode Go".into(),
-            limit: None,
-            limit_name: None,
-            resets: None,
-            runs_out: None,
-        };
-        let (_, wake) = core.took(Event::Pending(vec![alert.clone()]));
-        assert!(!wake);
-        assert_eq!(core.alerts_waiting.len(), 1);
-        let (_, wake) = core.took(Event::Shown(Box::new(example()), Vec::new()));
-        assert!(wake);
-        assert_eq!(core.alerts_waiting.len(), 0);
-        let sync = core.sync();
-        assert!(sync.effects.iter().any(
-            |e| matches!(e, Effect::PostAlerts { alerts } if alerts.len() == 1 && alerts[0].id == 1)
-        ));
-        let (_, wake) = core.took(Event::Pending(vec![alert]));
-        assert!(wake);
-        assert_eq!(core.alerts_waiting.len(), 0);
     }
 
     #[test]
