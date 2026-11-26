@@ -80,7 +80,7 @@ and `until`, take:
 | A count back | `24h`, `7d`, `4w` | That many hours, days or weeks before now |
 | A date | `2026-10-01` | From midnight that day |
 | A time | `2026-10-01T09:00:00Z` | RFC 3339, with `Z` or an offset such as `-05:00` |
-| Now | `now` | Now |
+| Now | `now` | Now (`--until` / `until` only) |
 
 Times are read and shown in the Mac's time zone, or the one `TZ` names. A
 date in another year than now's shows its year, `Jan 1 2020 00:00`, and a
@@ -378,8 +378,9 @@ Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at t
 
 A hook waits for the guard, so it reads no history and no prices. It reads
 the limits only as they come due, and not while the app runs, which reads
-them itself, nor once a newer Turnscope has written to the data: then it
-guards by the limits read before. Nor does it make or migrate the
+them itself, nor when it can't write the data (as in a read-only sandbox, or
+once a newer Turnscope has written to it): then it guards by the limits read
+before. Nor does it make or migrate the
 database: before Turnscope has, or after an update until the new version
 has opened it, the standing isn't known. Each read of a login's limits gives
 up after 15 seconds, whether its provider takes one request or two, or

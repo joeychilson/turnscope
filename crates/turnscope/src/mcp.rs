@@ -97,8 +97,8 @@ static TOOLS: &[Tool] = &[
             "account": {"type": "string", "description": "One account, by id or part of its title or label. Default: yours."},
             "all": {"type": "boolean", "description": "Every account's usage together, as across your agents, with no share of a limit; since is then 30 days back unless given."},
             "limit": {"type": "string", "description": "Part of a limit's name, such as week, 5h or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: without since, the one that decides the account."},
-            "since": {"type": "string", "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, an RFC 3339 time, or now."},
-            "until": {"type": "string", "description": "Up to when, in the same forms as since, with since. Default: now."},
+            "since": {"type": "string", "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01 or an RFC 3339 time."},
+            "until": {"type": "string", "description": "Up to when, in the same forms as since or now, with since. Default: now."},
             "by": {"type": "string", "enum": ["session", "project", "model", "agent", "account", "day", "week", "month"], "description": "Default session."},
             "top": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Rows, default 5; the rest are added up."}
         }, "additionalProperties": false}"#,
@@ -165,24 +165,50 @@ impl Caller {
         };
         if id.is_none()
             && let Some(agent) = self.agent
-        {
-            let folder = self
+            && let Some(folder) = self
                 .agent_folder
                 .clone()
-                .or_else(|| agent.folders(home).into_iter().next());
-            id = db
+                .or_else(|| agent.folders(home).into_iter().next())
+        {
+            let agent = agent.info().id;
+            let folder = folder.to_string_lossy();
+            let latest: Option<(String, String)> = db
                 .prepare_cached(
-                    "SELECT account FROM response WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
+                    "SELECT account, provider FROM response
+                     WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
                      ORDER BY at DESC LIMIT 1",
                 )?
-                .query_row(
-                    rusqlite::params![
-                        agent.info().id,
-                        folder.map(|folder| folder.to_string_lossy().into_owned())
-                    ],
-                    |row| row.get(0),
-                )
+                .query_row(rusqlite::params![agent, folder.as_ref()], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
                 .optional()?;
+            let current = match &latest {
+                Some((_, provider)) => db
+                    .prepare_cached(
+                        "SELECT account FROM sign_in
+                         WHERE folder = ?1 AND provider = ?2
+                         ORDER BY since DESC LIMIT 1",
+                    )?
+                    .query_row(rusqlite::params![folder.as_ref(), provider], |row| {
+                        row.get::<_, Option<String>>(0)
+                    })
+                    .optional()?,
+                None => None,
+            };
+            id = match (latest, current) {
+                (_, Some(Some(signed_in))) => Some(signed_in),
+                (Some((account, _)), None) => Some(account),
+                _ => db
+                    .prepare_cached(&format!(
+                        "SELECT s.account FROM sign_in s
+                         WHERE s.agent = ?1 AND s.folder = ?2 AND s.account IS NOT NULL
+                             AND EXISTS (SELECT 1 FROM account WHERE id = s.account) AND {}
+                         ORDER BY s.since DESC, s.provider ASC LIMIT 1",
+                        turnscope::limits::SIGNED_IN_NOW
+                    ))?
+                    .query_row(rusqlite::params![agent, folder.as_ref()], |row| row.get(0))
+                    .optional()?,
+            };
         }
         Ok(id.and_then(|id| status.accounts.iter().find(|account| account.id == id)))
     }

@@ -237,15 +237,41 @@ pub fn open(dir: &Path) -> Result<Connection> {
 /// The database in `dir` to read, never written: None when it's missing,
 /// or at a revision other than this binary's, as for a status line, which
 /// runs every few seconds and shouldn't be what creates or migrates it.
+///
+/// Falls back to `immutable=1` when `dir` is read-only (as inside an agent
+/// sandbox) and no `-wal` file sits beside the database, so a cleanly
+/// closed WAL database can still be read without creating `-shm`.
 pub fn read(dir: &Path) -> Option<Connection> {
+    let path = dir.join(FILE);
     let flags =
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let db = Connection::open_with_flags(dir.join(FILE), flags).ok()?;
-    db.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
-    let id: i32 = db
-        .pragma_query_value(None, "application_id", |row| row.get(0))
-        .ok()?;
-    (id == APPLICATION_ID && revision(&db).ok()? == REVISIONS.len() as i64).then_some(db)
+    let check = |db: Connection| -> rusqlite::Result<Option<Connection>> {
+        db.busy_timeout(std::time::Duration::from_secs(1))?;
+        let id: i32 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
+        Ok(
+            (id == APPLICATION_ID && revision(&db).ok() == Some(REVISIONS.len() as i64))
+                .then_some(db),
+        )
+    };
+    match Connection::open_with_flags(&path, flags).and_then(check) {
+        Ok(db) => return db,
+        Err(_)
+            if path.is_file()
+                && matches!(dir.join(format!("{FILE}-wal")).try_exists(), Ok(false)) => {}
+        Err(_) => return None,
+    }
+    let encoded = path
+        .to_str()?
+        .replace('%', "%25")
+        .replace('?', "%3f")
+        .replace('#', "%23");
+    Connection::open_with_flags(
+        format!("file:{encoded}?immutable=1"),
+        flags | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )
+    .and_then(check)
+    .ok()
+    .flatten()
 }
 
 /// The data directory `db` is in.
@@ -582,5 +608,80 @@ mod tests {
         let error = open(dir.path()).unwrap_err().to_string();
         assert!(error.contains("isn't Turnscope's database"), "{error}");
         assert!(read(dir.path()).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_opens_a_cleanly_closed_wal_database_in_a_read_only_directory_without_skipping_wal() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        struct Restore<'a>(&'a Path);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o700));
+                if let Ok(entries) = std::fs::read_dir(self.0) {
+                    for entry in entries.flatten() {
+                        let _ = std::fs::set_permissions(
+                            entry.path(),
+                            std::fs::Permissions::from_mode(0o600),
+                        );
+                    }
+                }
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(dir.path()).unwrap();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max')",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        assert!(!dir.path().join("turnscope.db-wal").exists());
+        assert!(!dir.path().join("turnscope.db-shm").exists());
+
+        {
+            let _restore = Restore(dir.path());
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+            let ro = read(dir.path()).expect("cleanly closed WAL DB should open read-only");
+            assert_eq!(one::<i64>(&ro, "SELECT count(*) FROM account"), 1);
+            assert!(open(dir.path()).is_err());
+        }
+
+        // An uncheckpointed `-wal` without `-shm` must never be bypassed via `immutable=1`.
+        let wal_dir = tempfile::tempdir().unwrap();
+        let writer = open(dir.path()).unwrap();
+        writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        writer
+            .execute(
+                "INSERT INTO account (id, provider, kind, title)
+                 VALUES ('openai:b', 'openai', 'subscription', 'ChatGPT Team')",
+                [],
+            )
+            .unwrap();
+        std::fs::copy(
+            dir.path().join("turnscope.db"),
+            wal_dir.path().join("turnscope.db"),
+        )
+        .unwrap();
+        std::fs::copy(
+            dir.path().join("turnscope.db-wal"),
+            wal_dir.path().join("turnscope.db-wal"),
+        )
+        .unwrap();
+        drop(writer);
+        assert!(
+            std::fs::metadata(wal_dir.path().join("turnscope.db-wal"))
+                .unwrap()
+                .len()
+                > 0
+        );
+        assert!(!wal_dir.path().join("turnscope.db-shm").exists());
+
+        let _restore = Restore(wal_dir.path());
+        std::fs::set_permissions(wal_dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(read(wal_dir.path()).is_none());
     }
 }

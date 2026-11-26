@@ -98,10 +98,10 @@ enum Command {
 
 #[derive(clap::Args)]
 struct UsageArgs {
-    /// From when [default: 30 days back]: today, yesterday, week (since Monday), month (since the 1st), 24h, 7d, 4w, a date, an RFC 3339 time, or now
+    /// From when [default: 30 days back]: today, yesterday, week (since Monday), month (since the 1st), 24h, 7d, 4w, a date or an RFC 3339 time
     #[arg(long)]
     since: Option<String>,
-    /// Until when [default: now], in the same forms
+    /// Until when [default: now], in the same forms or now
     #[arg(long)]
     until: Option<String>,
     /// How to group the rows [default: day, or session with --limit]
@@ -557,14 +557,19 @@ fn guard(
         return Ok(None);
     };
     // The limits read before still guard when this one can't read them
-    // again, as once a newer Turnscope has written here, or does while they
-    // are read: a hook that fails guards nothing. While the menu bar app
-    // holds `app.lock`, it keeps limits current outside any agent sandbox.
+    // again, as in a read-only sandbox, once a newer Turnscope has written
+    // here, or while they are read: a hook that fails guards nothing. While
+    // the menu bar app holds `app.lock`, it keeps limits current outside
+    // any agent sandbox.
     let db = if online() && !turnscope::engine::running(data) {
-        drop(read_db);
-        let mut db = db::open(data)?;
-        let _ = limits::refresh(&mut db, home, limits::Ask::Scheduled);
-        db
+        match db::open(data) {
+            Ok(mut writable) => {
+                drop(read_db);
+                let _ = limits::refresh(&mut writable, home, limits::Ask::Scheduled);
+                writable
+            }
+            Err(_) => read_db,
+        }
     } else {
         read_db
     };

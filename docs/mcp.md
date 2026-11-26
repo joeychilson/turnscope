@@ -58,7 +58,7 @@ Claude Code calls from.
 |---|---|
 | Agent | The nearest agent's command (`claude`, `codex`, `opencode`, `pi`, `grok` or `agy`) among the server's parent processes, up to eight levels up, found with `/bin/ps`. A script run by `node`, `bun`, `deno`, `python` or `python3` counts by the script's name. A versioned build such as `grok-1.0.41-macos-aarch64` counts as `grok`. Antigravity's app starts the server from its own language server, without `agy`, so that program counts as well. With none found, `CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a server it starts, says Claude Code. So Codex run from Claude Code's shell, where the variable is set too, is Codex. |
 | Session | `CLAUDE_CODE_SESSION_ID` for Claude Code. The other agents don't say, so their session isn't known. |
-| Account | The account of the session's latest response. Otherwise the account of the agent's latest response from its agent folder: the one `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` points to, or else its default folder. |
+| Account | The account of the session's latest response. Otherwise the account of the agent's latest response from its agent folder (the one `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` points to, or else its default folder) while still signed in to it, or else the folder's current sign-in. |
 
 When the account isn't known, `check_limits` lists every account, and
 `explain_usage` answers with every account's usage; given `limit`, it asks
@@ -234,7 +234,7 @@ together, as for "what did I spend across my agents".
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
 | `limit` | string | the limit that decides how the account stands, unless `since` is given | Text in a limit's name or key, any case, such as `week` or `5 hours`, or the name the status line shows, such as `5h`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
 | `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). A window that rolls, as OpenCode Go's 5 hours, is the last of its length. For another limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. Given without `limit`, the usage is the account's, with no limit's line. A `since` at or after now is an error, as it is for the command line's `usage`. |
-| `until` | string | now | With `since`: up to when, in the same forms. Without `since`, the usage runs to now, and `until` is an error. |
+| `until` | string | now | With `since`: up to when, in the same forms or `now`. Without `since`, the usage runs to now, and `until` is an error. |
 | `by` | `session`, `project`, `model`, `agent`, `account`, `day`, `week` or `month` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
 
