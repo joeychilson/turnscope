@@ -64,7 +64,8 @@
   dollars still gives them: a share of it is cost over its size.
 - **A key's sessions that cost more than its last read says is used say
   both**: "Your agents here account for $12.00; the last read, at 11:50,
-  says $9.00 is used."
+  says $9.00 is used." So do they from a read that's out of date, while
+  your agents have worked since.
 - **Whether more hours fit isn't said of a read that's out of date** when
   your agents have worked on the account since it: `check_limits` and
   `status --hours` say what was left then, and how long they've worked.

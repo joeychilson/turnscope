@@ -613,7 +613,9 @@ pub fn shares(
     let line = limit.money.filter(|_| limit.is_key()).and_then(|money| {
         let used = money.size_usd - money.left_usd;
         let (seen, said) = (dollars(usage.total.cost_usd), dollars(used));
-        (seen != said).then(|| match usage.total.cost_usd < used {
+        // What agents here spent since an out-of-date read isn't in it.
+        let in_read = usage.total.cost_usd == 0.0 || account.worked_since_read().is_none();
+        (seen != said).then(|| match usage.total.cost_usd < used && in_read {
             true => format!(
                 "Your agents here account for {seen} of the {said} used; the rest was spent \
                  elsewhere with this key."

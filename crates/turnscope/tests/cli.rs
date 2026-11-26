@@ -1191,14 +1191,15 @@ fn a_limit_in_dollars_is_shared_by_dollars() {
         answer.contains(" | $12.00 | 2 | 60% |\n") && answer.contains(more),
         "{answer}"
     );
-    // Read 35 minutes ago, and Pi worked 10 minutes ago: a share of the
-    // size needs no read, so the shares stay.
+    // Read 35 minutes ago, and Pi spent $5.00 10 minutes ago: a share of
+    // the size needs no read, so the shares stay, and the $5.00 isn't of
+    // the $9.00 the read says is used.
     Connection::open(data.path().join("turnscope.db"))
         .unwrap()
         .execute_batch(&format!(
             "UPDATE reading SET at = at - {shift} WHERE account = 'openrouter:api';
              UPDATE account SET read_at = read_at - {shift} WHERE id = 'openrouter:api';
-             UPDATE response SET at = {NOW} - {HOUR} / 6 WHERE agent = 'pi';",
+             UPDATE response SET at = {NOW} - {HOUR} / 6, cost = 2.5 WHERE agent = 'pi';",
             shift = HOUR * 25 / 60
         ))
         .unwrap();
@@ -1208,9 +1209,9 @@ fn a_limit_in_dollars_is_shared_by_dollars() {
         "explain_usage",
         r#"{"account":"openrouter","limit":"key"}"#,
     );
+    let since = "Your agents here account for $5.00; the last read, at 11:25, says $9.00 is used.";
     assert!(
-        answer.contains(" | $12.00 | 2 | 60% |\n")
-            && answer.contains(&more.replace("11:50", "11:25")),
+        answer.contains(" | $5.00 | 2 | 25% |\n") && answer.contains(since),
         "{answer}"
     );
 }

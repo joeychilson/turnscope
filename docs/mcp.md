@@ -269,8 +269,9 @@ an OpenRouter key's own, a share is the cost over the limit's size, and
 when the usage here cost less than what's used, a line says so: `Your
 agents here account for $0.00 of the $9.00 used; the rest was spent
 elsewhere with this key.` When it cost more, as when some was spent
-since the key's last read, the line gives both: `Your agents here
-account for $12.00; the last read, at 11:50, says $9.00 is used.` A limit
+since the key's last read, or the read is out of date and your agents
+have worked since, the line gives both: `Your agents here account for
+$12.00; the last read, at 11:50, says $9.00 is used.` A limit
 whose window reset since it was read gives no shares, so no line says how
 to get them. Usage with no known price gives none either, as a share is
 of cost, nor does a limit whose account's last read is out of date while
