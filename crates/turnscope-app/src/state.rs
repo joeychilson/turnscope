@@ -599,7 +599,6 @@ pub(crate) mod tests {
             account_title: "OpenCode Go".into(),
             limit: None,
             limit_name: None,
-            replaces: format!("account:{OPENCODE_GO}"),
             resets: None,
             runs_out: None,
         };

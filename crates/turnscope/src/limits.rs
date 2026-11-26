@@ -202,7 +202,7 @@ fn refresh_with(
         (Ask::Force, false) | (Ask::Scheduled, true) => CLAIM,
         (Ask::Scheduled, false) => DUE,
     };
-    if !crate::db::claim(db, crate::db::Claim::Limits, now, gap, now)? {
+    if !crate::db::claim(db, "limits_at", now, gap, now)? {
         return Ok(false);
     }
     let mut gathered = gather(db, home, agents, providers)?;
