@@ -1062,6 +1062,29 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
         answer.contains(unshared) && !answer.contains("% of"),
         "{answer}"
     );
+    // A limit on Sonnet alone, which nothing here used: with nothing to
+    // share, no line says why none is given.
+    db.execute(
+        "INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets)
+         SELECT account, 'seven_day_sonnet', at, name, 'Sonnet', used, starts, resets FROM reading
+         WHERE account = 'anthropic:acct-1:org-1' AND limit_key = 'seven_day'",
+        [],
+    )
+    .unwrap();
+    let output = turnscope(
+        data.path(),
+        &["usage", "--account", "claude", "--limit", "sonnet"],
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("Nothing was used.") && !text.contains("No shares"),
+        "{text}"
+    );
+    db.execute(
+        "DELETE FROM reading WHERE limit_key = 'seven_day_sonnet'",
+        [],
+    )
+    .unwrap();
     // Its 5 hours reset since the read, at 11:55: the read is still of
     // Weekly.
     db.execute(
@@ -1166,6 +1189,29 @@ fn a_limit_in_dollars_is_shared_by_dollars() {
     let more = "Your agents here account for $12.00; the last read, at 11:50, says $9.00 is used.";
     assert!(
         answer.contains(" | $12.00 | 2 | 60% |\n") && answer.contains(more),
+        "{answer}"
+    );
+    // Read 35 minutes ago, and Pi spent $5.00 10 minutes ago: a share of
+    // the size needs no read, so the shares stay, and the $5.00 isn't of
+    // the $9.00 the read says is used.
+    Connection::open(data.path().join("turnscope.db"))
+        .unwrap()
+        .execute_batch(&format!(
+            "UPDATE reading SET at = at - {shift} WHERE account = 'openrouter:api';
+             UPDATE account SET read_at = read_at - {shift} WHERE id = 'openrouter:api';
+             UPDATE response SET at = {NOW} - {HOUR} / 6, cost = 2.5 WHERE agent = 'pi';",
+            shift = HOUR * 25 / 60
+        ))
+        .unwrap();
+    let answer = ask(
+        "claude",
+        data.path(),
+        "explain_usage",
+        r#"{"account":"openrouter","limit":"key"}"#,
+    );
+    let since = "Your agents here account for $5.00; the last read, at 11:25, says $9.00 is used.";
+    assert!(
+        answer.contains(" | $5.00 | 2 | 25% |\n") && answer.contains(since),
         "{answer}"
     );
 }
