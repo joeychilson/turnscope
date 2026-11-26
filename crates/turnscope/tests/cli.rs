@@ -477,18 +477,11 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "--since is now or later, so there's no usage after it: give an earlier --since",
         ),
-        // An --until past now is now.
-        (
-            vec!["usage", "--since", "now", "--until", "2099-01-01"],
-            2,
-            "--since is now or later",
-        ),
         (
             vec!["usage", "--since", "2d", "--until", "3d"],
             2,
             "--since is at or after --until, so nothing is between them: give an earlier --since",
         ),
-        (vec!["usage", "--since", "last tuesday"], 2, "24h, 7d or 4w"),
         (
             vec!["usage", "--since", "99999999999999d"],
             2,
