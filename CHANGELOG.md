@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A model limit no longer decides an account after its whole-account
+  limits reset**: when 5 hours and Weekly have both reset since the last
+  read, one of them stays the deciding limit instead of Weekly (Opus).
+- **An OpenRouter API key with only key limits shows its limit on the
+  status line** instead of its title alone, and says when that key limit
+  is used up instead of "$0.00 left".
+- **`status --hours` and `check_limits` no longer say work fits with
+  "about 0%" left** or reject hours that fit because work left rounded to
+  ten minutes. When under 1% stays, they say "under 1%"; when work runs
+  out within the rounded estimate, they say it runs out in that time.
+- **Work right after a read in the same 5-minute slot counts as work
+  since the read**, so `status --hours` and usage shares don't miss it
+  when a response shares the read's timestamp.
 - **Codex's responses after fast mode is turned off cost the standard
   rate**, not the fast one. The history is read again once, to price them
   anew.

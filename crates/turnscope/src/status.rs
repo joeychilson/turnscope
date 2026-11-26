@@ -646,7 +646,9 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
                 read_at,
                 why: why.unwrap_or(Stale::ReadFailed),
                 worked_minutes: minutes(forecast::hours(forecast::slots_worked(
-                    &worked(db, &id, &[], None, read_at)?,
+                    // Strictly after `read_at`, so a response at `read_at`
+                    // doesn't hide later work in the same 5-minute slot.
+                    &worked(db, &id, &[], None, read_at + 1)?,
                     read_at,
                     now,
                 ))),
@@ -1155,13 +1157,20 @@ fn outlook(window: &Window, now: i64) -> Outlook {
     }
 }
 
-/// The limit that decides how an account stands, of those in `pool` where
-/// it draws on one. Of several used up, the last back decides: the account
-/// can't be used until every one is back.
+/// The limit that decides how an account stands, of those on all its usage
+/// where it has any, or else of those in `pool`. Of several used up, the
+/// last back decides: the account can't be used until every one is back.
 fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
+    let whole = limits.iter().any(Limit::whole);
     let standing: Vec<&Limit> = limits
         .iter()
-        .filter(|limit| pool.is_none_or(|pool| limit.scope.as_deref() == Some(pool)))
+        .filter(|limit| {
+            if whole {
+                limit.whole()
+            } else {
+                pool.is_none_or(|pool| limit.scope.as_deref() == Some(pool))
+            }
+        })
         .collect();
     standing
         .iter()
@@ -1175,7 +1184,6 @@ fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
                 _ => limit.left_percent,
             };
             (
-                !limit.whole(),
                 Reverse(limit.standing()),
                 Reverse(limit.back()),
                 limit.runs_out().unwrap_or(i64::MAX),
@@ -1755,5 +1763,47 @@ mod tests {
         assert_eq!(limits[1].key, "seven_day_opus");
         assert_eq!(limits[1].left_percent, 85);
         assert_eq!(limits[1].read_at, full_at);
+    }
+
+    #[test]
+    fn a_scoped_limit_never_decides_after_whole_limits_reset() {
+        let example = example();
+        let now = example.at;
+        let mut account = example.accounts[0].clone();
+        // Both whole-account limits reset since the last read; Weekly (Opus)
+        // is still used up and has not reset.
+        account.limits[0].reset_since = Some(now - 5 * MINUTE);
+        account.limits[1].reset_since = Some(now - 10 * MINUTE);
+        assert_eq!(deciding(&account.limits, None).unwrap().key, "five_hour");
+        // Even if the scoped limit reset even later, a whole limit still decides.
+        account.limits[2].reset_since = Some(now - MINUTE);
+        assert_eq!(deciding(&account.limits, None).unwrap().key, "five_hour");
+    }
+
+    #[test]
+    fn work_after_a_read_in_the_same_slot_counts_as_worked_since_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let read_at = 2 * HOUR;
+        let now = read_at + 45 * MINUTE;
+        db.execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+                 VALUES ('openai:a', 'openai', 'subscription', 'ChatGPT Plus', {read_at});
+             INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('codex', '/a', 'openai', 0, 'openai:a');"
+        ))
+        .unwrap();
+        let codex = ("codex", "/a", "openai", Some("openai:a"));
+        // A response at the exact timestamp of an in-band read, followed by
+        // more work two minutes later in the same 5-minute slot.
+        response(&db, codex, "r1", read_at, "gpt-5", None);
+        response(&db, codex, "r2", read_at + 2 * MINUTE, "gpt-5", None);
+        let account = status(&db, now).unwrap().accounts.remove(0);
+        assert_eq!(account.worked_since_read(), Some((read_at, 5)));
+        // With only the response at `read_at`, no work happened since.
+        db.execute("DELETE FROM response WHERE id = 'r2'", [])
+            .unwrap();
+        let account = status(&db, now).unwrap().accounts.remove(0);
+        assert_eq!(account.worked_since_read(), None);
     }
 }
