@@ -165,9 +165,9 @@ pub fn work_rate(
     known: Option<i64>,
     enough: f64,
 ) -> Option<f64> {
-    let (mut rose, mut worked_hours) = (0.0, 0.0);
+    let (mut rose, mut slots) = (0.0, 0);
     for (index, reading) in readings.iter().enumerate().rev() {
-        if worked_hours >= enough {
+        if hours(slots) >= enough {
             break;
         }
         let before = index.checked_sub(1).map(|before| readings[before]);
@@ -177,30 +177,35 @@ pub fn work_rate(
             (Some(before), _) if same && reading.used < before.used - 1.0 => {}
             (Some(before), _) if same => {
                 rose += (reading.used - before.used).max(0.0);
-                worked_hours += hours(worked, before.at, reading.at);
+                slots += slots_worked(worked, before.at, reading.at);
             }
             (_, Some(starts))
                 if known.is_some_and(|known| known <= starts)
                     && worked.first().is_some_and(|first| *first <= starts) =>
             {
                 rose += reading.used;
-                worked_hours += hours(worked, starts, reading.at);
+                slots += slots_worked(worked, starts, reading.at);
             }
             _ => {}
         }
     }
-    (worked_hours >= 1.0 && rose >= 2.0).then(|| rose / worked_hours)
+    (hours(slots) >= 1.0 && rose >= 2.0).then(|| rose / hours(slots))
 }
 
-/// The hours of work after `from` up to `to`, by the slots `worked` starts,
-/// oldest first.
-pub fn hours(worked: &[i64], from: i64, to: i64) -> f64 {
-    // No hours where `from` is after `to`, as a window's start drifted past
-    // its first reading is.
+/// The slots of work after `from` up to `to`, of those `worked` starts,
+/// oldest first. Counted whole: hours added up as floats fall short, as 2, 8
+/// and 2 slots come to 0.9999999999999999 hours.
+pub fn slots_worked(worked: &[i64], from: i64, to: i64) -> i64 {
+    // None where `from` is after `to`, as a window's start drifted past its
+    // first reading is.
     let slots = worked
         .partition_point(|at| *at <= to)
         .saturating_sub(worked.partition_point(|at| *at <= from));
-    (slots as i64 * SLOT) as f64 / HOUR as f64
+    slots as i64
+}
+
+pub fn hours(slots: i64) -> f64 {
+    (slots * SLOT) as f64 / HOUR as f64
 }
 
 /// The hours of work [`work_rate`] walks back to for a window of `length`.
@@ -213,8 +218,8 @@ pub fn enough_work(length: Option<i64>) -> f64 {
 
 /// The 80% range of what the next hours of work used over the rate
 /// measured, for a window of `length`. Measured by `work_backtest` on
-/// Anthropic's 5-hour and weekly limits from 2026-10-10 to 2026-11-25, 3,003
-/// and 11,457 forecasts, rounded outward. Other limits had too few windows of
+/// Anthropic's 5-hour and weekly limits from 2026-10-10 to 2026-11-25, 3,006
+/// and 11,495 forecasts, rounded outward. Other limits had too few windows of
 /// work, except OpenCode Go's, which swung too far for any range: one week rose
 /// 44 points in 36 minutes of work, the week before 1 point in 4 hours.
 pub fn work_band(length: Option<i64>) -> (f64, f64) {
@@ -350,6 +355,19 @@ mod tests {
             .map(|slot| at(10.0) + 10_000 + slot * SLOT)
             .collect();
         assert_eq!(work_rate(&drifted, &worked, Some(0), 5.0), Some(4.5));
+        // Stretches of 2, 8 and 2 slots are an hour of work, not just under.
+        let readings =
+            [(1.0, 0.0), (2.0, 2.0), (3.0, 4.0), (4.0, 6.0)].map(|(hours, used)| Reading {
+                at: at(hours),
+                used,
+                starts: Some(0),
+                resets: week,
+            });
+        let worked: Vec<i64> = [(1.0, 2), (2.0, 8), (3.0, 2)]
+            .into_iter()
+            .flat_map(|(hours, slots)| (1..=slots).map(move |slot| at(hours) + slot * SLOT))
+            .collect();
+        assert_eq!(work_rate(&readings, &worked, None, 5.0), Some(6.0));
         let (slow, fast) = work_band(Some(at(168.0)));
         let (low, likely, high) = work_left(14.0, 4.0, (slow, fast), Some(164.0)).unwrap();
         assert_eq!(likely, 21.5);
@@ -578,19 +596,19 @@ mod tests {
                 let Some(rate) = work_rate(walked, slots, known, enough) else {
                     continue;
                 };
-                let (mut rose, mut hours_next) = (0.0, 0.0);
+                let (mut rose, mut slots_next) = (0.0, 0);
                 for pair in readings[at..].windows(2) {
-                    if hours_next >= enough
+                    if hours(slots_next) >= enough
                         || !same_reset(pair[0].resets, pair[1].resets)
                         || pair[1].used < pair[0].used - 1.0
                     {
                         break;
                     }
                     rose += (pair[1].used - pair[0].used).max(0.0);
-                    hours_next += hours(&worked, pair[0].at, pair[1].at);
+                    slots_next += slots_worked(&worked, pair[0].at, pair[1].at);
                 }
-                if hours_next >= 1.0 {
-                    let ratio = rose / hours_next / rate;
+                if hours(slots_next) >= 1.0 {
+                    let ratio = rose / hours(slots_next) / rate;
                     let (slow, fast) = work_band(length);
                     ratios.push((ratio, (slow..=fast).contains(&ratio)));
                 }

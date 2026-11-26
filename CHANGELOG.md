@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Hours of work left are told once an hour of work is measured.** Work
+  in several stretches could add up to just under an hour, and say there
+  was too little to tell.
 - **`turnscope guard` passes while the standing isn't known**: before any
   account is read, or while none of its limits are. It exited 1 with an
   error, which a hook shows at every tool call.
