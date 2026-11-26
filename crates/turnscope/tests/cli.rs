@@ -778,6 +778,18 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
     // does one before any account is read.
     let quiet = |output: Output| (output.status.code(), output.stderr.is_empty());
     assert_eq!(quiet(guard("supergrok", "week", "50")), (Some(0), true));
+    // So does a key read with no limits, as an Anthropic API key is, with a
+    // Claude Code signed in to it.
+    turnscope::db::open(data.path())
+        .unwrap()
+        .execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+                 VALUES ('anthropic:api', 'anthropic', 'apiKey', 'Anthropic API key', {NOW});
+             INSERT INTO sign_in (agent, folder, provider, since, account, key)
+                 VALUES ('claude-code', '/k/.claude', 'anthropic', {NOW}, 'anthropic:api', 'aaaabbbbccccdddd');"
+        ))
+        .unwrap();
+    assert_eq!(quiet(guard("anthropic api", "week", "50")), (Some(0), true));
     let none = tempfile::tempdir().unwrap();
     drop(turnscope::db::open(none.path()).unwrap());
     let args = [

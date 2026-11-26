@@ -579,7 +579,8 @@ fn guard(
             None => return Ok(None),
         },
     };
-    if account.unread().is_some() {
+    // Read or not, with no limits it has none to guard.
+    if account.limits.is_empty() {
         return Ok(None);
     }
     let found = account.limit(limit)?;

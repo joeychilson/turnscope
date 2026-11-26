@@ -6,8 +6,9 @@
   rate**, not the fast one. The history is read again once, to price them
   anew.
 - **`turnscope guard` passes while the standing isn't known**: before any
-  account is read, or while none of its limits are. It exited 1 with an
-  error, which a hook shows at every tool call.
+  account is read, while none of its limits are, or for a key with none,
+  as an Anthropic API key has. It exited 1 with an error, which a hook
+  shows at every tool call.
 - **A notification clicked as the panel opens shows its account once the
   limits are read**, even if Settings was opened meanwhile. The account
   opened on its own later instead.
