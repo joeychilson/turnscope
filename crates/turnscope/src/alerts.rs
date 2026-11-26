@@ -2,7 +2,7 @@
 //!
 //! The rules are in docs/architecture.md#alerts.
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::status::{Account, Limit, Moment, Outlook, State, Status};
@@ -31,18 +31,6 @@ impl Kind {
         [Kind::RunningOut, Kind::UsedUp, Kind::Reset, Kind::SignIn]
             .into_iter()
             .find(|kind| kind.as_str() == text)
-    }
-
-    /// How far apart two of its alerts' windows are and still one window. A
-    /// reset drifts from read to read. A size, below zero, doesn't, and
-    /// within the drift $10 more would match; nor does a sign-in's last read
-    /// that worked, and one minutes after it is a sign-in since.
-    fn drift(self, window: i64) -> i64 {
-        if window < 0 || self == Kind::SignIn {
-            0
-        } else {
-            forecast::DRIFT
-        }
     }
 }
 
@@ -90,24 +78,34 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
                      runs_out: Option<i64>|
      -> Result<()> {
         let key = limit.map_or("", |limit| limit.key.as_str());
-        let drift = kind.drift(window);
-        // Told in this window, and not ended since: a reset ends its
-        // warnings, and the limit used up again ends the reset.
+        // A reset drifts from read to read. A size, below zero, doesn't, and
+        // within the drift $10 more would match; nor does a sign-in's last
+        // read that worked, and one minutes after it is a sign-in since.
+        let exact = window < 0 || kind == Kind::SignIn;
+        let drift = if exact { 0 } else { forecast::DRIFT };
         let known = tx
             .prepare_cached(
-                "SELECT 1 FROM alert a WHERE account = ?1 AND limit_key = ?2 AND kind = ?3
-                     AND window BETWEEN ?4 - ?5 AND ?4 + ?5
-                     AND NOT EXISTS (SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2
-                         AND kind = CASE ?3 WHEN 'reset' THEN 'usedUp' ELSE 'reset' END
-                         AND window BETWEEN ?4 - ?5 AND ?4 + ?5 AND id > a.id)",
+                "SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3 AND window BETWEEN ?4 - ?5 AND ?4 + ?5",
             )?
-            .query_row(
-                params![account.id, key, kind.as_str(), window, drift],
-                |_| Ok(()),
-            )
+            .query_row(params![account.id, key, kind.as_str(), window, drift], |_| {
+                Ok(())
+            })
             .optional()?;
         if known.is_some() {
             return Ok(());
+        }
+        // A reset ends the limit's warnings, and the limit used up again
+        // ends its reset, so each is told again the next time.
+        let ended: &[Kind] = match kind {
+            Kind::Reset => &[Kind::RunningOut, Kind::UsedUp],
+            Kind::UsedUp => &[Kind::Reset],
+            Kind::RunningOut | Kind::SignIn => &[],
+        };
+        for ended in ended {
+            tx.prepare_cached(
+                "DELETE FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3",
+            )?
+            .execute(params![account.id, key, ended.as_str()])?;
         }
         let on = match kind {
             Kind::RunningOut => notify.running_out,
@@ -157,19 +155,6 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             let Some(window) = window(limit) else {
                 continue;
             };
-            match limit.outlook {
-                Outlook::UsedUp { .. } if account.in_use => {
-                    raise(account, Some(limit), Kind::UsedUp, window, None)?
-                }
-                Outlook::RunsOut { likely, .. } if account.in_use => raise(
-                    account,
-                    Some(limit),
-                    Kind::RunningOut,
-                    window,
-                    Some(likely.at),
-                )?,
-                _ => {}
-            }
             // Back after being used up: a window used up that ended in the
             // last day, or that the limit no longer reads, as when a
             // provider resets limits early, or this one when use was given
@@ -202,6 +187,20 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
                 if ended <= now || moved || (this && limit.left_percent > 1) {
                     raise(account, Some(limit), Kind::Reset, ended, None)?;
                 }
+            }
+            // After its return, which ends the warnings told before it.
+            match limit.outlook {
+                Outlook::UsedUp { .. } if account.in_use => {
+                    raise(account, Some(limit), Kind::UsedUp, window, None)?
+                }
+                Outlook::RunsOut { likely, .. } if account.in_use => raise(
+                    account,
+                    Some(limit),
+                    Kind::RunningOut,
+                    window,
+                    Some(likely.at),
+                )?,
+                _ => {}
             }
         }
     }
@@ -270,31 +269,6 @@ pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>>
         }
     }
     Ok(pending)
-}
-
-/// Make `other`'s alerts `first`'s, as its account is made part of
-/// `first`'s. One `first` has too is left out: newer than `first`'s reset,
-/// it would tell the reset again.
-pub fn merge(tx: &Transaction, other: &str, first: &str) -> Result<()> {
-    let theirs: Vec<(i64, String, String, i64)> = tx
-        .prepare("SELECT id, limit_key, kind, window FROM alert WHERE account = ?1")?
-        .query_map([other], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    for (id, key, kind, window) in theirs {
-        let drift = Kind::parse(&kind).map_or(0, |kind| kind.drift(window));
-        tx.execute(
-            "DELETE FROM alert WHERE id = ?1 AND EXISTS (SELECT 1 FROM alert WHERE account = ?2
-                 AND limit_key = ?3 AND kind = ?4 AND window BETWEEN ?5 - ?6 AND ?5 + ?6)",
-            params![id, first, key, kind, window, drift],
-        )?;
-    }
-    tx.execute(
-        "UPDATE alert SET account = ?2 WHERE account = ?1",
-        params![other, first],
-    )?;
-    Ok(())
 }
 
 pub fn acknowledge(db: &mut Connection, id: i64) -> Result<()> {
@@ -460,35 +434,6 @@ mod tests {
             left_usd: left,
         });
         status
-    }
-
-    /// Two accounts read as one plan, each told of its limit used up: the
-    /// other's, not yet back, doesn't make the first's return news again.
-    #[test]
-    fn of_two_accounts_made_one_a_limit_is_told_back_once() {
-        let (_dir, mut db) = open();
-        let used_up = status(DAY, 0, Outlook::UsedUp { back: None });
-        for told in [used_up.clone(), status(DAY + MINUTE, 60, LASTS)] {
-            for alert in raise(&mut db, &told).unwrap() {
-                acknowledge(&mut db, alert.id).unwrap();
-            }
-        }
-        // Read apart, their resets differ by a little.
-        let mut other = used_up;
-        other.accounts[0].id = "anthropic:other".to_owned();
-        other.accounts[0].limits[0]
-            .window
-            .as_mut()
-            .unwrap()
-            .resets
-            .at += MINUTE;
-        assert_eq!(kinds(&raise(&mut db, &other).unwrap()), [Kind::UsedUp]);
-        let tx = crate::db::write(&mut db).unwrap();
-        merge(&tx, "anthropic:other", "anthropic:acct-1:org-1").unwrap();
-        tx.commit().unwrap();
-        let back = status(DAY + 2 * MINUTE, 60, LASTS);
-        assert!(raise(&mut db, &back).unwrap().is_empty());
-        assert!(pending(&db, &back, back.at).unwrap().is_empty());
     }
 
     #[test]
@@ -719,6 +664,20 @@ mod tests {
         assert_eq!(pending_at(3 * DAY), [Kind::Reset]);
         // Not sent days late, as at a launch after the Mac was off.
         assert!(pending_at(5 * DAY).is_empty());
+    }
+
+    /// Reset early on day 3, and already running out in its new window: told
+    /// back and running out, once each.
+    #[test]
+    fn a_limit_back_and_running_out_on_one_read_is_told_each_once() {
+        let (_dir, mut db) = open();
+        raise(&mut db, &status(DAY, 0, Outlook::UsedUp { back: None })).unwrap();
+        let mut early = runs_out(3 * DAY);
+        let window = early.accounts[0].limits[0].window.as_mut().unwrap();
+        window.resets.at = 13 * DAY;
+        let raised = raise(&mut db, &early).unwrap();
+        assert_eq!(kinds(&raised), [Kind::Reset, Kind::RunningOut]);
+        assert!(raise(&mut db, &early).unwrap().is_empty(), "told once");
     }
 
     #[test]
