@@ -261,9 +261,13 @@ struct Schedule {
 
 impl Schedule {
     fn due(&self, now: i64, ask: Ask) -> bool {
-        // A wait longer than any is a clock set back since. Refresh Limits
-        // waits only for the provider.
-        let waits = |until: Option<i64>| until.is_some_and(|at| now < at && at <= now + BACKED_OFF);
+        // A wait longer than any, or counted from a check ahead of now by
+        // more than `DUE`, is of a clock set back since. Refresh Limits waits
+        // only for the provider.
+        let set_back = self.checked_at.is_some_and(|at| at > now + DUE);
+        let waits = |until: Option<i64>| {
+            !set_back && until.is_some_and(|at| now < at && at <= now + BACKED_OFF)
+        };
         if waits(self.retry_at) || (ask != Ask::Force && waits(self.backed_off)) {
             return false;
         }
@@ -304,11 +308,7 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
         .query_map([now], |row| {
             let checked_at: Option<i64> = row.get(3)?;
             let reads: Option<i64> = row.get(6)?;
-            // Counted from a check ahead of now, the clock was set back since.
-            let backed_off = checked_at
-                .filter(|&at| at <= now + DUE)
-                .zip(reads)
-                .map(|(at, reads)| at + backoff(reads));
+            let backed_off = checked_at.zip(reads).map(|(at, reads)| at + backoff(reads));
             Ok((
                 row.get(0)?,
                 Schedule {
@@ -1391,6 +1391,7 @@ mod tests {
         let (_, held) = fake(Kind::ApiKey, &[]);
         record(&mut db, signed_in(), vec![(none, held)], at).unwrap();
         assert!(!due(&db, at + 5 * minute, Ask::Force));
+        assert!(due(&db, at - 10 * minute, Ask::Scheduled));
     }
 
     /// Whether the fake provider's account is read at `now`.
