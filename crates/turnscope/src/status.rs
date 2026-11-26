@@ -1022,7 +1022,10 @@ fn work(
     else {
         return Ok(None);
     };
-    let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
+    // The reset as shown, rounded to the minute, as `Limit::hours_to_reset`
+    // has it: work held at the reset read 20 s earlier read as ending first.
+    let until = resets
+        .and_then(|resets| hours_to_reset(*starts, time::round_minute(resets), resets <= now, now));
     let left_minutes = forecast::work_left(left, rate, forecast::work_band(length), until).map(
         |(low, likely, high)| MinutesLeft {
             low: minutes(low),
@@ -1544,7 +1547,8 @@ mod tests {
     }
 
     /// Three hours of Sonnet, then one of Opus, over which Weekly (Opus)
-    /// rose 8 points: 8% an hour of work, not 2%.
+    /// rose 8 points: 8% an hour of work, not 2%. Its reset, 54m 40s off,
+    /// holds the most work left, which reads as lasting to it.
     #[test]
     fn a_limit_on_one_model_is_worked_by_that_models_responses() {
         let dir = tempfile::tempdir().unwrap();
@@ -1560,7 +1564,7 @@ mod tests {
                  ('anthropic:a', 'seven_day_opus', {start}, 'Weekly', 'Opus', 87.6, {starts}, {resets}),
                  ('anthropic:a', 'seven_day_opus', {now}, 'Weekly', 'Opus', 95.6, {starts}, {resets});",
             starts = start - DAY,
-            resets = start + 6 * DAY,
+            resets = now + 54 * MINUTE + 40_000,
         ))
         .unwrap();
         let claude = ("claude-code", "/a", "anthropic", Some("anthropic:a"));
@@ -1578,6 +1582,11 @@ mod tests {
         assert_eq!(work.rate_per_hour, 8.0);
         // 4.4% left is 33 minutes of work.
         assert_eq!(work.left_minutes.unwrap().likely, 30);
+        let said = limit_text(&status.accounts[0].limits[0], now);
+        assert!(
+            said.contains("About 30m of work left (10m or more)"),
+            "{said}"
+        );
     }
 
     /// Its cents would change every minute, and the status with them.
