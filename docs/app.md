@@ -34,8 +34,8 @@ folder on a Mac's case-insensitive disk can't hold both `Turnscope` and
 ## How data flows
 
 ```
-turnscope::engine ──events──▶ turnscope-app (Core) ──wake/sync──▶ Bridge.swift ──▶ SwiftUI, menu bar, notifier
-                  ◀─requests─                      ◀───actions───              ◀── clicks
+turnscope::engine ──events──▶ turnscope-app (State) ──wake/sync──▶ Bridge.swift ──▶ SwiftUI, menu bar, notifier
+                  ◀─requests─                       ◀───actions───              ◀── clicks
 ```
 
 `crates/turnscope-app` starts `turnscope::engine::Engine` inside the app's
@@ -51,10 +51,10 @@ does.
   (which row is open, folds, active page and Settings tab) stays local
   to `UIState` in Swift so clicking around the panel never round-trips
   through FFI or JSON.
-- **`Core::took`** handles engine events on the engine thread, updates
-  `State`, queues one-shot `Effect`s (alerts to post, sign-in alerts to
-  clear), and invokes the host's wake callback. `Core::apply`, for what
-  the person does, queues preference saves. The
+- **`State::took`** handles engine events on the engine thread, queues
+  one-shot `Effect`s (alerts to post, sign-in alerts to clear), and
+  invokes the host's wake callback. `State::apply`, for what the person
+  does, queues preference saves. The
   status is kept until a newer one arrives, even while the data can't be
   kept current, so the panel never goes empty.
 - **`State` and `view.rs`** (in `crates/turnscope-app`) split the accounts

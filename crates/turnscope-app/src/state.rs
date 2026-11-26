@@ -106,6 +106,9 @@ pub struct State {
     /// The minute the open panel's words are as of: set as it opens, and each minute after.
     pub now: i64,
     pub panel_open: bool,
+    // Taken by the shell's next `sync`.
+    pub effects: Vec<Effect>,
+    pub animated: bool,
 }
 
 impl State {
@@ -283,37 +286,20 @@ impl State {
             })
             .collect()
     }
-}
-
-pub struct Core {
-    pub state: State,
-    effects: Vec<Effect>,
-    animated: bool,
-}
-
-impl Core {
-    pub fn new(state: State) -> Core {
-        Core {
-            state,
-            effects: Vec::new(),
-            animated: false,
-        }
-    }
 
     /// Returns the calls to send the engine, and whether to wake the shell.
     pub fn took(&mut self, event: Event) -> (Vec<Call>, bool) {
         let mut calls = Vec::new();
         match event {
             Event::Shown(shown, alerts) => {
-                let before = self.state.status.take();
-                self.state.take(*shown);
+                let before = self.status.take();
+                self.take(*shown);
                 let was_refused = |id: &str| {
                     before
                         .as_ref()
                         .is_none_or(|b| b.accounts.iter().any(|a| a.id == id && a.refused()))
                 };
                 let identifiers: Vec<String> = self
-                    .state
                     .all()
                     .iter()
                     .filter(|a| !a.refused() && was_refused(&a.id))
@@ -323,22 +309,22 @@ impl Core {
                     self.effects
                         .push(Effect::RemoveNotifications { identifiers });
                 }
-                if self.state.panel_open {
+                if self.panel_open {
                     self.animated = true;
-                    calls = self.state.asks(|a| self.state.counts(a));
+                    calls = self.asks(|a| self.counts(a));
                 }
-                let mut told = std::mem::take(&mut self.state.alerts_waiting);
+                let mut told = std::mem::take(&mut self.alerts_waiting);
                 told.extend(alerts);
                 self.post(told);
                 (calls, true)
             }
-            Event::Pending(alerts) if self.state.status.is_none() => {
-                self.state.alerts_waiting.extend(alerts);
+            Event::Pending(alerts) if self.status.is_none() => {
+                self.alerts_waiting.extend(alerts);
                 (calls, false)
             }
             Event::Pending(alerts) => (calls, self.post(alerts)),
             Event::Kept(stopped) => {
-                self.state.problem = stopped;
+                self.problem = stopped;
                 (calls, true)
             }
             Event::UsedMost {
@@ -347,11 +333,11 @@ impl Core {
                 sessions,
             } => {
                 let entry = (limit, sessions);
-                let changed = self.state.used.get(&account) != Some(&entry);
+                let changed = self.used.get(&account) != Some(&entry);
                 if changed {
-                    self.state.used.insert(account, entry);
+                    self.used.insert(account, entry);
                 }
-                let wake = changed && self.state.panel_open;
+                let wake = changed && self.panel_open;
                 if wake {
                     self.animated = true;
                 }
@@ -362,16 +348,16 @@ impl Core {
                 connection,
                 error,
             } => {
-                self.state.changing_agents.remove(&agent);
-                if let Some(shown) = self.state.agents.iter_mut().find(|a| a.id == agent) {
+                self.changing_agents.remove(&agent);
+                if let Some(shown) = self.agents.iter_mut().find(|a| a.id == agent) {
                     shown.connection = connection;
                     if let Some(error) = error {
-                        self.state.agent_errors.insert(agent, (connection, error));
+                        self.agent_errors.insert(agent, (connection, error));
                     }
                 }
-                (calls, self.state.panel_open)
+                (calls, self.panel_open)
             }
-            Event::Refreshed => (calls, std::mem::take(&mut self.state.refreshing)),
+            Event::Refreshed => (calls, std::mem::take(&mut self.refreshing)),
         }
     }
 
@@ -380,19 +366,19 @@ impl Core {
         let mut calls = Vec::new();
         match action {
             Action::PanelOpened {} => {
-                if !self.state.panel_open {
-                    self.state.panel_open = true;
-                    self.state.now = turnscope::time::minute(now_ms);
-                    calls = self.state.asks(|_| true);
+                if !self.panel_open {
+                    self.panel_open = true;
+                    self.now = turnscope::time::minute(now_ms);
+                    calls = self.asks(|_| true);
                     calls.push(Call::AskLimits);
                 }
             }
             Action::PanelClosed {} => {
-                self.state.panel_open = false;
+                self.panel_open = false;
             }
             Action::SetHidden { id, hidden } => {
-                if !self.state.stopped() {
-                    self.state.mark_hidden(&id, hidden);
+                if !self.stopped() {
+                    self.mark_hidden(&id, hidden);
                     calls.push(Call::Hide {
                         account: id,
                         hidden,
@@ -400,14 +386,14 @@ impl Core {
                 }
             }
             Action::SetConnected { id, connecting } => {
-                if self.state.live() && self.state.can_change(&id) {
+                if self.live() && self.can_change(&id) {
                     let to = if connecting {
                         Connection::Connected
                     } else {
                         Connection::Available
                     };
-                    self.state.changing_agents.insert(id.clone(), to);
-                    self.state.agent_errors.remove(&id);
+                    self.changing_agents.insert(id.clone(), to);
+                    self.agent_errors.remove(&id);
                     calls.push(Call::Connect {
                         agent: id,
                         connecting,
@@ -415,21 +401,21 @@ impl Core {
                 }
             }
             Action::SetNotify { notify } => {
-                if !self.state.stopped()
-                    && let Some(status) = &mut self.state.status
+                if !self.stopped()
+                    && let Some(status) = &mut self.status
                 {
                     status.settings.notify = notify;
                     calls.push(Call::SaveSettings(status.settings));
                 }
             }
             Action::SetMenuShows { shows } => {
-                if self.state.preferences.menu_shows != shows {
-                    self.state.preferences.menu_shows = shows;
+                if self.preferences.menu_shows != shows {
+                    self.preferences.menu_shows = shows;
                     self.save_preferences();
                 }
             }
             Action::DismissConnect { id } => {
-                if self.state.preferences.dismissed_connect.insert(id) {
+                if self.preferences.dismissed_connect.insert(id) {
                     self.save_preferences();
                 }
             }
@@ -440,11 +426,7 @@ impl Core {
                 calls.push(Call::Acknowledge(id));
                 // The account may have been read again while the notification was posted.
                 if let Some(account) = sign_in_account
-                    && self
-                        .state
-                        .all()
-                        .iter()
-                        .any(|a| a.id == account && !a.refused())
+                    && self.all().iter().any(|a| a.id == account && !a.refused())
                 {
                     self.effects.push(Effect::RemoveNotifications {
                         identifiers: vec![replaces(&account, None)],
@@ -452,14 +434,14 @@ impl Core {
                 }
             }
             Action::RefreshNow {} => {
-                if self.state.can_refresh() && !self.state.refreshing {
-                    self.state.refreshing = true;
+                if self.can_refresh() && !self.refreshing {
+                    self.refreshing = true;
                     calls.push(Call::RefreshNow);
                 }
             }
             Action::Tick {} => {
-                if self.state.panel_open {
-                    self.state.now = turnscope::time::minute(now_ms);
+                if self.panel_open {
+                    self.now = turnscope::time::minute(now_ms);
                 }
             }
         }
@@ -471,35 +453,29 @@ impl Core {
         if alerts.is_empty() {
             return false;
         }
-        let words = self.state.words_now();
+        let words = self.words_now();
         let alerts = alerts
             .into_iter()
-            .map(|alert| words.note(alert, self.state.all()))
+            .map(|alert| words.note(alert, self.all()))
             .collect();
         self.effects.push(Effect::PostAlerts { alerts });
         true
     }
 
     fn save_preferences(&mut self) {
-        if !self.state.live() {
+        if !self.live() {
             return;
         }
         self.effects.push(Effect::SavePreferences {
-            menu_shows: self.state.preferences.menu_shows,
-            dismissed_connect: self
-                .state
-                .preferences
-                .dismissed_connect
-                .iter()
-                .cloned()
-                .collect(),
+            menu_shows: self.preferences.menu_shows,
+            dismissed_connect: self.preferences.dismissed_connect.iter().cloned().collect(),
         });
     }
 
     pub fn sync(&mut self) -> AppSync {
         let animated = std::mem::take(&mut self.animated);
         let effects = std::mem::take(&mut self.effects);
-        build_sync(&self.state, animated, effects)
+        build_sync(self, animated, effects)
     }
 }
 
@@ -549,12 +525,11 @@ pub(crate) mod tests {
         assert!(shown(example()).to_connect().is_none());
         let mut using = example();
         using.agents[1].in_use = true;
-        let mut state = shown(using);
-        assert_eq!(state.to_connect().map(|a| a.id.as_str()), Some("codex"));
-        state.preferences.dismissed_connect.insert("codex".into());
-        assert!(state.to_connect().is_none());
-        state.preferences.dismissed_connect.clear();
-        let mut core = Core::new(state);
+        let mut core = shown(using);
+        assert_eq!(core.to_connect().map(|a| a.id.as_str()), Some("codex"));
+        core.preferences.dismissed_connect.insert("codex".into());
+        assert!(core.to_connect().is_none());
+        core.preferences.dismissed_connect.clear();
         let connect = Action::SetConnected {
             id: "codex".into(),
             connecting: true,
@@ -562,8 +537,8 @@ pub(crate) mod tests {
         core.apply(connect, 0);
         let offer = core.sync().panel.connect_offer;
         assert!(offer.is_some_and(|offer| offer.changing));
-        core.state.from_disk_image = true;
-        assert!(core.state.to_connect().is_none());
+        core.from_disk_image = true;
+        assert!(core.to_connect().is_none());
     }
 
     #[test]
@@ -616,7 +591,7 @@ pub(crate) mod tests {
 
     #[test]
     fn alerts_told_before_the_first_status_wait_for_it() {
-        let mut core = Core::new(State::default());
+        let mut core = State::default();
         let alert = Alert {
             id: 1,
             kind: AlertKind::SignIn,
@@ -630,31 +605,35 @@ pub(crate) mod tests {
         };
         let (_, wake) = core.took(Event::Pending(vec![alert.clone()]));
         assert!(!wake);
-        assert_eq!(core.state.alerts_waiting.len(), 1);
+        assert_eq!(core.alerts_waiting.len(), 1);
         let (_, wake) = core.took(Event::Shown(Box::new(example()), Vec::new()));
         assert!(wake);
-        assert_eq!(core.state.alerts_waiting.len(), 0);
+        assert_eq!(core.alerts_waiting.len(), 0);
         let sync = core.sync();
         assert!(sync.effects.iter().any(
             |e| matches!(e, Effect::PostAlerts { alerts } if alerts.len() == 1 && alerts[0].id == 1)
         ));
         let (_, wake) = core.took(Event::Pending(vec![alert]));
         assert!(wake);
-        assert_eq!(core.state.alerts_waiting.len(), 0);
+        assert_eq!(core.alerts_waiting.len(), 0);
     }
 
     #[test]
     fn a_connect_that_ends_shows_at_once_and_one_that_fails_says_why_until_it_changes() {
-        let mut state = shown(example());
-        state.panel_open = true;
-        let mut core = Core::new(state);
-        fn codex(core: &mut Core) -> (bool, Option<String>) {
+        let mut core = shown(example());
+        core.panel_open = true;
+        fn codex(core: &mut State) -> (bool, Option<String>) {
             let agents = core.sync().panel.settings.agents;
             let row = agents.into_iter().find(|a| a.id == "codex").unwrap();
             assert!(row.changing.is_none());
             (row.connected, row.note)
         }
-        fn connect(core: &mut Core, connecting: bool, connection: Connection, error: Option<&str>) {
+        fn connect(
+            core: &mut State,
+            connecting: bool,
+            connection: Connection,
+            error: Option<&str>,
+        ) {
             let action = Action::SetConnected {
                 id: "codex".into(),
                 connecting,
@@ -671,7 +650,7 @@ pub(crate) mod tests {
             });
             assert!(wake);
         }
-        fn read(core: &mut Core, connection: Connection) {
+        fn read(core: &mut State, connection: Connection) {
             let mut shown = example();
             shown.agents[1].connection = connection;
             core.took(Event::Shown(Box::new(shown), Vec::new()));
@@ -698,7 +677,7 @@ pub(crate) mod tests {
 
     #[test]
     fn while_the_panel_is_open_a_status_asks_what_used_in_use_and_missing_accounts() {
-        let mut core = Core::new(State::default());
+        let mut core = State::default();
         core.apply(Action::PanelOpened {}, 0);
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
         fn asked(calls: &[Call]) -> Vec<&str> {
@@ -711,9 +690,9 @@ pub(crate) mod tests {
                 .collect()
         }
         assert_eq!(asked(&calls), [CLAUDE, CODEX, OPENROUTER]);
-        for call in core.state.asks(|_| true) {
+        for call in core.asks(|_| true) {
             if let Call::UsedMost { account, limit } = call {
-                core.state.used.insert(account, (limit, Vec::new()));
+                core.used.insert(account, (limit, Vec::new()));
             }
         }
         let (calls, _) = core.took(Event::Shown(Box::new(example()), Vec::new()));
@@ -729,7 +708,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sign_in_notification_goes_on_the_first_status_and_once_its_account_is_read_again() {
-        let mut core = Core::new(State::default());
+        let mut core = State::default();
         core.took(Event::Shown(Box::new(example()), Vec::new()));
         let removed = |sync: AppSync| -> Vec<String> {
             sync.effects
@@ -769,8 +748,7 @@ pub(crate) mod tests {
 
     #[test]
     fn preferences_are_saved_except_on_a_fixture() {
-        let changed = |state: State| {
-            let mut core = Core::new(state);
+        let changed = |mut core: State| {
             core.apply(
                 Action::SetMenuShows {
                     shows: MenuShows::One,
@@ -800,8 +778,8 @@ pub(crate) mod tests {
     fn set_to_most_urgent_the_menu_bar_shows_one_account() {
         let mut two = example();
         two.status.accounts[1].in_use = true;
-        let mut core = Core::new(shown(two));
-        let slots = |core: &mut Core| core.sync().menu_bar.slots.len();
+        let mut core = shown(two);
+        let slots = |core: &mut State| core.sync().menu_bar.slots.len();
         assert_eq!(slots(&mut core), 2);
         let one = Action::SetMenuShows {
             shows: MenuShows::One,
@@ -813,10 +791,10 @@ pub(crate) mod tests {
     #[test]
     fn opening_the_panel_asks_for_limits_and_its_words_move_each_minute() {
         let at = example().status.at;
-        let mut core = Core::new(shown(example()));
+        let mut core = shown(example());
         let asked = core.apply(Action::PanelOpened {}, at);
         assert!(asked.contains(&Call::AskLimits));
-        let headline = |core: &mut Core| core.sync().panel.verdict.unwrap().headline;
+        let headline = |core: &mut State| core.sync().panel.verdict.unwrap().headline;
         assert_eq!(headline(&mut core), "Claude Max runs out in\u{a0}50m");
         core.apply(Action::Tick {}, at + 10 * turnscope::time::MINUTE);
         assert_eq!(headline(&mut core), "Claude Max runs out in\u{a0}40m");
@@ -824,12 +802,12 @@ pub(crate) mod tests {
 
     #[test]
     fn once_a_newer_turnscope_stops_the_engine_nothing_changes_nor_connects_from_a_disk_image() {
-        let mut stopped = Core::new(shown(example()));
+        let mut stopped = shown(example());
         stopped.took(Event::Kept(Some(Stopped::Newer { replaced: false })));
-        let mut image = Core::new(State {
+        let mut image = State {
             from_disk_image: true,
             ..shown(example())
-        });
+        };
         for core in [&mut stopped, &mut image] {
             let connect = Action::SetConnected {
                 id: "codex".into(),
@@ -873,8 +851,8 @@ pub(crate) mod tests {
     /// which the engine tells for every forced read.
     #[test]
     fn refreshing_is_said_until_the_refresh_ends_and_only_once_there_is_a_status() {
-        let refreshing = |core: &mut Core| core.sync().panel.footer_note.map(|n| n.text);
-        let mut core = Core::new(shown(example()));
+        let refreshing = |core: &mut State| core.sync().panel.footer_note.map(|n| n.text);
+        let mut core = shown(example());
         assert!(core.sync().panel.can_refresh);
         assert_eq!(core.apply(Action::RefreshNow {}, 0), [Call::RefreshNow]);
         assert_eq!(refreshing(&mut core).as_deref(), Some("Refreshing limits…"));
@@ -889,7 +867,7 @@ pub(crate) mod tests {
         assert_eq!(refreshing(&mut core).as_deref(), Some("Refreshing limits…"));
         assert_eq!(core.apply(Action::RefreshNow {}, 0), []);
 
-        let mut unopened = Core::new(State::default());
+        let mut unopened = State::default();
         assert!(!unopened.sync().panel.can_refresh);
         assert_eq!(unopened.apply(Action::RefreshNow {}, 0), []);
         assert_eq!(refreshing(&mut unopened), None);
