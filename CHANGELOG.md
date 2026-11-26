@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **A Codex limit that hasn't moved stays current while Codex works.** If
+  ChatGPT's own read of the limits failed, a limit unchanged for 30 minutes
+  said "Not read since" instead of when it runs out, though Codex wrote it
+  with every response.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

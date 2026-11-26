@@ -612,10 +612,11 @@ fn write_readings<'a>(
 }
 
 /// Take in the limits an agent wrote in its history for `account`, as Codex
-/// does with each response: each reading newer than the last of its limit
-/// and unlike it. They move `read_at` alone, so a limit the agent doesn't
-/// write, as one on some models, stands as the last full read gave it, and
-/// the account is still read in full within `IDLE`. Whether any was taken in.
+/// does with each response: each reading newer than the last of its limit,
+/// and unlike it or `DUE` after it. They move `read_at` alone, so a limit
+/// the agent doesn't write, as one on some models, stands as the last full
+/// read gave it, and the account is still read in full within `IDLE`.
+/// Whether any was taken in.
 pub fn record_in_band(
     tx: &Transaction,
     account: &str,
@@ -646,10 +647,13 @@ pub fn record_in_band(
             })
             .optional()?;
         // Codex writes its limits with every response, most often unchanged:
-        // as used, of the same window.
+        // as used, of the same window. One unchanged is still taken as often
+        // as a read would take it, or it would go stale while Codex says it.
         if !before.is_some_and(|(at, used, resets)| {
             at >= snapshot.at
-                || (used == reading.used && crate::forecast::same_reset(resets, reading.resets))
+                || (snapshot.at - at < DUE
+                    && used == reading.used
+                    && crate::forecast::same_reset(resets, reading.resets))
         }) {
             new.push(reading);
         }
@@ -1571,6 +1575,29 @@ mod tests {
             status.accounts[0].state,
             crate::status::State::AsOf { .. }
         ));
+    }
+
+    /// While its provider's read fails, a limit Codex keeps writing
+    /// unchanged is still current.
+    #[test]
+    fn a_limit_an_agent_writes_unchanged_stays_current() {
+        use crate::status::{Outlook, Unknown};
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let minute = crate::time::MINUTE;
+        let at = 1_000 * crate::time::DAY;
+        let (_, held) = fake(Kind::Subscription, &[]);
+        let read = Read::of(in_band(at, 30.0).readings.into());
+        record(&mut db, signed_in(), vec![(read, held)], at).unwrap();
+        failed(&mut db, Problem::unavailable("down"), at + minute);
+        for written in (2..=40).map(|minutes| at + minutes * minute) {
+            take(&mut db, &in_band(written, 30.0), written);
+        }
+        let status = crate::status::status(&db, at + 40 * minute).unwrap();
+        let stale = Outlook::Unknown {
+            reason: Unknown::Stale,
+        };
+        assert_ne!(status.accounts[0].limits[0].outlook, stale);
     }
 
     #[test]
