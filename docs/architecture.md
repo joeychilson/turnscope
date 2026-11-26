@@ -306,10 +306,12 @@ megabytes.
 - The **deciding limit** says how an account stands. It's chosen from the
   limits not reset since they were read, and of those, from the limits on
   all of the account's usage (not one model's, other apps', or one key's)
-  where there are any. An account with none, as a Google AI plan with a
-  pool for Gemini and one for Claude and GPT, stands by one pool: the one
-  its latest response drew on, or with none, the first listed
-  (`status::pool`). Its deciding limit is that pool's. The most urgent
+  where there are any. An account whose every limit is on some models, as
+  a Google AI plan with a pool for Gemini and one for Claude and GPT,
+  stands by one pool: the one its latest response drew on, or with none,
+  the first listed (`status::pool`). Its deciding limit is that pool's.
+  Otherwise, as an API key with no credits read, it's chosen from all its
+  limits. The most urgent
   wins (used up, then running out), then the soonest out, then the least
   left (at the reset for a limit that lasts, where that's forecast, or else
   now). Of several used up, the last back wins, since the account can't be

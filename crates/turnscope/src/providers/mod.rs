@@ -173,10 +173,20 @@ pub fn key_limit(fingerprint: &str) -> String {
     format!("key-{fingerprint}")
 }
 
-/// The fingerprint of the API key whose own limit is keyed `key`, if it's
-/// one's.
+/// The key of another limit on one API key, as a guardrail on it, after the
+/// key's own so the two list together.
+pub fn key_limit_on(fingerprint: &str, limit: &str) -> String {
+    format!("key-{fingerprint}-{limit}")
+}
+
+/// The fingerprint of the API key whose limit is keyed `key`, if it's one
+/// key's: its own or another on it.
 pub fn key_limit_fingerprint(key: &str) -> Option<&str> {
-    key.strip_prefix("key-")
+    let key = key.strip_prefix("key-")?;
+    Some(
+        key.split_once('-')
+            .map_or(key, |(fingerprint, _)| fingerprint),
+    )
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]

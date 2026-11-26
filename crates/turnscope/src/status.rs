@@ -271,7 +271,8 @@ pub enum Stale {
 #[serde(rename_all = "camelCase")]
 pub struct Limit {
     /// The provider's key: `five_hour`, `seven_day`. An API key's own limit
-    /// is `key-<fingerprint>`.
+    /// is `key-<fingerprint>`, and another on the key
+    /// `key-<fingerprint>-<its own>`.
     pub key: String,
     /// The provider's name: `5 hours`, `Weekly`, `Credits`.
     pub name: String,
@@ -290,7 +291,7 @@ pub struct Limit {
     pub money: Option<Money>,
     /// When its window reset, if it has since it was read.
     pub reset_since: Option<i64>,
-    /// For one API key's own limit, the agents holding the key. Otherwise
+    /// For one API key's limit, the agents holding the key. Otherwise
     /// empty.
     pub held_by: Vec<String>,
     pub outlook: Outlook,
@@ -337,6 +338,12 @@ impl Limit {
 
     pub fn is_key(&self) -> bool {
         crate::providers::key_limit_fingerprint(&self.key).is_some()
+    }
+
+    /// Whether it's an API key's own limit, not another on the key.
+    pub fn is_own_key(&self) -> bool {
+        crate::providers::key_limit_fingerprint(&self.key)
+            .is_some_and(|fingerprint| self.key == crate::providers::key_limit(fingerprint))
     }
 
     /// When its window resets, unless it already has since it was read.
@@ -589,6 +596,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
     // Between readings it changes at most once a minute.
     let now = time::minute(now);
     let mut signed: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // The agents holding each API key, by its fingerprint.
     let mut keys: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut rows = db.prepare(&format!(
         "SELECT s.agent, s.account, s.key FROM sign_in s
@@ -602,7 +610,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             agents.push(agent.clone());
         }
         if let Some(key) = key {
-            let agents = keys.entry(crate::providers::key_limit(&key)).or_default();
+            let agents = keys.entry(key).or_default();
             if !agents.contains(&agent) {
                 agents.push(agent);
             }
@@ -974,7 +982,10 @@ fn limits(
             },
         };
         limits.push(Limit {
-            held_by: keys.get(&key).cloned().unwrap_or_default(),
+            held_by: crate::providers::key_limit_fingerprint(&key)
+                .and_then(|fingerprint| keys.get(fingerprint))
+                .cloned()
+                .unwrap_or_default(),
             key,
             name,
             scope,
@@ -1205,7 +1216,7 @@ fn pool<'a>(
     account: &str,
     limits: &'a [Limit],
 ) -> Result<Option<&'a str>> {
-    if limits.iter().any(Limit::whole) {
+    if limits.iter().any(|limit| limit.scope.is_none()) {
         return Ok(None);
     }
     let mut pools: Vec<&str> = Vec::new();
@@ -1708,6 +1719,63 @@ mod tests {
         let status = status(&db, HOUR).unwrap();
         let limit = &status.accounts[0].limits[0];
         assert_eq!(limit.held_by, ["pi"]);
+    }
+
+    /// An OpenRouter key Pi holds, with no credits bought: `readings` of
+    /// key, name, scope and percent used, read an hour ago and now.
+    fn key_account(readings: &[(&str, &str, Option<&str>, f64)]) -> Account {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let now = 2 * HOUR;
+        db.execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at)
+                 VALUES ('openrouter:api', 'openrouter', 'apiKey', 'OpenRouter API key', {now}, {now});
+             INSERT INTO sign_in (agent, folder, provider, since, account, key)
+                 VALUES ('pi', '/a', 'openrouter', 0, 'openrouter:api', 'abc');"
+        ))
+        .unwrap();
+        for at in [now - HOUR, now] {
+            for (key, name, scope, used) in readings {
+                db.execute(
+                    "INSERT INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
+                     VALUES ('openrouter:api', ?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+                    params![key, at, name, scope, used, scope.is_none().then_some(20.0), DAY],
+                )
+                .unwrap();
+            }
+        }
+        status(&db, now).unwrap().accounts.remove(0)
+    }
+
+    #[test]
+    fn a_key_used_up_decides_over_a_limit_on_some_models() {
+        let account = key_account(&[
+            ("key-abc", "Daily key limit", None, 100.0),
+            (
+                "free_model_daily_requests",
+                "Daily",
+                Some("Free models"),
+                12.0,
+            ),
+        ]);
+        assert_eq!(account.deciding.as_deref(), Some("key-abc"));
+    }
+
+    #[test]
+    fn a_guardrail_on_a_key_is_the_keys() {
+        let account = key_account(&[
+            ("credits", "Credits", None, 50.0),
+            ("key-abc", "Daily key limit", None, 10.0),
+            ("key-abc-guardrail-g1", "Daily key guardrail", None, 100.0),
+        ]);
+        // Used up, it stops the key, not the account.
+        assert_eq!(account.deciding.as_deref(), Some("credits"));
+        let guardrail = &account.limits[2];
+        assert_eq!(guardrail.named(), "Pi's daily key guardrail");
+        // `pi` and `key limit` name the key's own limit.
+        for name in ["pi", "key limit"] {
+            assert_eq!(account.limit(name).unwrap().key, "key-abc");
+        }
     }
 
     #[test]

@@ -106,8 +106,10 @@ limit. Beyond the doc comments on `Reading`:
 
 - `key` is the same at every read: it names the limit in readings, alerts
   and what used it. A limit of one API key is keyed by `key_limit` of the
-  key's fingerprint: the status then shows the agents holding that key, and
-  the limit never decides how the account stands.
+  key's fingerprint, and another on that key, as a guardrail, by
+  `key_limit_on`: the status then shows the agents holding that key, its
+  usage is that key's, and the limit decides how the account stands only
+  when nothing on all its usage does.
 - `name` is as the user knows it: `5 hours`, `Weekly`, `Credits`. A limit
   of money whose name ends in `s` is said as plural: "Credits are used up".
 - `starts` and `resets` are Unix milliseconds. `starts` is `None` for a

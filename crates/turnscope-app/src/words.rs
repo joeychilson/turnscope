@@ -633,7 +633,12 @@ fn short_name(limit: &Limit) -> (String, bool) {
 
 pub fn name(limit: &Limit) -> String {
     if !limit.held_by.is_empty() {
-        return format!("{}'s key", agent_names(&limit.held_by, "and"));
+        let holders = agent_names(&limit.held_by, "and");
+        // A key's own limit goes by the key; another on it, by its name.
+        return match limit.is_own_key() {
+            true => format!("{holders}'s key"),
+            false => format!("{holders}'s {}", limit.name.to_lowercase()),
+        };
     }
     match &limit.scope {
         Some(scope) => format!("{scope} {}", limit.name.to_lowercase()),
@@ -1135,6 +1140,12 @@ mod tests {
             ..limit(lasts())
         };
         assert_eq!(name(&held), "Codex and Pi's key");
+        let guardrail = Limit {
+            key: "key-1-guardrail-g".into(),
+            name: "Weekly key guardrail".into(),
+            ..held.clone()
+        };
+        assert_eq!(name(&guardrail), "Codex and Pi's weekly key guardrail");
 
         let spent = Limit {
             left_percent: 0,

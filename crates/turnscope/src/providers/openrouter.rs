@@ -132,32 +132,34 @@ fn own_limit(answer: &Value, key: &str, now: i64) -> Option<Option<Reading>> {
 /// A budget besides the key's own limit: a guardrail's or a workspace's.
 /// One of a scope or interval not known is passed over.
 fn budget(budget: &Value, fingerprint: &str, now: i64) -> Option<Reading> {
-    let scope = budget["scope"].as_str()?;
-    // A guardrail on the key holds each key to its own spend; one on the
-    // member, every key of theirs to their spend together.
-    let (what, id, own) = match scope {
-        "api_key" | "workspace_default_key" => ("key guardrail", "guardrail_id", true),
-        "member" | "workspace_default_member" => ("guardrail", "guardrail_id", false),
-        "workspace" => ("workspace budget", "budget_id", false),
+    let id = |field: &str| budget[field].as_str().filter(|id| !id.is_empty());
+    // A guardrail on keys holds each key to its own spend, so it's the
+    // key's limit; one on members, every key of theirs to their spend
+    // together.
+    let (what, key) = match budget["scope"].as_str()? {
+        "api_key" | "workspace_default_key" => (
+            "key guardrail",
+            super::key_limit_on(fingerprint, &format!("guardrail-{}", id("guardrail_id")?)),
+        ),
+        "member" | "workspace_default_member" => {
+            ("guardrail", format!("guardrail-{}", id("guardrail_id")?))
+        }
+        "workspace" => ("workspace budget", format!("budget-{}", id("budget_id")?)),
         _ => return None,
     };
-    let id = budget[id].as_str().filter(|id| !id.is_empty())?;
     let limit = budget["limit_usd"].as_f64().filter(|limit| *limit > 0.0)?;
     let spent = budget["spend_usd"].as_f64()?;
-    let key = match own {
-        true => format!("budget-{scope}-{id}-{fingerprint}"),
-        false => format!("budget-{scope}-{id}"),
-    };
     let period = period(&budget["reset_interval"])?;
     Some(money(key, what, period, spent, limit, now))
 }
 
-/// The account's requests to free models today, once it has made any: a
-/// count, not money, so the limit has no size, and one who uses no free
-/// model has no row for it.
+/// The account's requests to free models today: a count, not money, so the
+/// limit has no size. It's read with none made too, as the day after one
+/// that used them up has none, and only a reading in that day tells that
+/// they're back.
 fn free_requests(data: &Value, now: i64) -> Option<Reading> {
     let requests = &data["free_model_daily_requests"];
-    let used = requests["used"].as_f64().filter(|used| *used > 0.0)?;
+    let used = requests["used"].as_f64()?;
     let limit = requests["limit"].as_f64().filter(|limit| *limit > 0.0)?;
     let (starts, resets) = time::window(Period::Day, now, &TimeZone::UTC);
     Some(Reading {
@@ -311,7 +313,7 @@ mod tests {
     );
 
     fn read(answer: &Value, now: i64) -> Vec<Read> {
-        super::key_limits(answer, "made-up-key", now)
+        super::key_limits(answer, "0123456789abcdef", now)
             .unwrap()
             .into_iter()
             .map(|r| (r.key, r.name, r.scope, r.used, r.size, r.starts, r.resets))
@@ -322,30 +324,22 @@ mod tests {
     fn a_keys_guardrails_and_workspace_budgets_are_read_beside_its_limit() {
         // Thursday 2026-10-01 12:00 UTC.
         let now = 1_790_856_000_000;
-        let (day, week) = (
+        let (day, week, month) = (
             (Some(1_790_812_800_000), Some(1_790_899_200_000)),
             (Some(1_790_553_600_000), Some(1_791_158_400_000)),
+            (Some(1_790_812_800_000), Some(1_793_491_200_000)),
         );
+        let guardrail = |scope, id, every| budget(scope, ("guardrail_id", id), 10.0, 2.5, every);
         let answer = key_answer(
             json!([
-                budget("member", ("guardrail_id", "gr_1"), 4.0, 1.0, Some("daily")),
-                budget(
-                    "api_key",
-                    ("guardrail_id", "gr_2"),
-                    10.0,
-                    2.5,
-                    Some("weekly")
-                ),
+                guardrail("member", "gr_1", Some("daily")),
+                guardrail("workspace_default_member", "gr_2", Some("weekly")),
+                guardrail("api_key", "gr_3", Some("weekly")),
+                guardrail("workspace_default_key", "gr_4", Some("monthly")),
                 budget("workspace", ("budget_id", "wb_1"), 100.0, 40.0, None),
                 // The key's own limit, read from `limit`, and what isn't known.
                 budget("key_limit", ("guardrail_id", "gr_0"), 50.0, 0.0, None),
-                budget(
-                    "organization",
-                    ("guardrail_id", "gr_3"),
-                    5.0,
-                    1.0,
-                    Some("daily")
-                ),
+                guardrail("organization", "gr_5", Some("daily")),
                 budget("workspace", ("budget_id", "wb_2"), 5.0, 1.0, Some("yearly")),
             ]),
             0,
@@ -362,45 +356,49 @@ mod tests {
             )
         };
         assert_eq!(
-            read(&answer, now),
+            read(&answer, now)[..6],
             [
-                money("key-made-up-key", "Key limit", 0.0, 50.0, (None, None)),
-                money("budget-member-gr_1", "Daily guardrail", 25.0, 4.0, day),
+                money("key-0123456789abcdef", "Key limit", 0.0, 50.0, (None, None)),
+                money("guardrail-gr_1", "Daily guardrail", 25.0, 10.0, day),
+                money("guardrail-gr_2", "Weekly guardrail", 25.0, 10.0, week),
+                // On the key alone, so the key's.
                 money(
-                    "budget-api_key-gr_2-made-up-key",
+                    "key-0123456789abcdef-guardrail-gr_3",
                     "Weekly key guardrail",
                     25.0,
                     10.0,
                     week
                 ),
                 money(
-                    "budget-workspace-wb_1",
-                    "Workspace budget",
-                    40.0,
-                    100.0,
-                    (None, None)
+                    "key-0123456789abcdef-guardrail-gr_4",
+                    "Monthly key guardrail",
+                    25.0,
+                    10.0,
+                    month
                 ),
+                money("budget-wb_1", "Workspace budget", 40.0, 100.0, (None, None)),
             ]
         );
     }
 
     #[test]
-    fn free_model_requests_are_a_limit_once_some_are_made_today() {
+    fn free_model_requests_are_a_limit_of_the_utc_day_made_or_not() {
         // Thursday 2026-10-01 12:00 UTC: the day from midnight UTC.
         let now = 1_790_856_000_000;
-        assert_eq!(read(&key_answer(json!([]), 0), now).len(), 1);
-        assert_eq!(
-            read(&key_answer(json!([]), 10), now)[1],
-            (
-                "free_model_daily_requests".to_owned(),
-                "Daily".to_owned(),
-                Some("Free models".to_owned()),
-                1.0,
-                None,
-                Some(1_790_812_800_000),
-                Some(1_790_899_200_000)
-            )
-        );
+        for (made, used) in [(0, 0.0), (10, 1.0)] {
+            assert_eq!(
+                read(&key_answer(json!([]), made), now)[1],
+                (
+                    "free_model_daily_requests".to_owned(),
+                    "Daily".to_owned(),
+                    Some("Free models".to_owned()),
+                    used,
+                    None,
+                    Some(1_790_812_800_000),
+                    Some(1_790_899_200_000)
+                )
+            );
+        }
     }
 
     #[test]
