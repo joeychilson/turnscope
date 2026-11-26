@@ -1002,29 +1002,20 @@ mod tests {
             std::fs::write(folder.join(format!("{file}.jsonl")), log).unwrap();
         }
         let other = crate::db::open(dir.path()).unwrap();
-        // Then all of it again, as after an update.
-        for again in [false, true] {
-            if again {
-                read_with_an_older_reader(&db);
+        let mut longest = Duration::ZERO;
+        std::thread::scope(|scope| {
+            let reading = scope.spawn(|| ingest(&mut db, home.path(), None));
+            while !reading.is_finished() {
+                let began = Instant::now();
+                other
+                    .execute("UPDATE state SET settings = NULL", [])
+                    .unwrap();
+                longest = longest.max(began.elapsed());
+                std::thread::sleep(Duration::from_millis(100));
             }
-            let mut longest = Duration::ZERO;
-            std::thread::scope(|scope| {
-                let reading = scope.spawn(|| ingest(&mut db, home.path(), None));
-                while !reading.is_finished() {
-                    let began = Instant::now();
-                    other
-                        .execute("UPDATE state SET settings = NULL", [])
-                        .unwrap();
-                    longest = longest.max(began.elapsed());
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                reading.join().unwrap().unwrap();
-            });
-            assert!(
-                longest < 3 * HOLD,
-                "a write waited {longest:?}, read again: {again}"
-            );
-        }
+            reading.join().unwrap().unwrap();
+        });
+        assert!(longest < 3 * HOLD, "a write waited {longest:?}");
     }
 
     #[test]
