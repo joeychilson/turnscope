@@ -97,7 +97,7 @@ enum Standing: String, Codable {
 }
 
 enum MenuShows: String, Codable {
-    case all, one
+    case three, one
 }
 
 struct NotifySettings: Codable, Equatable {
@@ -241,7 +241,7 @@ struct SettingsModel: Decodable, Equatable {
     var apiKeys: [AccountModel]
 
     static let empty = SettingsModel(
-        menuShows: .all, notify: nil,
+        menuShows: .three, notify: nil,
         agentsEmpty: nil, agentsTitle: "", agents: [],
         subscriptions: [], apiKeys: []
     )

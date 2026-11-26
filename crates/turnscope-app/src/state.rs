@@ -12,12 +12,12 @@ use turnscope::status::{Account, Agent, Connection, Standing, Status};
 use crate::view::{self, AppSync};
 use crate::words::{self, AlertNote, Words};
 
-/// What the menu bar shows: every account in use, or only the most urgent.
+/// What the menu bar shows: the 3 most urgent accounts in use, or only the most urgent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MenuShows {
     #[default]
-    All,
+    Three,
     One,
 }
 
@@ -242,11 +242,17 @@ impl State {
         }
     }
 
+    /// macOS hides a menu bar item too wide to fit, as beside the notch, and with it the only
+    /// way to open the panel: drawn, the example status's 6 accounts took 403 pt, and 3 took
+    /// 195 pt. Until the history is read, every account counts as in use, so only the most
+    /// urgent shows.
     pub fn in_menu_bar(&self) -> Vec<&Account> {
+        let most = match self.preferences.menu_shows {
+            MenuShows::Three if !self.reading() => 3,
+            _ => 1,
+        };
         let mut shown = self.in_use();
-        if self.preferences.menu_shows == MenuShows::One {
-            shown.truncate(1);
-        }
+        shown.truncate(most);
         shown
     }
 
@@ -723,17 +729,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn set_to_most_urgent_the_menu_bar_shows_one_account() {
-        let mut two = example();
-        two.status.accounts[1].in_use = true;
-        let mut core = shown(two);
-        let slots = |core: &mut State| core.sync().menu_bar.slots.len();
-        assert_eq!(slots(&mut core), 2);
+    fn the_menu_bar_shows_the_3_most_urgent_or_1_while_history_is_read() {
+        let mut every = example();
+        for account in &mut every.status.accounts {
+            account.in_use = true;
+            account.hidden = false;
+        }
+        let figures = |core: &mut State| {
+            let slots = core.sync().menu_bar.slots;
+            slots.into_iter().map(|s| s.figure).collect::<Vec<_>>()
+        };
+        let mut core = State::fixed(every);
+        assert_eq!(figures(&mut core), ["50m", "97%", "$8.70"]);
         let one = Action::SetMenuShows {
             shows: MenuShows::One,
         };
         core.apply(one, 0);
-        assert_eq!(slots(&mut core), 1);
+        assert_eq!(figures(&mut core), ["50m"]);
+        assert_eq!(figures(&mut State::fixed(first_launch())), ["50m"]);
     }
 
     #[test]

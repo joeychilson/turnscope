@@ -411,7 +411,7 @@ mod tests {
         let cfg = serde_json::json!({
             "fixture": fixture,
             "fromDiskImage": false,
-            "menuShows": "all",
+            "menuShows": "three",
             "dismissedConnect": [],
         })
         .to_string();
@@ -466,7 +466,7 @@ mod tests {
             "data": data.path(),
             "home": home.path(),
             "fromDiskImage": false,
-            "menuShows": "all",
+            "menuShows": "three",
             "dismissedConnect": [],
         })
         .to_string();
@@ -672,7 +672,7 @@ mod tests {
                     busy: false,
                 }),
                 settings: SettingsModel {
-                    menu_shows: MenuShows::All,
+                    menu_shows: MenuShows::Three,
                     notify: Some(Notify {
                         running_out: true,
                         used_up: false,
@@ -839,7 +839,7 @@ let out = Out(
         .setHidden(id: "anthropic:a", hidden: true),
         .setConnected(id: "claude-code", connecting: true),
         .setNotify(notify: NotifySettings(runningOut: true, usedUp: false, reset: true, signIn: false)),
-        .setMenuShows(shows: .all),
+        .setMenuShows(shows: .three),
         .setMenuShows(shows: .one),
         .dismissConnect(id: "codex"),
         .acknowledgeAlert(id: 7, signInAccount: nil),
@@ -921,7 +921,7 @@ print(String(data: data, encoding: .utf8)!)
                     },
                 },
                 Action::SetMenuShows {
-                    shows: MenuShows::All,
+                    shows: MenuShows::Three,
                 },
                 Action::SetMenuShows {
                     shows: MenuShows::One,

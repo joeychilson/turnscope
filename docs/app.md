@@ -85,8 +85,8 @@ at 12:00:40 a reset at 14:00 is in 2h.
 
 ## The menu bar item
 
-The item shows each account in use, most urgent first: its provider's logo,
-then its figure:
+The item shows up to 3 accounts in use, most urgent first: for each, its
+provider's logo, then its figure:
 
 - What's left, `68%`, in amber once it's running out.
 - How long it has, `1h 40m`, within 3 hours of running out.
@@ -97,7 +97,10 @@ With nothing in use, it shows Turnscope's logo. While every account it
 shows lasts, it's a template image in the menu bar's own color; once one
 needs attention, it's drawn in color. While the data can't be kept
 current, it's dimmed, since it shows the last status. With Settings →
-General → Show set to Most urgent, it shows only the most urgent account.
+General → Show set to Most urgent, or until the history is first read, it
+shows only the most urgent account. It never shows more than 3, since
+macOS hides an item that doesn't fit, as beside the notch, and with it the
+only way to open the panel.
 VoiceOver reads each account's title, with its label where two share
 one, and what its figure says, then "not up to date" while it's dimmed. Clicking the item opens or closes the
 panel. Right-clicking (or Control-clicking) opens a menu with Refresh
@@ -133,7 +136,8 @@ On a first launch, the headline says "Getting your limits" until the
 engine has read them. The accounts show then, while the footer says the
 history is being read. Until that read ends, which accounts are in use
 isn't known, so every account shown counts as in use: the headline is
-about the most urgent, the menu bar shows each, and none is folded away.
+about the most urgent, the menu bar shows only that one, and none is
+folded away.
 
 An account's row shows its logo, its title (and its label when another
 shown account has the same title), the line for its deciding limit, and
@@ -180,7 +184,7 @@ agents and accounts are off, and so are the panel's Hide and Show.
 
 | Tab | Holds |
 |---|---|
-| General | **Menu bar**: Show (All in use, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version (right-click for Copy Diagnostics and Reveal Log in Finder, or Option-click to copy diagnostics), Check now and Check automatically |
+| General | **Menu bar**: Show (3 most urgent, or Most urgent) and Open at login. **Notify me when**: a switch for each kind of alert. **Updates**: the version (right-click for Copy Diagnostics and Reveal Log in Finder, or Option-click to copy diagnostics), Check now and Check automatically |
 | Agents | Each installed agent, with a switch that connects or disconnects it, and under its name that it runs another copy of Turnscope (hover to see the configured path) or why connecting failed |
 | Accounts | Subscriptions, then API keys, each with a switch to show or hide it |
 
@@ -188,7 +192,7 @@ Where each setting is kept:
 
 | Setting | Kept in | Also changed by |
 |---|---|---|
-| Show (menu bar) | The app's defaults, `menuShows`: `all` or `one` | |
+| Show (menu bar) | The app's defaults, `menuShows`: `three` or `one` | |
 | Offers to connect put away | The app's defaults, `dismissedConnect`: agent ids joined by commas | |
 | Open at login | macOS's login items (`SMAppService.mainApp`) | System Settings |
 | Notify me when | The engine's settings, in the database | |
