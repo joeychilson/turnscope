@@ -32,7 +32,6 @@ struct Cost {
     base: Rates,
     #[serde(default)]
     tiers: Vec<Tiered>,
-    context_over_200k: Option<Rates>,
 }
 
 #[derive(Deserialize)]
@@ -70,11 +69,6 @@ impl Prices {
                 .iter()
                 .map(|tier| (tier.tier.size, tier.rates))
                 .collect();
-            if tiers.is_empty()
-                && let Some(long) = cost.context_over_200k
-            {
-                tiers.push((200_000, long));
-            }
             tiers.sort_by_key(|(above, _)| *above);
             let priority = row
                 .get_ref(4)?
