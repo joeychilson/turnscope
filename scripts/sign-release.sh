@@ -44,6 +44,10 @@ if [ ! -d "$app" ]; then
 fi
 version=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
 image="$dist/Turnscope-$version.dmg"
+if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "sign-release.sh: the app's version, $version, isn't X.Y.Z" >&2
+  exit 2
+fi
 if [ "$identity" != - ]; then
   for name in NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER SPARKLE_PUBLIC_KEY; do
     if [ -z "${!name:-}" ]; then
