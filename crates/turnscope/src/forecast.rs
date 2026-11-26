@@ -229,17 +229,16 @@ pub fn work_band(length: Option<i64>) -> (f64, f64) {
     }
 }
 
-/// Hours of work left at `rate` with `used` percent used: the fewest, at
+/// Hours of work left at `rate` with `left` percent left: the fewest, at
 /// the fast end of `band`; the likely; and the most, at the slow end but no
 /// more than `until`, the hours to its reset. `None` when the likely hours
 /// reach `until`: it lasts until its reset even with work all the time.
 pub fn work_left(
-    used: f64,
+    left: f64,
     rate: f64,
     (low, high): (f64, f64),
     until: Option<f64>,
 ) -> Option<(f64, f64, f64)> {
-    let left = (100.0 - used).max(0.0);
     let likely = left / rate;
     let until = until.unwrap_or(f64::INFINITY);
     (likely < until).then(|| {
@@ -369,19 +368,19 @@ mod tests {
             .collect();
         assert_eq!(work_rate(&readings, &worked, None, 5.0), Some(6.0));
         let (slow, fast) = work_band(Some(at(168.0)));
-        let (low, likely, high) = work_left(14.0, 4.0, (slow, fast), Some(164.0)).unwrap();
+        let (low, likely, high) = work_left(86.0, 4.0, (slow, fast), Some(164.0)).unwrap();
         assert_eq!(likely, 21.5);
         assert!((low - 21.5 / fast).abs() < 1e-9 && (high - 21.5 / slow).abs() < 1e-9);
         // More work left than hours to the reset lasts until it, even
         // working all the time.
         assert_eq!(
-            work_left(14.0, 4.0, work_band(Some(at(5.0))), Some(3.0)),
+            work_left(86.0, 4.0, work_band(Some(at(5.0))), Some(3.0)),
             None
         );
         // Less runs out first, its slow end no later than the reset.
         let (slow, fast) = work_band(Some(at(5.0)));
         assert_eq!(
-            work_left(90.0, 4.0, (slow, fast), Some(4.0)),
+            work_left(10.0, 4.0, (slow, fast), Some(4.0)),
             Some((10.0 / 4.0 / fast, 2.5, 4.0))
         );
     }
