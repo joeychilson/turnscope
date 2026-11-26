@@ -1142,6 +1142,9 @@ mod tests {
     /// expiring before the one before it.
     fn fake(kind: Kind, secrets: &[&str]) -> (&'static Fake, Held) {
         let fake: &'static Fake = Box::leak(Box::default());
+        // Read once: a millisecond passing between two logins made them
+        // expire together.
+        let now = now();
         let credentials = secrets
             .iter()
             .enumerate()
@@ -1149,7 +1152,7 @@ mod tests {
                 credential(
                     secret,
                     kind == Kind::ApiKey,
-                    Some(now() + crate::time::DAY - at as i64),
+                    Some(now + crate::time::DAY - at as i64),
                 )
             })
             .collect();
