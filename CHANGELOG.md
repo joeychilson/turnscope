@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Forking an old Codex thread no longer moves its usage to the day of
+  the fork.** A fork copies its thread's history, as a subagent does,
+  and the copy's later time was taken for the thread's own responses:
+  into today's usage, the current window's, and the sign-in in force at
+  the copy. History is read again once, to put them back.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

@@ -178,7 +178,8 @@ Rules:
   a line rewritten as it streams, a fork's copy of its parent's history, a
   continuation's. Give every report the same `id` and pass each to
   `read.respond`. Set `copy` on a report that may be another session's. A
-  report that isn't a copy decides which session owns the response.
+  report that isn't a copy decides which session owns the response, and
+  when it was: an agent can stamp a copy with when it copied it.
 - **Titles.** A session the agent or the user named takes that title.
   Otherwise offer the first thing the user asked, as `Title::Prompt`, and
   read no more of what was said: Turnscope keeps none of it. Offer what
