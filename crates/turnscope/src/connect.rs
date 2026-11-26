@@ -7,6 +7,7 @@ use std::process::{Command, Output};
 use std::time::Duration;
 
 use crate::agents::{Agent, Info};
+use crate::platform;
 use crate::process::output_within;
 use crate::status::Connection;
 use crate::{Error, Result};
@@ -19,14 +20,13 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
     let info = agent.info();
     // Its real path, so a link to it on `PATH` isn't what agents run.
     let exe = std::fs::canonicalize(engine)?;
-    if temporary(&exe) {
-        return Err(Error::Failed(format!(
-            "Turnscope's engine runs from {}, which goes away when its disk image is ejected or its drive is removed. Put Turnscope in Applications, quit it, and open it from there to connect",
-            exe.display()
-        )));
+    if let Some(why) = platform::temporary_install(&exe) {
+        return Err(Error::Failed(why));
     }
     let exe = exe.to_string_lossy();
-    let path = login_path();
+    let path = (!platform::on_path(info.command))
+        .then(platform::login_path)
+        .flatten();
     for (n, folder) in agent.folders(home).iter().enumerate() {
         let at = (n > 0).then_some(folder.as_path());
         let add = |exe: &str| {
@@ -38,9 +38,8 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
             // Nothing to remove is fine.
             let _ = run(info, remove, path.as_deref(), at, home);
         }
-        let quoted = format!("'{exe}'");
-        let by_hand = [info.mcp_add, &[&quoted, "mcp"]].concat();
-        let Some(failed) = failed(info, "add", add(&exe), &by_hand, at, home) else {
+        let args = [info.mcp_add, &[&exe, "mcp"]].concat();
+        let Some(failed) = failed(info, "add", add(&exe), &args, at, home) else {
             continue;
         };
         if let (Some(_), Some(earlier)) = (info.mcp_remove, earlier) {
@@ -51,13 +50,6 @@ pub fn connect(agent: &dyn Agent, home: &Path, engine: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether `exe` is on a disk image or a drive, which `/Volumes` holds, or
-/// in the read-only copy macOS runs a downloaded app from (App
-/// Translocation): an agent connected to it would lose it once that's gone.
-fn temporary(exe: &Path) -> bool {
-    exe.starts_with("/Volumes") || exe.to_string_lossy().contains("/AppTranslocation/")
-}
-
 pub fn disconnect(agent: &dyn Agent, home: &Path) -> Result<()> {
     let info = agent.info();
     let Some(remove) = info.mcp_remove else {
@@ -66,7 +58,9 @@ pub fn disconnect(agent: &dyn Agent, home: &Path) -> Result<()> {
             info.name
         )));
     };
-    let path = login_path();
+    let path = (!platform::on_path(info.command))
+        .then(platform::login_path)
+        .flatten();
     for (n, folder) in agent.folders(home).iter().enumerate() {
         if agent.mcp_command(folder, home).is_none() {
             continue;
@@ -91,24 +85,33 @@ fn failed(
     at: Option<&Path>,
     home: &Path,
 ) -> Option<String> {
-    let by_hand = format!(
-        "{}{} {}",
-        pointed(info, at, home),
-        info.command,
-        args.join(" ")
-    );
+    let by_hand = by_hand(info, args, at, home);
     match ran {
         Ok(output) if output.status.success() => None,
         Ok(output) => Some(format!(
             "{} couldn't {act} the server: {}. To {act} it by hand, run: {by_hand}",
             info.name,
-            String::from_utf8_lossy(&output.stderr).trim(),
+            error_output(&output),
         )),
         Err(error) => Some(format!(
             "couldn't run {}: {error}. Is {} installed? To {act} the server by hand, run: {by_hand}",
             info.command, info.name
         )),
     }
+}
+
+fn error_output(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.to_owned();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        return stdout.to_owned();
+    }
+    format!("exited with {}", output.status)
 }
 
 fn run(
@@ -136,7 +139,7 @@ fn command(
     }
     // The home Turnscope was given, over the process's own: with `--home` at
     // a copy, the agent added the server to the person's own settings.
-    command.env("HOME", home);
+    platform::set_home(&mut command, home);
     // A second account's folder, as `~/.claude-work`, keeps its own
     // settings: the agent is pointed at it as it's run for that account.
     if let Some(var) = info.folder_var {
@@ -148,18 +151,19 @@ fn command(
     command
 }
 
-/// How a command is pointed at `home`, when it isn't the person's own, and
-/// at the folder `at`, to run by hand.
-fn pointed(info: &Info, at: Option<&Path>, home: &Path) -> String {
-    let own = std::env::var_os("HOME").is_some_and(|own| Path::new(&own) == home);
-    let mut pointed = match own {
-        true => String::new(),
-        false => format!("HOME='{}' ", home.display()),
-    };
-    if let (Some(var), Some(folder)) = (info.folder_var, at) {
-        pointed += &format!("{var}='{}' ", folder.display());
+/// The command to run by hand, pointed at `home` when it isn't the person's
+/// own, and at `at` when it's a second account's folder.
+fn by_hand(info: &Info, args: &[&str], at: Option<&Path>, home: &Path) -> String {
+    let home_text = home.to_string_lossy();
+    let folder_text = at.map(|folder| folder.to_string_lossy());
+    let mut env = Vec::new();
+    if !platform::is_own_home(home) {
+        env.push((platform::home_var(), home_text.as_ref()));
     }
-    pointed
+    if let (Some(var), Some(folder)) = (info.folder_var, folder_text.as_deref()) {
+        env.push((var, folder));
+    }
+    platform::shell_command(&env, info.command, args)
 }
 
 /// Whether `agent` runs `engine`, the `turnscope` binary, plus the differing
@@ -184,23 +188,6 @@ pub fn connection(agent: &dyn Agent, home: &Path, engine: &Path) -> (Connection,
     }
 }
 
-/// An app started from Finder runs with a bare `PATH`, so the agent's
-/// command is found with the `PATH` of the person's interactive login shell,
-/// in their own home: on 2026-09-30, `zsh -lc` found none of four agents,
-/// and `zsh -ilc` all four, in 0.15 s.
-fn login_path() -> Option<String> {
-    let shell = std::env::var("SHELL").unwrap_or("/bin/zsh".to_owned());
-    let mut command = Command::new(shell);
-    command.args(["-ilc", "printf '__path__=%s' \"$PATH\""]);
-    let output = output_within(&mut command, Duration::from_secs(10)).ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let said = String::from_utf8_lossy(&output.stdout);
-    let path = said.rsplit_once("__path__=")?.1.trim();
-    (!path.is_empty()).then(|| path.to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -213,6 +200,7 @@ mod tests {
 
     /// Connected once every folder of the agent runs this binary, a link to
     /// it counting; one that runs another says which.
+    #[cfg(unix)]
     #[test]
     fn an_agent_is_connected_once_each_of_its_folders_runs_this_turnscope() {
         let home = tempfile::tempdir().unwrap();
@@ -255,7 +243,7 @@ mod tests {
                 assert_eq!(command.get_args().collect::<Vec<_>>(), args);
                 let set: HashMap<&OsStr, Option<&OsStr>> = command.get_envs().collect();
                 assert_eq!(
-                    set.get(OsStr::new("HOME")),
+                    set.get(OsStr::new(crate::platform::home_var())),
                     Some(&Some(home.as_os_str())),
                     "{}",
                     info.id
@@ -280,45 +268,69 @@ mod tests {
     fn a_command_to_run_by_hand_names_a_home_that_isnt_the_persons_own() {
         let home = Path::new("/made-up/home");
         let second = home.join("second");
+        let home_var = crate::platform::home_var();
         for agent in crate::agents::ALL {
             let info = agent.info();
+            let args = ["mcp", "remove", "turnscope"];
+            let tail = format!("{} mcp remove turnscope", info.command);
             // How it's pointed at a second account's folder, where it can be.
             let folder = info
                 .folder_var
                 .map(|var| format!("{var}='/made-up/home/second' "))
                 .unwrap_or_default();
-            assert_eq!(super::pointed(info, None, home), "HOME='/made-up/home' ");
             assert_eq!(
-                super::pointed(info, Some(&second), home),
-                format!("HOME='/made-up/home' {folder}")
+                super::by_hand(info, &args, None, home),
+                format!("{home_var}='/made-up/home' {tail}")
+            );
+            assert_eq!(
+                super::by_hand(info, &args, Some(&second), home),
+                format!("{home_var}='/made-up/home' {folder}{tail}")
             );
             // In the person's own home, nothing names it.
-            if let Some(own) = std::env::var_os("HOME") {
-                let own = Path::new(&own);
-                assert_eq!(super::pointed(info, None, own), "");
-                assert_eq!(super::pointed(info, Some(&second), own), folder);
+            let own = crate::platform::home();
+            if !own.as_os_str().is_empty() {
+                assert_eq!(super::by_hand(info, &args, None, &own), tail);
+                assert_eq!(
+                    super::by_hand(info, &args, Some(&second), &own),
+                    format!("{folder}{tail}")
+                );
             }
         }
     }
 
+    #[cfg(unix)]
     #[test]
-    fn an_engine_on_a_disk_image_a_drive_or_translocated_is_temporary() {
-        for (exe, temporary) in [
-            (
-                "/Volumes/Turnscope/Turnscope.app/Contents/Helpers/turnscope",
-                true,
-            ),
-            (
-                "/private/var/folders/ab/T/AppTranslocation/0A1B/d/Turnscope.app/Contents/Helpers/turnscope",
-                true,
-            ),
-            (
-                "/Applications/Turnscope.app/Contents/Helpers/turnscope",
-                false,
-            ),
-            ("/Users/me/Volumes/target/release/turnscope", false),
-        ] {
-            assert_eq!(super::temporary(Path::new(exe)), temporary, "{exe}");
-        }
+    fn failed_falls_back_to_stdout_when_stderr_is_empty() {
+        let info = crate::agents::by_id("claude-code").unwrap().info();
+        let status = std::process::Command::new("/usr/bin/false")
+            .status()
+            .unwrap();
+        let home = Path::new("/Users/O'Connor");
+        let args = [info.mcp_add, &["/Users/O'Connor/turnscope", "mcp"]].concat();
+        let stdout_only = std::process::Output {
+            status,
+            stdout: b"already configured\n".to_vec(),
+            stderr: Vec::new(),
+        };
+        let message = super::failed(info, "add", Ok(stdout_only), &args, None, home).unwrap();
+        assert!(
+            message.contains("couldn't add the server: already configured."),
+            "{message}"
+        );
+        assert!(
+            message.contains(r"HOME='/Users/O'\''Connor'")
+                && message.contains(r"'/Users/O'\''Connor/turnscope'"),
+            "{message}"
+        );
+        let neither = std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let message = super::failed(info, "add", Ok(neither), &args, None, home).unwrap();
+        assert!(
+            !message.contains(": .") && message.contains("exited with"),
+            "{message}"
+        );
     }
 }

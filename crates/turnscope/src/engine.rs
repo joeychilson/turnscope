@@ -11,8 +11,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant, SystemTime};
 
 use notify::Watcher as _;
 use rusqlite::Connection;
@@ -152,6 +152,39 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+struct Stop {
+    ended: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Stop {
+    fn new() -> Stop {
+        Stop {
+            ended: Mutex::new(false),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn ended(&self) -> bool {
+        *locked(&self.ended)
+    }
+
+    fn end(&self) {
+        *locked(&self.ended) = true;
+        self.changed.notify_all();
+    }
+
+    /// Wait up to `duration` for shutdown; returns whether the engine ended.
+    fn wait(&self, duration: Duration) -> bool {
+        let guard = locked(&self.ended);
+        let (guard, _) = self
+            .changed
+            .wait_timeout_while(guard, duration, |ended| !*ended)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard
+    }
+}
+
 struct Inner {
     data: PathBuf,
     home: PathBuf,
@@ -160,10 +193,13 @@ struct Inner {
     showing: Mutex<Option<Showing>>,
     kept: Mutex<Kept>,
     wake: Mutex<Option<Sender<Wake>>>,
+    /// Whether this engine currently holds `app.lock`: only the primary
+    /// instance reads pending alerts and raises new ones.
+    keeping: AtomicBool,
     /// A forced read sent to `keep` and not answered yet, which `run`
     /// answers if `keep` ends first.
     forcing: AtomicBool,
-    ended: AtomicBool,
+    stop: Stop,
 }
 
 impl Engine {
@@ -188,8 +224,9 @@ impl Engine {
             showing: Mutex::new(None),
             kept: Mutex::new(Kept::Unset),
             wake: Mutex::new(None),
+            keeping: AtomicBool::new(false),
             forcing: AtomicBool::new(false),
-            ended: AtomicBool::new(false),
+            stop: Stop::new(),
         });
         let running = Arc::clone(&inner);
         std::thread::spawn(move || running.run());
@@ -211,7 +248,7 @@ impl Engine {
     /// Keep which notifications are sent.
     pub fn save_settings(&self, settings: Settings) {
         self.change("saving the settings", Some(Tell::Always), move |showing| {
-            alerts::save_settings(&showing.db, &settings)
+            alerts::save_settings(&mut showing.db, &settings)
         });
     }
 
@@ -323,6 +360,9 @@ fn queue(inner: &Arc<Inner>) -> Sender<Work> {
     let inner = Arc::clone(inner);
     std::thread::spawn(move || {
         for work in received {
+            if inner.ended() {
+                break;
+            }
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&inner)));
             if ran.is_err() {
                 log(&inner.data, "answering a request panicked");
@@ -334,7 +374,7 @@ fn queue(inner: &Arc<Inner>) -> Sender<Work> {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.inner.ended.store(true, Ordering::Release);
+        self.inner.stop.end();
         if let Some(wake) = locked(&self.inner.wake).as_ref() {
             let _ = wake.send(Wake::Stop);
         }
@@ -347,36 +387,45 @@ impl Inner {
     }
 
     fn ended(&self) -> bool {
-        self.ended.load(Ordering::Acquire)
+        self.stop.ended()
     }
 
     fn run(&self) {
         while !self.ended() && self.newer().is_none() {
-            if self.showing().is_none() {
+            let opened_now = if self.showing().is_none() {
                 match Showing::open(&self.data, &self.home, &self.binary) {
                     Ok(opened) => {
                         *self.showing() = Some(opened);
-                        self.give(Tell::Always);
+                        true
                     }
                     Err(error) => {
                         if self.stopped(error) {
                             return;
                         }
-                        std::thread::sleep(AGAIN);
+                        if self.stop.wait(AGAIN) {
+                            return;
+                        }
                         continue;
                     }
                 }
-            }
+            } else {
+                false
+            };
             if self.ended() {
                 return;
             }
             match lock(&self.data) {
                 Ok(Some(lock)) => {
+                    self.keeping.store(true, Ordering::Release);
+                    if opened_now {
+                        self.give(Tell::Always);
+                    }
                     let kept = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        keep(&self.home, &self.data, &self.wake, &self.ended, |caught| {
+                        keep(&self.home, &self.data, &self.wake, &self.stop, |caught| {
                             self.caught(caught)
                         })
                     }));
+                    self.keeping.store(false, Ordering::Release);
                     *locked(&self.wake) = None;
                     drop(lock);
                     if self.forcing.swap(false, Ordering::AcqRel) {
@@ -392,10 +441,10 @@ impl Inner {
                     }
                 }
                 // Another app keeps it current: this one shows what that
-                // one writes. It writes nothing, so it looks for a newer
-                // Turnscope's writes itself: else, behind a newer app, it
-                // failed to raise alerts every 5 s and never said to update.
+                // one writes. It writes nothing and raises no alerts, so it
+                // looks for a newer Turnscope's writes itself.
                 Ok(None) => {
+                    self.keeping.store(false, Ordering::Release);
                     let newer = match self.showing().as_ref() {
                         Some(showing) => crate::db::writing(&showing.db),
                         None => Ok(()),
@@ -405,16 +454,24 @@ impl Inner {
                         return;
                     }
                     self.kept(None);
-                    self.give(Tell::IfChanged);
+                    self.give(if opened_now {
+                        Tell::Always
+                    } else {
+                        Tell::IfChanged
+                    });
                 }
                 Err(error) => {
+                    self.keeping.store(false, Ordering::Release);
+                    if opened_now {
+                        self.give(Tell::Always);
+                    }
                     if self.stopped(error) {
                         return;
                     }
                 }
             }
-            if !self.ended() {
-                std::thread::sleep(AGAIN);
+            if self.stop.wait(AGAIN) {
+                return;
             }
         }
     }
@@ -422,22 +479,22 @@ impl Inner {
     // Report current only once a catch-up reads every agent (not on lock or
     // limit read), so persistent failures like an unwritable lock stay visible.
     fn caught(&self, caught: Caught) -> bool {
-        let (new, forced) = match caught {
-            Caught::Limits => (true, false),
-            Caught::Read { new, forced } => {
+        match caught {
+            Caught::Limits { forced: true } => {
+                self.forcing.store(false, Ordering::Release);
+                self.refreshed();
+            }
+            Caught::Limits { forced: false } => self.give(Tell::IfChanged),
+            Caught::Read { new } => {
                 self.kept(None);
-                (new, forced)
+                if new {
+                    self.give(Tell::IfChanged);
+                }
             }
-            Caught::Failed { error, forced } => {
+            Caught::Failed(error) => {
                 self.stopped(error);
-                (true, forced)
+                self.give(Tell::IfChanged);
             }
-        };
-        if forced {
-            self.forcing.store(false, Ordering::Release);
-            self.refreshed();
-        } else if new {
-            self.give(Tell::IfChanged);
         }
         !self.ended() && self.newer().is_none()
     }
@@ -499,6 +556,7 @@ impl Inner {
     // Deliver under the `showing` lock so an older status never overtakes a
     // newer one from another thread. Safe because `tell` never blocks.
     fn give(&self, tell: Tell) {
+        let alerts = self.keeping.load(Ordering::Acquire);
         let mut showing = self.showing();
         let next = match showing.as_mut() {
             Some(showing) if self.newer().is_some() => Ok(showing
@@ -506,7 +564,7 @@ impl Inner {
                 .clone()
                 .filter(|_| tell != Tell::IfChanged)
                 .map(|shown| (shown, Vec::new()))),
-            Some(showing) => showing.next(crate::now(), tell),
+            Some(showing) => showing.next(crate::now(), tell, alerts),
             None => return,
         };
         match next {
@@ -521,18 +579,38 @@ const LOG_SIZE: u64 = 1 << 20;
 
 /// Append `line` with a timestamp to `app.log` in `data`, rotating past 1 MiB to `app.log.1`.
 pub fn log(data: &Path, line: &str) {
+    static LOG: Mutex<()> = Mutex::new(());
+    let _guard = locked(&LOG);
     let path = data.join("app.log");
-    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_SIZE) {
-        let _ = std::fs::rename(&path, data.join("app.log.1"));
-    }
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
+    let open = || {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)
+    };
+    let Ok(mut file) = open() else {
+        return;
+    };
+    if let Ok(meta) = file.metadata()
+        && meta.len() > LOG_SIZE
+        && file.lock().is_ok()
     {
-        let line = line.replace('\n', " ");
-        let _ = writeln!(file, "{:.0} {line}", jiff::Timestamp::now());
+        // Re-check under the file lock so another process rotating first
+        // doesn't get its new `app.log` renamed over the 1 MiB `app.log.1`.
+        let file_id = crate::platform::file_id(&meta);
+        if std::fs::metadata(&path).is_ok_and(|current| {
+            current.len() > LOG_SIZE && crate::platform::file_id(&current) == file_id
+        }) {
+            let _ = std::fs::rename(&path, data.join("app.log.1"));
+        }
+        drop(file);
+        let Ok(reopened) = open() else {
+            return;
+        };
+        file = reopened;
     }
+    let line = line.replace('\n', " ");
+    let _ = writeln!(file, "{:.0} {line}", jiff::Timestamp::now());
 }
 
 /// Whether an app process holds `app.lock` in `data`. Never creates the file.
@@ -548,13 +626,21 @@ pub fn running(data: &Path) -> bool {
 }
 
 fn lock(data: &Path) -> Result<Option<File>> {
-    std::fs::create_dir_all(data)?;
+    crate::platform::create_private_dir(data)?;
     crate::db::lock_within(&data.join("app.lock"), Duration::ZERO)
 }
 
 // Minimum gap between file-triggered catch-ups: 5 s, over catching up as writes
 // settle (9.8G vs 3.2G instructions over 5,000 sessions with heavy writes).
 const GAP: Duration = Duration::from_secs(5);
+
+/// How often the engine wakes while idle for clocks, due limits/prices, and
+/// external database writes.
+const TICK: Duration = Duration::from_secs(60);
+
+/// How often an idle engine rescans history even with no watcher event, as a
+/// fallback for symlinks or missed filesystem events.
+const RESCAN: Duration = Duration::from_secs(5 * 60);
 
 /// The least time between two reads of limits asked for
 /// (`limits::refresh`): each gathers every agent's logins, the
@@ -563,9 +649,14 @@ const GAP: Duration = Duration::from_secs(5);
 const ASKED: Duration = Duration::from_secs(30);
 
 enum Caught {
-    Limits,
-    Read { new: bool, forced: bool },
-    Failed { error: Error, forced: bool },
+    Limits { forced: bool },
+    Read { new: bool },
+    Failed(Error),
+}
+
+struct Woke {
+    written: bool,
+    tick: bool,
 }
 
 /// Catch up when the agents' folders change, and each minute, as horizons
@@ -576,33 +667,47 @@ fn keep(
     home: &Path,
     data: &Path,
     wake: &Mutex<Option<Sender<Wake>>>,
-    ended: &AtomicBool,
+    stop: &Stop,
     mut told: impl FnMut(Caught) -> bool,
 ) -> Result<()> {
     let mut db = crate::db::open(data)?;
     let (changed, changes) = mpsc::channel::<Wake>();
     *locked(wake) = Some(changed.clone());
-    if ended.load(Ordering::Acquire) {
+    if stop.ended() {
         return Ok(());
     }
     let mut watcher = watcher(changed)?;
-    let mut watched: Vec<PathBuf> = Vec::new();
-    let mut watch = |watcher: &mut notify::RecommendedWatcher| {
-        for agent in agents::ALL {
-            // Not an uninstalled agent's folder, as `~/.gemini` with only the
-            // Gemini command line there: each of its writes would catch up.
-            for folder in agent.installed_folders(home) {
-                if watched.contains(&folder) {
-                    continue;
-                }
-                if watcher
-                    .watch(&folder, notify::RecursiveMode::Recursive)
-                    .is_ok()
-                {
-                    watched.push(folder);
-                }
+    let mut watched: Vec<(PathBuf, u64)> = Vec::new();
+    let mut watch = |watcher: &mut notify::RecommendedWatcher| -> bool {
+        let mut added = false;
+        let current: Vec<(PathBuf, u64)> = agents::ALL
+            .iter()
+            .flat_map(|agent| agent.installed_folders(home))
+            .filter_map(|folder| {
+                let meta = std::fs::metadata(&folder).ok()?;
+                Some((folder, crate::platform::file_id(&meta)))
+            })
+            .collect();
+        watched.retain(|entry| {
+            let keep = current.contains(entry);
+            if !keep {
+                let _ = watcher.unwatch(&entry.0);
+            }
+            keep
+        });
+        for (folder, id) in current {
+            if watched.iter().any(|(path, _)| path == &folder) {
+                continue;
+            }
+            if watcher
+                .watch(&folder, notify::RecursiveMode::Recursive)
+                .is_ok()
+            {
+                watched.push((folder, id));
+                added = true;
             }
         }
+        added
     };
     // The minute and SQLite's `data_version`, which another connection's
     // write moves, at the last catch-up that worked: with neither moved and
@@ -612,44 +717,112 @@ fn keep(
     let mut pushed = None;
     // The limits before history: on a first launch that reads all of it (12 s
     // for a made-up 5,000 files), the app showed no account until it ended.
-    if crate::online() && read_limits(&mut db, home, Ask::Scheduled)? && !told(Caught::Limits) {
+    let mut skip_scheduled_limits = crate::online();
+    if skip_scheduled_limits
+        && read_limits(&mut db, home, Ask::Scheduled)?
+        && !told(Caught::Limits { forced: false })
+    {
         return Ok(());
     }
     // Limits asked for and not read yet, and when they last were.
     let (mut asked, mut asked_at) = (None::<Ask>, None::<Instant>);
+    let mut scanned: Option<Instant> = None;
+    let mut next_tick = Instant::now() + TICK;
+    let mut woke = Woke {
+        written: true,
+        tick: false,
+    };
     loop {
-        if ended.load(Ordering::Acquire) {
+        if stop.ended() {
             return Ok(());
         }
-        watch(&mut watcher);
+        let added = watch(&mut watcher);
         let reading = asked.filter(|_| due(asked, asked_at));
-        let mut read_asked = false;
+        let forced = reading == Some(Ask::Force);
         if let Some(ask) = reading {
             (asked, asked_at) = (None, Some(Instant::now()));
-            // Offline, the catch-up still takes in limits agents wrote.
-            read_asked = crate::online() && read_limits(&mut db, home, ask)?;
+            let read_asked = crate::online() && read_limits(&mut db, home, ask)?;
+            // Emit right after reading limits so panel opens and ⌘R aren't
+            // blocked behind a history walk or ingest.
+            if forced {
+                if !told(Caught::Limits { forced: true }) {
+                    return Ok(());
+                }
+            } else if read_asked && !told(Caught::Limits { forced: false }) {
+                return Ok(());
+            }
         }
-        let forced = reading == Some(Ask::Force);
-        let caught = match crate::catch_up(&mut db, home, None) {
-            Ok(read) => {
-                let now = (
-                    crate::time::minute(crate::now()),
-                    db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
-                );
-                let new = read || read_asked || pushed != Some(now);
+        let need_history = scanned.is_none()
+            || woke.written
+            || added
+            || forced
+            || scanned.is_some_and(|at| at.elapsed() >= RESCAN);
+        if need_history || woke.tick {
+            let skip_limits = reading.is_some() || std::mem::take(&mut skip_scheduled_limits);
+            let (priced, limits) = match crate::online() {
+                true => (
+                    crate::prices::refresh(&mut db).unwrap_or(false),
+                    if skip_limits {
+                        Ok(false)
+                    } else {
+                        crate::limits::refresh(&mut db, home, Ask::Scheduled)
+                    },
+                ),
+                false => (false, Ok(false)),
+            };
+            let ingested = if need_history {
+                match crate::ingest::ingest(&mut db, home, None) {
+                    Ok(read) => {
+                        scanned = Some(Instant::now());
+                        Ok(read)
+                    }
+                    Err(error) => {
+                        scanned = None;
+                        Err(error)
+                    }
+                }
+            } else {
+                Ok(false)
+            };
+            next_tick = Instant::now() + TICK;
+            let caught = match ingested.and_then(|read| Ok(limits? || priced || read)) {
+                Ok(read) => {
+                    let now = (
+                        crate::time::minute(crate::now()),
+                        db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
+                    );
+                    let new = read || pushed != Some(now);
+                    pushed = Some(now);
+                    Caught::Read { new }
+                }
+                Err(error) => {
+                    // Once a newer Turnscope has written here, this one writes
+                    // nothing more, so it stops, and the app says why. Going on,
+                    // it showed what it read before as current.
+                    crate::db::writing(&db)?;
+                    Caught::Failed(error)
+                }
+            };
+            if !told(caught) {
+                return Ok(());
+            }
+        } else if reading.is_some() {
+            // Surface external DB writes (e.g. CLI `accounts hide`) and minute
+            // rollovers when the panel opens without walking history.
+            let now = (
+                crate::time::minute(crate::now()),
+                db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
+            );
+            if pushed != Some(now) {
                 pushed = Some(now);
-                Caught::Read { new, forced }
+                if !told(Caught::Read { new: true }) {
+                    return Ok(());
+                }
             }
-            Err(error) => {
-                // Once a newer Turnscope has written here, this one writes
-                // nothing more, so it stops, and the app says why. Going on,
-                // it showed what it read before as current.
-                crate::db::writing(&db)?;
-                Caught::Failed { error, forced }
-            }
-        };
-        if !told(caught) || !wait(&changes, &mut asked, asked_at)? {
-            return Ok(());
+        }
+        match wait(&changes, &mut asked, asked_at, next_tick)? {
+            Some(next) => woke = next,
+            None => return Ok(()),
         }
     }
 }
@@ -686,41 +859,87 @@ fn due(asked: Option<Ask>, at: Option<Instant>) -> bool {
 }
 
 /// Wait for the next catch-up, noting in `asked` the limits asked for
-/// meanwhile; whether to go on. A write waits for a burst of writes to
+/// meanwhile; `None` when stopping. A write waits for a burst of writes to
 /// settle, a second at most, and out the gap: the next catch-up reads what's
-/// written meanwhile. Limits asked for are read at once, unless read under
-/// `ASKED` ago: waiting out the gap, they were read 5 s later.
+/// written meanwhile. Limits asked for are read at once, or as soon as
+/// `ASKED` elapses: waiting out a 60 s idle tick delayed a deferred login read.
 fn wait(
     changes: &Receiver<Wake>,
     asked: &mut Option<Ask>,
     asked_at: Option<Instant>,
-) -> Result<bool> {
+    next_tick: Instant,
+) -> Result<Option<Woke>> {
+    wait_within(changes, asked, asked_at, next_tick, ASKED)
+}
+
+fn wait_within(
+    changes: &Receiver<Wake>,
+    asked: &mut Option<Ask>,
+    asked_at: Option<Instant>,
+    next_tick: Instant,
+    asked_gap: Duration,
+) -> Result<Option<Woke>> {
     let waited = Instant::now();
-    let (mut first, mut settled) = (None::<Instant>, false);
+    let (mut first, mut settled, mut written) = (None::<Instant>, false, false);
+    let ready = |asked: Option<Ask>| match asked {
+        Some(Ask::Force) => true,
+        Some(_) => asked_at.is_none_or(|at| at.elapsed() >= asked_gap),
+        None => false,
+    };
+    let done = |written| {
+        Ok(Some(Woke {
+            written,
+            tick: Instant::now() >= next_tick,
+        }))
+    };
     loop {
+        let asked_wait = match *asked {
+            Some(Ask::Force) => Some(Duration::ZERO),
+            Some(_) => {
+                Some(asked_at.map_or(Duration::ZERO, |at| asked_gap.saturating_sub(at.elapsed())))
+            }
+            None => None,
+        };
         let timeout = match first {
-            None => Duration::from_secs(60),
+            None => {
+                let left = next_tick.saturating_duration_since(Instant::now());
+                asked_wait.map_or(left, |wait| left.min(wait))
+            }
             Some(_) if !settled => Duration::from_millis(250),
-            Some(_) => GAP.saturating_sub(waited.elapsed()),
+            Some(_) => {
+                let gap = GAP.saturating_sub(waited.elapsed());
+                asked_wait.map_or(gap, |wait| gap.min(wait))
+            }
         };
         match changes.recv_timeout(timeout) {
-            Ok(Wake::Stop) => return Ok(false),
+            Ok(Wake::Stop) => return Ok(None),
             Ok(Wake::Force) => *asked = Some(Ask::Force),
-            Ok(wake) => {
-                if wake == Wake::Asked {
-                    asked.get_or_insert(Ask::Opened);
-                }
+            Ok(Wake::Asked) => {
+                asked.get_or_insert(Ask::Opened);
+            }
+            Ok(Wake::Written) => {
+                written = true;
                 let first = *first.get_or_insert_with(Instant::now);
                 settled |= first.elapsed() >= Duration::from_secs(1);
             }
-            Err(RecvTimeoutError::Timeout) if first.is_none() || settled => return Ok(true),
+            Err(RecvTimeoutError::Timeout) if ready(*asked) => return done(written),
+            Err(RecvTimeoutError::Timeout) if first.is_none() => {
+                if Instant::now() >= next_tick {
+                    return done(written);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) if settled => {
+                if waited.elapsed() >= GAP {
+                    return done(written);
+                }
+            }
             Err(RecvTimeoutError::Timeout) => settled = true,
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(Error::Failed("the agents' folders can't be watched".into()));
             }
         }
-        if due(*asked, asked_at) {
-            return Ok(true);
+        if ready(*asked) {
+            return done(written);
         }
     }
 }
@@ -739,13 +958,83 @@ fn read_limits(db: &mut Connection, home: &Path, ask: Ask) -> Result<bool> {
     }
 }
 
+type FileStamp = (PathBuf, u64, Option<SystemTime>, u64);
+
+#[derive(PartialEq, Eq)]
+struct AgentsStamp {
+    installed: Vec<(Vec<PathBuf>, bool)>,
+    files: Vec<FileStamp>,
+}
+
+fn file_stamp(path: PathBuf) -> Option<FileStamp> {
+    let meta = std::fs::metadata(&path).ok()?;
+    Some((
+        path,
+        meta.len(),
+        meta.modified().ok(),
+        crate::platform::file_id(&meta),
+    ))
+}
+
+/// Fingerprint of installed agent folders and top-level JSON/TOML config files
+/// so unchanged multi-MB MCP configs aren't re-parsed every minute.
+fn agents_stamp(home: &Path, binary: &Path) -> AgentsStamp {
+    let mut installed = Vec::new();
+    let mut files = Vec::new();
+    if let Some(stamp) = file_stamp(binary.to_path_buf()) {
+        files.push(stamp);
+    }
+    let mut scan = |dir: &Path, dotfiles_only: bool| {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if dotfiles_only && !name.starts_with('.') {
+                continue;
+            }
+            if (name.ends_with(".json") || name.ends_with(".toml"))
+                && let Some(stamp) = file_stamp(entry.path())
+            {
+                files.push(stamp);
+            }
+        }
+    };
+    scan(home, true);
+    let config_root = home.join(".config");
+    for agent in agents::ALL {
+        let folders = agent.folders(home);
+        let is_installed = folders
+            .first()
+            .is_some_and(|folder| agent.installed(folder));
+        for folder in &folders {
+            scan(folder, false);
+            scan(&folder.join("config"), false);
+        }
+        scan(&config_root.join(agent.info().id), false);
+        installed.push((folders, is_installed));
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files.dedup_by(|a, b| a.0 == b.0);
+    AgentsStamp { installed, files }
+}
+
+struct AgentsCache {
+    at: i64,
+    stamp: AgentsStamp,
+    agents: Vec<Agent>,
+}
+
 struct Showing {
     db: Connection,
     data: PathBuf,
     home: PathBuf,
     binary: PathBuf,
     shown: Option<Shown>,
-    agents: Option<(i64, Vec<Agent>)>,
+    agents: Option<AgentsCache>,
     /// Whether the alerts pending when the data opened were told.
     pending_told: bool,
 }
@@ -772,29 +1061,58 @@ impl Showing {
         })
     }
 
-    // Skip telling statuses that differ only in `at` (app ticks on its own clock):
-    // cut 60 -> 10 statuses/hr after last read, 0/hr thereafter (measured 2026-11-18).
-    fn next(&mut self, now: i64, tell: Tell) -> Result<Option<(Shown, Vec<Alert>)>> {
+    // Skip telling statuses that differ only in `at` or unused `work` rates
+    // (app ticks on its own clock): cut 60 -> 10 statuses/hr after last read,
+    // 0/hr thereafter (measured 2026-11-18).
+    fn next(&mut self, now: i64, tell: Tell, alerts: bool) -> Result<Option<(Shown, Vec<Alert>)>> {
         let status = status::status(&self.db, now)?;
         let in_use = |id: &str| status::in_use(&status.accounts, id);
-        // Cache MCP config reads for the minute (`~/.claude.json` can be megabytes).
-        let agents = match &self.agents {
-            Some((at, agents)) if tell != Tell::WithAgents && *at == status.at => agents
+        // Cache MCP config reads within the minute, and across minutes while
+        // config files' `(size, mtime, file_id)` haven't changed (`~/.claude.json`
+        // can be megabytes).
+        let agents = match &mut self.agents {
+            Some(cached) if tell != Tell::WithAgents && cached.at == status.at => cached
+                .agents
                 .iter()
                 .map(|agent| Agent {
                     in_use: in_use(&agent.id),
                     ..agent.clone()
                 })
                 .collect(),
-            _ => {
-                let agents = status::agents(&self.home, &self.binary, in_use);
-                self.agents = Some((status.at, agents.clone()));
-                agents
+            cached => {
+                let stamp = agents_stamp(&self.home, &self.binary);
+                match cached {
+                    Some(cached) if tell != Tell::WithAgents && cached.stamp == stamp => {
+                        cached.at = status.at;
+                        cached
+                            .agents
+                            .iter()
+                            .map(|agent| Agent {
+                                in_use: in_use(&agent.id),
+                                ..agent.clone()
+                            })
+                            .collect()
+                    }
+                    _ => {
+                        let agents = status::agents(&self.home, &self.binary, in_use);
+                        self.agents = Some(AgentsCache {
+                            at: status.at,
+                            stamp,
+                            agents: agents.clone(),
+                        });
+                        agents
+                    }
+                }
             }
         };
         let shown = Shown { status, agents };
-        if self.shown.as_ref().is_some_and(|told| same(told, &shown)) {
+        let unchanged = self.shown.as_ref().is_some_and(|told| same(told, &shown));
+        if unchanged && (!alerts || self.pending_told) {
             return Ok((tell != Tell::IfChanged).then_some((shown, Vec::new())));
+        }
+        if !alerts {
+            self.shown = Some(shown.clone());
+            return Ok(Some((shown, Vec::new())));
         }
         // Read before `raise`, which adds alerts not yet acknowledged.
         let mut told = Vec::new();
@@ -808,12 +1126,14 @@ impl Showing {
             Ok(raised) => {
                 self.shown = Some(shown.clone());
                 told.extend(raised);
-                Ok(Some((shown, told)))
+                let emit = !unchanged || !told.is_empty() || tell != Tell::IfChanged;
+                Ok(emit.then_some((shown, told)))
             }
             Err(error @ Error::Newer { .. }) => Err(error),
             Err(error) => {
                 log(&self.data, &format!("raising alerts: {error}"));
-                Ok(Some((shown, told)))
+                let emit = !unchanged || !told.is_empty() || tell != Tell::IfChanged;
+                Ok(emit.then_some((shown, told)))
             }
         }
     }
@@ -839,7 +1159,8 @@ impl Showing {
             let (project_path, agent) = usage::brief(&self.db, &row.key)?;
             let project = project_path
                 .as_deref()
-                .and_then(|path| path.rsplit('/').next())
+                .and_then(|path| Path::new(path).file_name())
+                .and_then(|name| name.to_str())
                 .filter(|name| !name.is_empty())
                 .map(str::to_owned);
             sessions.push(UsedMost {
@@ -863,9 +1184,75 @@ fn same(a: &Shown, b: &Shown) -> bool {
         settings,
     } = &a.status;
     *history_read == b.status.history_read
-        && *accounts == b.status.accounts
         && *settings == b.status.settings
         && a.agents == b.agents
+        && accounts.len() == b.status.accounts.len()
+        && accounts
+            .iter()
+            .zip(&b.status.accounts)
+            .all(|(a, b)| same_account(a, b))
+}
+
+fn same_account(a: &status::Account, b: &status::Account) -> bool {
+    let status::Account {
+        id,
+        provider,
+        kind,
+        title,
+        label,
+        agents,
+        used_by,
+        in_use,
+        recent,
+        hidden,
+        state,
+        limits,
+        deciding,
+        spend,
+    } = a;
+    *id == b.id
+        && *provider == b.provider
+        && *kind == b.kind
+        && *title == b.title
+        && *label == b.label
+        && *agents == b.agents
+        && *used_by == b.used_by
+        && *in_use == b.in_use
+        && *recent == b.recent
+        && *hidden == b.hidden
+        && *state == b.state
+        && *deciding == b.deciding
+        && *spend == b.spend
+        && limits.len() == b.limits.len()
+        && limits.iter().zip(&b.limits).all(|(a, b)| same_limit(a, b))
+}
+
+fn same_limit(a: &status::Limit, b: &status::Limit) -> bool {
+    let status::Limit {
+        key,
+        name,
+        scope,
+        window,
+        read_at,
+        left_percent,
+        money,
+        reset_since,
+        held_by,
+        outlook,
+        // Work rates aren't shown by the app; ignoring them avoids spurious
+        // `Event::Shown`, alert checks, and UI rebuilds.
+        work: _,
+    } = a;
+    *key == b.key
+        && *name == b.name
+        && *scope == b.scope
+        && *window == b.window
+        && *read_at == b.read_at
+        && *left_percent == b.left_percent
+        && *money == b.money
+        && *reset_since == b.reset_since
+        && *held_by == b.held_by
+        && *outlook == b.outlook
 }
 
 /// What the app shows of the data in `data` now, read once and only read:
@@ -1176,8 +1563,15 @@ mod tests {
         }
         let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let db = crate::db::open(data.path()).unwrap();
-        // Nothing is asked over the network: the home holds no login to
-        // read a limit with, and the prices count as read just now.
+        // An Anthropic API key (`key_limits: false`) records an account with
+        // no network request; prices count as read just now.
+        let pi = home.path().join(".pi/agent");
+        std::fs::create_dir_all(&pi).unwrap();
+        std::fs::write(
+            pi.join("auth.json"),
+            r#"{"anthropic":{"type":"api_key","key":"sk-ant-made-up"}}"#,
+        )
+        .unwrap();
         db.execute("UPDATE state SET prices_at = ?1", [crate::now()])
             .unwrap();
         let reading = crate::db::lock(&data.path().join("ingest.lock")).unwrap();
@@ -1185,8 +1579,8 @@ mod tests {
         let (home_kept, data_kept) = (home.path().to_path_buf(), data.path().to_path_buf());
         std::thread::spawn(move || {
             let wake = Mutex::new(None);
-            let ended = AtomicBool::new(false);
-            keep(&home_kept, &data_kept, &wake, &ended, |_| {
+            let stop = Stop::new();
+            keep(&home_kept, &data_kept, &wake, &stop, |_| {
                 sender.send(()).is_ok()
             })
         });
@@ -1223,8 +1617,8 @@ mod tests {
             Arc::clone(&wake),
         );
         std::thread::spawn(move || {
-            let ended = AtomicBool::new(false);
-            keep(&home_kept, &data_kept, &wake_kept, &ended, |_| {
+            let stop = Stop::new();
+            keep(&home_kept, &data_kept, &wake_kept, &stop, |_| {
                 sender.send(Instant::now()).is_ok()
             })
         });
@@ -1265,7 +1659,7 @@ mod tests {
         // Whether the first read had finished, in the status told, if one was.
         let told = |showing: &mut Showing, at: i64, tell: Tell| {
             showing
-                .next(at, tell)
+                .next(at, tell, true)
                 .unwrap()
                 .map(|(shown, _)| shown.status.history_read)
         };
@@ -1286,7 +1680,7 @@ mod tests {
         assert_eq!(told(&mut showing, later, Tell::Always), Some(true));
         let mut settings = Settings::default();
         settings.notify.reset = false;
-        alerts::save_settings(&showing.db, &settings).unwrap();
+        alerts::save_settings(&mut showing.db, &settings).unwrap();
         assert_eq!(told(&mut showing, later, Tell::IfChanged), Some(true));
     }
 
@@ -1300,7 +1694,7 @@ mod tests {
         let mut showing = Showing::open(data.path(), home.path(), home.path()).unwrap();
         let now = crate::now();
         let claude = |showing: &mut Showing, at: i64, tell: Tell| {
-            let (shown, _) = showing.next(at, tell).unwrap()?;
+            let (shown, _) = showing.next(at, tell, true).unwrap()?;
             let agent = shown.agents.into_iter().find(|a| a.id == "claude-code");
             Some(agent.unwrap().connection)
         };
@@ -1439,5 +1833,259 @@ mod tests {
             });
             assert!(shown.get(), "another keeps: {another_keeps}");
         }
+    }
+
+    #[test]
+    fn secondary_engine_neither_emits_pending_alerts_nor_writes_new_ones() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = read_just_now(data.path());
+        let now = crate::now();
+        // Seed an unacknowledged pending alert AND a used-up account in use.
+        db.execute(
+            "INSERT INTO alert (account, limit_key, kind, window, at, detail)
+             VALUES ('anthropic:a', 'five_hour', 'reset', 1, ?1, '{\"accountTitle\":\"Claude Max\"}')",
+            [now],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', ?1, ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account)
+             VALUES ('claude-code', '/f', 'anthropic', ?1, 'anthropic:a')",
+            [now - 60_000],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+             VALUES ('anthropic:a', 'five_hour', ?1, '5 hours', 100.0, ?2, ?3)",
+            rusqlite::params![now, now - crate::time::HOUR, now + crate::time::HOUR],
+        )
+        .unwrap();
+        crate::db::test::response(
+            &db,
+            ("claude-code", "/f", "anthropic", Some("anthropic:a")),
+            "r1",
+            now - 1_000,
+            "claude-opus-5",
+            Some(0.01),
+        );
+
+        let _primary = lock(data.path()).unwrap().expect("primary holds app.lock");
+        let (engine, told) = start(data.path(), home.path());
+        let alerts = next(&told, 10, |event| match event {
+            Event::Shown(_, alerts) => Some(alerts),
+            _ => None,
+        });
+        assert!(alerts.is_empty(), "secondary emitted alerts: {alerts:?}");
+        // Only the seeded row exists; secondary wrote no UsedUp alert.
+        assert_eq!(
+            crate::db::test::one::<i64>(&db, "SELECT count(*) FROM alert"),
+            1
+        );
+        // Dropping a secondary engine interrupts the 5 s retry sleep immediately.
+        let began = Instant::now();
+        drop(engine);
+        assert!(began.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn deferred_asked_wakes_when_asked_gap_expires_not_on_60s_tick() {
+        let (_send, recv) = mpsc::channel::<Wake>();
+        let mut asked = Some(Ask::Opened);
+        let asked_at = Some(Instant::now());
+        let began = Instant::now();
+        let woke = wait_within(
+            &recv,
+            &mut asked,
+            asked_at,
+            began + Duration::from_secs(60),
+            Duration::from_millis(80),
+        )
+        .unwrap()
+        .unwrap();
+        let elapsed = began.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(70) && elapsed < Duration::from_secs(1),
+            "elapsed={elapsed:?}"
+        );
+        assert!(!woke.tick && !woke.written);
+
+        // When `next_tick` is already due, waking for `asked` still flags `tick: true`.
+        let mut asked = Some(Ask::Opened);
+        let woke = wait_within(
+            &recv,
+            &mut asked,
+            None,
+            Instant::now() - Duration::from_millis(1),
+            Duration::from_secs(30),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(woke.tick);
+    }
+
+    #[test]
+    fn ask_limits_surfaces_external_db_writes() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = read_just_now(data.path());
+        let now = crate::now();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', ?1, ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        let (engine, told) = start(data.path(), home.path());
+        next(&told, 10, |event| match event {
+            Event::Shown(shown, _)
+                if shown.status.history_read
+                    && shown
+                        .status
+                        .accounts
+                        .iter()
+                        .any(|a| a.id == "anthropic:a" && !a.hidden) =>
+            {
+                Some(())
+            }
+            _ => None,
+        });
+        // Simulate an external CLI write (`turnscope accounts hide`).
+        db.execute("UPDATE account SET hidden = 1 WHERE id = 'anthropic:a'", [])
+            .unwrap();
+        engine.ask_limits();
+        next(&told, 10, |event| match event {
+            Event::Shown(shown, _)
+                if shown
+                    .status
+                    .accounts
+                    .iter()
+                    .any(|a| a.id == "anthropic:a" && a.hidden) =>
+            {
+                Some(())
+            }
+            _ => None,
+        });
+    }
+
+    #[test]
+    fn engine_drop_interrupts_again_sleep_and_skips_queued_work() {
+        let stop = Arc::new(Stop::new());
+        let waiting = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || waiting.wait(Duration::from_secs(5)));
+        std::thread::sleep(Duration::from_millis(20));
+        let began = Instant::now();
+        stop.end();
+        assert!(handle.join().unwrap());
+        assert!(began.elapsed() < Duration::from_millis(500));
+
+        // Queued requests after drop are not executed.
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        drop(read_just_now(data.path()));
+        let (engine, _told) = start(data.path(), home.path());
+        let (hold_send, hold_recv) = mpsc::channel::<()>();
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_flag = Arc::clone(&ran);
+        Engine::ask(&engine.requests, move |_| {
+            let _ = hold_recv.recv_timeout(Duration::from_secs(5));
+        });
+        Engine::ask(&engine.requests, move |_| {
+            ran_flag.store(true, Ordering::SeqCst);
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        drop(engine);
+        let _ = hold_send.send(());
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn same_ignores_limit_work_rate_changes() {
+        let a: Shown = serde_json::from_str(include_str!("../tests/fixtures/status.json")).unwrap();
+        let mut b = a.clone();
+        b.status.accounts[0].limits[0].work = Some(status::Work {
+            rate_per_hour: 99.9,
+            left_minutes: None,
+        });
+        assert!(same(&a, &b));
+        b.status.accounts[0].limits[0].left_percent = 1;
+        assert!(!same(&a, &b));
+    }
+
+    #[test]
+    fn used_most_handles_trailing_slash_in_project_path() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = read_just_now(data.path());
+        let now = crate::now();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at, checked_at)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', ?1, ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account)
+             VALUES ('claude-code', '/f', 'anthropic', ?1, 'anthropic:a')",
+            [now - crate::time::HOUR],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+             VALUES ('anthropic:a', 'five_hour', ?1, '5 hours', 20.0, ?2, ?3)",
+            rusqlite::params![now, now - crate::time::HOUR, now + crate::time::HOUR],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session (id, agent, project, title)
+             VALUES ('claude-code:s1', 'claude-code', '/work/my-app/', 'Fix bug')",
+            [],
+        )
+        .unwrap();
+        crate::db::test::response(
+            &db,
+            ("claude-code", "/f", "anthropic", Some("anthropic:a")),
+            "claude-code:s1",
+            now - 10_000,
+            "claude-opus-5",
+            Some(1.0),
+        );
+        let showing = Showing::open(data.path(), home.path(), home.path()).unwrap();
+        let sessions = showing.used_most("anthropic:a", "five_hour", now).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].project.as_deref(), Some("my-app"));
+    }
+
+    #[test]
+    fn concurrent_log_rotation_preserves_full_backup() {
+        let data = tempfile::tempdir().unwrap();
+        let path = data.path().join("app.log");
+        let full = "x".repeat(LOG_SIZE as usize + 128);
+        std::fs::write(&path, &full).unwrap();
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let dir = data.path();
+                scope.spawn(move || log(dir, &format!("line {i}")));
+            }
+        });
+        assert_eq!(
+            std::fs::read_to_string(data.path().join("app.log.1")).unwrap(),
+            full
+        );
+        let current = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(current.lines().count(), 8, "{current}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_lock_creates_private_data_dir() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("fresh-data");
+        let _held = lock(&data).unwrap().unwrap();
+        let mode = std::fs::metadata(&data).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 }

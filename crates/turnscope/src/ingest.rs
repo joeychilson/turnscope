@@ -3,10 +3,9 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -50,7 +49,7 @@ macro_rules! response_columns {
 const SELECT_RESPONSE: &str = concat!(
     "SELECT ",
     response_columns!(),
-    " FROM response WHERE agent = ?1 AND id = ?2"
+    ", file, folder, cost, account FROM response WHERE agent = ?1 AND id = ?2"
 );
 const REPLACE_RESPONSE: &str = concat!(
     "INSERT OR REPLACE INTO response (agent, folder, file, cost, account, ",
@@ -63,8 +62,7 @@ const SELECT_REPRICED: &str = concat!(
     ", agent, cost FROM response
      WHERE cost IS NULL OR EXISTS (
          SELECT 1 FROM repriced
-         WHERE repriced.provider = response.provider
-           AND repriced.model = response.model
+         WHERE repriced.model = response.model
      )"
 );
 
@@ -83,27 +81,42 @@ struct Stat {
     inode: i64,
 }
 
+fn modified_nanos(meta: &std::fs::Metadata) -> i64 {
+    let Ok(time) = meta.modified() else {
+        return 0;
+    };
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_nanos()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_nanos())
+            .map(i64::wrapping_neg)
+            .unwrap_or(i64::MIN),
+    }
+}
+
 impl Stat {
     /// A SQLite database's changes reach its file only at a checkpoint, so
     /// its write-ahead log's time counts as its own; not the log's size,
-    /// which a checkpoint shrinks. Only a `.db` file is looked beside: of the
-    /// files agents list, only it has a log, and a second stat for every file
+    /// which a checkpoint shrinks. Only SQLite files are looked beside: of the
+    /// files agents list, only they have a log, and a second stat for every file
     /// cost 67M instructions in a catch-up of 5,700 files that read nothing.
     fn of(path: &Path) -> Option<Stat> {
-        let modified = |meta: &std::fs::Metadata| meta.mtime() * 1_000_000_000 + meta.mtime_nsec();
         let meta = std::fs::metadata(path).ok()?;
-        let wal = match path.extension().is_some_and(|extension| extension == "db") {
+        let is_sqlite = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| matches!(extension, "db" | "sqlite" | "sqlite3"));
+        let wal = match is_sqlite {
             true => {
                 let mut wal = path.as_os_str().to_owned();
                 wal.push("-wal");
-                std::fs::metadata(wal).map_or(i64::MIN, |wal| modified(&wal))
+                std::fs::metadata(wal).map_or(i64::MIN, |wal| modified_nanos(&wal))
             }
             false => i64::MIN,
         };
         Some(Stat {
-            size: meta.size() as i64,
-            modified: modified(&meta).max(wal),
-            inode: meta.ino() as i64,
+            size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
+            modified: modified_nanos(&meta).max(wal),
+            inode: crate::platform::file_id(&meta) as i64,
         })
     }
 }
@@ -247,13 +260,14 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
         }
     }
 
-    // A file at a path that's gone is found again by its inode, so it's read
-    // on, not twice: an agent moves a file it archives on the same volume,
-    // where it keeps its inode, and APFS numbers new files in order rather
-    // than reusing a number. Anything still in `known` is a gone path.
+    // A file at a path that's gone is found again by its inode so it's read on,
+    // not twice: a pure rename keeps `(modified, size)`, while a move+append
+    // (same inode, larger size) is verified against the old file's sessions so
+    // a new file reusing a deleted file's inode won't inherit its cursor.
     let mut moved: HashMap<i64, Known> = if !unmatched.is_empty() && !known.is_empty() {
         known
             .into_values()
+            .filter(|was| was.stat.inode != 0)
             .map(|was| (was.stat.inode, was))
             .collect()
     } else {
@@ -261,14 +275,22 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
     };
     for (agent, folder, path, stat) in unmatched {
         let mut cursor = String::new();
-        if let Some(was) = moved.remove(&stat.inode) {
+        if stat.inode != 0
+            && let Some(was) = moved.get(&stat.inode)
+        {
             let (was_agent, was_cursor) = stored(was.id)?;
             if was_agent == agent.info().id {
-                renames.push((was.id, path.to_string_lossy().into_owned()));
-                match was.resume(&stat, &mut older) {
-                    Resume::Unchanged => continue,
-                    Resume::On => cursor = was_cursor,
-                    Resume::FromStart => {}
+                let exact = stat.modified == was.stat.modified && stat.size == was.stat.size;
+                let same = exact
+                    || (stat.size >= was.stat.size && same_session(db, was.id, agent, &path)?);
+                if same {
+                    let was = moved.remove(&stat.inode).expect("just found");
+                    renames.push((was.id, path.to_string_lossy().into_owned()));
+                    match was.resume(&stat, &mut older) {
+                        Resume::Unchanged => continue,
+                        Resume::On => cursor = was_cursor,
+                        Resume::FromStart => {}
+                    }
                 }
             }
         }
@@ -295,6 +317,25 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
         tx.commit()?;
     }
     Ok(due)
+}
+
+fn same_session(
+    db: &Connection,
+    file: i64,
+    agent: &dyn agents::Agent,
+    path: &Path,
+) -> Result<bool> {
+    let mut stmt = db.prepare_cached("SELECT session FROM session_file WHERE file = ?1")?;
+    let sessions: Vec<String> = stmt
+        .query_map([file], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if sessions.is_empty() {
+        return Ok(false);
+    }
+    let Ok(read) = agent.read(path, "") else {
+        return Ok(false);
+    };
+    Ok(sessions.iter().any(|id| read.sessions.contains_key(id)))
 }
 
 /// Read what's new in every agent's history under `home`; whether any file
@@ -340,15 +381,26 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
                         std::thread::sleep(PAUSE.saturating_sub(at.elapsed()));
                     }
                     let tx = crate::db::write(db)?;
-                    let derived = Derived::load(&tx)?;
+                    let mut derived = Derived::load(&tx)?;
                     // Each folder's logins, read once a write: Codex writes
                     // limits in every rollout.
                     let mut held = HashMap::new();
                     let began = Instant::now();
-                    while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
+                    let mut any = false;
+                    while let Some((due, read)) = files.next_if(|_| !any || began.elapsed() < HOLD)
+                    {
+                        any = true;
                         match read {
                             Ok(read) => {
-                                write(&tx, due, read, home, &derived, &mut projects, &mut held)?;
+                                write(
+                                    &tx,
+                                    due,
+                                    read,
+                                    home,
+                                    &mut derived,
+                                    &mut projects,
+                                    &mut held,
+                                )?;
                                 wrote = true;
                             }
                             Err(error) => failed(&tx, due, &error)?,
@@ -403,7 +455,7 @@ fn write(
     due: &Due,
     read: Read,
     home: &Path,
-    derived: &Derived,
+    derived: &mut Derived<'_>,
     projects: &mut HashMap<String, String>,
     held: &mut HashMap<Arc<str>, Vec<(String, String)>>,
 ) -> Result<()> {
@@ -455,17 +507,48 @@ fn write(
         holds.execute(params![id, file])?;
     }
 
+    struct Stored {
+        response: Response,
+        file: i64,
+        folder: String,
+        cost: Option<f64>,
+        account: Option<String>,
+    }
     let mut known = tx.prepare_cached(SELECT_RESPONSE)?;
     let mut store = tx.prepare_cached(REPLACE_RESPONSE)?;
     for (_, mut response) in read.responses {
-        if let Some(was) = known
-            .query_row(params![agent, response.id], stored)
-            .optional()?
-        {
-            response.merge(was);
-        }
-        let cost = derived.prices.cost(agent, &response);
+        let existing = known
+            .query_row(params![agent, response.id], |row| {
+                Ok(Stored {
+                    response: stored(row)?,
+                    file: row.get(16)?,
+                    folder: row.get(17)?,
+                    cost: row.get(18)?,
+                    account: row.get(19)?,
+                })
+            })
+            .optional()?;
+        let unchanged = if let Some(was) = &existing {
+            if response == was.response {
+                true
+            } else {
+                response.merge(was.response.clone());
+                response == was.response
+            }
+        } else {
+            false
+        };
+        let cost = derived.prices.cost(agent, &response)?;
         let account = derived.account(folder, &response.provider, response.at);
+        if unchanged
+            && let Some(was) = existing
+            && file == was.file
+            && folder == was.folder
+            && cost == was.cost
+            && account == was.account.as_deref()
+        {
+            continue;
+        }
         let tokens = &response.tokens;
         store.execute(params![
             agent,
@@ -528,22 +611,22 @@ fn stored(row: &Row) -> rusqlite::Result<Response> {
     })
 }
 
-/// What a response's cost and account are worked out from: the prices, and
-/// what each agent folder held for each provider from when, oldest first.
+/// What a response's cost and account are worked out from: lazy per-model
+/// prices, and what each agent folder held for each provider from when, oldest
+/// first.
 ///
 /// Loaded in each write, so a price or sign-in another process wrote since
 /// is used: loaded once and taking prices in under `ingest.lock`, an agent's
-/// tool call waited out the app's read of all of history. The cost: 3.3 ms
-/// for 4,000 prices (November 2026), once a write.
-struct Derived {
-    prices: Prices,
+/// tool call waited out the app's read of all of history.
+struct Derived<'a> {
+    prices: Prices<'a>,
     /// The accounts each agent folder held, by folder then provider: one row
     /// a sign-in, for each folder, of which there are tens.
     signed: HashMap<String, HashMap<String, History<Option<String>>>>,
 }
 
-impl Derived {
-    fn load(db: &Connection) -> Result<Derived> {
+impl<'a> Derived<'a> {
+    fn load(db: &'a Connection) -> Result<Derived<'a>> {
         let mut signed: HashMap<String, HashMap<String, History<Option<String>>>> = HashMap::new();
         let mut rows = db.prepare_cached(
             "SELECT folder, provider, since, account FROM sign_in ORDER BY since",
@@ -558,7 +641,7 @@ impl Derived {
                 .push((row.get(2)?, row.get(3)?));
         }
         Ok(Derived {
-            prices: Prices::load(db)?,
+            prices: Prices::new(db),
             signed,
         })
     }
@@ -583,17 +666,10 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     // One scan, over a query per model, as `response` has no index on
     // `(provider, model)`: 12 ms against 72 ms on 50,000 responses and 20
     // models (2026-11-20).
-    tx.execute(
-        "CREATE TEMP TABLE repriced (
-             provider TEXT NOT NULL,
-             model TEXT NOT NULL,
-             PRIMARY KEY (provider, model)
-         )",
-        [],
-    )?;
-    let mut add = tx.prepare("INSERT OR IGNORE INTO repriced (provider, model) VALUES (?1, ?2)")?;
-    for (provider, model) in models {
-        add.execute(params![provider, model])?;
+    tx.execute("CREATE TEMP TABLE repriced (model TEXT PRIMARY KEY)", [])?;
+    let mut add = tx.prepare("INSERT OR IGNORE INTO repriced (model) VALUES (?1)")?;
+    for (_, model) in models {
+        add.execute(params![model])?;
     }
     drop(add);
     let rows: Vec<(String, Option<f64>, Response)> = tx
@@ -604,10 +680,10 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
     if rows.is_empty() {
         return Ok(());
     }
-    let prices = Prices::load(tx)?;
+    let mut prices = Prices::new(tx);
     let mut update = tx.prepare("UPDATE response SET cost = ?3 WHERE agent = ?1 AND id = ?2")?;
     for (agent, kept, response) in &rows {
-        let cost = prices.cost(agent, response);
+        let cost = prices.cost(agent, response)?;
         if cost != *kept {
             update.execute(params![agent, response.id, cost])?;
         }
@@ -1040,7 +1116,6 @@ mod tests {
 
     #[test]
     fn a_read_says_whether_any_file_changed_and_writes_nothing_if_none_did() {
-        use std::os::unix::fs::PermissionsExt as _;
         let (dir, home, mut db, folder) = store();
         let log = folder.join("s1.jsonl");
         std::fs::write(&log, line()).unwrap();
@@ -1059,11 +1134,15 @@ mod tests {
         std::fs::write(&log, line().repeat(2)).unwrap();
         assert!(ingest(&mut db, home.path(), None).unwrap());
         // One that can't be read is tried again each time, and reads nothing.
-        let locked = folder.join("s2.jsonl");
-        std::fs::write(&locked, line()).unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-        assert!(!ingest(&mut db, home.path(), None).unwrap());
-        assert!(!ingest(&mut db, home.path(), None).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let locked = folder.join("s2.jsonl");
+            std::fs::write(&locked, line()).unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            assert!(!ingest(&mut db, home.path(), None).unwrap());
+            assert!(!ingest(&mut db, home.path(), None).unwrap());
+        }
     }
 
     #[test]
@@ -1302,5 +1381,190 @@ mod tests {
         write(now - 30_000, 90.0);
         assert!(ingest(&mut db, home.path(), None).unwrap());
         assert_eq!(left(&db), (true, vec![70, 85]));
+    }
+
+    #[test]
+    fn a_new_file_reusing_a_deleted_files_inode_is_read_from_start() {
+        let (_dir, home, mut db, folder) = store();
+        let deleted = folder.join("deleted.jsonl");
+        std::fs::write(&deleted, turn("old1")).unwrap();
+        ingest(&mut db, home.path(), None).unwrap();
+        std::fs::remove_file(&deleted).unwrap();
+
+        // A brand-new session file at a new path reusing the deleted file's
+        // inode (as on ext4/tmpfs) with a larger size and newer mtime.
+        let fresh = folder.join("fresh.jsonl");
+        let fresh_content = (turn("new1") + &turn("new2")).replace(r#""s1""#, r#""s_new""#);
+        std::fs::write(&fresh, &fresh_content).unwrap();
+        let fresh_stat = Stat::of(&fresh).unwrap();
+        db.execute(
+            "UPDATE file SET inode = ?1, modified = ?2 WHERE path LIKE '%deleted.jsonl'",
+            params![fresh_stat.inode, fresh_stat.modified - 1_000_000_000],
+        )
+        .unwrap();
+
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        // Both responses from the fresh file must be read from offset 0 (not skipped
+        // by inheriting the deleted file's cursor), leaving the deleted file row intact.
+        assert_eq!(
+            rows(&db, "SELECT id FROM response ORDER BY id"),
+            [
+                "msg_new1:req_new1",
+                "msg_new2:req_new2",
+                "msg_old1:req_old1"
+            ]
+        );
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM file"), 2);
+    }
+
+    #[test]
+    fn a_moved_and_appended_file_resumes_and_re_reads_on_reader_upgrade() {
+        let (_dir, home, mut db, first) = store();
+        let second = first.with_file_name("-work-b");
+        std::fs::create_dir_all(&second).unwrap();
+        let third = first.with_file_name("-work-c");
+        std::fs::create_dir_all(&third).unwrap();
+
+        let file = first.join("s1.jsonl");
+        std::fs::write(&file, turn("t1")).unwrap();
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+
+        // Move + append under the current reader: renames the single file row
+        // and resumes without leaving an orphaned `session_file` entry.
+        let archived = second.join("s1.jsonl");
+        {
+            use std::io::Write as _;
+            let mut out = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap();
+            out.write_all(turn("t2").as_bytes()).unwrap();
+        }
+        std::fs::rename(&file, &archived).unwrap();
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM file"), 1);
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM session_file"), 1);
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM response"), 2);
+
+        // Move + append across a `READERS` upgrade: `read_again` wipes the old
+        // reader's misread output and title instead of merging stale rows.
+        read_with_an_older_reader(&db);
+        let moved_again = third.join("s1.jsonl");
+        {
+            use std::io::Write as _;
+            let mut out = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&archived)
+                .unwrap();
+            out.write_all(turn("t3").as_bytes()).unwrap();
+        }
+        std::fs::rename(&archived, &moved_again).unwrap();
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        assert_eq!(made(&db), [60, 0]);
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM file"), 1);
+        assert_eq!(one::<i64>(&db, "SELECT count(*) FROM session_file"), 1);
+        assert_eq!(
+            one::<String>(&db, "SELECT title FROM session WHERE id = 'claude-code:s1'"),
+            "Fix the parser."
+        );
+    }
+
+    #[test]
+    fn price_again_reprices_maker_fallback_models_under_another_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        db.execute(
+            "INSERT INTO price VALUES ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL)",
+            [],
+        )
+        .unwrap();
+        // OpenCode response under a custom gateway with a recorded agent estimate
+        // (`cost IS NOT NULL`), before Anthropic's price was first listed.
+        response(
+            &db,
+            ("opencode", "/w", "my-gateway", None),
+            "r1",
+            0,
+            "claude-opus-5-5",
+            Some(0.001),
+        );
+        db.execute("UPDATE response SET recorded = 0.001 WHERE id = 'r1'", [])
+            .unwrap();
+        let tx = crate::db::write(&mut db).unwrap();
+        price_again(
+            &tx,
+            &[("anthropic".to_owned(), "claude-opus-5-5".to_owned())],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            one::<f64>(&db, "SELECT cost FROM response WHERE id = 'r1'"),
+            5.0
+        );
+    }
+
+    #[test]
+    fn stat_tracks_wal_changes_for_sqlite_and_sqlite3_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        for ext in ["db", "sqlite", "sqlite3"] {
+            let db_path = dir.path().join(format!("history.{ext}"));
+            let wal_path = dir.path().join(format!("history.{ext}-wal"));
+            std::fs::write(&db_path, "db").unwrap();
+            let before = Stat::of(&db_path).unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+            std::fs::write(&wal_path, "wal-write").unwrap();
+            let after = Stat::of(&db_path).unwrap();
+            assert!(
+                after.modified > before.modified,
+                "WAL change not detected for .{ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_rereported_responses_skip_rewriting_the_response_row() {
+        let (_dir, home, mut db, _) = store();
+        let folder = home.path().join(".local/share/opencode");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("opencode.db");
+        let opencode = Connection::open(&file).unwrap();
+        opencode
+            .execute_batch(&format!(
+                "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; {}",
+                include_str!("../tests/fixtures/home/.local/share/opencode/opencode.sql")
+            ))
+            .unwrap();
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+
+        // Insert a brand-new message at the same timestamp window so OpenCode's
+        // `LATE` lookback re-reports the earlier messages alongside the new one.
+        let latest: i64 = one(&opencode, "SELECT max(time_updated) FROM session_message");
+        let at = latest + 1_000;
+        opencode
+            .execute(
+                "INSERT INTO session_message VALUES ('msg_extra',
+                     (SELECT id FROM session_v2 LIMIT 1), 'assistant', 99, ?1, ?1,
+                     '{\"model\": {\"providerID\": \"opencode-go\", \"id\": \"glm-5.3\"},
+                       \"time\": {\"created\": 1790748000000, \"completed\": 1790748000000},
+                       \"tokens\": {\"input\": 50, \"output\": 10, \"reasoning\": 0, \"cache\": {\"read\": 0, \"write\": 0}},
+                       \"content\": [{\"type\": \"text\", \"text\": \"Done.\"}]}')",
+                [at],
+            )
+            .unwrap();
+        let before_count = one::<i64>(&db, "SELECT count(*) FROM response");
+        // Track writes to `response` with a temporary trigger.
+        db.execute_batch(
+            "CREATE TEMP TABLE writes (id TEXT);
+             CREATE TEMP TRIGGER count_writes AFTER INSERT ON response
+             BEGIN INSERT INTO writes VALUES (NEW.id); END;",
+        )
+        .unwrap();
+        assert!(ingest(&mut db, home.path(), None).unwrap());
+        assert_eq!(
+            one::<i64>(&db, "SELECT count(*) FROM response"),
+            before_count + 1
+        );
+        // Only the new response was written; re-reported identical responses were skipped.
+        assert_eq!(rows(&db, "SELECT id FROM writes"), ["msg_extra"]);
     }
 }

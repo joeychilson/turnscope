@@ -6,7 +6,8 @@
 //! a thousand, as Anthropic, the only provider whose usage reports either,
 //! charges.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
@@ -28,17 +29,47 @@ struct Rates {
 
 #[derive(Deserialize)]
 struct Cost {
-    #[serde(flatten)]
-    base: Rates,
+    input: f64,
+    output: f64,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+    reasoning: Option<f64>,
     #[serde(default)]
     tiers: Vec<Tiered>,
 }
 
+impl Cost {
+    fn base(&self) -> Rates {
+        Rates {
+            input: self.input,
+            output: self.output,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+            reasoning: self.reasoning,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Tiered {
-    #[serde(flatten)]
-    rates: Rates,
+    input: f64,
+    output: f64,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+    reasoning: Option<f64>,
     tier: Threshold,
+}
+
+impl Tiered {
+    fn rates(&self) -> Rates {
+        Rates {
+            input: self.input,
+            output: self.output,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+            reasoning: self.reasoning,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -52,55 +83,32 @@ struct Model {
     priority: Option<Rates>,
 }
 
-pub struct Prices(HashMap<String, HashMap<String, History<Model>>>);
+/// Lazily loaded per-`(provider, model)` price cache for a single connection or
+/// transaction: seeks only the models actually priced instead of scanning the
+/// entire `price` table under SQLite's write lock.
+pub struct Prices<'a> {
+    db: &'a Connection,
+    models: HashMap<String, HashMap<String, History<Model>>>,
+}
 
-impl Prices {
-    pub fn load(db: &Connection) -> Result<Prices> {
-        let mut models: HashMap<String, HashMap<String, History<Model>>> = HashMap::new();
-        let mut rows =
-            db.prepare("SELECT provider, model, since, cost, fast FROM price ORDER BY since")?;
-        let mut rows = rows.query([])?;
-        while let Some(row) = rows.next()? {
-            let Ok(cost) = serde_json::from_str::<Cost>(row.get_ref(3)?.as_str()?) else {
-                continue;
-            };
-            let mut tiers: Vec<(u64, Rates)> = cost
-                .tiers
-                .iter()
-                .map(|tier| (tier.tier.size, tier.rates))
-                .collect();
-            tiers.sort_by_key(|(above, _)| *above);
-            let priority = row
-                .get_ref(4)?
-                .as_str_or_null()?
-                .and_then(|fast| serde_json::from_str(fast).ok());
-            models
-                .entry(row.get(0)?)
-                .or_default()
-                .entry(row.get(1)?)
-                .or_default()
-                .push((
-                    row.get(2)?,
-                    Model {
-                        base: cost.base,
-                        tiers,
-                        priority,
-                    },
-                ));
+impl<'a> Prices<'a> {
+    pub fn new(db: &'a Connection) -> Prices<'a> {
+        Prices {
+            db,
+            models: HashMap::new(),
         }
-        Ok(Prices(models))
     }
 
-    pub fn cost(&self, agent: &str, response: &Response) -> Option<f64> {
+    pub fn cost(&mut self, agent: &str, response: &Response) -> Result<Option<f64>> {
         // A recorded cost of zero is usage a subscription covered: it says
         // nothing of what it would have cost.
         let recorded = response.cost.filter(|cost| *cost > 0.0);
         let charges = agents::by_id(agent).is_some_and(|agent| agent.info().charges);
         if charges && recorded.is_some() {
-            return recorded;
+            return Ok(recorded);
         }
-        let Some(model) = self.at(&response.provider, &response.model, response.at) else {
-            return recorded;
+        let Some(model) = self.at(&response.provider, &response.model, response.at)? else {
+            return Ok(recorded);
         };
         let rates = match model.priority {
             Some(priority) if response.priority => priority,
@@ -118,17 +126,68 @@ impl Prices {
             + tokens.cache_write_1h as f64 * 2.0 * rates.input
             + tokens.output.saturating_sub(tokens.reasoning) as f64 * rates.output
             + tokens.reasoning as f64 * rates.reasoning.unwrap_or(rates.output);
-        Some(dollars / 1e6 + response.web_searches as f64 * 0.01)
+        Ok(Some(dollars / 1e6 + response.web_searches as f64 * 0.01))
+    }
+
+    fn history(&mut self, provider: &str, model: &str) -> Result<&[(i64, Model)]> {
+        let cached = self
+            .models
+            .get(provider)
+            .is_some_and(|models| models.contains_key(model));
+        if !cached {
+            let mut rows = self.db.prepare_cached(
+                "SELECT since, cost, fast FROM price
+                 WHERE provider = ?1 AND model = ?2 ORDER BY since",
+            )?;
+            let mut rows = rows.query(params![provider, model])?;
+            let mut history = History::new();
+            while let Some(row) = rows.next()? {
+                let Ok(cost) = serde_json::from_str::<Cost>(row.get_ref(1)?.as_str()?) else {
+                    continue;
+                };
+                let mut tiers: Vec<(u64, Rates)> = cost
+                    .tiers
+                    .iter()
+                    .map(|tier| (tier.tier.size, tier.rates()))
+                    .collect();
+                tiers.sort_by_key(|(above, _)| *above);
+                let priority = row
+                    .get_ref(2)?
+                    .as_str_or_null()?
+                    .and_then(|fast| serde_json::from_str(fast).ok());
+                history.push((
+                    row.get(0)?,
+                    Model {
+                        base: cost.base(),
+                        tiers,
+                        priority,
+                    },
+                ));
+            }
+            self.models
+                .entry(provider.to_owned())
+                .or_default()
+                .insert(model.to_owned(), history);
+        }
+        Ok(&self.models[provider][model])
     }
 
     /// The price of `model` from `provider` in force `at`, or where
     /// `provider` serves a model it doesn't list, its maker's: Antigravity
     /// records the Claude models Google serves it as `google`'s, and
     /// models.dev lists them under Anthropic alone.
-    fn at(&self, provider: &str, model: &str, at: i64) -> Option<&Model> {
-        let listed = |provider: &str| self.0.get(provider)?.get(model);
-        let history = listed(provider).or_else(|| listed(providers::maker(model)?.info().id))?;
-        in_force(history, at)
+    fn at(&mut self, provider: &str, model: &str, at: i64) -> Result<Option<&Model>> {
+        if !self.history(provider, model)?.is_empty() {
+            return Ok(in_force(&self.models[provider][model], at));
+        }
+        let Some(maker) = providers::maker(model).map(|provider| provider.info().id) else {
+            return Ok(None);
+        };
+        if maker == provider {
+            return Ok(None);
+        }
+        let history = self.history(maker, model)?;
+        Ok(in_force(history, at))
     }
 }
 
@@ -222,33 +281,190 @@ fn check(status: u16, json: &[u8]) -> Result<Catalog> {
 /// rates is left out: stored, it would stop `take` pricing what was used of
 /// it once its rates are listed.
 fn parse_catalog(json: &[u8]) -> Result<Catalog> {
-    let providers: HashMap<String, Value> = serde_json::from_slice(json)
-        .map_err(|error| Error::Failed(format!("models.dev's catalog didn't read: {error}")))?;
+    struct MaybeMap<T>(Option<T>);
+
+    impl<T> Default for MaybeMap<T> {
+        fn default() -> Self {
+            Self(None)
+        }
+    }
+
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaybeMap<T> {
+        fn deserialize<D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> std::result::Result<Self, D::Error> {
+            struct Visitor<T>(std::marker::PhantomData<T>);
+            impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Visitor<T> {
+                type Value = MaybeMap<T>;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a JSON object")
+                }
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    map: A,
+                ) -> std::result::Result<MaybeMap<T>, A::Error> {
+                    T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                        .map(|value| MaybeMap(Some(value)))
+                }
+                fn visit_bool<E>(self, _: bool) -> std::result::Result<MaybeMap<T>, E> {
+                    Ok(MaybeMap(None))
+                }
+                fn visit_i64<E>(self, _: i64) -> std::result::Result<MaybeMap<T>, E> {
+                    Ok(MaybeMap(None))
+                }
+                fn visit_u64<E>(self, _: u64) -> std::result::Result<MaybeMap<T>, E> {
+                    Ok(MaybeMap(None))
+                }
+                fn visit_f64<E>(self, _: f64) -> std::result::Result<MaybeMap<T>, E> {
+                    Ok(MaybeMap(None))
+                }
+                fn visit_str<E>(self, _: &str) -> std::result::Result<MaybeMap<T>, E> {
+                    Ok(MaybeMap(None))
+                }
+                fn visit_unit<E>(self) -> std::result::Result<MaybeMap<T>, E> {
+                    Ok(MaybeMap(None))
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> std::result::Result<MaybeMap<T>, A::Error> {
+                    while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                    Ok(MaybeMap(None))
+                }
+            }
+            deserializer.deserialize_any(Visitor(std::marker::PhantomData))
+        }
+    }
+
+    fn str_or_none<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Option<Cow<'de, str>>, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Option<Cow<'de, str>>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an optional string")
+            }
+            fn visit_borrowed_str<E>(self, s: &'de str) -> std::result::Result<Self::Value, E> {
+                Ok(Some(Cow::Borrowed(s)))
+            }
+            fn visit_str<E>(self, s: &str) -> std::result::Result<Self::Value, E> {
+                Ok(Some(Cow::Owned(s.to_owned())))
+            }
+            fn visit_string<E>(self, s: String) -> std::result::Result<Self::Value, E> {
+                Ok(Some(Cow::Owned(s)))
+            }
+            fn visit_bool<E>(self, _: bool) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_i64<E>(self, _: i64) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_u64<E>(self, _: u64) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_f64<E>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(None)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                while map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(None)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+
+    #[derive(Deserialize)]
+    struct ProviderListing<'a> {
+        #[serde(borrow, default)]
+        models: MaybeMap<HashMap<Cow<'a, str>, MaybeMap<ModelListing<'a>>>>,
+    }
+    #[derive(Deserialize)]
+    struct ModelListing<'a> {
+        // Keep `cost` as canonical compact JSON matching stored `price.cost`
+        // rows; outer fields outside `cost` are skipped without building a DOM.
+        cost: Option<Value>,
+        #[serde(borrow, default)]
+        experimental: MaybeMap<Experimental<'a>>,
+    }
+    #[derive(Deserialize)]
+    struct Experimental<'a> {
+        #[serde(borrow, default)]
+        modes: MaybeMap<BTreeMap<Cow<'a, str>, MaybeMap<Mode<'a>>>>,
+    }
+    #[derive(Deserialize)]
+    struct Mode<'a> {
+        #[serde(borrow, default)]
+        provider: MaybeMap<ModeProvider<'a>>,
+        cost: Option<Value>,
+    }
+    #[derive(Deserialize)]
+    struct ModeProvider<'a> {
+        #[serde(borrow, default)]
+        body: MaybeMap<ModeBody<'a>>,
+    }
+    #[derive(Deserialize)]
+    struct ModeBody<'a> {
+        #[serde(borrow, default, deserialize_with = "str_or_none")]
+        speed: Option<Cow<'a, str>>,
+        #[serde(borrow, default, deserialize_with = "str_or_none")]
+        service_tier: Option<Cow<'a, str>>,
+    }
+
+    let providers: HashMap<Cow<'_, str>, MaybeMap<ProviderListing<'_>>> =
+        serde_json::from_slice(json)
+            .map_err(|error| Error::Failed(format!("models.dev's catalog didn't read: {error}")))?;
     let mut catalog = Catalog::new();
-    for (provider, mut listing) in providers {
-        let Some(models) = listing.get_mut("models").and_then(Value::as_object_mut) else {
+    for (provider, listing) in providers {
+        let Some(models) = listing.0.and_then(|listing| listing.models.0) else {
             continue;
         };
-        for (id, model) in std::mem::take(models) {
-            let Some(cost) = model
-                .get("cost")
-                .filter(|cost| Cost::deserialize(*cost).is_ok())
-            else {
+        for (id, model) in models {
+            let Some(model) = model.0 else {
                 continue;
             };
-            let fast = model["experimental"]["modes"]
-                .as_object()
+            let Some(cost) = model.cost.filter(|cost| Cost::deserialize(cost).is_ok()) else {
+                continue;
+            };
+            let fast = model
+                .experimental
+                .0
+                .and_then(|experimental| experimental.modes.0)
                 .and_then(|modes| {
-                    modes.values().find_map(|mode| {
-                        let body = &mode["provider"]["body"];
-                        let cost = mode
-                            .get("cost")
-                            .filter(|cost| Rates::deserialize(*cost).is_ok())?;
-                        (body["speed"] == "fast" || body["service_tier"] == "priority")
-                            .then(|| cost.to_string())
-                    })
+                    modes
+                        .into_values()
+                        .filter_map(|mode| mode.0)
+                        .find_map(|mode| {
+                            let body = mode.provider.0?.body.0?;
+                            let is_fast = body.speed.as_deref() == Some("fast")
+                                || body.service_tier.as_deref() == Some("priority");
+                            let cost = mode
+                                .cost
+                                .filter(|_| is_fast)
+                                .filter(|cost| Rates::deserialize(cost).is_ok())?;
+                            Some(cost.to_string())
+                        })
                 });
-            catalog.push(((provider.clone(), id), (cost.to_string(), fast)));
+            catalog.push((
+                (provider.clone().into_owned(), id.into_owned()),
+                (cost.to_string(), fast),
+            ));
         }
     }
     Ok(catalog)
@@ -301,7 +517,18 @@ mod tests {
     use crate::db::test::one;
 
     /// Prices of `rows`, each in force from `since`.
-    fn priced(rows: &[(&str, &str, i64, &str, Option<&str>)]) -> Prices {
+    struct Priced {
+        _dir: tempfile::TempDir,
+        db: Connection,
+    }
+
+    impl Priced {
+        fn cost(&self, agent: &str, response: &Response) -> Option<f64> {
+            Prices::new(&self.db).cost(agent, response).unwrap()
+        }
+    }
+
+    fn priced(rows: &[(&str, &str, i64, &str, Option<&str>)]) -> Priced {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::open(dir.path()).unwrap();
         for (provider, model, since, cost, fast) in rows {
@@ -311,7 +538,7 @@ mod tests {
             )
             .unwrap();
         }
-        Prices::load(&db).unwrap()
+        Priced { _dir: dir, db }
     }
 
     fn response(provider: &str, model: &str, tokens: Tokens) -> Response {
@@ -634,5 +861,49 @@ mod tests {
         }
         let log = std::fs::read_to_string(data.path().join("app.log")).unwrap();
         assert_eq!(log.matches("models.dev answered 403").count(), 2, "{log}");
+    }
+
+    #[test]
+    fn parse_catalog_canonicalizes_cost_json_and_ignores_non_object_entries() {
+        let raw = br#"{
+            "_meta": "v1",
+            "bad_models": { "models": [] },
+            "anthropic": {
+                "models": {
+                    "bad_entry": "ignored",
+                    "claude-opus": {
+                        "name": "Ignored DOM fields",
+                        "cost": { "output": 15, "input": 3, "cache_read": 0.3 },
+                        "experimental": {
+                            "modes": {
+                                "b_priority": {
+                                    "provider": { "body": { "service_tier": "priority" } },
+                                    "cost": { "output": 45, "input": 9 }
+                                },
+                                "a_fast": {
+                                    "provider": { "body": { "speed": "fast" } },
+                                    "cost": { "output": 30, "input": 6 }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"#;
+        // Multiple fast/priority modes must resolve deterministically in key order.
+        for _ in 0..20 {
+            let parsed = parse_catalog(raw).unwrap();
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(
+                parsed[0],
+                (
+                    ("anthropic".to_owned(), "claude-opus".to_owned()),
+                    (
+                        r#"{"cache_read":0.3,"input":3,"output":15}"#.to_owned(),
+                        Some(r#"{"input":6,"output":30}"#.to_owned()),
+                    )
+                )
+            );
+        }
     }
 }

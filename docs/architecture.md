@@ -88,8 +88,9 @@ such as a new one, gets Turnscope's tables, whatever else it holds.
   so only what was appended is read, and an unchanged file is only
   stat'ed. A file that was replaced or cut short is read from the start.
   A moved file is read on from where it was. A file is taken as moved
-  when its old path is gone and its inode turns up at a new path, as when
-  an agent archives it.
+  when its old path is gone and its inode turns up at a new path with the
+  same size and modification time, or with a larger size for the same
+  session, as when an agent archives it.
 - **A response is one row**, however many files report it: a line
   rewritten as it streams, a fork's copy, a continuation's.
   `agents::Response::merge` combines reports the same way in any order: the
@@ -141,8 +142,8 @@ is the thin SwiftUI + AppKit shell statically linked to `turnscope-app`
 
 ```
 crates/turnscope/src/            the engine, a module per job (ingest, limits, prices,
-                                 forecast, status, usage, alerts, engine); the command
-                                 line (main.rs) and the MCP server (mcp.rs)
+                                 forecast, status, usage, alerts, engine, platform);
+                                 the command line (main.rs) and the MCP server (mcp.rs)
 crates/turnscope/src/agents/     one file per agent, and agents::ALL
 crates/turnscope/src/providers/  one file per provider, and providers::ALL
 crates/turnscope-app/src/        app core (state, words, view, C ABI)
@@ -199,7 +200,7 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due, and not while an app runs. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, history only while an app runs. |
-| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits more than 5 minutes old, and those whose read failed, right away, at most every 30 s (`limits::refresh`); while another process reads them, it waits for that read, then reads those it didn't ask. |
+| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; a 5-minute periodic fallback walk when idle; and every minute for clocks, due prices/limits, and external database writes. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits more than 5 minutes old, and those whose read failed, right away, at most every 30 s (`limits::refresh`), and tells the status before any history walk; while another process reads them, it waits for that read, then reads those it didn't ask. |
 
 While an app runs, the other processes rarely find anything new to read.
 
@@ -225,8 +226,9 @@ Four files in the data directory keep processes apart:
 - `limits.lock` while limits are read, so no two processes ask a provider
   at once, and one refused login isn't counted as two. A read asked for
   waits for it; one as limits come due gives way.
-- `app.lock`, while an app keeps the data current. A second app shows what
-  the first writes, and takes over once it's gone.
+- `app.lock`, while an app keeps the data current and raises alerts. A
+  second app shows what the first writes, writes nothing and raises no
+  alerts, and takes over once it's gone.
 
 Prices, and limits as they come due, are claimed with one `UPDATE` of
 `state`, so a process doesn't read again what another just read.
@@ -247,11 +249,13 @@ It's in the engine crate, so an app for another platform only draws.
   starts no catch-up: Turnscope writes it itself by opening the database.
 - After a catch-up that read anything new, ran in a new minute, or
   followed another process's write to the database, it works out the
-  status. If anything it shows changed, it raises alerts and tells the app
-  the status with the alerts (`Event::Shown`). A status that differs from
-  the last told only in the minute it's as of isn't told: the app counts
-  down on its own clock. Each agent's MCP settings are read once a minute
-  and after a connect, not with every status.
+  status. If anything it shows changed, the app holding `app.lock` raises
+  alerts and tells the app the status with the alerts (`Event::Shown`). A
+  status that differs from the last told only in the minute it's as of or
+  in unused work-rate fields isn't told: the app counts down on its own
+  clock. Each agent's MCP settings are read after a connect and when their
+  config files change (checked at most once a minute), not with every
+  status.
 - At start, it reads the limits, when they're due, before its first
   catch-up, and tells the status then too. On a first launch the catch-up
   reads all of history, so the app shows the accounts while it does, and

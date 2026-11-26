@@ -3,7 +3,6 @@
 //! docs/architecture.md#data.
 
 use std::fs::File;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::SystemTime;
@@ -177,6 +176,13 @@ UPDATE account SET full_read_at = read_at, checked_at = read_at;
 -- it's worked out again.
 UPDATE session SET project = NULL WHERE project = '';
 "#,
+    r#"
+-- Cover `status::drawn` without scanning every response, and seek directly to
+-- an agent folder's latest response in `Caller::account`.
+DROP INDEX IF EXISTS response_at;
+CREATE INDEX response_at ON response (at, account);
+CREATE INDEX response_agent_folder ON response (agent, folder, at);
+"#,
 ];
 
 /// "TRNS", in the header, so a file with another program's is never written.
@@ -189,10 +195,7 @@ const APPLICATION_ID: i32 = 0x5452_4E53;
 /// can't wait for another connection as a query does, and fails at once.
 pub fn open(dir: &Path) -> Result<Connection> {
     // The owner's alone: it holds what each session cost, and its title.
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+    crate::platform::create_private_dir(dir)
         .map_err(|error| Error::Failed(format!("creating {}: {error}", dir.display())))?;
     let path = dir.join(FILE);
     let mut db = Connection::open(&path)?;
@@ -208,7 +211,7 @@ pub fn open(dir: &Path) -> Result<Connection> {
     // by a committed `user_version > 0` and falsely reject Turnscope's own DB.
     let current = revision(&db)?;
     let id: i32 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    if (id != 0 || current > 0) && id != APPLICATION_ID {
+    if (id != 0 || current != 0) && id != APPLICATION_ID {
         return Err(Error::Failed(format!(
             "{} isn't Turnscope's database",
             path.display()
@@ -322,6 +325,12 @@ pub fn lock_within(path: &Path, wait: std::time::Duration) -> Result<Option<File
 
 fn revision(db: &Connection) -> Result<i64> {
     let revision: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if revision < 0 {
+        return Err(Error::Failed(match db.path() {
+            Some(path) => format!("{path} isn't Turnscope's database"),
+            None => "this isn't Turnscope's database".to_owned(),
+        }));
+    }
     if revision > REVISIONS.len() as i64 {
         return Err(newer());
     }
@@ -373,7 +382,7 @@ pub fn started() {
 
 fn binary() -> Option<(u64, SystemTime)> {
     let file = std::fs::metadata(std::env::current_exe().ok()?).ok()?;
-    Some((file.ino(), file.modified().ok()?))
+    Some((crate::platform::file_id(&file), file.modified().ok()?))
 }
 
 /// Why this Turnscope writes nothing more.
@@ -582,5 +591,81 @@ mod tests {
         let error = open(dir.path()).unwrap_err().to_string();
         assert!(error.contains("isn't Turnscope's database"), "{error}");
         assert!(read(dir.path()).is_none());
+    }
+
+    #[test]
+    fn a_database_with_a_negative_user_version_is_refused() {
+        for app_id in [0_i32, APPLICATION_ID] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = Connection::open(dir.path().join(FILE)).unwrap();
+            db.pragma_update(None, "application_id", app_id).unwrap();
+            db.pragma_update(None, "user_version", -1_i64).unwrap();
+            drop(db);
+
+            let error = open(dir.path()).unwrap_err().to_string();
+            assert!(error.contains("isn't Turnscope's database"), "{error}");
+            assert!(read(dir.path()).is_none());
+            // The foreign DB wasn't stamped with Turnscope's application_id.
+            let check = Connection::open(dir.path().join(FILE)).unwrap();
+            let stored_id: i32 = check
+                .pragma_query_value(None, "application_id", |row| row.get(0))
+                .unwrap();
+            assert_eq!(stored_id, app_id);
+        }
+    }
+
+    #[test]
+    fn revision_3_indexes_cover_drawn_and_caller_account_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(dir.path()).unwrap();
+        for i in 0..200_i64 {
+            let agent = if i % 2 == 0 { "claude-code" } else { "codex" };
+            let account = format!("acct:{}", i % 3);
+            test::response(
+                &db,
+                (agent, "/home/.claude", "anthropic", Some(&account)),
+                &format!("r{i}"),
+                1_000_000 + i * 1_000,
+                "claude-opus-5",
+                Some(0.01),
+            );
+        }
+        db.execute_batch("ANALYZE").unwrap();
+
+        let drawn = rows(
+            &db,
+            "EXPLAIN QUERY PLAN SELECT account, agent, at FROM response
+             WHERE at >= 1190000 AND account IS NOT NULL",
+        );
+        assert!(
+            drawn
+                .iter()
+                .any(|line| line.contains("COVERING INDEX response_at")),
+            "{drawn:?}"
+        );
+        let drawn_grouped = rows(
+            &db,
+            "EXPLAIN QUERY PLAN SELECT account, agent FROM response
+             WHERE at >= 1190000 AND account IS NOT NULL
+             GROUP BY account, agent ORDER BY max(at) DESC",
+        );
+        assert!(
+            drawn_grouped
+                .iter()
+                .any(|line| line.contains("COVERING INDEX response_at")),
+            "{drawn_grouped:?}"
+        );
+        let caller = rows(
+            &db,
+            "EXPLAIN QUERY PLAN SELECT account FROM response
+             WHERE agent = 'claude-code' AND folder = '/home/.claude'
+               AND account IS NOT NULL ORDER BY at DESC LIMIT 1",
+        );
+        assert!(
+            caller
+                .iter()
+                .any(|line| line.contains("INDEX response_agent_folder")),
+            "{caller:?}"
+        );
     }
 }

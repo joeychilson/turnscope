@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Opening the panel or pressing ⌘R shows fresh limits right away**,
+  instead of waiting for history to finish reading, and an idle menu bar
+  rescans agent folders every 5 minutes as a fallback instead of every
+  minute.
+- **Hidden accounts, resolved limits and second app instances don't raise
+  stale or duplicate notifications.** Launching after a limit reset no
+  longer sends both "used up" and "back" together, and a second copy of
+  the app doesn't write alerts.
+- **`connect` and `disconnect` handle `fish` and non-POSIX shells, paths
+  with apostrophes and commands that fail on stdout**, and skip probing
+  the login shell when the agent is already on `PATH`.
+- **Faster status lookups, price updates and incremental history reads.**
+  New indexes speed up recent-account and agent-folder queries, catalog
+  parsing skips an intermediate DOM, and history writes look up only the
+  models they read instead of scanning all stored prices.
+- **Reused file inodes and repriced maker models are handled accurately.**
+  A new history file reusing a deleted file's inode is read from the
+  start, and a model priced through its maker under another provider is
+  repriced when the maker's price updates.
 - **Codex's responses after fast mode is turned off cost the standard
   rate**, not the fast one. The history is read again once, to price them
   anew.

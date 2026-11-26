@@ -159,7 +159,7 @@ row can be committed after one stamped later, and from no later than now,
 since a row can be stamped ahead of the clock (`src/agents/opencode.rs`).
 Rows read again are reported again, which changes nothing. `Stat::of` in
 `src/ingest.rs` looks for a write-ahead log only beside a file whose name
-ends in `.db`, as OpenCode's does. For a database named otherwise, add its
+ends in `.db`, `.sqlite`, or `.sqlite3`, as OpenCode's does. For a database named otherwise, add its
 ending there: until a checkpoint, new rows are only in the log, and the
 file itself doesn't change.
 

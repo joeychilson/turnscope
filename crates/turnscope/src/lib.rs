@@ -11,6 +11,7 @@ pub mod engine;
 pub mod forecast;
 pub mod ingest;
 pub mod limits;
+mod platform;
 pub mod prices;
 pub mod process;
 pub mod providers;
@@ -26,13 +27,8 @@ use std::path::{Path, PathBuf};
 /// other folders.
 pub fn places(home: Option<PathBuf>, data: Option<PathBuf>) -> (PathBuf, PathBuf) {
     let absolute = |path: PathBuf| std::path::absolute(&path).unwrap_or(path);
-    let home = absolute(
-        home.or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-            .unwrap_or_default(),
-    );
-    let data = absolute(
-        data.unwrap_or_else(|| home.join("Library/Application Support/com.joeychilson.turnscope")),
-    );
+    let home = absolute(home.unwrap_or_else(platform::home));
+    let data = absolute(data.unwrap_or_else(|| platform::data_dir(&home)));
     (home, data)
 }
 
@@ -257,6 +253,7 @@ mod tests {
     use super::*;
 
     /// Eleven files that can't be read, one more than doctor names.
+    #[cfg(unix)]
     #[test]
     fn doctor_names_a_file_that_cant_be_read_until_its_deleted() {
         use std::os::unix::fs::PermissionsExt as _;

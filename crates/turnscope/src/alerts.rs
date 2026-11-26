@@ -5,7 +5,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use crate::status::{Account, Limit, Moment, Outlook, State, Status};
+use crate::status::{Account, Limit, Moment, Outlook, State, Status, Unknown};
 use crate::time::DAY;
 use crate::{Result, forecast};
 
@@ -250,17 +250,33 @@ pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>>
         let account = row.get_ref(3)?.as_str()?;
         let limit = row.get_ref(4)?.as_str()?;
         let known = status.accounts.iter().find(|known| known.id == account);
+        if known.is_some_and(|account| account.hidden) {
+            continue;
+        }
         let known_limit = known.and_then(|known| known.limits.iter().find(|l| l.key == limit));
         let stands = match kind {
-            Kind::RunningOut | Kind::UsedUp => match detail.resets {
-                Some(resets) => {
-                    let moved = known_limit.and_then(|l| l.window).is_some_and(|window| {
-                        !forecast::same_reset(Some(resets), Some(window.resets.at))
-                    });
-                    resets > now && !moved
+            Kind::RunningOut | Kind::UsedUp => {
+                let matching_outlook = |limit: &Limit| match kind {
+                    Kind::UsedUp => matches!(limit.outlook, Outlook::UsedUp { .. }),
+                    Kind::RunningOut => matches!(
+                        limit.outlook,
+                        Outlook::RunsOut { .. }
+                            | Outlook::Unknown {
+                                reason: Unknown::Stale
+                            }
+                    ),
+                    _ => false,
+                };
+                match detail.resets {
+                    Some(resets) => {
+                        let moved = known_limit.and_then(|l| l.window).is_some_and(|window| {
+                            !forecast::same_reset(Some(resets), Some(window.resets.at))
+                        });
+                        resets > now && !moved && known_limit.is_none_or(matching_outlook)
+                    }
+                    None => known_limit.is_some_and(matching_outlook),
                 }
-                None => known_limit.is_some_and(|l| matches!(l.outlook, Outlook::UsedUp { .. })),
-            },
+            }
             Kind::Reset => now - at <= DAY,
             Kind::SignIn => now - at <= DAY && known.is_some_and(Account::refused),
         };
@@ -340,12 +356,13 @@ pub fn settings(db: &rusqlite::Connection) -> Result<Settings> {
         .unwrap_or_default())
 }
 
-pub fn save_settings(db: &rusqlite::Connection, settings: &Settings) -> Result<()> {
-    crate::db::writing(db)?;
-    db.execute(
+pub fn save_settings(db: &mut rusqlite::Connection, settings: &Settings) -> Result<()> {
+    let tx = crate::db::write(db)?;
+    tx.execute(
         "UPDATE state SET settings = ?1",
         [serde_json::to_string(settings).unwrap_or_default()],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -713,5 +730,71 @@ mod tests {
         assert!(with(vec![limit("weekly", None, true)]));
         // One key's limit doesn't stop another's.
         assert!(!with(vec![limit("key-b", None, true)]));
+    }
+
+    #[test]
+    fn pending_skips_hidden_accounts_and_already_resolved_alerts() {
+        let (_dir, mut db) = open();
+        // UsedUp raised, not acknowledged, then use is given back in the same
+        // window before relaunch: pending must not emit the stale UsedUp.
+        let used_up = status(DAY, 0, Outlook::UsedUp { back: None });
+        assert_eq!(kinds(&raise(&mut db, &used_up).unwrap()), [Kind::UsedUp]);
+        let given_back = status(DAY + MINUTE, 60, LASTS);
+        assert!(pending(&db, &given_back, DAY + MINUTE).unwrap().is_empty());
+        // Only Reset is emitted, not UsedUp + Reset together.
+        assert_eq!(kinds(&raise(&mut db, &given_back).unwrap()), [Kind::Reset]);
+
+        // RunningOut raised, then pace slows so the limit now lasts.
+        let (_dir, mut db) = open();
+        let running = runs_out(DAY);
+        assert_eq!(
+            kinds(&raise(&mut db, &running).unwrap()),
+            [Kind::RunningOut]
+        );
+        assert_eq!(
+            kinds(&pending(&db, &running, DAY + MINUTE).unwrap()),
+            [Kind::RunningOut]
+        );
+        let calmed = status(DAY + MINUTE, 40, LASTS);
+        assert!(pending(&db, &calmed, DAY + MINUTE).unwrap().is_empty());
+
+        // Relaunching with a stale (>30 m) reading keeps the unacknowledged
+        // RunningOut alert alive instead of dropping it permanently.
+        let stale = status(
+            DAY + 31 * MINUTE,
+            40,
+            Outlook::Unknown {
+                reason: Unknown::Stale,
+            },
+        );
+        assert_eq!(
+            kinds(&pending(&db, &stale, DAY + 31 * MINUTE).unwrap()),
+            [Kind::RunningOut]
+        );
+        // Once escalated to UsedUp or past reset, the old RunningOut alert is skipped.
+        let escalated = status(DAY + 31 * MINUTE, 0, Outlook::UsedUp { back: None });
+        assert!(
+            pending(&db, &escalated, DAY + 31 * MINUTE)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(pending(&db, &stale, 10 * DAY + MINUTE).unwrap().is_empty());
+
+        // Account hidden after alert was raised: pending skips it.
+        let mut hidden = running;
+        hidden.accounts[0].hidden = true;
+        assert!(pending(&db, &hidden, DAY + MINUTE).unwrap().is_empty());
+    }
+
+    #[test]
+    fn save_settings_refuses_writes_once_a_newer_turnscope_has_written() {
+        let (_dir, mut db) = open();
+        db.execute("UPDATE state SET version = ?1", [i64::MAX])
+            .unwrap();
+        let mut updated = Settings::default();
+        updated.notify.reset = false;
+        let error = save_settings(&mut db, &updated).unwrap_err();
+        assert_eq!(error.to_string(), crate::db::newer().to_string());
+        assert!(settings(&db).unwrap().notify.reset);
     }
 }

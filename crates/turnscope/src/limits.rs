@@ -229,12 +229,12 @@ fn refresh_with(
             .collect()
     });
     answers.extend(gathered.unreadable);
-    let answers = answers
+    let answers: Vec<(Read, Held)> = answers
         .into_iter()
         .filter(|(read, _)| !(ask != Ask::Scheduled && read.unanswered()))
         .collect();
-    record(db, gathered.signed_in, answers, now)?;
-    Ok(true)
+    let recorded_at = crate::now();
+    record(db, gathered.signed_in, answers, recorded_at)
 }
 
 /// What decides when an account's limits are read (`Schedule::due`).
@@ -299,7 +299,8 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
              iif(a.problem = 'unavailable' AND f.reads > 0, f.reads, NULL),
              EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id AND {SIGNED_IN_NOW}),
              {},
-             EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= a.full_read_at
+             EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id
+                 AND (a.full_read_at IS NULL OR r.at >= a.full_read_at)
                  AND {LATEST_READING} AND r.resets > a.checked_at AND r.resets <= ?1)
          FROM account a LEFT JOIN failing f ON f.account = a.id",
         crate::status::Account::in_use_sql()
@@ -471,16 +472,39 @@ fn failed_reads(
     Ok(failed)
 }
 
+/// Whether any folder's sign-in in `signed_in` differs from what's stored.
+fn sign_ins_changed(db: &Connection, signed_in: &[SignedIn]) -> Result<bool> {
+    let mut latest = db.prepare_cached(
+        "SELECT account, key FROM sign_in WHERE folder = ?1 AND provider = ?2
+         ORDER BY since DESC LIMIT 1",
+    )?;
+    for signed in signed_in {
+        let held: Option<(Option<String>, Option<String>)> = latest
+            .query_row(params![signed.folder, signed.provider], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()?;
+        if held.as_ref() != Some(&(signed.account.clone(), signed.key.clone())) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Write what was read, in one write: accounts read as one plan made one,
 /// each folder's sign-ins and whose usage is whose since, then each account
 /// and its readings. A read that failed differently from the one before is
 /// added to `app.log` in the data directory, for `turnscope doctor`.
+/// Returns whether anything was written.
 fn record(
     db: &mut Connection,
     mut signed_in: Vec<SignedIn>,
     answers: Vec<(Read, Held)>,
     now: i64,
-) -> Result<()> {
+) -> Result<bool> {
+    if answers.is_empty() && !sign_ins_changed(db, &signed_in)? {
+        return Ok(false);
+    }
     let tx = crate::db::write(db)?;
     let one = same_plan(&tx, &answers)?;
     for (other, first) in &one {
@@ -529,7 +553,10 @@ fn record(
                  read_at = iif(excluded.full_read_at IS NULL,
                      coalesce(min(read_at, excluded.read_at), read_at, excluded.read_at),
                      excluded.read_at),
-                 full_read_at = coalesce(excluded.full_read_at, full_read_at),
+                 full_read_at = coalesce(
+                     excluded.full_read_at,
+                     iif(excluded.read_at IS NOT NULL AND full_read_at > excluded.read_at, NULL, full_read_at)
+                 ),
                  checked_at = excluded.checked_at, problem = excluded.problem",
         )?
         .execute(params![
@@ -553,11 +580,15 @@ fn record(
             write_readings(&tx, &id, now, &limits.readings)?;
         }
     }
+    tx.execute(
+        "UPDATE state SET limits_at = max(coalesce(limits_at, ?1), ?1)",
+        [now],
+    )?;
     tx.commit()?;
     for line in logged {
         crate::engine::log(crate::db::dir(db), &line);
     }
-    Ok(())
+    Ok(true)
 }
 
 /// The provider of `credential` among `providers`, and the account it's a
@@ -1731,7 +1762,7 @@ mod tests {
                 let asked = Instant::now();
                 assert!(!refresh(&mut open(), Ask::Scheduled));
                 assert!(asked.elapsed() < Duration::from_millis(100));
-                assert!(refresh(&mut db, ask));
+                assert_eq!(refresh(&mut db, ask), ask == Ask::Force);
             });
             // Fake by the other read; fake-too once, by this one or before.
             for (provider, key, reads) in [(fake, key, 2), (too, "key", 1)] {
@@ -2215,5 +2246,83 @@ mod tests {
         let covered = gathered(&db, home.path(), &FakeAgent::default());
         assert!(covered.accounts.contains_key("fake:api"));
         assert!(covered.unreadable.is_empty());
+    }
+
+    #[test]
+    fn partial_read_after_clock_rollback_clears_future_full_read_at_and_in_band_resets_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let minute = crate::time::MINUTE;
+        let at = 1_000 * crate::time::DAY;
+        // Full read while clock was an hour ahead.
+        read_at(&mut db, at + 60 * minute, 10.0, at + 120 * minute);
+        // Clock rolled back; partial read at `at + 10m` writes a reading with a reset at `at + 15m`.
+        let mut partial_reading = limit("five");
+        partial_reading.used = 60.0;
+        partial_reading.resets = Some(at + 15 * minute);
+        let some = Read {
+            problem: Some(Problem::unavailable("down")),
+            ..Read::of(vec![partial_reading].into())
+        };
+        let (_, held) = fake(Kind::Subscription, &[]);
+        record(&mut db, signed_in(), vec![(some, held)], at + 10 * minute).unwrap();
+        assert_eq!(
+            one::<Option<i64>>(
+                &db,
+                "SELECT full_read_at FROM account WHERE id = 'fake:account'"
+            ),
+            None
+        );
+        // Subsequent in-band reading is no longer rejected by a stale future `full_read_at`.
+        assert!(take(
+            &mut db,
+            &in_band(at + 12 * minute, 75.0),
+            at + 13 * minute
+        ));
+        // An account with `full_read_at IS NULL` still triggers `reset_passed` in `schedules`.
+        let mut reset_soon = in_band(at + 14 * minute, 80.0);
+        reset_soon.readings[0].resets = Some(at + 16 * minute);
+        assert!(take(&mut db, &reset_soon, at + 15 * minute));
+        assert!(schedules(&db, at + 17 * minute).unwrap()["fake:account"].reset_passed);
+    }
+
+    #[test]
+    fn slow_refresh_stamps_post_io_time_and_idle_record_skips_write_tx() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut db = crate::db::open(data.path()).unwrap();
+        let fake: &'static Fake = Box::leak(Box::default());
+        let folder = home.path().join(".fake");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("login"), r#"{"fake": "slow key"}"#).unwrap();
+
+        let before = now();
+        assert!(
+            refresh_with(
+                &mut db,
+                home.path(),
+                &[&FakeAgent::default()],
+                &[fake],
+                Ask::Scheduled,
+            )
+            .unwrap()
+        );
+        let checked_at: i64 = one(&db, "SELECT checked_at FROM account WHERE id = 'fake:api'");
+        let limits_at: i64 = one(&db, "SELECT limits_at FROM state");
+        // Slow provider sleeps 300 ms; timestamps must reflect completion, not start.
+        assert!(
+            checked_at >= before + 250,
+            "checked_at={checked_at}, before={before}"
+        );
+        assert!(
+            limits_at >= checked_at,
+            "limits_at={limits_at}, checked_at={checked_at}"
+        );
+
+        // Idle `record` with empty answers and unchanged sign-ins opens no write tx.
+        let other = crate::db::open(data.path()).unwrap();
+        let version_before: i64 = one(&other, "PRAGMA data_version");
+        let gathered = gather(&db, home.path(), &[&FakeAgent::default()], &[fake]).unwrap();
+        assert!(!record(&mut db, gathered.signed_in, Vec::new(), now()).unwrap());
+        assert_eq!(one::<i64>(&other, "PRAGMA data_version"), version_before);
     }
 }
