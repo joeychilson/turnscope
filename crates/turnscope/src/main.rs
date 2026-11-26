@@ -432,7 +432,7 @@ fn cmd_usage(db: &rusqlite::Connection, now: i64, json: bool, args: UsageArgs) -
         models: Vec::new(),
         key: None,
     };
-    let mut used = usage::usage(db, &query)?;
+    let (mut used, _) = usage::usage(db, &query, &[])?;
     usage::fold(&mut used, None, args.top);
     Ok(print(
         json,

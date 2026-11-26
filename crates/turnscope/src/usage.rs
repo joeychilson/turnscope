@@ -64,7 +64,6 @@ impl By {
 /// Where usage starts when neither a time nor a limit's window says.
 pub const SINCE: &str = "30d";
 
-#[derive(Clone)]
 pub struct Query {
     pub since: i64,
     pub until: i64,
@@ -144,10 +143,12 @@ impl Query {
     }
 }
 
-pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
+/// How `by` groups responses: its key, its row's name, and the tables they
+/// join, each under its own name, so one pass can group by several.
+fn grouping(by: By) -> (&'static str, &'static str, &'static str) {
     // Time is grouped by quarter hours here and into local days in Rust: every
     // time zone's offset is a whole number of them.
-    let (key, name, join) = match query.by {
+    match by {
         By::Day | By::Week | By::Month => ("r.at / 900000 * 900000", "NULL", ""),
         By::Model => ("r.model", "NULL", ""),
         By::Agent => ("r.agent", "NULL", ""),
@@ -157,9 +158,9 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
             "LEFT JOIN account a ON a.id = r.account",
         ),
         By::Project => (
-            "coalesce(s.project, '')",
+            "coalesce(p.project, '')",
             "NULL",
-            "LEFT JOIN session s ON s.id = r.session",
+            "LEFT JOIN session p ON p.id = r.session",
         ),
         // A subagent's usage counts toward the session at the top of its
         // tree. A fork's or a continuation's is its own.
@@ -168,73 +169,105 @@ pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
             "s.title",
             "LEFT JOIN tree t ON t.id = r.session LEFT JOIN session s ON s.id = coalesce(t.root, r.session)",
         ),
+    }
+}
+
+/// What `query` used by its `by`, and its rows by each of `others`, in one
+/// pass over its responses. A pass for each took three times as long: 19 s
+/// of CPU to 6 s for `explain_usage` over a made-up year of 602,000
+/// responses.
+pub fn usage(db: &Connection, query: &Query, others: &[By]) -> Result<(Usage, Vec<Vec<Row>>)> {
+    let bys: Vec<By> = std::iter::once(query.by)
+        .chain(others.iter().copied())
+        .collect();
+    let mut columns = Vec::new();
+    let mut joins = String::new();
+    for by in &bys {
+        let (key, name, join) = grouping(*by);
+        columns.push(format!("{key}, {name}"));
+        joins += &format!(" {join}");
+    }
+    let trees = match bys.contains(&By::Session) {
+        true => TREES,
+        false => "",
     };
-    let trees = match query.by {
-        By::Session => TREES,
-        _ => "",
-    };
+    let keys: Vec<String> = (0..bys.len()).map(|at| (2 * at + 1).to_string()).collect();
     let (where_sql, values) = query.where_clause();
     let sql = format!(
-        "{trees} SELECT {key}, {name}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
+        "{trees} SELECT {}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
              sum(r.cache_write_1h), sum(r.output), sum(r.reasoning), total(r.cost), count(*) - count(r.cost)
-         FROM response r {join} WHERE {where_sql} GROUP BY 1",
+         FROM response r{joins} WHERE {where_sql} GROUP BY {}",
+        columns.join(", "),
+        keys.join(", "),
     );
-    let period = query.by.period().map(|period| (period, TimeZone::system()));
-    let mut groups: BTreeMap<String, Row> = BTreeMap::new();
+    let zone = TimeZone::system();
+    let mut groups: Vec<BTreeMap<String, Row>> = bys.iter().map(|_| BTreeMap::new()).collect();
+    let counts = 2 * bys.len();
     let mut statement = db.prepare(&sql)?;
     let mut rows = statement.query(params_from_iter(values))?;
     while let Some(row) = rows.next()? {
         let found = Row {
             key: String::new(),
             name: None,
-            responses: crate::db::count(row, 2)?,
-            tokens: crate::db::tokens(row, 3)?,
-            cost_usd: row.get(9)?,
-            unpriced: crate::db::count(row, 10)?,
+            responses: crate::db::count(row, counts)?,
+            tokens: crate::db::tokens(row, counts + 1)?,
+            cost_usd: row.get(counts + 7)?,
+            unpriced: crate::db::count(row, counts + 8)?,
         };
-        let key = if let Some((period, zone)) = &period {
-            time::period_date(*period, row.get(0)?, zone).to_string()
-        } else if query.by == By::Model {
-            // One model through several providers: OpenRouter's
-            // `google/gemini-3.8-flash` is Google's `gemini-3.8-flash`.
-            let model = row.get_ref(0)?.as_str()?;
-            model.rsplit('/').next().unwrap_or(model).to_owned()
-        } else {
-            row.get(0)?
-        };
-        let group = groups.entry(key).or_insert_with_key(|key| Row {
-            key: key.clone(),
-            name: (query.by == By::Agent).then(|| agents::name(key).to_owned()),
-            ..Row::default()
-        });
-        if group.name.is_none() {
-            group.name = row.get(1)?;
+        for (at, (by, groups)) in bys.iter().zip(&mut groups).enumerate() {
+            let key = if let Some(period) = by.period() {
+                time::period_date(period, row.get(2 * at)?, &zone).to_string()
+            } else if *by == By::Model {
+                // One model through several providers: OpenRouter's
+                // `google/gemini-3.8-flash` is Google's `gemini-3.8-flash`.
+                let model = row.get_ref(2 * at)?.as_str()?;
+                model.rsplit('/').next().unwrap_or(model).to_owned()
+            } else {
+                row.get(2 * at)?
+            };
+            let group = groups.entry(key).or_insert_with_key(|key| Row {
+                key: key.clone(),
+                name: (*by == By::Agent).then(|| agents::name(key).to_owned()),
+                ..Row::default()
+            });
+            if group.name.is_none() {
+                group.name = row.get(2 * at + 1)?;
+            }
+            group.add(&found);
         }
-        group.add(&found);
     }
+    let mut grouped: Vec<Vec<Row>> = bys
+        .iter()
+        .zip(groups)
+        .map(|(by, groups)| {
+            let mut rows: Vec<Row> = groups.into_values().collect();
+            if by.period().is_none() {
+                rows.sort_by(|a, b| {
+                    b.cost_usd
+                        .total_cmp(&a.cost_usd)
+                        .then(b.responses.cmp(&a.responses))
+                });
+            }
+            rows
+        })
+        .collect();
+    let rows = grouped.remove(0);
     let mut total = Row {
         key: "total".to_owned(),
         ..Row::default()
     };
-    let mut rows: Vec<Row> = groups.into_values().collect();
     for row in &rows {
         total.add(row);
     }
-    if query.by.period().is_none() {
-        rows.sort_by(|a, b| {
-            b.cost_usd
-                .total_cmp(&a.cost_usd)
-                .then(b.responses.cmp(&a.responses))
-        });
-    }
-    Ok(Usage {
+    let used = Usage {
         since: query.since,
         until: query.until,
         by: query.by,
         total,
         rows,
         rest: None,
-    })
+    };
+    Ok((used, grouped))
 }
 
 /// Adds up the rows past the `top` in one, and gives back the rows it added
@@ -470,7 +503,7 @@ pub fn breakdown(
     by: By,
     now: i64,
 ) -> Result<(Usage, Option<Shares>, Option<String>)> {
-    let usage = usage(db, &query(account, Some(limit), between, by, now))?;
+    let (usage, _) = usage(db, &query(account, Some(limit), between, by, now), &[])?;
     let (shares, line) = shares(&usage, account, limit, between, now);
     Ok((usage, shares, line))
 }
