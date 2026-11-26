@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **A fast-mode response with a prompt over 272K tokens costs OpenAI's
+  Fast long-context price.** It was priced at the short-prompt Fast rate:
+  20K input, 280K cached and 4K output tokens of gpt-6.2-sol cost $0.22,
+  where OpenAI lists $0.39.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that
