@@ -8,7 +8,7 @@ struct GeneralTab: View {
     @Environment(Updater.self) private var updater
     @Environment(\.closePanel) private var closePanel
     @State private var copiedDiagnostics = false
-    @State private var copyTask: Task<Void, Never>?
+    @State private var copies = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -127,6 +127,7 @@ struct GeneralTab: View {
                     }
                 }
             }
+            .flashesCopied($copiedDiagnostics, copies: copies)
             if updater.available {
                 SettingRow(
                     "Check automatically",
@@ -140,15 +141,9 @@ struct GeneralTab: View {
     }
 
     private func copyDiagnostics() {
-        copyTask?.cancel()
-        copyTask = Task { @MainActor in
-            let report = await bridge.diagnostics()
-            guard !Task.isCancelled else { return }
-            copyToPasteboard(report)
-            withAnimation(.easeOut(duration: 0.12)) { copiedDiagnostics = true }
-            try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.16)) { copiedDiagnostics = false }
+        Task {
+            copyToPasteboard(await bridge.diagnostics())
+            copies += 1
         }
     }
 

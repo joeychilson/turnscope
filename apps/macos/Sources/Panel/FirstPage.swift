@@ -9,7 +9,6 @@ struct FirstPage: View {
 
     var body: some View {
         let panel = bridge.panel
-        let openAccount = ui.openAccount
         VStack(alignment: .leading, spacing: 0) {
             if let waiting = panel.waiting {
                 Waiting(model: waiting)
@@ -25,7 +24,7 @@ struct FirstPage: View {
                         if !panel.inUse.isEmpty {
                             VStack(spacing: Row.spacing) {
                                 ForEach(panel.inUse) {
-                                    AccountRow(row: $0, isOpen: openAccount == $0.id, focus: $focus)
+                                    AccountRow(row: $0, focus: $focus)
                                 }
                             }
                         }
@@ -33,7 +32,7 @@ struct FirstPage: View {
                             VStack(alignment: .leading, spacing: Row.spacing) {
                                 SectionTitle(text: "Used this week")
                                 ForEach(panel.recent) {
-                                    AccountRow(row: $0, isOpen: openAccount == $0.id, focus: $focus)
+                                    AccountRow(row: $0, focus: $focus)
                                 }
                             }
                             .padding(.top, panel.inUse.isEmpty ? 0 : Row.groups)
