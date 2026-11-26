@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use turnscope::engine::{Engine, Shown};
 
-use crate::state::{Action, Call, Core, MenuShows, Preferences, State};
+use crate::state::{Action, Call, MenuShows, Preferences, State};
 use crate::view::PanelModel;
 
 /// Resolves the bundled `Helpers/turnscope` (or sibling binary under `target/`)
@@ -70,7 +70,7 @@ unsafe impl Sync for Wake {}
 /// Never freed: the app quits by exiting, which SQLite's transactions are safe for, and which
 /// lets `app.lock` go.
 pub struct TurnscopeApp {
-    core: Arc<Mutex<Core>>,
+    core: Arc<Mutex<State>>,
     engine: Arc<OnceLock<Engine>>,
     data: Option<PathBuf>,
 }
@@ -111,7 +111,7 @@ fn send(engine: Option<&Engine>, calls: Vec<Call>) {
     }
 }
 
-fn lock_core(core: &Mutex<Core>) -> std::sync::MutexGuard<'_, Core> {
+fn lock_core(core: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
     core.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -161,7 +161,7 @@ pub fn start(
     };
     state.from_disk_image = config.from_disk_image;
 
-    let core = Arc::new(Mutex::new(Core::new(state)));
+    let core = Arc::new(Mutex::new(state));
     let wake = wake.map(|cb| Wake { ctx, cb });
 
     let engine: Arc<OnceLock<Engine>> = Arc::new(OnceLock::new());
