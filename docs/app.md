@@ -125,8 +125,9 @@ The panel is 340 points wide. From the top:
 6. **The footer**: "Not up to date" and why while the data can't be kept
    current, "Reading your agents' history…" during the first read, or
    "Refreshing limits…" until a refresh ⌘R forced has read the limits.
-   Then "Update available" when a scheduled check found one
-   ([Updates](#updates)), Settings (⌘,) and Quit (⌘Q).
+   Then "Update available" (shortened to "Update" beside a footer note)
+   when a scheduled check found one ([Updates](#updates)), Settings (⌘,)
+   and Quit (⌘Q).
 
 On a first launch, the headline says "Getting your limits" until the
 engine has read them. The accounts show then, while the footer says the

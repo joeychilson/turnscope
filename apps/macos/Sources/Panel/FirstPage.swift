@@ -151,7 +151,7 @@ private struct ConnectNudge: View {
                     .accessibilityLabel("Connecting \(offer.name)")
             } else {
                 Button(offer.verb) {
-                    withAnimation(spring) {
+                    withMotion {
                         bridge.send(.setConnected(id: offer.id, connecting: true))
                     }
                 }
@@ -161,7 +161,7 @@ private struct ConnectNudge: View {
                 .help(offer.help)
             }
             Button {
-                withAnimation(spring) {
+                withMotion {
                     bridge.send(.dismissConnect(id: offer.id))
                 }
             } label: {
@@ -194,20 +194,20 @@ private struct Footer: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                .help(note.help ?? "")
+                .optionalHelp(note.help)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(note.spoken)
                 .padding(.leading, 12)
                 .id(note.text)
                 .transition(appears)
             }
-            Spacer()
+            Spacer(minLength: 4)
             Button("Close", action: closePanel)
                 .keyboardShortcut(.cancelAction)
                 .hiddenShortcut()
             if bridge.panel.canRefresh {
                 Button("Refresh Limits") {
-                    withAnimation(spring) {
+                    withMotion {
                         bridge.send(.refreshNow)
                     }
                 }
@@ -215,12 +215,13 @@ private struct Footer: View {
                 .hiddenShortcut()
             }
             if updater.waiting {
-                Button("Update available") {
+                Button(bridge.panel.footerNote != nil ? "Update" : "Update available") {
                     closePanel()
                     updater.check()
                 }
                 .buttonStyle(PillButton())
                 .help("Shows what's new, and asks before installing it")
+                .accessibilityLabel("Update available")
                 .padding(.trailing, 4)
                 .transition(appears)
             }

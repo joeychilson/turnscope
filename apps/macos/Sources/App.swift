@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         startedAt = .now
+        installMainMenu()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked)
@@ -78,6 +79,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             observeWake()
         }
         bridge.sync()
+    }
+
+    /// Minimal Edit menu so ⌘C and ⌘A work on selectable text in an `.accessory` app.
+    private func installMainMenu() {
+        let main = NSMenu()
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+        NSApp.mainMenu = main
     }
 
     // MARK: - Sync & Effects

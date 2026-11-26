@@ -35,7 +35,7 @@ struct GeneralTab: View {
                 isOn: Binding(
                     get: { login.status.isOn },
                     set: { on in
-                        withAnimation(spring) {
+                        withMotion {
                             login.set(on, isLive: bridge.isLive) { bridge.log($0) }
                         }
                     }
@@ -95,7 +95,10 @@ struct GeneralTab: View {
 
     private var updates: some View {
         SettingGroup(title: "Updates") {
-            SettingRow(title: "Turnscope \(bridge.panel.version)") {
+            SettingRow(
+                title: "Turnscope \(bridge.panel.version)",
+                help: "Right-click to copy diagnostics or reveal the log"
+            ) {
                 HStack(spacing: 8) {
                     if copiedDiagnostics {
                         Text("Copied")
@@ -114,7 +117,6 @@ struct GeneralTab: View {
                 }
             }
             .contentShape(Rectangle())
-            .help("Right-click to copy diagnostics or reveal the log")
             .onTapGesture {
                 if NSEvent.modifierFlags.contains(.option) {
                     copyDiagnostics()

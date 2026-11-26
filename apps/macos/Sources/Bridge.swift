@@ -87,13 +87,13 @@ final class UIState {
     }
 
     func toggleAccount(_ id: String) {
-        withAnimation(spring) {
+        withMotion {
             openAccount = (openAccount == id) ? nil : id
         }
     }
 
     func toggleUnused(panel: PanelModel) {
-        withAnimation(spring) {
+        withMotion {
             unusedOpen.toggle()
             if !unusedOpen {
                 if let open = openAccount, panel.unused.contains(where: { $0.id == open }) {
@@ -105,19 +105,19 @@ final class UIState {
     }
 
     func toggleHidden() {
-        withAnimation(spring) {
+        withMotion {
             hiddenShown.toggle()
         }
     }
 
     func go(_ page: Page) {
-        withAnimation(spring) {
+        withMotion(fade: true) {
             self.page = page
         }
     }
 
     func setTab(_ tab: SettingsTab) {
-        withAnimation(spring) {
+        withMotion(fade: true) {
             self.tab = tab
         }
     }
@@ -249,7 +249,7 @@ final class Bridge {
             if self.panel != sync.panel { self.panel = sync.panel }
         }
         if sync.animated {
-            withAnimation(spring, update)
+            withMotion(update)
         } else {
             update()
         }
