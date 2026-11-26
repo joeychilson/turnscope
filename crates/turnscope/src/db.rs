@@ -202,6 +202,10 @@ pub fn open(dir: &Path) -> Result<Connection> {
     // one large write left a 359 MB log for as long as a connection stayed
     // open, as the app's does. Above the 4 MB SQLite checkpoints at.
     db.pragma_update(None, "journal_size_limit", 16 << 20)?;
+    // Read through a map of the file, as much as SQLite maps, over a call to
+    // the kernel a page: a year by month of a made-up 683 MB took 6.6 s of CPU,
+    // 3.1 s mapped, and Activity Monitor's 16 MB, 14 MB mapped (November 2026).
+    db.pragma_update(None, "mmap_size", 0x7fff_0000)?;
     let latest = REVISIONS.len() as i64;
     // Read `user_version` before `application_id`: a concurrent creator commits
     // both together, so reading `application_id` first could observe 0 followed
