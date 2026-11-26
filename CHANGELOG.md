@@ -5,9 +5,6 @@
 - **An agent in a new or switched account folder resolves to its signed-in
   account** before its first response there, in `statusline`, `guard`,
   `usage --limit` and the MCP tools.
-- **`turnscope guard` and `statusline` read a cleanly closed database in a
-  read-only data directory**, as inside an agent sandbox while the app isn't
-  running, instead of exiting without guarding or printing nothing.
 - **`--since` / `since` help no longer lists `now`**, which is refused as a
   start time; `now` is listed under `--until` / `until`.
 - **Codex's responses after fast mode is turned off cost the standard

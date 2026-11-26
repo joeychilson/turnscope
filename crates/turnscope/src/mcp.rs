@@ -198,7 +198,7 @@ impl Caller {
             id = match (latest, current) {
                 (_, Some(Some(signed_in))) => Some(signed_in),
                 (Some((account, _)), None) => Some(account),
-                _ => db
+                (latest, _) => db
                     .prepare_cached(&format!(
                         "SELECT s.account FROM sign_in s
                          WHERE s.agent = ?1 AND s.folder = ?2 AND s.account IS NOT NULL
@@ -207,7 +207,8 @@ impl Caller {
                         turnscope::limits::SIGNED_IN_NOW
                     ))?
                     .query_row(rusqlite::params![agent, folder.as_ref()], |row| row.get(0))
-                    .optional()?,
+                    .optional()?
+                    .or_else(|| latest.map(|(account, _)| account)),
             };
         }
         Ok(id.and_then(|id| status.accounts.iter().find(|account| account.id == id)))

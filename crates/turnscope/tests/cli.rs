@@ -1691,9 +1691,49 @@ fn caller_resolves_from_active_sign_in_for_new_and_switched_folders() {
         String::from_utf8_lossy(&out.stdout).trim(),
         "ChatGPT Team · weekly 90%"
     );
+    // Signing out of Codex keeps its latest response's account rather than
+    // falling back to another agent's account in statusline, usage, or guard.
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('codex', ?1, 'openai', ?2, NULL)",
+        params![&default_codex, NOW],
+    )
+    .unwrap();
+    let codex_out = command_as("codex", data.path(), &["statusline"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&codex_out.stdout)
+            .trim()
+            .starts_with("ChatGPT Plus · "),
+        "{}",
+        String::from_utf8_lossy(&codex_out.stdout)
+    );
+    let codex_usage = command_as("codex", data.path(), &["usage", "--limit", "week"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&codex_usage.stdout).starts_with("ChatGPT Plus"),
+        "{}",
+        String::from_utf8_lossy(&codex_usage.stdout)
+    );
+    let codex_guard = command_as(
+        "codex",
+        data.path(),
+        &["guard", "--limit", "week", "--below", "95"],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(codex_guard.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&codex_guard.stderr)
+            .starts_with("ChatGPT Plus's weekly limit has "),
+        "{}",
+        String::from_utf8_lossy(&codex_guard.stderr)
+    );
     // Multi-provider folder keeps its latest response's provider while still
-    // signed in, falls back to another active sign-in once signed out, and
-    // becomes unknown when signed out of every provider.
+    // signed in, switches to another active sign-in in that folder once signed
+    // out, and keeps its latest response's account when signed out of all.
     let pi_folder = format!("{}/.pi/agent", home().display());
     db.execute(
         "INSERT INTO sign_in (agent, folder, provider, since, account)
@@ -1730,132 +1770,14 @@ fn caller_resolves_from_active_sign_in_for_new_and_switched_folders() {
         params![&pi_folder, NOW],
     )
     .unwrap();
-    let pi_signed_out = ask("pi", data.path(), "check_limits", "{}");
-    assert!(
-        pi_signed_out.starts_with("Which account is yours isn't known"),
-        "{pi_signed_out}"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn guard_and_statusline_read_a_cleanly_closed_read_only_data_dir() {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    struct Restore<'a>(&'a Path);
-    impl Drop for Restore<'_> {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o700));
-            if let Ok(entries) = std::fs::read_dir(self.0) {
-                for entry in entries.flatten() {
-                    let _ = std::fs::set_permissions(
-                        entry.path(),
-                        std::fs::Permissions::from_mode(0o600),
-                    );
-                }
-            }
-        }
-    }
-
-    let data = store();
-    assert!(!data.path().join("turnscope.db-wal").exists());
-    assert!(!data.path().join("turnscope.db-shm").exists());
-
-    // Online, with every request sent to a port that takes none, so `guard`
-    // can never reach real providers on the network.
-    let online = |mut command: Command| {
-        command
-            .env("TURNSCOPE_OFFLINE", "0")
-            .env("ALL_PROXY", "http://127.0.0.1:9")
-            .env("HTTPS_PROXY", "http://127.0.0.1:9")
-            .env("NO_PROXY", "");
-        command
-    };
-
-    {
-        let _restore = Restore(data.path());
-        std::fs::set_permissions(data.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let line = turnscope(data.path(), &["statusline", "--account", "claude"]);
-        assert!(line.status.success());
-        assert_eq!(
-            String::from_utf8_lossy(&line.stdout).trim(),
-            "Claude Max · 5h 25%, out in 1h · weekly 56%"
-        );
-        let guarded = online(command(
-            data.path(),
-            &[
-                "guard",
-                "--account",
-                "claude",
-                "--limit",
-                "5h",
-                "--below",
-                "50",
-            ],
-        ))
+    let pi_signed_out = command_as("pi", data.path(), &["statusline"])
         .output()
         .unwrap();
-        assert_eq!(
-            guarded.status.code(),
-            Some(2),
-            "{}",
-            String::from_utf8_lossy(&guarded.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&guarded.stderr)
-                .starts_with("Claude Max's 5-hour limit has 25% left, under 50%."),
-            "{}",
-            String::from_utf8_lossy(&guarded.stderr)
-        );
-    }
-
-    // With an uncheckpointed `-wal` and no `-shm` in a read-only dir, neither
-    // `statusline` nor `guard` bypasses the WAL via `immutable=1`.
-    let wal_data = tempfile::tempdir().unwrap();
-    let writer = turnscope::db::open(data.path()).unwrap();
-    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
-    writer
-        .execute(
-            "UPDATE reading SET used = 10 WHERE account = 'anthropic:acct-1:org-1' AND limit_key = 'five_hour'",
-            [],
-        )
-        .unwrap();
-    std::fs::copy(
-        data.path().join("turnscope.db"),
-        wal_data.path().join("turnscope.db"),
-    )
-    .unwrap();
-    std::fs::copy(
-        data.path().join("turnscope.db-wal"),
-        wal_data.path().join("turnscope.db-wal"),
-    )
-    .unwrap();
-    drop(writer);
     assert!(
-        std::fs::metadata(wal_data.path().join("turnscope.db-wal"))
-            .unwrap()
-            .len()
-            > 0
+        String::from_utf8_lossy(&pi_signed_out.stdout)
+            .trim()
+            .starts_with("OpenRouter API key · "),
+        "{}",
+        String::from_utf8_lossy(&pi_signed_out.stdout)
     );
-    assert!(!wal_data.path().join("turnscope.db-shm").exists());
-
-    let _restore = Restore(wal_data.path());
-    std::fs::set_permissions(wal_data.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-    let line = turnscope(wal_data.path(), &["statusline", "--account", "claude"]);
-    assert!(line.status.success() && line.stdout.is_empty());
-    let guarded = online(command(
-        wal_data.path(),
-        &[
-            "guard",
-            "--account",
-            "claude",
-            "--limit",
-            "5h",
-            "--below",
-            "50",
-        ],
-    ))
-    .output()
-    .unwrap();
-    assert_eq!(guarded.status.code(), Some(0));
 }

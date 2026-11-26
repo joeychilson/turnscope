@@ -58,7 +58,7 @@ Claude Code calls from.
 |---|---|
 | Agent | The nearest agent's command (`claude`, `codex`, `opencode`, `pi`, `grok` or `agy`) among the server's parent processes, up to eight levels up, found with `/bin/ps`. A script run by `node`, `bun`, `deno`, `python` or `python3` counts by the script's name. A versioned build such as `grok-1.0.41-macos-aarch64` counts as `grok`. Antigravity's app starts the server from its own language server, without `agy`, so that program counts as well. With none found, `CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a server it starts, says Claude Code. So Codex run from Claude Code's shell, where the variable is set too, is Codex. |
 | Session | `CLAUDE_CODE_SESSION_ID` for Claude Code. The other agents don't say, so their session isn't known. |
-| Account | The account of the session's latest response. Otherwise the account of the agent's latest response from its agent folder (the one `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` points to, or else its default folder) while still signed in to it, or else the folder's current sign-in. |
+| Account | The account of the session's latest response. Otherwise the current sign-in for the latest response's provider in the agent's folder (the one `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` points to, or else its default folder), another active sign-in in that folder, or else the latest response's account. |
 
 When the account isn't known, `check_limits` lists every account, and
 `explain_usage` answers with every account's usage; given `limit`, it asks
