@@ -78,6 +78,15 @@ impl Read {
                 })
             )
     }
+
+    /// Whether it holds limits: all it asked for, or some, as an API key's
+    /// keys without its credits. A key with no limit of its own whose
+    /// credits weren't read holds none.
+    fn any_limits(&self) -> bool {
+        self.limits
+            .as_ref()
+            .is_some_and(|limits| self.problem.is_none() || !limits.readings.is_empty())
+    }
 }
 
 /// An account, and the logins it's read with.
@@ -252,9 +261,13 @@ struct Schedule {
 
 impl Schedule {
     fn due(&self, now: i64, ask: Ask) -> bool {
-        // A wait longer than any is a clock set back since. Refresh Limits
-        // waits only for the provider.
-        let waits = |until: Option<i64>| until.is_some_and(|at| now < at && at <= now + BACKED_OFF);
+        // A wait longer than any, or counted from a check ahead of now by
+        // more than `DUE`, is of a clock set back since. Refresh Limits waits
+        // only for the provider.
+        let set_back = self.checked_at.is_some_and(|at| at > now + DUE);
+        let waits = |until: Option<i64>| {
+            !set_back && until.is_some_and(|at| now < at && at <= now + BACKED_OFF)
+        };
         if waits(self.retry_at) || (ask != Ask::Force && waits(self.backed_off)) {
             return false;
         }
@@ -506,10 +519,7 @@ fn record(
         // that's ahead of now (the clock set back since); one of none isn't
         // a read.
         let full = read.limits.is_some() && read.problem.is_none();
-        let some = read
-            .limits
-            .as_ref()
-            .is_some_and(|limits| full || !limits.readings.is_empty());
+        let some = read.any_limits();
         tx.prepare_cached(
             "INSERT INTO account (id, provider, kind, title, label, read_at, full_read_at, checked_at, problem)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?9, ?7, ?8)
@@ -697,7 +707,7 @@ fn failing(
             answered: false,
             ..
         } => (Some(why.as_str()), None, 0),
-        Problem::Unavailable { why, .. } if read.limits.is_some() => (Some(why.as_str()), None, 0),
+        Problem::Unavailable { why, .. } if read.any_limits() => (Some(why.as_str()), None, 0),
         Problem::Unavailable {
             why, retry_after, ..
         } => (
@@ -1371,7 +1381,17 @@ mod tests {
         failed(&mut db, asks(3600), at);
         assert!(!due(&db, at + 5 * minute, Ask::Force));
         assert!(due(&db, at + 30 * minute, Ask::Scheduled));
-        assert!(due(&db, at - 40 * minute, Ask::Scheduled));
+        assert!(due(&db, at - 10 * minute, Ask::Scheduled));
+        // A key with no limit of its own whose credits asked to wait read
+        // none, so it waits as well.
+        let none = Read {
+            limits: Some(Limits::default()),
+            problem: Some(asks(600)),
+        };
+        let (_, held) = fake(Kind::ApiKey, &[]);
+        record(&mut db, signed_in(), vec![(none, held)], at).unwrap();
+        assert!(!due(&db, at + 5 * minute, Ask::Force));
+        assert!(due(&db, at - 10 * minute, Ask::Scheduled));
     }
 
     /// Whether the fake provider's account is read at `now`.
