@@ -903,8 +903,8 @@ fn latest(db: &rusqlite::Connection, account: &str, since: i64, now: i64) -> Res
 }
 
 /// An account's limits, each as last read since its last read in full,
-/// `full_read_at`, or ever with none: an agent writes only the limits that
-/// moved (`limits::record_in_band`).
+/// `full_read_at`, or ever with none: an agent writes only some at a time
+/// (`limits::record_in_band`).
 fn limits(
     db: &rusqlite::Connection,
     account: &str,
