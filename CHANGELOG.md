@@ -7,8 +7,9 @@
   00:00". A guardrail on one key is the key's, as its own limit is: "Pi's
   key guardrail" stops only that key.
 - **OpenRouter shows free models' requests today**: "Daily (Free models):
-  98% left, resets Fri 00:00", by the UTC day. `usage --limit free` lists
-  the responses of `:free` models.
+  98% left, resets Fri 00:00", by the UTC day. The panel lists them once
+  some are used, and for a day after they're back. `usage --limit free`
+  lists the responses of `:free` models.
 
 ## 0.4.2
 

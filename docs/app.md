@@ -143,8 +143,8 @@ bar (a vertical tick marks how much of a fixed window's time is left, so
 a bar behind the tick is burning faster than steady pace), a note on what
 the limits can't say, and the sessions that used the deciding limit most.
 An API key's limit on some models, as OpenRouter's free models, is left
-out while none of it is used, unless it's back since it was read or
-decides how the account stands.
+out while none of it is used, unless it decides how the account stands or
+was told back in the last day.
 Clicking a session copies its project path (or title); right-clicking
 offers Open Project in Finder, Copy Project Path and Copy Session ID. The
 app asks for those sessions as the panel opens, so a row opens with them
