@@ -144,6 +144,9 @@ A failure is a `Problem`:
   whether it answered at all. `ask` and `asked` fill these in. For an
   answer `parse` doesn't understand, use `Problem::not_understood(url)`;
   for anything else, `Problem::unavailable(why)`.
+- `Problem::NoPlan`: the provider says the key has no subscription, as
+  OpenCode answers a key without Go. The account shows no limits, and the
+  user is told the key has no subscription; it's asked again every hour.
 
 The helpers in `src/providers/mod.rs` make requests (`ask`, `asked`,
 `requested`, `post_form`) and read answers (`answer`, `absent`, `reset`,

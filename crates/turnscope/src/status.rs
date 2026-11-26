@@ -265,6 +265,9 @@ pub enum Stale {
     /// refusal isn't `SignIn`: an agent replacing its token while it was
     /// sent is refused once, and read at the next try.
     ReadFailed,
+    /// Its key has no subscription, as an OpenCode key to a workspace
+    /// without Go: it has no limits, whatever it read before.
+    NoPlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -635,9 +638,11 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             _ if agents.is_empty() => Some(Stale::SignedOut),
             Some("signIn") if failed.unwrap_or(0) >= 2 => Some(Stale::SignIn),
             Some("expired") => Some(Stale::Expired),
+            Some("noPlan") => Some(Stale::NoPlan),
             Some(_) => Some(Stale::ReadFailed),
             None => None,
         };
+        let read_at = read_at.filter(|_| why != Some(Stale::NoPlan));
         let state = match (read_at, why) {
             (Some(read_at), None) if now - read_at <= STALE => State::Live { read_at },
             (Some(read_at), why) => State::AsOf {

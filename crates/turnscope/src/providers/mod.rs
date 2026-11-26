@@ -192,6 +192,9 @@ pub enum Problem {
     /// Every login to it has expired, so none was sent: its agent renews one
     /// when next used. Set by `limits`, never by a provider.
     Expired,
+    /// The key has no subscription with limits, which signing in again
+    /// wouldn't fix: asked again every `limits::NO_PLAN`.
+    NoPlan,
 }
 
 impl Problem {

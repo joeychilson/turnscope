@@ -4,9 +4,8 @@
 //! The 5-hour window starts at the first use and lasts five hours, so it
 //! starts five hours before it resets. Before that first use, its
 //! `resetsAt` is five hours from now: it reads as a window beginning now.
-//! Only a key that isn't valid is answered 401. One Go doesn't cover, as
-//! one to a workspace with no Go plan, is answered 403, which signing in
-//! again wouldn't fix.
+//! Only a key that isn't valid is answered 401. One to a workspace with no
+//! Go subscription is answered 403.
 //!
 //! A plan can have several keys, and nothing in an answer names the plan
 //! (measured 2026-10-05). But two keys to one plan answer alike, the monthly
@@ -72,7 +71,7 @@ impl Provider for OpenCodeGo {
 /// The limits in OpenCode's answer, or why there are none.
 fn read(answered: &Answered) -> Result<Limits, Problem> {
     if answered.status == 403 && !answered.page() {
-        return Err(Problem::unavailable("this key has no Go plan"));
+        return Err(Problem::NoPlan);
     }
     let answer = super::answer(USAGE, answered, &[401])?;
     Ok(parse(&answer)
@@ -164,10 +163,7 @@ mod tests {
         };
         // OpenCode's docs' example.
         let no_plan = br#"{"type":"error","error":{"type":"EntitlementError","message":"OpenCode Go subscription required."}}"#;
-        assert_eq!(
-            answered(403, no_plan),
-            Some(Problem::unavailable("this key has no Go plan"))
-        );
+        assert_eq!(answered(403, no_plan), Some(Problem::NoPlan));
         assert_eq!(answered(401, b""), Some(Problem::SignIn));
         assert_eq!(
             answered(403, b"<!DOCTYPE html><title>Just a moment...</title>"),

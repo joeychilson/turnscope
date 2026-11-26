@@ -70,11 +70,11 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
     // an account not `SignedOut`.
     let agents = agent_names(&account.agents, "or");
     Some(match why {
-        Stale::SignedOut => unread(why).to_owned(),
-        Stale::SignIn => format!("{}; open {agents} to sign in again", unread(why)),
+        Stale::SignedOut | Stale::NoPlan => unread(account, why),
+        Stale::SignIn => format!("{}; open {agents} to sign in again", unread(account, why)),
         Stale::Expired => format!(
             "{}; it's read {}when {agents} runs",
-            unread(why),
+            unread(account, why),
             if read_at.is_some() { "again " } else { "" }
         ),
         Stale::ReadFailed => format!(
@@ -90,13 +90,14 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
     })
 }
 
-/// Why an account isn't read now, without what to do about it.
-fn unread(why: Stale) -> &'static str {
+/// Why `account` isn't read now, without what to do about it.
+fn unread(account: &Account, why: Stale) -> String {
     match why {
-        Stale::SignedOut => "no agent here is signed in to it now",
-        Stale::SignIn => "its login was refused",
-        Stale::Expired => "its login expired",
-        Stale::ReadFailed => "it couldn't be read",
+        Stale::SignedOut => "no agent here is signed in to it now".into(),
+        Stale::SignIn => "its login was refused".into(),
+        Stale::Expired => "its login expired".into(),
+        Stale::ReadFailed => "it couldn't be read".into(),
+        Stale::NoPlan => format!("this key has no {} subscription", account.title),
     }
 }
 
@@ -349,7 +350,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
     };
     let untold = |why: &str| format!("whether {more} of work {fit} can't be told: {why}.");
     if let Some(why) = account.unread() {
-        return (Fits::Untold, untold(unread(why)), true);
+        return (Fits::Untold, untold(&unread(account, why)), true);
     }
     if let Some(said) = used_up(account, now) {
         return (
@@ -625,6 +626,7 @@ pub fn line(account: &Account, now: i64) -> String {
             match why {
                 Stale::Expired => "login expired",
                 Stale::SignedOut => "signed out",
+                Stale::NoPlan => "no subscription",
                 Stale::SignIn | Stale::ReadFailed => "not read yet",
             }
             .to_owned(),

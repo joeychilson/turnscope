@@ -29,6 +29,11 @@ const CLAIM: i64 = 30 * 1000;
 /// failing (`backoff`).
 pub const BACKED_OFF: i64 = 30 * crate::time::MINUTE;
 
+/// How long a key with no subscription waits between reads, unless Refresh
+/// Limits asks: one can be bought later, and the command line has no Refresh
+/// Limits.
+pub const NO_PLAN: i64 = 60 * crate::time::MINUTE;
+
 /// How long an account waits after `reads` reads in a row its provider
 /// answered busy or not understood: [`DUE`], doubled with each, up to
 /// [`BACKED_OFF`]. Only an answer is backed off: backed off too, a provider
@@ -251,7 +256,7 @@ struct Schedule {
     failing: bool,
     /// When its provider asked to be asked again.
     retry_at: Option<i64>,
-    /// Until when it's backed off (`backoff`).
+    /// Until when it's backed off (`backoff`, [`NO_PLAN`]).
     backed_off: Option<i64>,
     /// In use, as `status::Account::in_use` has it.
     in_use: bool,
@@ -265,10 +270,12 @@ impl Schedule {
         // more than `DUE`, is of a clock set back since. Refresh Limits waits
         // only for the provider.
         let set_back = self.checked_at.is_some_and(|at| at > now + DUE);
-        let waits = |until: Option<i64>| {
-            !set_back && until.is_some_and(|at| now < at && at <= now + BACKED_OFF)
+        let waits = |until: Option<i64>, longest: i64| {
+            !set_back && until.is_some_and(|at| now < at && at <= now + longest)
         };
-        if waits(self.retry_at) || (ask != Ask::Force && waits(self.backed_off)) {
+        if waits(self.retry_at, BACKED_OFF)
+            || (ask != Ask::Force && waits(self.backed_off, NO_PLAN))
+        {
             return false;
         }
         // Long ago for a time ahead of now by more than `DUE`: the clock was
@@ -296,7 +303,7 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
     // In SQL, over working out the status: this is asked at every catch-up.
     let mut rows = db.prepare_cached(&format!(
         "SELECT a.id, a.read_at, a.full_read_at, a.checked_at, f.account IS NOT NULL, f.retry_at,
-             iif(a.problem = 'unavailable' AND f.reads > 0, f.reads, NULL),
+             a.problem, f.reads,
              EXISTS (SELECT 1 FROM sign_in s WHERE s.account = a.id AND {SIGNED_IN_NOW}),
              {},
              EXISTS (SELECT 1 FROM reading r WHERE r.account = a.id AND r.at >= a.full_read_at
@@ -307,8 +314,14 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
     let schedules = rows
         .query_map([now], |row| {
             let checked_at: Option<i64> = row.get(3)?;
-            let reads: Option<i64> = row.get(6)?;
-            let backed_off = checked_at.zip(reads).map(|(at, reads)| at + backoff(reads));
+            let problem: Option<String> = row.get(6)?;
+            let reads: Option<i64> = row.get(7)?;
+            let wait = match (problem.as_deref(), reads) {
+                (Some("noPlan"), _) => Some(NO_PLAN),
+                (Some("unavailable"), Some(reads)) if reads > 0 => Some(backoff(reads)),
+                _ => None,
+            };
+            let backed_off = checked_at.zip(wait).map(|(at, wait)| at + wait);
             Ok((
                 row.get(0)?,
                 Schedule {
@@ -318,9 +331,9 @@ fn schedules(db: &Connection, now: i64) -> Result<BTreeMap<String, Schedule>> {
                     failing: row.get(4)?,
                     retry_at: row.get(5)?,
                     backed_off,
-                    signed_in: row.get(7)?,
-                    in_use: row.get(8)?,
-                    reset_passed: row.get(9)?,
+                    signed_in: row.get(8)?,
+                    in_use: row.get(9)?,
+                    reset_passed: row.get(10)?,
                 },
             ))
         })?
@@ -668,6 +681,7 @@ fn problem_name(problem: &Problem) -> &'static str {
         Problem::SignIn => "signIn",
         Problem::Expired => "expired",
         Problem::Unavailable { .. } => "unavailable",
+        Problem::NoPlan => "noPlan",
     }
 }
 
@@ -725,6 +739,7 @@ fn failing(
         _ if again && said.as_deref() == why => None,
         Problem::Unavailable { why, .. } => Some(format!("{named}: limits not read: {why}")),
         Problem::SignIn => Some(format!("{named}: its login was refused")),
+        Problem::NoPlan => Some(format!("{named}: its key has no subscription")),
         // The status says so, and what to do.
         Problem::Expired => None,
     })
@@ -1011,7 +1026,7 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
                     retry_after,
                     ..
                 } => (*answered, *retry_after),
-                Problem::SignIn | Problem::Expired => (false, None),
+                Problem::SignIn | Problem::Expired | Problem::NoPlan => (false, None),
             };
             problem = Some(match (problem.take(), error) {
                 (Some(Problem::SignIn), _) | (_, Problem::SignIn) => Problem::SignIn,
@@ -1392,6 +1407,27 @@ mod tests {
         record(&mut db, signed_in(), vec![(none, held)], at).unwrap();
         assert!(!due(&db, at + 5 * minute, Ask::Force));
         assert!(due(&db, at - 10 * minute, Ask::Scheduled));
+    }
+
+    #[test]
+    fn a_key_with_no_subscription_says_so_with_no_limits_and_is_asked_hourly() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        let minute = crate::time::MINUTE;
+        let at = 1_000 * crate::time::DAY;
+        // Its subscription ended since this read.
+        read_at(&mut db, at, 10.0, at + 300 * minute);
+        failed(&mut db, Problem::NoPlan, at + 20 * minute);
+        let status = crate::status::status(&db, at + 20 * minute).unwrap();
+        assert_eq!(
+            crate::status::text(&status, &[&status.accounts[0]], None),
+            "Fake · via fake\n  This key has no Fake subscription."
+        );
+        for ask in [Ask::Scheduled, Ask::Opened] {
+            assert!(!due(&db, at + 79 * minute, ask));
+            assert!(due(&db, at + 80 * minute, ask));
+        }
+        assert!(due(&db, at + 21 * minute, Ask::Force));
     }
 
     /// Whether the fake provider's account is read at `now`.

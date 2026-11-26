@@ -185,8 +185,9 @@ Each trait's methods, `Agent` in `agents/mod.rs` and `Provider` in
    provider answered but was busy or not understood waits longer: 5
    minutes, then 10, 20 and 30 at most, or as long as the provider asks,
    up to 30 (`limits::backoff`). One that didn't answer, as while the Mac
-   is offline, doesn't. A read that fails differently from the one before
-   is added to `app.log`.
+   is offline, doesn't. A key with no subscription is asked again every
+   hour, and at Refresh Limits (`limits::NO_PLAN`): it shows no limits. A
+   read that fails differently from the one before is added to `app.log`.
 3. The agents' history, every time, with the limits Codex writes as it
    works (`limits::record_in_band`).
 
