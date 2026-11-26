@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **The spinner no longer uses CPU while the panel is closed**, and next
+  to none while it's open. It looks and turns as before. Turning in the
+  app, it used 4–5% of a core the whole time Turnscope read your agents'
+  history, refreshed limits or connected an agent, panel open or not.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that
