@@ -29,7 +29,7 @@ pub fn local(at: i64) -> ZonedDateTime {
     zoned(at, &TimeZone::system())
 }
 
-fn zoned(at: i64, zone: &TimeZone) -> ZonedDateTime {
+pub fn zoned(at: i64, zone: &TimeZone) -> ZonedDateTime {
     Timestamp::from_millisecond(at)
         .unwrap_or_default()
         .to_zoned_datetime(zone.clone())

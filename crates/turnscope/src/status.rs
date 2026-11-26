@@ -18,8 +18,8 @@ use crate::{Result, agents};
 
 mod text;
 pub use text::{
-    NONE_READ, alternate_note, fit, fits, limit_text, line, list, most_room, none, stale, text,
-    verdict, via,
+    NONE_READ, agent_names, alternate_note, fit, fits, limit_text, line, list, most_room, none,
+    stale, text, verdict, via,
 };
 
 /// How recently a response must have drawn on an account for it to be in use.
