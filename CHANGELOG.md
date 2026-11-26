@@ -2,9 +2,6 @@
 
 ## Unreleased
 
-- **Hours of work left are told once an hour of work is measured.** Work
-  in several stretches could add up to just under an hour, and say there
-  was too little to tell.
 - **`turnscope guard` passes while the standing isn't known**: before any
   account is read, or while none of its limits are. It exited 1 with an
   error, which a hook shows at every tool call.
@@ -13,6 +10,9 @@
   "No limit" and "You can keep going".
 - **A key's pace isn't said once it rounds below what's spent**, late in a
   month: "$155 this month" no longer comes with "On pace for about $150".
+- **Hours of work left are told once an hour of work is measured.** Work
+  in several stretches could add up to just under an hour, and say there
+  was too little to tell.
 - **Credits used up say so** in their row, not "Credits back later": they
   come back only when bought.
 - **"Refreshing limits…" shows until the limits are read.** Hiding an
