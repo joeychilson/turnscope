@@ -183,6 +183,13 @@ UPDATE session SET project = NULL WHERE project = '';
 -- table, 0.5 s among 876,086 made-up responses (November 2026).
 CREATE INDEX response_file ON response (file);
 "#,
+    r#"
+-- The caller's account, when it names no session, is its agent folder's
+-- latest response's (`mcp::Caller::account`): without it, finding that
+-- response read and sorted all of the agent's, 201 ms for 709,071 made-up
+-- ones; with it, 0.01 ms (November 2026).
+CREATE INDEX response_folder ON response (agent, folder, at) WHERE account IS NOT NULL;
+"#,
 ];
 
 /// "TRNS", in the header, so a file with another program's is never written.
