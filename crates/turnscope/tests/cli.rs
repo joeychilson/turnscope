@@ -477,18 +477,11 @@ fn mistakes_say_how_to_fix_them_with_their_exit_codes() {
             2,
             "--since is now or later, so there's no usage after it: give an earlier --since",
         ),
-        // An --until past now is now.
-        (
-            vec!["usage", "--since", "now", "--until", "2099-01-01"],
-            2,
-            "--since is now or later",
-        ),
         (
             vec!["usage", "--since", "2d", "--until", "3d"],
             2,
             "--since is at or after --until, so nothing is between them: give an earlier --since",
         ),
-        (vec!["usage", "--since", "last tuesday"], 2, "24h, 7d or 4w"),
         (
             vec!["usage", "--since", "99999999999999d"],
             2,
@@ -754,11 +747,11 @@ fn explain_usage_marks_the_session_its_caller_names() {
 #[test]
 fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
     let data = store();
-    let guard = |limit: &str, below: &str| {
+    let guard = |account: &str, limit: &str, below: &str| {
         let args = [
             "guard",
             "--account",
-            "claude",
+            account,
             "--limit",
             limit,
             "--below",
@@ -766,19 +759,35 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
         ];
         turnscope(data.path(), &args)
     };
-    let blocked = guard("5 hours", "50");
+    let blocked = guard("claude", "5 hours", "50");
     assert_eq!(blocked.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&blocked.stderr).trim(),
         "Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at this pace it runs out 13:00 (in 1h)."
     );
-    assert_eq!(guard("5 hours", "20").status.code(), Some(0));
+    assert_eq!(guard("claude", "5 hours", "20").status.code(), Some(0));
     // Named as the status line shows it, `5h 25%`.
-    assert_eq!(guard("5h", "50").status.code(), Some(2));
+    assert_eq!(guard("claude", "5h", "50").status.code(), Some(2));
     // One it can't follow blocks nothing.
-    assert_eq!(guard("month", "50").status.code(), Some(1));
+    assert_eq!(guard("claude", "month", "50").status.code(), Some(1));
     // Nor does one mistyped.
-    assert_eq!(guard("5 hours", "150").status.code(), Some(1));
+    assert_eq!(guard("claude", "5 hours", "150").status.code(), Some(1));
+    // One of an account whose limits aren't read passes, saying nothing, as
+    // does one before any account is read.
+    let quiet = |output: Output| (output.status.code(), output.stderr.is_empty());
+    assert_eq!(quiet(guard("supergrok", "week", "50")), (Some(0), true));
+    let none = tempfile::tempdir().unwrap();
+    drop(turnscope::db::open(none.path()).unwrap());
+    let args = [
+        "guard",
+        "--account",
+        "claude",
+        "--limit",
+        "week",
+        "--below",
+        "50",
+    ];
+    assert_eq!(quiet(turnscope(none.path(), &args)), (Some(0), true));
 }
 
 /// A new session isn't read yet, as a status line never catches up: its

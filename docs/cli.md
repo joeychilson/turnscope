@@ -360,7 +360,7 @@ the weekly limit has under 10% left:
 
 | Exit | Means |
 |---|---|
-| 0 | There's room, or the standing isn't known, such as when there is no calling agent or no database yet. A guard never blocks for want of data. |
+| 0 | There's room, or the standing isn't known, such as when there is no calling agent, no account read yet, or none of its limits. A guard never blocks for want of data. |
 | 1 | It can't follow its command line: a flag missing or mistyped, or a limit your account doesn't have. It blocks nothing. |
 | 2 | Under the threshold. The reason is on standard error, which Claude Code shows the model. |
 

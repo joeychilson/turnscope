@@ -50,7 +50,6 @@ impl Provider for OpenRouter {
     fn account_limits(
         &self,
         credential: &Credential,
-        _now: i64,
         by: Instant,
     ) -> Result<Vec<Reading>, Problem> {
         let answer = super::ask(CREDITS, credential, &[], by)?;

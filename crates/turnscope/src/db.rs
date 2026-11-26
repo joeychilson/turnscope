@@ -289,18 +289,15 @@ impl Claim {
 pub fn claim(db: &mut Connection, job: Claim, now: i64, gap: i64, to: i64) -> Result<bool> {
     const AHEAD: i64 = 5 * crate::time::MINUTE;
     let column = job.column();
-    let last: Option<i64> =
-        db.query_row(&format!("SELECT {column} FROM state"), [], |row| row.get(0))?;
-    if last.is_some_and(|last| now - gap < last && last <= now + AHEAD) {
+    let free = format!("{column} IS NULL OR {column} <= ?1 - ?2 OR {column} > ?1 + ?3");
+    let at = rusqlite::params![now, gap, AHEAD];
+    if !db.query_row(&format!("SELECT {free} FROM state"), at, |row| row.get(0))? {
         return Ok(false);
     }
     let tx = write(db)?;
     let claimed = tx.execute(
-        &format!(
-            "UPDATE state SET {column} = ?1
-             WHERE {column} IS NULL OR {column} <= ?2 - ?3 OR {column} > ?2 + ?4"
-        ),
-        rusqlite::params![to, now, gap, AHEAD],
+        &format!("UPDATE state SET {column} = ?4 WHERE {free}"),
+        rusqlite::params![now, gap, AHEAD, to],
     )?;
     tx.commit()?;
     Ok(claimed > 0)
@@ -373,15 +370,11 @@ pub fn writing(db: &Connection) -> Result<()> {
     // Read first so hooks don't contend on the write lock once recorded.
     let mut newest_now = newest()?;
     if newest_now < Some(VERSION) {
-        let updated = db.execute(
+        db.execute(
             "UPDATE state SET version = ?1 WHERE version IS NULL OR version < ?1",
             [VERSION],
         )?;
-        newest_now = if updated > 0 {
-            Some(VERSION)
-        } else {
-            newest()?
-        };
+        newest_now = newest()?;
     }
     match newest_now > Some(VERSION) {
         true => Err(newer()),

@@ -985,7 +985,7 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
             .collect();
         let shared = scope.spawn(|| {
             for key in keys {
-                match provider.account_limits(key, now, by) {
+                match provider.account_limits(key, by) {
                     Err(Problem::SignIn) => {}
                     read => return read,
                 }
@@ -1140,7 +1140,6 @@ mod tests {
         fn account_limits(
             &self,
             credential: &Credential,
-            _now: i64,
             _by: Instant,
         ) -> std::result::Result<Vec<Reading>, Problem> {
             self.asked.lock().unwrap().push("credits".to_owned());
@@ -1861,9 +1860,7 @@ mod tests {
 
         fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<agents::Login>> {
             self.asked.store(true, Ordering::Relaxed);
-            let Some(kept) = agents::json_file(&folder.join("login"))? else {
-                return Ok(Vec::new());
-            };
+            let kept = agents::json_file(&folder.join("login"))?;
             let kept = kept.as_object().into_iter().flatten();
             Ok(kept
                 .map(|(provider, key)| agents::Login {

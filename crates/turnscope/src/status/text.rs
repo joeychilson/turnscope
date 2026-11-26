@@ -70,8 +70,7 @@ pub fn stale(account: &Account, dated: bool, now: i64) -> Option<String> {
     };
     // The agents to sign in with, `Codex or Pi`: one is always signed in to
     // an account not `SignedOut`.
-    let names: Vec<&str> = account.agents.iter().map(|id| agents::name(id)).collect();
-    let agents = list(&names, "or");
+    let agents = agent_names(&account.agents, "or");
     Some(match why {
         Stale::SignedOut => unread(why).to_owned(),
         Stale::SignIn => format!("{}; open {agents} to sign in again", unread(why)),
@@ -343,12 +342,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
         false => (format!("{hours} more hours"), "fit", "don't fit"),
     };
     let untold = |why: &str| format!("whether {more} of work {fit} can't be told: {why}.");
-    // No limit read: an account not read now says why. One read with none,
-    // as a key whose provider Turnscope doesn't ask, may still draw on
-    // credit or a spend cap.
-    if account.limits.is_empty()
-        && let Some(why) = account.state.why()
-    {
+    if let Some(why) = account.unread() {
         return (Fits::Untold, untold(unread(why)), true);
     }
     if let Some((limit, back)) = used_up(account) {
@@ -680,8 +674,14 @@ pub fn line(account: &Account, now: i64) -> String {
 
 /// `via Codex` or `via Claude Code and OpenCode`.
 pub fn via(ids: &[String]) -> Option<String> {
+    (!ids.is_empty()).then(|| format!("via {}", agent_names(ids, "and")))
+}
+
+/// The names of the agents `ids`, in a sentence with `last` before the
+/// last: `Codex or Pi`.
+pub fn agent_names(ids: &[String], last: &str) -> String {
     let names: Vec<&str> = ids.iter().map(|id| agents::name(id)).collect();
-    (!names.is_empty()).then(|| format!("via {}", list(&names, "and")))
+    list(&names, last)
 }
 
 /// `names` in a sentence: `a`, `a or b`, `a, b or c`, with `last`, `and`

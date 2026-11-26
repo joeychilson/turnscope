@@ -229,8 +229,7 @@ impl Message<'_> {
             #[serde(borrow)]
             id: Option<Cow<'a, str>>,
         }
-        self.content
-            .and_then(|content| serde_json::from_str::<Vec<Block>>(content.get()).ok())
+        super::parsed::<Vec<Block>>(self.content)
             .is_some_and(|blocks| blocks.iter().any(|block| block.id.as_deref() == Some(id)))
     }
 }
@@ -455,7 +454,7 @@ impl Agent for ClaudeCode {
         })
         .map(|kept| kept.and_then(|kept| credential(&kept, identity.clone())));
         let file = super::json_file(&folder.join(".credentials.json"))
-            .map(|kept| kept.and_then(|kept| credential(&kept, identity.clone())));
+            .map(|kept| credential(&kept, identity.clone()));
         Ok(vec![Login {
             provider: "anthropic".to_owned(),
             credential: super::fresher(keychain, file)?,
@@ -612,7 +611,7 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
 /// Whose sign-in `settings` names: a plan belongs to an organization, and one
 /// account can be in several.
 fn identity(settings: &Path) -> Result<Option<(String, Option<String>)>> {
-    let config = super::json_file(settings)?.unwrap_or_default();
+    let config = super::json_file(settings)?;
     Ok(
         match (
             super::str_at(&config, "/oauthAccount/accountUuid"),

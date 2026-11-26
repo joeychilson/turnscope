@@ -47,7 +47,7 @@ impl By {
         }
     }
 
-    fn noun(self) -> &'static str {
+    pub fn noun(self) -> &'static str {
         match self {
             By::Day => "day",
             By::Week => "week",
@@ -340,29 +340,19 @@ pub fn text(usage: &Usage, shares: Option<(&crate::status::Limit, &Shares)>, now
         counted(usage.total.responses, "response"),
         cost(usage.total.cost_usd, usage.total.unpriced),
     );
-    let time = usage.by.period().is_some();
-    let label = |row: &Row| match (&usage.by, &row.name) {
-        (By::Session, Some(name)) => format!("{} {name}", start(&row.key)),
-        (By::Session, None) => start(&row.key),
-        _ => row.label(usage.by).to_owned(),
-    };
-    let mut rows: Vec<(&Row, Option<f64>, String)> = usage
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(at, row)| {
-            let points = shares.map(|(_, shares)| shares.rows[at]);
-            (row, points, short(&label(row), 55))
+    let rows: Vec<(&Row, Option<f64>, String)> = in_order(usage, shares.map(|(_, shares)| shares))
+        .into_iter()
+        .map(|(row, points, rest)| {
+            let label = match (&usage.by, &row.name) {
+                // Its key counts the rows it adds up, `3551 more`, and isn't a session.
+                _ if rest => row.label(usage.by).to_owned(),
+                (By::Session, Some(name)) => short(&format!("{} {name}", start(&row.key)), 55),
+                (By::Session, None) => start(&row.key),
+                _ => short(row.label(usage.by), 55),
+            };
+            (row, points, label)
         })
         .collect();
-    // Its key counts the rows it adds up, `3551 more`, and isn't a session.
-    if let Some(rest) = &usage.rest {
-        let points = shares.and_then(|(_, shares)| shares.rest);
-        rows.insert(
-            if time { 0 } else { rows.len() },
-            (rest, points, rest.label(usage.by).to_owned()),
-        );
-    }
     if rows.is_empty() {
         return out + "Nothing was used.";
     }
@@ -414,28 +404,11 @@ pub fn markdown(
         ),
         None => format!("| {what} | Cost | Responses |\n|---|--:|--:|\n"),
     };
-    let rest_line = usage.rest.as_ref().map(|rest| {
-        // Its key, made in `fold`, counts the rows it adds up: `3 more` or
-        // `3 earlier`, never one.
-        let mut line = format!(
-            "| {} {}s | {} | {} |",
-            rest.key,
-            usage.by.noun(),
-            cost(rest.cost_usd, rest.unpriced),
-            count(rest.responses)
-        );
-        if let Some(points) = shares.and_then(|(_, shares)| shares.rest) {
-            let _ = write!(line, " {} |", share(points));
-        }
-        line.push('\n');
-        line
-    });
-    let time = usage.by.period().is_some();
-    if time && let Some(line) = &rest_line {
-        out += line;
-    }
-    for (at, row) in usage.rows.iter().enumerate() {
+    for (row, points, rest) in in_order(usage, shares.map(|(_, shares)| shares)) {
         let name = match usage.by {
+            // Its key, made in `fold`, counts the rows it adds up: `3 more`
+            // or `3 earlier`, never one.
+            _ if rest => format!("{} {}s", row.key, usage.by.noun()),
             // Its name is its title, which a session may not have yet.
             By::Session => format!(
                 "`{}` {}{}",
@@ -458,15 +431,32 @@ pub fn markdown(
             cost(row.cost_usd, row.unpriced),
             count(row.responses)
         );
-        if let Some((_, shares)) = shares {
-            let _ = write!(out, " {} |", share(shares.rows[at]));
+        if let Some(points) = points {
+            let _ = write!(out, " {} |", share(points));
         }
         out.push('\n');
     }
-    if !time && let Some(line) = &rest_line {
-        out += line;
-    }
     out
+}
+
+/// `usage`'s rows with the points of the limit each took, and whether it's
+/// the rest, which comes first of rows by time and last of any other.
+fn in_order<'a>(usage: &'a Usage, shares: Option<&Shares>) -> Vec<(&'a Row, Option<f64>, bool)> {
+    let mut rows: Vec<_> = usage
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(at, row)| (row, shares.map(|shares| shares.rows[at]), false))
+        .collect();
+    if let Some(rest) = &usage.rest {
+        let at = if usage.by.period().is_some() {
+            0
+        } else {
+            rows.len()
+        };
+        rows.insert(at, (rest, shares.and_then(|shares| shares.rest), true));
+    }
+    rows
 }
 
 /// What used `limit`: `account`'s usage in its window, or `between` a start
@@ -508,6 +498,9 @@ pub fn query(
             let reset = limit.reset_since?;
             Some(reset.max(limit.length().map_or(reset, |length| now - length)))
         });
+    let (models, key) = limit
+        .map(|limit| of_limit(&limit.key, limit.scope.as_deref()))
+        .unwrap_or_default();
     Query {
         since: between
             .map(|(since, _)| since)
@@ -517,10 +510,8 @@ pub fn query(
         by,
         agent: None,
         account: Some(account.id.clone()),
-        models: models(limit.and_then(|limit| limit.scope.as_deref())),
-        key: limit
-            .and_then(|limit| crate::providers::key_limit_fingerprint(&limit.key))
-            .map(str::to_owned),
+        models,
+        key,
     }
 }
 
@@ -593,10 +584,10 @@ pub fn shares(
         }
         None => return None,
     };
-    let points = |row: &Row| row.cost_usd * scale;
+    // The rest's are `fold`'s to add up.
     Some(Shares {
-        rows: usage.rows.iter().map(points).collect(),
-        rest: usage.rest.as_ref().map(points),
+        rows: usage.rows.iter().map(|row| row.cost_usd * scale).collect(),
+        rest: None,
     })
 }
 
@@ -632,6 +623,14 @@ pub fn footnote(
 /// it: asked `between` other times, there's none.
 fn window(limit: &crate::status::Limit, between: Option<(i64, i64)>) -> Option<i64> {
     limit.started().filter(|_| between.is_none())
+}
+
+/// The models and the key whose responses a limit with `key` and `scope`
+/// counts: of an account's limit on some models, theirs; of a key's own
+/// limit, that key's.
+pub fn of_limit(key: &str, scope: Option<&str>) -> (Vec<String>, Option<String>) {
+    let key = crate::providers::key_limit_fingerprint(key).map(str::to_owned);
+    (models(scope), key)
 }
 
 pub fn models(scope: Option<&str>) -> Vec<String> {
@@ -677,8 +676,7 @@ pub fn session_account(db: &Connection, id: &str) -> rusqlite::Result<Option<Str
 /// First 8 chars of the agent's native id (over the full ~45-char id): only
 /// disambiguates duplicate titles.
 fn start(id: &str) -> String {
-    let native = id.split_once(':').map_or(id, |(_, native)| native);
-    native.chars().take(8).collect()
+    crate::agents::native(id).chars().take(8).collect()
 }
 
 fn short(text: &str, most: usize) -> String {

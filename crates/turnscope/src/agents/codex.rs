@@ -330,10 +330,6 @@ struct RateWindow {
     resets_at: Option<i64>,
 }
 
-fn parsed<'a, T: Deserialize<'a>>(raw: Option<&'a RawValue>) -> Option<T> {
-    serde_json::from_str(raw?.get()).ok()
-}
-
 /// What the person typed in a message Codex sent as theirs: without its
 /// context, and of pasted files, only their words after `## My request:`.
 fn typed(text: &str) -> String {
@@ -419,7 +415,7 @@ impl Agent for Codex {
     }
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
-        let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
+        let kept = super::json_file(&folder.join("auth.json"))?;
         let (secret, key) = match kept["auth_mode"].as_str() {
             Some("chatgpt") => (super::str_at(&kept, "/tokens/access_token"), false),
             Some("apikey") => (super::str_at(&kept, "/OPENAI_API_KEY"), true),
@@ -488,7 +484,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
                 }
             }
             if !copied
-                && let Some(limits) = parsed::<RateLimits>(payload.rate_limits)
+                && let Some(limits) = super::parsed::<RateLimits>(payload.rate_limits)
                 && let Some(at) = line.at()
                 && let Some(snapshot) = in_band(limits, cursor, at)
             {
@@ -496,7 +492,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
             }
         }
         ("event_msg", Some("thread_settings_applied")) => {
-            if let Some(settings) = parsed::<Settings>(payload.thread_settings) {
+            if let Some(settings) = super::parsed::<Settings>(payload.thread_settings) {
                 let (model, tier) = (settings.model.as_deref(), settings.service_tier.as_deref());
                 apply(model, tier, cursor, read);
             }
@@ -504,7 +500,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         ("token_usage_record", _) => {
             let (Some(response), Some(usage)) = (
                 payload.response_id.as_deref(),
-                parsed::<Usage>(payload.usage),
+                super::parsed::<Usage>(payload.usage),
             ) else {
                 read.skipped += 1;
                 return;
@@ -570,7 +566,7 @@ fn open(meta: &Payload<'_>, cursor: &mut Cursor, read: &mut Read) {
     // A rollout that goes on from the thread's own history, as a rewind's
     // does, doesn't hold its first request, so it titles nothing. A fork's
     // own history starts after its parent's.
-    cursor.titled = parsed::<Base>(meta.history_base).is_some_and(|base| {
+    cursor.titled = super::parsed::<Base>(meta.history_base).is_some_and(|base| {
         base.end_ordinal_exclusive > meta.forked_from_ordinal_exclusive.unwrap_or(0)
     });
     cursor.thread = Some(thread);

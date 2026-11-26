@@ -18,8 +18,8 @@ use crate::{Result, agents};
 
 mod text;
 pub use text::{
-    NONE_READ, alternate_note, fit, fits, limit_text, line, list, most_room, none, stale, text,
-    verdict, via,
+    NONE_READ, agent_names, alternate_note, fit, fits, limit_text, line, list, most_room, none,
+    stale, text, verdict, via,
 };
 
 /// How recently a response must have drawn on an account for it to be in use.
@@ -147,6 +147,13 @@ impl Account {
             Some(label) => format!("{} ({label})", self.title),
             None => self.title.clone(),
         }
+    }
+
+    /// Why none of its limits are known: none were read, and it isn't read
+    /// now. One read with none, as a key whose provider Turnscope doesn't
+    /// ask, may still draw on credit or a spend cap.
+    pub fn unread(&self) -> Option<Stale> {
+        self.limits.is_empty().then(|| self.state.why()).flatten()
     }
 
     /// Its limit `name` names, or an error naming the limits it has.
@@ -991,11 +998,7 @@ fn work(
     }
     // By the work on its own models or key: by all the account's, 1h of Opus
     // that rose Weekly (Opus) 8 points after 3h of Sonnet read as 2% an hour.
-    let counted = (
-        crate::usage::models(scope.as_deref()),
-        crate::providers::key_limit_fingerprint(key).map(str::to_owned),
-    );
-    let slots = match slots.entry(counted) {
+    let slots = match slots.entry(crate::usage::of_limit(key, scope.as_deref())) {
         Entry::Occupied(slots) => slots.into_mut(),
         Entry::Vacant(slot) => {
             let (models, key) = slot.key();

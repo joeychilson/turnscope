@@ -194,7 +194,7 @@ pub fn build_sync(s: &State, animated: bool, effects: Vec<Effect>) -> AppSync {
     }
 }
 
-pub fn build_menu_bar(s: &State) -> MenuBarModel {
+fn build_menu_bar(s: &State) -> MenuBarModel {
     let words = s.words_now();
     let shown = s.in_menu_bar();
     let out_of_date = s.problem.is_some();
@@ -355,13 +355,8 @@ fn build_used_most(sessions: &[UsedMost]) -> Vec<UsedMostModel> {
     sessions
         .iter()
         .map(|used| {
-            // Strip Turnscope's `<agent>:` key prefix so copying yields the
-            // agent's native session id (usable with `claude --resume`, etc.).
-            let session_id = used
-                .session
-                .split_once(':')
-                .map_or(used.session.as_str(), |(_, native)| native)
-                .to_owned();
+            // Copied, the agent's own id works with `claude --resume`.
+            let session_id = turnscope::agents::native(&used.session).to_owned();
             UsedMostModel {
                 id: used.session.clone(),
                 session_id,
@@ -460,7 +455,7 @@ fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
         configured: agent.configured.clone(),
         changing: changing.map(|to| words::agent_changing(to).to_owned()),
         connected: changing.unwrap_or(agent.connection) == Connection::Connected,
-        enabled: changing.is_none() && !s.from_disk_image && !s.stopped(),
+        enabled: s.can_change(&agent.id),
     }
 }
 
