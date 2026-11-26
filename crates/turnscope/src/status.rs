@@ -213,13 +213,14 @@ pub enum State {
     /// Read at the last try.
     #[serde(rename_all = "camelCase")]
     Live { read_at: i64 },
-    /// As of an earlier read, why not since, and the hours agents here
-    /// worked on it since, to a tenth: what they used isn't in that read.
+    /// As of an earlier read, why not since, and the minutes agents here
+    /// worked on it since, as they're said (`minutes`): what they used
+    /// isn't in that read.
     #[serde(rename_all = "camelCase")]
     AsOf {
         read_at: i64,
         why: Stale,
-        worked_hours: f64,
+        worked_minutes: i64,
     },
     /// Never read, and why: every account was recorded by a read that
     /// either worked or failed.
@@ -470,16 +471,16 @@ pub struct Work {
     /// Points an hour of work uses, to a tenth.
     pub rate_per_hour: f64,
     /// None when it lasts until its reset even with work all the while.
-    pub left_hours: Option<HoursLeft>,
+    pub left_minutes: Option<MinutesLeft>,
 }
 
-/// Hours of work left, to a tenth: the fewest and the most of the 80% range,
-/// and the likely.
+/// Minutes of work left, as they're said (`minutes`): the fewest and the
+/// most of the 80% range, and the likely.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct HoursLeft {
-    pub low: f64,
-    pub likely: f64,
-    pub high: f64,
+pub struct MinutesLeft {
+    pub low: i64,
+    pub likely: i64,
+    pub high: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -622,7 +623,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             (Some(read_at), why) => State::AsOf {
                 read_at,
                 why: why.unwrap_or(Stale::ReadFailed),
-                worked_hours: tenths(forecast::hours(
+                worked_minutes: minutes(forecast::hours(
                     &worked(db, &id, &[], None, read_at)?,
                     read_at,
                     now,
@@ -1016,20 +1017,35 @@ fn work(
         return Ok(None);
     };
     let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
-    let left_hours = forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
-        .map(|(low, likely, high)| HoursLeft {
-            low: tenths(low),
-            likely: tenths(likely),
-            high: tenths(high),
+    let left_minutes = forecast::work_left(100.0 - left, rate, forecast::work_band(length), until)
+        .map(|(low, likely, high)| MinutesLeft {
+            low: minutes(low),
+            likely: minutes(likely),
+            high: minutes(high),
         });
     Ok(Some(Work {
         rate_per_hour: tenths(rate),
-        left_hours,
+        left_minutes,
     }))
 }
 
 fn tenths(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
+}
+
+/// `hours` of work in minutes, as they're said: to the minute under ten
+/// minutes, to ten minutes under ten hours, then to the hour. Rounded once:
+/// to a tenth of an hour first, 33 minutes was said as "about 40m".
+fn minutes(hours: f64) -> i64 {
+    let minutes = hours * 60.0;
+    let step = if minutes < 9.5 {
+        1.0
+    } else if minutes < 595.0 {
+        10.0
+    } else {
+        60.0
+    };
+    ((minutes / step).round() * step) as i64
 }
 
 /// The start of each slot of work on `account` from `since`, by the
@@ -1534,8 +1550,8 @@ mod tests {
              INSERT INTO sign_in (agent, folder, provider, since, account)
                  VALUES ('claude-code', '/a', 'anthropic', 0, 'anthropic:a');
              INSERT INTO reading (account, limit_key, at, name, scope, used, starts, resets) VALUES
-                 ('anthropic:a', 'seven_day_opus', {start}, 'Weekly', 'Opus', 10.0, {starts}, {resets}),
-                 ('anthropic:a', 'seven_day_opus', {now}, 'Weekly', 'Opus', 18.0, {starts}, {resets});",
+                 ('anthropic:a', 'seven_day_opus', {start}, 'Weekly', 'Opus', 87.6, {starts}, {resets}),
+                 ('anthropic:a', 'seven_day_opus', {now}, 'Weekly', 'Opus', 95.6, {starts}, {resets});",
             starts = start - DAY,
             resets = start + 6 * DAY,
         ))
@@ -1553,6 +1569,8 @@ mod tests {
         let status = status(&db, now).unwrap();
         let work = status.accounts[0].limits[0].work.unwrap();
         assert_eq!(work.rate_per_hour, 8.0);
+        // 4.4% left is 33 minutes of work.
+        assert_eq!(work.left_minutes.unwrap().likely, 30);
     }
 
     /// Its cents would change every minute, and the status with them.

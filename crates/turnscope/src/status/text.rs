@@ -3,29 +3,27 @@
 //! one sentence that leads an answer. The app says it in its own words.
 
 use super::{
-    Account, Horizon, HoursLeft, Limit, Moment, Outlook, Spend, Spread, Stale, Standing, State,
-    Status, Unknown, Work,
+    Account, Horizon, Limit, MinutesLeft, Moment, Outlook, Spend, Spread, Stale, Standing, State,
+    Status, Unknown, Work, minutes,
 };
 use crate::agents;
 use crate::time::{self, MINUTE};
 
 const UNDER: &str = "under 10m";
 
-/// Hours of work as people say them: to ten minutes, `1h 50m`, and from
-/// ten hours, to the hour, `26h`.
-fn worked(hours: f64) -> String {
-    let minutes = (hours * 60.0).round() as i64;
+/// Minutes of work as `minutes` rounds them: `1h 50m`, `26h`.
+fn worked(minutes: i64) -> String {
     match minutes {
         ..10 => UNDER.to_owned(),
-        10..600 => time::span((minutes + 5) / 10 * 10 * MINUTE),
-        _ => format!("{}h", (minutes + 30) / 60),
+        10..600 => time::span(minutes * MINUTE),
+        _ => format!("{}h", minutes / 60),
     }
 }
 
-/// The likely hours of work left, as a sentence says them: `about 1h 50m`,
+/// The likely minutes of work left, as a sentence says them: `about 1h 50m`,
 /// or `under 10m` alone, which is already no exact amount.
-fn about(hours: f64) -> String {
-    match worked(hours) {
+fn about(minutes: i64) -> String {
+    match worked(minutes) {
         under if under == UNDER => under,
         amount => format!("about {amount}"),
     }
@@ -234,7 +232,7 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
         && !matches!(limit.outlook, Outlook::UsedUp { .. })
     {
         let rate = work.rate_per_hour;
-        out += &match work.left_hours {
+        out += &match work.left_minutes {
             Some(left) => format!(
                 " {} of work left{}, at {rate}% an hour of work.",
                 capital(&about(left.likely)),
@@ -252,10 +250,10 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
 /// hours: ` (1h 10m–3h)`, or ` (1h 10m or more)` when its slow end is held
 /// at the reset. Nothing where it says no more: its ends read the same, or
 /// it's "under 10m or more", which is any amount.
-fn range(limit: &Limit, left: &HoursLeft, now: i64) -> String {
+fn range(limit: &Limit, left: &MinutesLeft, now: i64) -> String {
     let until = limit.hours_to_reset(now);
     let (low, high) = (worked(left.low), worked(left.high));
-    match until.is_some_and(|until| left.high >= until - 0.1) {
+    match until.is_some_and(|until| left.high >= minutes(until)) {
         true if low == UNDER => String::new(),
         true => format!(" ({low} or more)"),
         false if low == high => String::new(),
@@ -279,22 +277,22 @@ fn used_up(account: &Account) -> Option<(&Limit, Option<Moment>)> {
 /// left, and those hours. One reset since it was read counts, with a new
 /// window's work left: left out, an account whose 5 hours had just reset
 /// was said to have room to keep going, even working nonstop.
-fn first_out(account: &Account) -> Option<(&Limit, HoursLeft)> {
+fn first_out(account: &Account) -> Option<(&Limit, MinutesLeft)> {
     account
         .limits
         .iter()
         .filter(|limit| account.stands_by(limit))
-        .filter_map(|limit| Some((limit, limit.work?.left_hours?)))
-        .min_by(|(_, a), (_, b)| a.likely.total_cmp(&b.likely))
+        .filter_map(|limit| Some((limit, limit.work?.left_minutes?)))
+        .min_by_key(|(_, left)| left.likely)
 }
 
-/// The likely hours of work left before `limit` runs out, endless where
+/// The likely minutes of work left before `limit` runs out, endless where
 /// that isn't measured.
-fn likely_left(limit: &Limit) -> f64 {
+fn likely_left(limit: &Limit) -> i64 {
     limit
         .work
-        .and_then(|work| work.left_hours)
-        .map_or(f64::INFINITY, |left| left.likely)
+        .and_then(|work| work.left_minutes)
+        .map_or(i64::MAX, |left| left.likely)
 }
 
 /// Whether `hours` more of work fit each of `accounts`, after its title: a
@@ -364,10 +362,10 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
     // reset since, what the new windows hold is as unknown.
     if let State::AsOf {
         read_at,
-        worked_hours,
+        worked_minutes,
         ..
     } = account.state
-        && worked_hours > 0.0
+        && worked_minutes > 0
         && account.limits.iter().any(|limit| account.stands_by(limit))
     {
         let still = |limit: &&Limit| account.stands_by(limit) && limit.reset_since.is_none();
@@ -379,7 +377,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
                     .limits
                     .iter()
                     .filter(still)
-                    .min_by(|a, b| likely_left(a).total_cmp(&likely_left(b)))
+                    .min_by_key(|limit| likely_left(limit))
             });
         let then = match limit {
             Some(limit) => format!(
@@ -392,11 +390,11 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
         };
         let why = format!(
             "{then}, and your agents have worked {} since",
-            about(worked_hours)
+            about(worked_minutes)
         );
         return (Fits::Untold, untold(&why), true);
     }
-    let mut out: Option<(&Limit, f64, Option<HoursLeft>)> = None;
+    let mut out: Option<(&Limit, i64, Option<MinutesLeft>)> = None;
     let mut after = Vec::new();
     let mut untold_why = None;
     for limit in account
@@ -468,9 +466,9 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
 
 /// Where `hours` more of work leave a limit.
 enum End {
-    /// Out after these hours of work, and the hours it has left where that's
-    /// before its reset.
-    Out(f64, Option<HoursLeft>),
+    /// Out after these minutes of work, and the minutes it has left where
+    /// that's before its reset.
+    Out(i64, Option<MinutesLeft>),
     /// With this percent left.
     Leaves(f64),
 }
@@ -482,8 +480,8 @@ enum End {
 fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
     let rate = work.rate_per_hour;
     // Out before its reset, as forecast with the spread of work's pace.
-    if let Some(left) = work.left_hours
-        && left.likely < hours
+    if let Some(left) = work.left_minutes
+        && (left.likely as f64) < hours * 60.0
     {
         return End::Out(left.likely, Some(left));
     }
@@ -504,7 +502,7 @@ fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
         None => (past, past),
     };
     match first * rate > 100.0 {
-        true => End::Out(until + 100.0 / rate, None),
+        true => End::Out(minutes(until + 100.0 / rate), None),
         false => End::Leaves((100.0 - rate * last).max(0.0)),
     }
 }
@@ -773,8 +771,8 @@ mod tests {
         // Claude Max's 5 hours with half an hour of work left: said with its
         // range and reset, as the verdict says them.
         let mut account = claude.clone();
-        account["limits"][0]["work"]["leftHours"] =
-            serde_json::json!({"low": 0.3, "likely": 0.5, "high": 1.0});
+        account["limits"][0]["work"]["leftMinutes"] =
+            serde_json::json!({"low": 20, "likely": 30, "high": 60});
         let account: Account = serde_json::from_value(account).unwrap();
         let resets = time::ahead(account.limits[0].resets().unwrap(), now);
         assert_eq!(
@@ -789,12 +787,12 @@ mod tests {
                 "2 more hours of work don't fit: 5 hours runs out after about 30m of work (20m–1h); it resets {resets}."
             )
         );
-        // Its Weekly with 40 minutes of work left and 5 hours with 1h 15m:
+        // Its Weekly with 40 minutes of work left and 5 hours with 1h 20m:
         // the first out decides, by its likely hours, as the verdict says.
         let mut account = claude.clone();
-        account["limits"][0]["work"]["leftHours"]["likely"] = 1.25.into();
-        account["limits"][1]["work"]["leftHours"] =
-            serde_json::json!({"low": 0.3, "likely": 0.67, "high": 1.5});
+        account["limits"][0]["work"]["leftMinutes"]["likely"] = 80.into();
+        account["limits"][1]["work"]["leftMinutes"] =
+            serde_json::json!({"low": 20, "likely": 40, "high": 90});
         let account: Account = serde_json::from_value(account).unwrap();
         let resets = time::ahead(account.limits[1].resets().unwrap(), now);
         assert_eq!(
@@ -817,7 +815,7 @@ mod tests {
         five["resetSince"] = (now - 10 * MINUTE).into();
         five["leftPercent"] = 100.into();
         five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "stale"});
-        five["work"]["leftHours"] = serde_json::json!({"low": 1.9, "likely": 3.0, "high": 5.0});
+        five["work"]["leftMinutes"] = serde_json::json!({"low": 110, "likely": 180, "high": 300});
         account["deciding"] = "seven_day".into();
         let account: Account = serde_json::from_value(account).unwrap();
         assert_eq!(
@@ -835,7 +833,7 @@ mod tests {
         let five = &mut account["limits"][0];
         five["resetSince"] = (now - 10 * MINUTE).into();
         five["leftPercent"] = 100.into();
-        five["work"] = serde_json::json!({"ratePerHour": 10.0, "leftHours": null});
+        five["work"] = serde_json::json!({"ratePerHour": 10.0, "leftMinutes": null});
         let lasting: Account = serde_json::from_value(account.clone()).unwrap();
         let said = fit(&lasting, 6.0, now);
         // The new window resets after 5 hours of work, and the one after
@@ -872,9 +870,9 @@ mod tests {
             said.starts_with("Claude Max (me@example.com): 5 hours has 28% left; it resets "),
             "{said}"
         );
-        account["state"] = serde_json::json!({"kind": "asOf", "readAt": now - 35 * MINUTE, "why": "readFailed", "workedHours": 0.7});
-        account["limits"][1]["work"]["leftHours"] =
-            serde_json::json!({"low": 20.0, "likely": 40.0, "high": 60.0});
+        account["state"] = serde_json::json!({"kind": "asOf", "readAt": now - 35 * MINUTE, "why": "readFailed", "workedMinutes": 40});
+        account["limits"][1]["work"]["leftMinutes"] =
+            serde_json::json!({"low": 1200, "likely": 2400, "high": 3600});
         let dated: Account = serde_json::from_value(account).unwrap();
         let said = fit(&dated, 1.0, now);
         assert!(
@@ -896,7 +894,7 @@ mod tests {
         five["leftPercent"] = 28.into();
         five["window"]["resets"]["at"] = (now + 30 * MINUTE).into();
         five["window"]["startsAt"] = (now + 30 * MINUTE - 5 * time::HOUR).into();
-        five["work"] = serde_json::json!({"ratePerHour": 25.0, "leftHours": null});
+        five["work"] = serde_json::json!({"ratePerHour": 25.0, "leftMinutes": null});
         let before: Account = serde_json::from_value(account.clone()).unwrap();
         let after_reset = {
             let five = &mut account["limits"][0];
@@ -904,7 +902,8 @@ mod tests {
             five["leftPercent"] = 100.into();
             five["window"]["resets"]["at"] = (now - MINUTE).into();
             five["window"]["startsAt"] = (now - MINUTE - 5 * time::HOUR).into();
-            five["work"]["leftHours"] = serde_json::json!({"low": 4.0, "likely": 4.0, "high": 4.0});
+            five["work"]["leftMinutes"] =
+                serde_json::json!({"low": 240, "likely": 240, "high": 240});
             serde_json::from_value::<Account>(account).unwrap()
         };
         assert_eq!(
@@ -965,8 +964,8 @@ mod tests {
         // Claude Max's 5 hours with 6 minutes of work left, and as much at
         // the slow end.
         let mut account = example["accounts"][0].clone();
-        let hours = &mut account["limits"][0]["work"]["leftHours"];
-        *hours = serde_json::json!({"low": 0.0, "likely": 0.1, "high": 0.1});
+        account["limits"][0]["work"]["leftMinutes"] =
+            serde_json::json!({"low": 0, "likely": 6, "high": 6});
         let few: Account = serde_json::from_value(account.clone()).unwrap();
         let line = limit_text(&few.limits[0], now);
         assert!(
@@ -988,7 +987,7 @@ mod tests {
             "{said}"
         );
         // A slow end of ten minutes or more is still said.
-        account["limits"][0]["work"]["leftHours"]["high"] = 0.3.into();
+        account["limits"][0]["work"]["leftMinutes"]["high"] = 20.into();
         let more: Account = serde_json::from_value(account.clone()).unwrap();
         let line = limit_text(&more.limits[0], now);
         assert!(
@@ -1106,7 +1105,7 @@ mod tests {
         expired.state = State::AsOf {
             read_at: status.at - 45 * MINUTE,
             why: Stale::Expired,
-            worked_hours: 0.0,
+            worked_minutes: 0,
         };
         assert!(
             verdict(&expired, status.at)
@@ -1185,7 +1184,7 @@ mod tests {
         key.state = State::AsOf {
             read_at: status.at,
             why: Stale::SignIn,
-            worked_hours: 0.0,
+            worked_minutes: 0,
         };
         assert_eq!(
             fit(&key, 1.0, status.at),
@@ -1231,10 +1230,10 @@ mod tests {
         claude.deciding = Some("seven_day".to_owned());
         claude.limits[0].work = Some(Work {
             rate_per_hour: 3.8,
-            left_hours: Some(HoursLeft {
-                low: 12.0,
-                likely: 15.8,
-                high: 20.0,
+            left_minutes: Some(MinutesLeft {
+                low: 720,
+                likely: 960,
+                high: 1200,
             }),
         });
         let chatgpt = &mut status.accounts[1];
@@ -1253,10 +1252,10 @@ mod tests {
         // ChatGPT Pro runs out after 2h 20m of work.
         status.accounts[1].limits[1].work = Some(Work {
             rate_per_hour: 41.6,
-            left_hours: Some(HoursLeft {
-                low: 2.0,
-                likely: 2.3,
-                high: 3.0,
+            left_minutes: Some(MinutesLeft {
+                low: 120,
+                likely: 140,
+                high: 180,
             }),
         });
         assert!(room(&status, Some(5.0)).unwrap().starts_with(claude));

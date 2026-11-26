@@ -39,10 +39,10 @@
             "startsAt": 1790845200000
           },
           "work": {
-            "leftHours": {
-              "high": 1.7,
-              "likely": 0.6,
-              "low": 0.3
+            "leftMinutes": {
+              "high": 100,
+              "likely": 40,
+              "low": 20
             },
             "ratePerHour": 40.9
           }
@@ -71,10 +71,10 @@
             "startsAt": 1790553600000
           },
           "work": {
-            "leftHours": {
-              "high": 53.3,
-              "likely": 18.7,
-              "low": 7.8
+            "leftMinutes": {
+              "high": 3180,
+              "likely": 1140,
+              "low": 470
             },
             "ratePerHour": 3.0
           }

@@ -40,10 +40,10 @@
           },
           "work": {
             "ratePerHour": 25.0,
-            "leftHours": {
-              "low": 0.7,
-              "likely": 1.1,
-              "high": 2.2
+            "leftMinutes": {
+              "low": 40,
+              "likely": 70,
+              "high": 130
             }
           }
         },
@@ -72,7 +72,7 @@
           },
           "work": {
             "ratePerHour": 1.0,
-            "leftHours": null
+            "leftMinutes": null
           }
         },
         {
@@ -174,7 +174,7 @@
         "kind": "asOf",
         "readAt": 1791459600000,
         "why": "signedOut",
-        "workedHours": 0.0
+        "workedMinutes": 0
       },
       "title": "ChatGPT Pro",
       "usedBy": []
@@ -251,7 +251,7 @@
         "kind": "asOf",
         "readAt": 1791460200000,
         "why": "readFailed",
-        "workedHours": 0.0
+        "workedMinutes": 0
       },
       "title": "OpenRouter API key",
       "usedBy": []
@@ -295,7 +295,7 @@
         "kind": "asOf",
         "readAt": 1791455400000,
         "why": "signIn",
-        "workedHours": 0.0
+        "workedMinutes": 0
       },
       "title": "SuperGrok",
       "usedBy": []
