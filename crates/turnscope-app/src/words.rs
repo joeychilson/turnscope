@@ -168,6 +168,7 @@ impl Words {
             Some(Stale::Expired) => "Login expired".into(),
             Some(Stale::ReadFailed) => "Couldn't be read yet".into(),
             Some(Stale::SignedOut) => "Signed out".into(),
+            Some(Stale::NoPlan) => "No subscription".into(),
             _ => "Not read yet".into(),
         }
     }
@@ -222,6 +223,9 @@ impl Words {
                 let detail =
                     pace(spend).unwrap_or_else(|| format!("Your {} has no limit.", account.title));
                 return ("You can keep going".into(), detail);
+            }
+            if account.state.why() == Some(Stale::NoPlan) {
+                return (no_plan(account), String::new());
             }
             let detail = self
                 .trouble(account)
@@ -357,6 +361,7 @@ impl Words {
                 Stale::Expired => format!("Its login expired; it's read when {with} runs."),
                 Stale::ReadFailed => "It couldn't be read yet.".into(),
                 Stale::SignedOut => "No agent here is signed in to it.".into(),
+                Stale::NoPlan => format!("{}.", no_plan(account)),
             }),
             State::AsOf { read_at, why, .. } => {
                 if *why == Stale::SignedOut && refilled(account) {
@@ -365,6 +370,7 @@ impl Words {
                 let ago = self.ago(*read_at);
                 Some(match why {
                     Stale::SignIn => format!("Last read {ago}. {}", sign_in(account)),
+                    Stale::NoPlan => format!("Last read {ago}. {}.", no_plan(account)),
                     Stale::ReadFailed => format!("It couldn't be read since {ago}."),
                     Stale::Expired => {
                         format!(
@@ -695,7 +701,7 @@ fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
     };
     let standing = format!("{} has {what}", account.title);
     match reason {
-        Unknown::NotEnoughData | Unknown::Rolling => format!("{standing}."),
+        Unknown::NotEnoughData => format!("{standing}."),
         Unknown::Stale => format!("As last read, {standing}."),
         Unknown::NoReset => format!("{standing}; it doesn't reset."),
     }
@@ -859,6 +865,10 @@ fn sign_in(account: &Account) -> String {
     format!("Open {} to sign in.", first_agent(account))
 }
 
+fn no_plan(account: &Account) -> String {
+    format!("This key has no {} subscription", account.title)
+}
+
 fn refilled(account: &Account) -> bool {
     account
         .deciding_limit()
@@ -902,7 +912,7 @@ mod tests {
 
     fn window(text: &str, horizon: Horizon) -> Option<LimitWindow> {
         Some(LimitWindow {
-            starts_at: None,
+            starts_at: 0,
             resets: moment(text, horizon),
         })
     }
@@ -1405,7 +1415,6 @@ mod tests {
                 Unknown::Stale,
                 "As last read, Claude Max has 50% left of 5 hours.",
             ),
-            (Unknown::Rolling, "Claude Max has 50% left of 5 hours."),
             (
                 Unknown::NoReset,
                 "Claude Max has 50% left of 5 hours; it doesn't reset.",
@@ -1701,6 +1710,23 @@ mod tests {
             Some("It couldn't be read yet.")
         );
         assert_eq!(w.opened(&unreachable, true), None);
+        let no_plan = Account {
+            title: "OpenCode Go".into(),
+            state: State::Unread { why: Stale::NoPlan },
+            ..account(vec![])
+        };
+        assert_eq!(w.status(&no_plan), "No subscription");
+        assert_eq!(
+            w.verdict(Some(&no_plan), false, &[]),
+            (
+                "This key has no OpenCode Go subscription".into(),
+                String::new()
+            )
+        );
+        assert_eq!(
+            w.opened(&no_plan, false).as_deref(),
+            Some("This key has no OpenCode Go subscription.")
+        );
         let refused = Account {
             state: State::Unread { why: Stale::SignIn },
             ..account(vec![])

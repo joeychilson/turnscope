@@ -524,9 +524,8 @@ mod tests {
             .expect("TURNSCOPE_BACKTEST names a copy of a data directory");
         let db =
             rusqlite::Connection::open(std::path::Path::new(&dir).join("turnscope.db")).unwrap();
-        // A rolling window, with a reset but no start, has no work rate.
         let mut rows = db
-            .prepare("SELECT account, limit_key, scope, at, used, starts, resets FROM reading WHERE starts IS NOT NULL OR resets IS NULL ORDER BY account, limit_key, scope, at")
+            .prepare("SELECT account, limit_key, scope, at, used, starts, resets FROM reading ORDER BY account, limit_key, scope, at")
             .unwrap();
         let mut limits: std::collections::BTreeMap<(String, String, Option<String>), Vec<Reading>> =
             Default::default();

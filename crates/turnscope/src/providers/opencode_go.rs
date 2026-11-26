@@ -1,11 +1,11 @@
-//! OpenCode Go: the Go plan's limits, on a 5-hour window that rolls and on
-//! weekly and monthly windows that reset.
+//! OpenCode Go: the Go plan's limits, on a 5-hour, a weekly and a monthly
+//! window, as <https://opencode.ai/docs/go/> gives them (read 2026-11-26).
 //!
-//! The rolling window always counts the last five hours, so it has no
-//! start. What its `resetsAt` means isn't measured: it's taken for when
-//! the oldest use in the window drops out, and some of what's used comes
-//! back. Nothing counts on it but the countdown shown: what used the window
-//! is the use of the last five hours (`rolls`).
+//! The 5-hour window starts at the first use and lasts five hours, so it
+//! starts five hours before it resets. Before that first use, its
+//! `resetsAt` is five hours from now: it reads as a window beginning now.
+//! Only a key that isn't valid is answered 401. One to a workspace with no
+//! Go subscription is answered 403.
 //!
 //! A plan can have several keys, and nothing in an answer names the plan
 //! (measured 2026-10-05). But two keys to one plan answer alike, the monthly
@@ -24,7 +24,7 @@ use jiff::ToSpan;
 use jiff::tz::TimeZone;
 use serde_json::Value;
 
-use super::{Account, Info, Kind, Limits, Problem, Provider, Reading};
+use super::{Account, Answered, Info, Kind, Limits, Problem, Provider, Reading};
 use crate::agents::Credential;
 
 pub struct OpenCodeGo;
@@ -36,7 +36,7 @@ static INFO: Info = Info {
     key_limits: true,
 };
 
-const USAGE: &str = "https://opencode.ai/zen/go/v1/usage";
+const USAGE: &str = "https://opencode.ai/inference/go/v1/usage";
 
 impl Provider for OpenCodeGo {
     fn info(&self) -> &'static Info {
@@ -56,14 +56,7 @@ impl Provider for OpenCodeGo {
     }
 
     fn limits(&self, credential: &Credential, _now: i64, by: Instant) -> Result<Limits, Problem> {
-        let answer = super::ask(USAGE, credential, &[], by)?;
-        Ok(parse(&answer)
-            .ok_or_else(|| Problem::not_understood(USAGE))?
-            .into())
-    }
-
-    fn rolls(&self, key: &str) -> Option<i64> {
-        (key == "rolling").then_some(ROLLING)
+        read(&super::requested(USAGE, &credential.secret, &[], None, by)?)
     }
 
     fn plan_mark(&self, limits: &Limits) -> Option<i64> {
@@ -75,23 +68,31 @@ impl Provider for OpenCodeGo {
     }
 }
 
-/// How long the rolling window is.
-const ROLLING: i64 = 5 * crate::time::HOUR;
+/// The limits in OpenCode's answer, or why there are none.
+fn read(answered: &Answered) -> Result<Limits, Problem> {
+    if answered.status == 403 && !answered.page() {
+        return Err(Problem::NoPlan);
+    }
+    let answer = super::answer(USAGE, answered, &[401])?;
+    Ok(parse(&answer)
+        .ok_or_else(|| Problem::not_understood(USAGE))?
+        .into())
+}
 
 fn parse(answer: &Value) -> Option<Vec<Reading>> {
     let usage = answer.get("usage").filter(|usage| usage.is_object())?;
     let mut readings = Vec::new();
     for (key, name, length) in [
-        ("rolling", None, None),
-        ("weekly", Some("Weekly"), Some(1.week())),
-        ("monthly", Some("Monthly"), Some(1.month())),
+        ("rolling", "5 hours", 5.hours()),
+        ("weekly", "Weekly", 1.week()),
+        ("monthly", "Monthly", 1.month()),
     ] {
         let window = &usage[key];
         if super::absent(window) {
             continue;
         }
         let resets = super::reset(&window["resetsAt"])?;
-        let starts = resets.zip(length).and_then(|(resets, length)| {
+        let starts = resets.and_then(|resets| {
             let start = crate::time::zoned(resets, &TimeZone::UTC)
                 .checked_sub(length)
                 .ok()?;
@@ -99,7 +100,7 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         });
         readings.push(Reading {
             key: key.to_owned(),
-            name: name.map_or_else(|| super::window_name(ROLLING), str::to_owned),
+            name: name.to_owned(),
             scope: None,
             used: window["percent"].as_f64()?,
             size: None,
@@ -114,41 +115,63 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
 mod tests {
     use serde_json::json;
 
-    use crate::time::DAY;
+    use super::{Answered, Problem};
+    use crate::time::{DAY, HOUR};
 
+    /// Each window is its length back from its reset, the 5 hours too, as
+    /// it starts at the first use.
     #[test]
-    fn the_plans_windows_are_read_and_the_rolling_one_has_no_start() {
+    fn the_plans_windows_are_read_from_their_starts() {
+        // OpenCode's docs' example.
         let answer = json!({"usage": {
-            "rolling": {"status": "ok", "percent": 12, "resetsAt": "2026-10-01T15:00:00.000Z"},
-            "weekly": {"status": "ok", "percent": 40, "resetsAt": "2026-10-05T00:00:00.000Z"},
-            "monthly": {"status": "ok", "percent": 9, "resetsAt": "2026-11-01T00:00:00.000Z"}
+            "rolling": {"status": "ok", "percent": 30, "resetsAt": "2026-11-21T15:00:00.000Z"},
+            "weekly": {"status": "rate-limited", "percent": 100, "resetsAt": "2026-11-23T00:00:00.000Z"},
+            "monthly": {"status": "ok", "percent": 50, "resetsAt": "2026-12-01T00:00:00.000Z"}
         }});
-        let readings = super::parse(&answer).unwrap();
-        let read: Vec<_> = readings
+        let read: Vec<_> = super::parse(&answer)
+            .unwrap()
             .iter()
             .map(|reading| {
-                (
-                    reading.name.as_str(),
-                    reading.used,
-                    reading.starts.is_some(),
-                )
+                let length = reading.resets.unwrap() - reading.starts.unwrap();
+                (reading.name.clone(), reading.used, length)
             })
             .collect();
+        // A month back from December 1 is November 1, 30 days.
         assert_eq!(
             read,
             [
-                ("5 hours", 12.0, false),
-                ("Weekly", 40.0, true),
-                ("Monthly", 9.0, true)
+                ("5 hours".to_owned(), 30.0, 5 * HOUR),
+                ("Weekly".to_owned(), 100.0, 7 * DAY),
+                ("Monthly".to_owned(), 50.0, 30 * DAY)
             ]
         );
-        let weekly = &readings[1];
-        assert_eq!(weekly.resets.unwrap() - weekly.starts.unwrap(), 7 * DAY);
-        // A month back from November 1 is October 1, 31 days.
-        let monthly = &readings[2];
-        assert_eq!(monthly.resets.unwrap() - monthly.starts.unwrap(), 31 * DAY);
         assert!(super::parse(&json!({"error": "unauthorized"})).is_none());
         assert!(super::parse(&json!({"usage": {}})).is_none());
+    }
+
+    /// A key Go doesn't cover has no plan to read, which signing in again
+    /// wouldn't change.
+    #[test]
+    fn only_a_401_is_a_refused_login() {
+        let answered = |status, body: &[u8]| {
+            super::read(&Answered {
+                status,
+                retry_after: None,
+                body: body.to_vec(),
+            })
+            .err()
+        };
+        // OpenCode's docs' example.
+        let no_plan = br#"{"type":"error","error":{"type":"EntitlementError","message":"OpenCode Go subscription required."}}"#;
+        assert_eq!(answered(403, no_plan), Some(Problem::NoPlan));
+        assert_eq!(answered(401, b""), Some(Problem::SignIn));
+        assert_eq!(
+            answered(403, b"<!DOCTYPE html><title>Just a moment...</title>"),
+            Some(Problem::unavailable(format!(
+                "{}: answered 403",
+                super::USAGE
+            )))
+        );
     }
 
     #[test]

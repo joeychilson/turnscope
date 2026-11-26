@@ -151,7 +151,7 @@
           "name": "Monthly",
           "outlook": {
             "kind": "unknown",
-            "reason": "rolling"
+            "reason": "notEnoughData"
           },
           "readAt": 1791459600000,
           "resetSince": null,
@@ -161,7 +161,7 @@
               "at": 1792660800000,
               "horizon": "later"
             },
-            "startsAt": null
+            "startsAt": 1790068800000
           },
           "work": null
         }

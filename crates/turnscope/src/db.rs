@@ -177,6 +177,27 @@ UPDATE account SET full_read_at = read_at, checked_at = read_at;
 -- it's worked out again.
 UPDATE session SET project = NULL WHERE project = '';
 "#,
+    r#"
+-- `problem` takes 'noPlan' (`Problem::NoPlan`): SQLite can't change a
+-- CHECK, so the table is made again.
+CREATE TABLE account_new (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('subscription', 'apiKey')),
+    title TEXT NOT NULL,
+    label TEXT,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    read_at INTEGER,               -- the last reading
+    problem TEXT CHECK (problem IN ('signIn', 'expired', 'unavailable', 'noPlan')),
+    checked_at INTEGER,            -- when its provider was last asked
+    full_read_at INTEGER           -- the last read of all its limits that worked
+) STRICT, WITHOUT ROWID;
+INSERT INTO account_new
+    SELECT id, provider, kind, title, label, hidden, read_at, problem, checked_at, full_read_at
+    FROM account;
+DROP TABLE account;
+ALTER TABLE account_new RENAME TO account;
+"#,
 ];
 
 /// "TRNS", in the header, so a file with another program's is never written.

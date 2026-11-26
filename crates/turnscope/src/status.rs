@@ -265,6 +265,9 @@ pub enum Stale {
     /// refusal isn't `SignIn`: an agent replacing its token while it was
     /// sent is refused once, and read at the next try.
     ReadFailed,
+    /// Its key has no subscription, as an OpenCode key to a workspace
+    /// without Go: it has no limits, whatever it read before.
+    NoPlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -294,7 +297,7 @@ pub struct Limit {
     pub held_by: Vec<String>,
     pub outlook: Outlook,
     /// The work rate, and the work left at it. None until an hour of work
-    /// and 2 points are measured, and for a window that rolls.
+    /// and 2 points are measured.
     pub work: Option<Work>,
 }
 
@@ -348,26 +351,26 @@ impl Limit {
     /// The hours until its window resets, as its work left counts them.
     pub fn hours_to_reset(&self, now: i64) -> Option<f64> {
         let window = self.window?;
-        hours_to_reset(
+        Some(hours_to_reset(
             window.starts_at,
             window.resets.at,
             self.reset_since.is_some(),
             now,
-        )
+        ))
     }
 
     /// When its window started, unless it has reset since it was read: the
     /// start read is then the window before's.
     pub fn started(&self) -> Option<i64> {
         self.window
-            .filter(|_| self.reset_since.is_none())?
-            .starts_at
+            .filter(|_| self.reset_since.is_none())
+            .map(|window| window.starts_at)
     }
 
-    /// Its window's length, unless it rolls.
+    /// Its window's length.
     pub(crate) fn length(&self) -> Option<i64> {
-        let window = self.window?;
-        Some(window.resets.at - window.starts_at?)
+        self.window
+            .map(|window| window.resets.at - window.starts_at)
     }
 
     /// Whether its name is plural, for the words beside it to agree with:
@@ -430,8 +433,7 @@ impl Limit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LimitWindow {
-    /// None for a window that rolls.
-    pub starts_at: Option<i64>,
+    pub starts_at: i64,
     pub resets: Moment,
 }
 
@@ -536,8 +538,6 @@ pub enum Unknown {
     Stale,
     /// It never resets, as credits.
     NoReset,
-    /// Its window rolls, with no start to pace from.
-    Rolling,
 }
 
 /// Percent left at the reset, likely and at the fast end, each rounded down.
@@ -638,9 +638,11 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             _ if agents.is_empty() => Some(Stale::SignedOut),
             Some("signIn") if failed.unwrap_or(0) >= 2 => Some(Stale::SignIn),
             Some("expired") => Some(Stale::Expired),
+            Some("noPlan") => Some(Stale::NoPlan),
             Some(_) => Some(Stale::ReadFailed),
             None => None,
         };
+        let read_at = read_at.filter(|_| why != Some(Stale::NoPlan));
         let state = match (read_at, why) {
             (Some(read_at), None) if now - read_at <= STALE => State::Live { read_at },
             (Some(read_at), why) => State::AsOf {
@@ -822,14 +824,10 @@ pub(crate) const WORKED: i64 = 14 * DAY;
 /// work held at the reset read 20 s earlier read as ending first. One that
 /// reset since it was read is a new one, as long: its start isn't known, and
 /// is taken as now.
-fn hours_to_reset(starts: Option<i64>, resets: i64, reset: bool, now: i64) -> Option<f64> {
+fn hours_to_reset(starts: i64, resets: i64, reset: bool, now: i64) -> f64 {
     let resets = time::round_minute(resets);
-    let until = if reset {
-        resets - starts?
-    } else {
-        resets - now
-    };
-    Some(until.max(0) as f64 / HOUR as f64)
+    let until = if reset { resets - starts } else { resets - now };
+    until.max(0) as f64 / HOUR as f64
 }
 
 /// A limit as last read, and its readings, oldest first, from at least its
@@ -942,14 +940,15 @@ fn limits(
             history,
         } = limit;
         let stale = reset_since.is_some() || now - limit_read_at > STALE;
-        let outlook = match (starts, resets) {
+        let window = starts.zip(resets);
+        let outlook = match window {
             _ if reset_since.is_none() && used >= 100.0 => Outlook::UsedUp {
                 back: resets.map(|resets| Moment::of(resets, now)),
             },
             _ if stale => Outlook::Unknown {
                 reason: Unknown::Stale,
             },
-            (Some(starts), Some(resets)) => outlook(
+            Some((starts, resets)) => outlook(
                 &Window {
                     starts,
                     resets,
@@ -965,10 +964,7 @@ fn limits(
                 },
                 now,
             ),
-            (None, Some(_)) => Outlook::Unknown {
-                reason: Unknown::Rolling,
-            },
-            (_, None) => Outlook::Unknown {
+            None => Outlook::Unknown {
                 reason: Unknown::NoReset,
             },
         };
@@ -977,7 +973,7 @@ fn limits(
             key,
             name,
             scope,
-            window: resets.map(|resets| LimitWindow {
+            window: window.map(|(starts, resets)| LimitWindow {
                 starts_at: starts,
                 resets: Moment::of(resets, now),
             }),
@@ -999,8 +995,7 @@ fn limits(
 }
 
 /// The work rate on `limit`, and the work left at it with `left` percent
-/// left. None for a window that rolls, which has no start to measure work
-/// from.
+/// left.
 fn work(
     db: &rusqlite::Connection,
     account: &str,
@@ -1018,9 +1013,6 @@ fn work(
         history,
         ..
     } = limit;
-    if starts.is_none() && resets.is_some() {
-        return Ok(None);
-    }
     // By the work on its own models or key: by all the account's, 1h of Opus
     // that rose Weekly (Opus) 8 points after 3h of Sonnet read as 2% an hour.
     let slots = match slots.entry(crate::usage::of_limit(key, scope.as_deref())) {
@@ -1035,12 +1027,13 @@ fn work(
     // count with no hours of work beside it.
     let walked = &history[history.partition_point(|reading| reading.at < now - WORKED)..];
     // Not `Limit::length`, whose reset is rounded to the minute.
-    let length = starts.zip(*resets).map(|(starts, resets)| resets - starts);
+    let window = starts.zip(*resets);
+    let length = window.map(|(starts, resets)| resets - starts);
     let Some(rate) = forecast::work_rate(walked, slots, known, forecast::enough_work(length))
     else {
         return Ok(None);
     };
-    let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
+    let until = window.map(|(starts, resets)| hours_to_reset(starts, resets, resets <= now, now));
     let left_minutes =
         forecast::work_left(left, rate, forecast::work_fast(length), until).map(|(low, likely)| {
             MinutesLeft {
