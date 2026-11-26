@@ -373,7 +373,7 @@ fn cmd_usage_limit(
         .as_deref()
         .map(|since| time::between(since, None, now, "--"))
         .transpose()?;
-    let (mut used, mut shares) = usage::breakdown(db, account, limit, between, by, now)?;
+    let (mut used, mut shares, line) = usage::breakdown(db, account, limit, between, by, now)?;
     usage::fold(&mut used, shares.as_mut(), args.top);
     Ok(print(
         json,
@@ -400,8 +400,8 @@ fn cmd_usage_limit(
                     shares.as_ref().map(|shares| (limit, shares)),
                     status.at,
                 );
-            if let Some(note) = usage::footnote(&used, account, limit, between, status.at) {
-                text += &format!("\n{note}");
+            if let Some(line) = &line {
+                text += &format!("\n{line}");
             }
             text
         },
