@@ -363,12 +363,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
     // still of: the deciding one with no work rate, as `standing` says it,
     // or else the one with the fewest hours of work left. With every one
     // reset since, what the new windows hold is as unknown.
-    if let State::AsOf {
-        read_at,
-        worked_minutes,
-        ..
-    } = account.state
-        && worked_minutes > 0
+    if let Some((read_at, worked_minutes)) = account.worked_since_read()
         && account.limits.iter().any(|limit| account.stands_by(limit))
     {
         let still = |limit: &&Limit| account.stands_by(limit) && limit.reset_since.is_none();

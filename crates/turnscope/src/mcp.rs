@@ -719,7 +719,9 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
         }
     };
     let mut used = usage::usage(ask.db, &query)?;
-    let mut shares = limit.and_then(|limit| usage::shares(&used, limit, between));
+    let mut shares = account
+        .zip(limit)
+        .and_then(|(account, limit)| usage::shares(&used, account, limit, between));
     let folded = usage::fold(&mut used, shares.as_mut(), top);
     // Added up with the rest, the caller's own session has a line of its own.
     let own_line = yours
@@ -768,7 +770,10 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     if let Some(line) = own_line {
         out += &line;
     }
-    if let Some(note) = limit.and_then(|limit| usage::footnote(&used, limit, between)) {
+    if let Some(note) = account
+        .zip(limit)
+        .and_then(|(account, limit)| usage::footnote(&used, account, limit, between, minute))
+    {
         out += &format!("\n{note}\n");
     }
     // Asked since a time, as the calendar week for "this week" of a weekly

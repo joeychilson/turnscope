@@ -149,6 +149,20 @@ impl Account {
         }
     }
 
+    /// When it was last read, and the minutes agents here worked on it
+    /// since, when they did: what's left now isn't known, as that read
+    /// holds none of that work.
+    pub fn worked_since_read(&self) -> Option<(i64, i64)> {
+        match self.state {
+            State::AsOf {
+                read_at,
+                worked_minutes,
+                ..
+            } if worked_minutes > 0 => Some((read_at, worked_minutes)),
+            _ => None,
+        }
+    }
+
     /// Why none of its limits are known: none were read, and it isn't read
     /// now. One read with none, as a key whose provider Turnscope doesn't
     /// ask, may still draw on credit or a spend cap.

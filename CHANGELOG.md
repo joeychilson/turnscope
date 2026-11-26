@@ -56,6 +56,14 @@
   cost over the limit's size, not its part of the cost here, and a last
   line of an answer says how much of what's used was spent elsewhere with
   the key.
+- **No shares of a limit are given from a read that's out of date** while
+  your agents have worked on it since, in `usage --limit`,
+  `explain_usage` and the panel's Used most, as `check_limits` already
+  can't tell then. The answers say why. Before, the last read's use was
+  spread over work it doesn't hold.
+- **A key's sessions that cost more than its last read says is used say
+  both**: "Your agents here account for $12.00; the last read, at 11:50,
+  says $9.00 is used."
 - **Whether more hours fit isn't said of a read that's out of date** when
   your agents have worked on the account since it: `check_limits` and
   `status --hours` say what was left then, and how long they've worked.

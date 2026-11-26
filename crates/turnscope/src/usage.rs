@@ -470,7 +470,7 @@ pub fn breakdown(
     now: i64,
 ) -> Result<(Usage, Option<Shares>)> {
     let usage = usage(db, &query(account, Some(limit), between, by, now))?;
-    let shares = shares(&usage, limit, between);
+    let shares = shares(&usage, account, limit, between);
     Ok((usage, shares))
 }
 
@@ -564,15 +564,17 @@ pub fn unreset(
 /// the points used: approximate, as providers say how much of a limit is
 /// used but not by what. None for a window that reset since it was read,
 /// as how much of the new one is used isn't known, for usage with no known
-/// price (`footnote`), as a share is of cost, and for usage asked `between`
-/// other times than the window's.
+/// price, as a share is of cost, for a limit read before work agents here
+/// did since (`Account::worked_since_read`), and for usage asked `between`
+/// other times than the window's: `footnote` says why.
 pub fn shares(
     usage: &Usage,
+    account: &crate::status::Account,
     limit: &crate::status::Limit,
     between: Option<(i64, i64)>,
 ) -> Option<Shares> {
     window(limit, between)?;
-    if usage.total.unpriced > 0 {
+    if usage.total.unpriced > 0 || account.worked_since_read().is_some() {
         return None;
     }
     // Split by the cost seen, a key's spend elsewhere, which no agent here
@@ -592,15 +594,25 @@ pub fn shares(
 }
 
 /// The line under `usage` of `limit` over its window, if any: why it gives
-/// no `shares`, when some of it has no known price; or, of a key's limit in
-/// dollars, how much of what's used it doesn't account for, when its
-/// shares, each of the limit's size, add up to less.
+/// no `shares`, when its read is out of date or some of it has no known
+/// price; or, of a key's limit in dollars, what its shares, each of the
+/// limit's size, add up to besides what its read says is used.
 pub fn footnote(
     usage: &Usage,
+    account: &crate::status::Account,
     limit: &crate::status::Limit,
     between: Option<(i64, i64)>,
+    now: i64,
 ) -> Option<String> {
     window(limit, between)?;
+    if let Some((read_at, _)) = account.worked_since_read() {
+        return Some(format!(
+            "No shares of {} are given: it was last read at {}, and your agents have worked on \
+             it since.",
+            limit.named(),
+            time::clock(read_at, now)
+        ));
+    }
     if usage.total.unpriced > 0 {
         return Some(format!(
             "No shares of {} are given: {} with no known price, and a share is of cost.",
@@ -611,11 +623,18 @@ pub fn footnote(
     let money = limit.money.filter(|_| limit.is_key())?;
     let used = money.size_usd - money.left_usd;
     let (seen, said) = (dollars(usage.total.cost_usd), dollars(used));
-    (usage.total.cost_usd < used && seen != said).then(|| {
-        format!(
+    if seen == said {
+        return None;
+    }
+    Some(match usage.total.cost_usd < used {
+        true => format!(
             "Your agents here account for {seen} of the {said} used; the rest was spent \
              elsewhere with this key."
-        )
+        ),
+        false => format!(
+            "Your agents here account for {seen}; the last read, at {}, says {said} is used.",
+            time::clock(limit.read_at, now)
+        ),
     })
 }
 
@@ -906,7 +925,7 @@ mod tests {
         let (usage, none) = shares(&db);
         assert!(none.is_none());
         assert_eq!(
-            footnote(&usage, weekly, None).as_deref(),
+            footnote(&usage, account, weekly, None, now).as_deref(),
             Some(
                 "No shares of Weekly are given: 1 response with no known price, and a share is of cost."
             )

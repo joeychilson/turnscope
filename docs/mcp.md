@@ -268,10 +268,15 @@ window runs and to leave `since` out for them. Of a limit in dollars, as
 an OpenRouter key's own, a share is the cost over the limit's size, and
 when the usage here cost less than what's used, a line says so: `Your
 agents here account for $0.00 of the $9.00 used; the rest was spent
-elsewhere with this key.` A limit whose window reset since it was read
-gives no shares, so no line says how to get them. Usage
-with no known price gives none either, as a share is of cost, and a line
-says so. A key's own limit counts only the usage made with that key.
+elsewhere with this key.` When it cost more, as when some was spent
+since the key's last read, the line gives both: `Your agents here
+account for $12.00; the last read, at 11:50, says $9.00 is used.` A limit
+whose window reset since it was read gives no shares, so no line says how
+to get them. Usage with no known price gives none either, as a share is
+of cost, nor does a limit whose account's last read is out of date while
+your agents have worked on it since, as `check_limits` can't tell then
+either; a line says why. A key's own limit counts only the usage made
+with that key.
 
 When the caller's account isn't known and neither `account` nor `all` is
 given, the answer is every account's, and opens by saying so; with

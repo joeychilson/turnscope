@@ -1043,6 +1043,25 @@ fn an_account_with_no_read_for_half_an_hour_shows_as_of_its_last() {
         fit(),
         "Claude Max (me@example.com): whether 0.4 more hours of work fit can't be told: 5 hours had 25% left at 11:25, and your agents have worked about 40m since."
     );
+    // Nor is what share of a limit each session took: the read holds none
+    // of that work.
+    let unshared = "No shares of 5 hours are given: it was last read at 11:25, and your agents have worked on it since.";
+    let output = turnscope(
+        data.path(),
+        &["usage", "--account", "claude", "--limit", "5h"],
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains(unshared) && !text.contains("% of"), "{text}");
+    let answer = ask(
+        "claude",
+        data.path(),
+        "explain_usage",
+        r#"{"account":"claude","limit":"5h"}"#,
+    );
+    assert!(
+        answer.contains(unshared) && !answer.contains("% of"),
+        "{answer}"
+    );
     // Its 5 hours reset since the read, at 11:55: the read is still of
     // Weekly.
     db.execute(
@@ -1132,6 +1151,23 @@ fn a_limit_in_dollars_is_shared_by_dollars() {
     );
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.trim_end().ends_with(elsewhere), "{text}");
+    // More than the key's last read says is used, as when some was spent
+    // since: its shares, of the limit's size, are left as they add up.
+    Connection::open(data.path().join("turnscope.db"))
+        .unwrap()
+        .execute("UPDATE response SET cost = 6.0 WHERE agent = 'pi'", [])
+        .unwrap();
+    let answer = ask(
+        "claude",
+        data.path(),
+        "explain_usage",
+        r#"{"account":"openrouter","limit":"key"}"#,
+    );
+    let more = "Your agents here account for $12.00; the last read, at 11:50, says $9.00 is used.";
+    assert!(
+        answer.contains(" | $12.00 | 2 | 60% |\n") && answer.contains(more),
+        "{answer}"
+    );
 }
 
 /// Credits never reset, so their usage runs from the month's start, and
