@@ -12,6 +12,8 @@
   month: "$155 this month" no longer comes with "On pace for about $150".
 - **Credits used up say so** in their row, not "Credits back later": they
   come back only when bought.
+- **A limit used up again after its use was given back is told again**,
+  and told back when its window ends. Only the first time was.
 - **"Refreshing limits…" shows until the limits are read.** Hiding an
   account, changing a setting or connecting an agent meanwhile ended it
   early, and ⌘R could start another refresh.

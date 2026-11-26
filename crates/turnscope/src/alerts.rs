@@ -90,13 +90,20 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
         // read that worked, and one minutes after it is a sign-in since.
         let exact = window < 0 || kind == Kind::SignIn;
         let drift = if exact { 0 } else { forecast::DRIFT };
+        // Told in this window, and not ended since: a reset ends its
+        // warnings, and the limit used up again ends the reset.
         let known = tx
             .prepare_cached(
-                "SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3 AND window BETWEEN ?4 - ?5 AND ?4 + ?5",
+                "SELECT 1 FROM alert a WHERE account = ?1 AND limit_key = ?2 AND kind = ?3
+                     AND window BETWEEN ?4 - ?5 AND ?4 + ?5
+                     AND NOT EXISTS (SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2
+                         AND kind = CASE ?3 WHEN 'reset' THEN 'usedUp' ELSE 'reset' END
+                         AND window BETWEEN ?4 - ?5 AND ?4 + ?5 AND id > a.id)",
             )?
-            .query_row(params![account.id, key, kind.as_str(), window, drift], |_| {
-                Ok(())
-            })
+            .query_row(
+                params![account.id, key, kind.as_str(), window, drift],
+                |_| Ok(()),
+            )
             .optional()?;
         if known.is_some() {
             return Ok(());
@@ -385,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn a_limit_used_up_is_told_once_and_its_return_after() {
+    fn a_limit_used_up_is_told_once_and_its_return_after_each_time() {
         let (_dir, mut db) = open();
         let used_up = status(DAY, 0, Outlook::UsedUp { back: None });
         let raised = raise(&mut db, &used_up).unwrap();
@@ -398,6 +405,13 @@ mod tests {
         // Use given back within the window: it's back.
         let back = status(DAY + MINUTE, 60, LASTS);
         assert_eq!(kinds(&raise(&mut db, &back).unwrap()), [Kind::Reset]);
+        // Used up again in the same window, and back once it ends.
+        let again = status(2 * DAY, 0, Outlook::UsedUp { back: None });
+        assert_eq!(kinds(&raise(&mut db, &again).unwrap()), [Kind::UsedUp]);
+        assert!(raise(&mut db, &again).unwrap().is_empty(), "told once");
+        let ended = status(10 * DAY + MINUTE, 100, LASTS);
+        assert_eq!(kinds(&raise(&mut db, &ended).unwrap()), [Kind::Reset]);
+        assert!(raise(&mut db, &ended).unwrap().is_empty(), "told once");
     }
 
     /// An OpenRouter account whose credits, `size` dollars of them, have
