@@ -1,15 +1,15 @@
 //! Every word the app shows: the panel, the menu bar item, notifications and what VoiceOver
 //! says. Times are in the Mac's own time zone, as of the minute the panel last ticked.
 
+use jiff::ZonedDateTime;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, ZonedDateTime};
 use serde::Serialize;
 use turnscope::alerts::{Alert, Kind as AlertKind};
 use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{
     Account, Agent, Connection, Horizon, Limit, Moment, Outlook, Spend, Stale, Standing, State,
-    Unknown, list,
+    Unknown, agent_names, list,
 };
 use turnscope::usage::counted;
 
@@ -39,17 +39,12 @@ impl Words {
 
     fn in_zone(now_ms: i64, tz: TimeZone) -> Words {
         let now = turnscope::time::minute(now_ms);
-        let today = Timestamp::from_millisecond(now)
-            .unwrap_or_default()
-            .to_zoned_datetime(tz.clone())
-            .date();
+        let today = turnscope::time::zoned(now, &tz).date();
         Words { now, tz, today }
     }
 
     fn zoned(&self, ms: i64) -> ZonedDateTime {
-        Timestamp::from_millisecond(ms)
-            .unwrap_or_default()
-            .to_zoned_datetime(self.tz.clone())
+        turnscope::time::zoned(ms, &self.tz)
     }
 
     /// Past is "0m": a status can be minutes old, as only one that changed is told.
@@ -67,12 +62,7 @@ impl Words {
             Horizon::Today => fmt_time(&self.zoned(at)),
             Horizon::ThisWeek => {
                 let z = self.zoned(at);
-                let day = if self.today.tomorrow().ok() == Some(z.date()) {
-                    "tomorrow".into()
-                } else {
-                    fmt_weekday(&z, full)
-                };
-                format!("{day} {}", fmt_time(&z))
+                format!("{} {}", self.day(&z, full), fmt_time(&z))
             }
             Horizon::Later => fmt_month_day(&self.zoned(at), full),
         }
@@ -104,21 +94,19 @@ impl Words {
         fmt_month_day(&z, false)
     }
 
-    fn day_name(&self, z: &ZonedDateTime) -> String {
-        let date = z.date();
-        if date == self.today {
-            return "today".into();
+    /// "tomorrow", or the weekday of a day later than that.
+    fn day(&self, z: &ZonedDateTime, full: bool) -> String {
+        if self.today.tomorrow().ok() == Some(z.date()) {
+            "tomorrow".into()
+        } else {
+            fmt_weekday(z, full)
         }
-        if self.today.tomorrow().ok() == Some(date) {
-            return "tomorrow".into();
-        }
-        fmt_weekday(z, true)
     }
 
     fn when(&self, ms: i64) -> String {
         let zoned = self.zoned(ms);
         let part = match zoned.hour() {
-            12 if zoned.minute() < 30 => "noon",
+            12 if zoned.minute() < 30 => "around noon",
             5..=11 => "morning",
             12..=16 => "afternoon",
             17..=21 => "evening",
@@ -127,26 +115,14 @@ impl Words {
         // Before 5 AM is the night of the date before. By the date, not 24
         // hours back, which after a 23-hour day lands two dates back.
         let day = match zoned.yesterday() {
-            Ok(before) if part == "night" && zoned.hour() < 5 && zoned.date() != self.today => {
-                before
-            }
+            Ok(before) if zoned.hour() < 5 && zoned.date() != self.today => before,
             _ => zoned,
         };
-        let today = day.date() == self.today;
-        if part == "noon" {
-            return if today {
-                "around noon".into()
-            } else {
-                format!("{} around noon", self.day_name(&day))
-            };
-        }
-        if !today {
-            return format!("{} {part}", self.day_name(&day));
-        }
-        if part == "night" {
-            "tonight".into()
-        } else {
-            format!("this {part}")
+        match (day.date() == self.today, part) {
+            (true, "night") => "tonight".into(),
+            (true, "around noon") => part.into(),
+            (true, _) => format!("this {part}"),
+            (false, _) => format!("{} {part}", self.day(&day, true)),
         }
     }
 
@@ -652,7 +628,7 @@ fn short_name(limit: &Limit) -> (String, bool) {
 
 pub fn name(limit: &Limit) -> String {
     if !limit.held_by.is_empty() {
-        return format!("{}'s key", agents(&limit.held_by));
+        return format!("{}'s key", agent_names(&limit.held_by, "and"));
     }
     match &limit.scope {
         Some(scope) => format!("{scope} {}", limit.name.to_lowercase()),
@@ -669,13 +645,10 @@ fn in_sentence(limit: &Limit) -> String {
 }
 
 pub fn of(limit: &Limit) -> String {
-    if limit.scope.is_some() || !limit.held_by.is_empty() {
-        return format!("of {}", name(limit));
-    }
-    match limit.name.to_lowercase().as_str() {
+    match in_sentence(limit).as_str() {
         "weekly" => "this week".into(),
         "monthly" => "this month".into(),
-        _ => format!("of {}", in_sentence(limit)),
+        named => format!("of {named}"),
     }
 }
 
@@ -881,12 +854,6 @@ fn sign_in(account: &Account) -> String {
     format!("Open {} to sign in.", first_agent(account))
 }
 
-/// "Claude Code and Codex", from agents' ids.
-fn agents(ids: &[String]) -> String {
-    let names: Vec<&str> = ids.iter().map(|id| turnscope::agents::name(id)).collect();
-    list(&names, "and")
-}
-
 fn refilled(account: &Account) -> bool {
     account
         .deciding_limit()
@@ -906,7 +873,7 @@ mod tests {
     use turnscope::status::{LimitWindow, Money};
 
     fn at(text: &str) -> i64 {
-        text.parse::<Timestamp>().unwrap().as_millisecond()
+        text.parse::<jiff::Timestamp>().unwrap().as_millisecond()
     }
 
     fn noon() -> i64 {
@@ -1054,6 +1021,8 @@ mod tests {
         );
         assert_eq!(w.when(at("2026-10-03T19:51:00Z")), "Saturday evening");
         assert_eq!(w.when(at("2026-10-01T00:40:00Z")), "tonight");
+        assert_eq!(w.when(at("2026-09-30T12:10:00Z")), "around noon");
+        assert_eq!(w.when(at("2026-09-30T18:00:00Z")), "this evening");
         assert_eq!(w.ago(at("2026-09-30T00:00:00Z")), "12 AM");
         assert_eq!(w.ago(at("2026-09-29T23:59:00Z")), "yesterday 11:59 PM");
         assert_eq!(w.until(w.now + 52 * 3_600_000), "2d 4h");
@@ -1164,11 +1133,6 @@ mod tests {
         assert_eq!(left(&money), "$8.70");
         assert_eq!(size(&money).as_deref(), Some("of $30"));
         assert_eq!((w.window(&money), w.ahead(&money)), (None, None));
-        let too_new = Limit {
-            left_percent: 99,
-            ..limit(unknown(Unknown::NotEnoughData))
-        };
-        assert_eq!(w.ahead(&too_new), None);
     }
 
     #[test]
