@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Hiding an account or changing a setting works while history is read
+  again after an update.** Taking out what the older version had read held
+  the database for up to 75 s on a made-up year of heavy use, so the change
+  waited 10 s and went back. Now it's taken out a second at a time, and no
+  write waited over 3.4 s.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

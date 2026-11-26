@@ -133,8 +133,9 @@ impl Known {
     /// Its reader is recorded when the read ends, over when what it made is
     /// taken out, so a file taken out and then not read, as when the process
     /// ends between the two, never looks read. The cost: one that can't be
-    /// read yet is taken out again at each catch-up, 23 to 25 ms among
-    /// 120,000 responses (2026-11-14).
+    /// read yet is taken out again at each catch-up, in a write of its own,
+    /// 6 ms of CPU and 78 ms in all among 876,086 made-up responses
+    /// (November 2026).
     fn resume(&self, stat: &Stat, older: &mut Vec<i64>) -> Resume {
         if self.readers < READERS {
             older.push(self.id);
@@ -189,9 +190,9 @@ pub fn all_read(db: &Connection) -> Result<bool> {
 }
 
 /// The files under `home` that are new, changed, or last read with an older
-/// reader, with where to read each from. A moved file's row moves with it,
-/// and what an older reader made of a file is taken out.
-fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
+/// reader, with where to read each from, and the ids of those last read
+/// with an older reader. A moved file's row moves with it.
+fn due(db: &mut Connection, home: &Path) -> Result<(Vec<Due>, Vec<i64>)> {
     // By the path's bytes: a `PathBuf` hashes component by component. With
     // 5,700 files, a catch-up that read nothing ran 60M fewer instructions.
     let mut known: HashMap<OsString, Known> = db
@@ -281,20 +282,39 @@ fn due(db: &mut Connection, home: &Path) -> Result<Vec<Due>> {
         });
     }
 
-    if !renames.is_empty() || !older.is_empty() {
+    if !renames.is_empty() {
         let tx = crate::db::write(db)?;
-        if !renames.is_empty() {
-            let mut rename = tx.prepare_cached("UPDATE file SET path = ?1 WHERE id = ?2")?;
-            for (id, to) in &renames {
-                rename.execute(params![to, id])?;
-            }
+        let mut rename = tx.prepare_cached("UPDATE file SET path = ?1 WHERE id = ?2")?;
+        for (id, to) in &renames {
+            rename.execute(params![to, id])?;
         }
-        if !older.is_empty() {
-            read_again(&tx, &older)?;
-        }
+        drop(rename);
         tx.commit()?;
     }
-    Ok(due)
+    Ok((due, older))
+}
+
+/// Write in turns, each one write of at most `HOLD` begun `PAUSE` after the
+/// last ended, at `ended`. `write` writes while its second argument says
+/// the turn lasts, and says whether there's more.
+fn in_turns(
+    db: &mut Connection,
+    ended: &mut Option<Instant>,
+    mut write: impl FnMut(&Transaction, &dyn Fn() -> bool) -> Result<bool>,
+) -> Result<()> {
+    loop {
+        if let Some(at) = *ended {
+            std::thread::sleep(PAUSE.saturating_sub(at.elapsed()));
+        }
+        let tx = crate::db::write(db)?;
+        let began = Instant::now();
+        let more = write(&tx, &|| began.elapsed() < HOLD)?;
+        tx.commit()?;
+        *ended = Some(Instant::now());
+        if !more {
+            return Ok(());
+        }
+    }
 }
 
 /// Read what's new in every agent's history under `home`; whether any file
@@ -309,7 +329,13 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     // Again: a newer one may have written while this waited for the lock.
     crate::db::writing(db)?;
 
-    let due = due(db, home)?;
+    let (due, older) = due(db, home)?;
+    // Paused between shares too: started at once, the next share's write
+    // kept another process's waiting through both, up to 1.9 s.
+    let mut ended: Option<Instant> = None;
+    if !older.is_empty() {
+        read_again(db, &older, &mut ended)?;
+    }
     let mut wrote = false;
     let mut projects = HashMap::new();
     if !due.is_empty() {
@@ -330,33 +356,24 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
                     }
                 }
             });
-            // Between shares too: started at once, the next share's write
-            // kept another process's waiting through both, up to 1.9 s.
-            let mut committed: Option<Instant> = None;
             for (share, read) in reads {
                 let mut files = share.iter().zip(read).peekable();
-                while files.peek().is_some() {
-                    if let Some(at) = committed {
-                        std::thread::sleep(PAUSE.saturating_sub(at.elapsed()));
-                    }
-                    let tx = crate::db::write(db)?;
-                    let derived = Derived::load(&tx)?;
+                in_turns(db, &mut ended, |tx, lasts| {
+                    let derived = Derived::load(tx)?;
                     // Each folder's logins, read once a write: Codex writes
                     // limits in every rollout.
                     let mut held = HashMap::new();
-                    let began = Instant::now();
-                    while let Some((due, read)) = files.next_if(|_| began.elapsed() < HOLD) {
+                    while let Some((due, read)) = files.next_if(|_| lasts()) {
                         match read {
                             Ok(read) => {
-                                write(&tx, due, read, home, &derived, &mut projects, &mut held)?;
+                                write(tx, due, read, home, &derived, &mut projects, &mut held)?;
                                 wrote = true;
                             }
-                            Err(error) => failed(&tx, due, &error)?,
+                            Err(error) => failed(tx, due, &error)?,
                         }
                     }
-                    tx.commit()?;
-                    committed = Some(Instant::now());
-                }
+                    Ok(files.peek().is_some())
+                })?;
             }
             Ok(())
         })?;
@@ -624,27 +641,34 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
 /// start. The sessions only such files hold lose their title and parent, as
 /// `SESSION` would keep the older reader's, and keep their project: worked
 /// out again, a worktree removed since is a project of its own.
-fn read_again(tx: &Transaction, files: &[i64]) -> Result<()> {
-    // One transaction, not split as reading is: it held the lock at most
-    // 1.24 s on 3,000 files and 120,000 responses (2026-11-14).
-    tx.execute("CREATE TEMP TABLE again (file INTEGER PRIMARY KEY)", [])?;
-    let mut again = tx.prepare("INSERT INTO again (file) VALUES (?1)")?;
-    for file in files {
-        again.execute([file])?;
-    }
-    drop(again);
-    // In one statement each: `response.file` has no index, so a statement a
-    // file would scan the table once for each.
-    tx.execute_batch(
-        "DELETE FROM response WHERE file IN (SELECT file FROM again);
-         UPDATE session SET title = NULL, title_rank = -1, parent = NULL
-             WHERE id IN (SELECT session FROM session_file WHERE file IN (SELECT file FROM again))
-             AND NOT EXISTS (SELECT 1 FROM session_file held
-                 WHERE held.session = session.id AND held.file NOT IN (SELECT file FROM again));
-         DELETE FROM session_file WHERE file IN (SELECT file FROM again);
-         DROP TABLE again;",
-    )?;
-    Ok(())
+///
+/// All of them before any is read again, as a response two files report
+/// would keep the older reader's counts (`Response::merge`), and in turns
+/// as reading is: in one write, over 876,086 made-up responses on a busy
+/// Mac, another process's write waited 59 to 75 s; in turns, at most 3.4 s
+/// (November 2026).
+fn read_again(db: &mut Connection, files: &[i64], ended: &mut Option<Instant>) -> Result<()> {
+    let mut files = files.iter().peekable();
+    in_turns(db, ended, |tx, lasts| {
+        tx.execute("CREATE TEMP TABLE again (file INTEGER PRIMARY KEY)", [])?;
+        let mut again = tx.prepare("INSERT INTO again (file) VALUES (?1)")?;
+        let mut forget = tx.prepare("DELETE FROM response WHERE file = ?1")?;
+        while let Some(file) = files.next_if(|_| lasts()) {
+            again.execute([file])?;
+            forget.execute([file])?;
+        }
+        drop((again, forget));
+        // A session's files taken out in an earlier turn no longer hold it.
+        tx.execute_batch(
+            "UPDATE session SET title = NULL, title_rank = -1, parent = NULL
+                 WHERE id IN (SELECT session FROM session_file WHERE file IN (SELECT file FROM again))
+                 AND NOT EXISTS (SELECT 1 FROM session_file held
+                     WHERE held.session = session.id AND held.file NOT IN (SELECT file FROM again));
+             DELETE FROM session_file WHERE file IN (SELECT file FROM again);
+             DROP TABLE again;",
+        )?;
+        Ok(files.peek().is_some())
+    })
 }
 
 /// The repository `cwd` is in, as its main working tree, so a subdirectory
@@ -978,20 +1002,29 @@ mod tests {
             std::fs::write(folder.join(format!("{file}.jsonl")), log).unwrap();
         }
         let other = crate::db::open(dir.path()).unwrap();
-        let mut longest = Duration::ZERO;
-        std::thread::scope(|scope| {
-            let reading = scope.spawn(|| ingest(&mut db, home.path(), None));
-            while !reading.is_finished() {
-                let began = Instant::now();
-                other
-                    .execute("UPDATE state SET settings = NULL", [])
-                    .unwrap();
-                longest = longest.max(began.elapsed());
-                std::thread::sleep(Duration::from_millis(100));
+        // Then all of it again, as after an update.
+        for again in [false, true] {
+            if again {
+                read_with_an_older_reader(&db);
             }
-            reading.join().unwrap().unwrap();
-        });
-        assert!(longest < 3 * HOLD, "a write waited {longest:?}");
+            let mut longest = Duration::ZERO;
+            std::thread::scope(|scope| {
+                let reading = scope.spawn(|| ingest(&mut db, home.path(), None));
+                while !reading.is_finished() {
+                    let began = Instant::now();
+                    other
+                        .execute("UPDATE state SET settings = NULL", [])
+                        .unwrap();
+                    longest = longest.max(began.elapsed());
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                reading.join().unwrap().unwrap();
+            });
+            assert!(
+                longest < 3 * HOLD,
+                "a write waited {longest:?}, read again: {again}"
+            );
+        }
     }
 
     #[test]

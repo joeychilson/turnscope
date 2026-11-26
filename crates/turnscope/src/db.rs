@@ -177,6 +177,12 @@ UPDATE account SET full_read_at = read_at, checked_at = read_at;
 -- it's worked out again.
 UPDATE session SET project = NULL WHERE project = '';
 "#,
+    r#"
+-- What an older reader made of a file is taken out a turn at a time
+-- (`ingest::read_again`): without it, each turn would read the whole
+-- table, 0.5 s among 876,086 made-up responses (November 2026).
+CREATE INDEX response_file ON response (file);
+"#,
 ];
 
 /// "TRNS", in the header, so a file with another program's is never written.
