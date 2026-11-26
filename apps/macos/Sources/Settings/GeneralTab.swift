@@ -8,7 +8,7 @@ struct GeneralTab: View {
     @Environment(Updater.self) private var updater
     @Environment(\.closePanel) private var closePanel
     @State private var copiedDiagnostics = false
-    @State private var copyTask: Task<Void, Never>?
+    @State private var copies = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -55,39 +55,41 @@ struct GeneralTab: View {
         }
     }
 
-    private var notifications: some View {
-        let settings = bridge.panel.settings
-        return SettingGroup(title: "Notify me when") {
-            if notifier.denied {
-                SettingRow(title: "Notifications are off for Turnscope") {
-                    Button("Open") {
-                        closePanel()
-                        notifier.openSettings()
+    /// Shown once the settings are read: before, a switch would show a guess.
+    @ViewBuilder private var notifications: some View {
+        if let current = bridge.panel.settings.notify {
+            SettingGroup(title: "Notify me when") {
+                if notifier.denied {
+                    SettingRow(title: "Notifications are off for Turnscope") {
+                        Button("Open") {
+                            closePanel()
+                            notifier.openSettings()
+                        }
+                        .buttonStyle(PillButton())
+                        .accessibilityLabel("Open Notifications in System Settings")
                     }
-                    .buttonStyle(PillButton())
-                    .accessibilityLabel("Open Notifications in System Settings")
+                    .transition(appears)
                 }
-                .transition(appears)
+                Group {
+                    SettingRow(
+                        "A limit will run out",
+                        help: "Before it resets, at your pace",
+                        isOn: notify(\.runningOut, in: current)
+                    )
+                    SettingRow("A limit is used up", isOn: notify(\.usedUp, in: current))
+                    SettingRow(
+                        "A limit is back",
+                        help: "After it was used up, once the account can be used again",
+                        isOn: notify(\.reset, in: current)
+                    )
+                    SettingRow(
+                        "An account needs signing in",
+                        help: "Its login was refused, so its limits can't be read",
+                        isOn: notify(\.signIn, in: current)
+                    )
+                }
+                .disabled(bridge.panel.stopped)
             }
-            Group {
-                SettingRow(
-                    "A limit will run out",
-                    help: "Before it resets, at your pace",
-                    isOn: notify(\.runningOut)
-                )
-                SettingRow("A limit is used up", isOn: notify(\.usedUp))
-                SettingRow(
-                    "A limit is back",
-                    help: "After it was used up, once the account can be used again",
-                    isOn: notify(\.reset)
-                )
-                SettingRow(
-                    "An account needs signing in",
-                    help: "Its login was refused, so its limits can't be read",
-                    isOn: notify(\.signIn)
-                )
-            }
-            .disabled(!settings.canEditNotify)
         }
     }
 
@@ -127,6 +129,7 @@ struct GeneralTab: View {
                     }
                 }
             }
+            .flashesCopied($copiedDiagnostics, copies: copies)
             if updater.available {
                 SettingRow(
                     "Check automatically",
@@ -140,25 +143,19 @@ struct GeneralTab: View {
     }
 
     private func copyDiagnostics() {
-        copyTask?.cancel()
-        copyTask = Task { @MainActor in
-            let report = await bridge.diagnostics()
-            guard !Task.isCancelled else { return }
-            copyToPasteboard(report)
-            withAnimation(.easeOut(duration: 0.12)) { copiedDiagnostics = true }
-            try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.16)) { copiedDiagnostics = false }
+        Task {
+            copyToPasteboard(await bridge.diagnostics())
+            copies += 1
         }
     }
 
-    private func notify(_ keyPath: WritableKeyPath<NotifySettings, Bool>) -> Binding<Bool> {
+    private func notify(_ keyPath: WritableKeyPath<NotifySettings, Bool>, in notify: NotifySettings) -> Binding<Bool> {
         Binding(
-            get: { bridge.panel.settings.notify?[keyPath: keyPath] ?? true },
+            get: { notify[keyPath: keyPath] },
             set: { value in
-                guard var current = bridge.panel.settings.notify else { return }
-                current[keyPath: keyPath] = value
-                bridge.send(.setNotify(notify: current))
+                var changed = notify
+                changed[keyPath: keyPath] = value
+                bridge.send(.setNotify(notify: changed))
             }
         )
     }

@@ -39,19 +39,6 @@ fn backoff(reads: i64) -> i64 {
         .min(BACKED_OFF)
 }
 
-/// Whether `problem` came with an answer, and how long it asked to be left:
-/// of two, the one kept (`keys`).
-fn asked_for(problem: &Problem) -> (bool, Option<i64>) {
-    match problem {
-        Problem::Unavailable {
-            answered,
-            retry_after,
-            ..
-        } => (*answered, *retry_after),
-        Problem::SignIn | Problem::Expired => (false, None),
-    }
-}
-
 /// How long an account's read is waited for, all its requests together:
 /// `guard` reads limits inside an agent's hook, which holds the agent.
 const WAIT: Duration = Duration::from_secs(15);
@@ -137,7 +124,7 @@ struct Gathered {
 }
 
 /// Why limits are read. Whatever the ask, a provider that asked to be left
-/// is left (`backoff`).
+/// is left, until its `Retry-After` (`retry_at`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
     /// As they come due: every [`DUE`] in use, every `IDLE` not.
@@ -202,7 +189,7 @@ fn refresh_with(
         (Ask::Force, false) | (Ask::Scheduled, true) => CLAIM,
         (Ask::Scheduled, false) => DUE,
     };
-    if !crate::db::claim(db, crate::db::Claim::Limits, now, gap, now)? {
+    if !crate::db::claim(db, "limits_at", now, gap, now)? {
         return Ok(false);
     }
     let mut gathered = gather(db, home, agents, providers)?;
@@ -353,21 +340,20 @@ fn gather(
     ))?;
     for &agent in agents {
         let folders = agent.installed_folders(home);
-        // Each folder whose logins were read, with the providers they name.
-        let mut read: Vec<(String, Vec<String>)> = Vec::new();
-        // Each folder whose logins couldn't be read, with why.
-        let mut failed: BTreeMap<String, String> = BTreeMap::new();
-        for folder in &folders {
+        // Each folder listed, with the providers its logins name, or why
+        // they couldn't be read.
+        let mut found: BTreeMap<String, std::result::Result<Vec<String>, String>> = BTreeMap::new();
+        for listed in &folders {
+            let folder = listed.to_string_lossy().into_owned();
             // A folder whose logins can't be read keeps what it held, and
             // its account says why (`record`).
-            let logins = match agent.logins(folder, home) {
+            let logins = match agent.logins(listed, home) {
                 Ok(logins) => logins,
                 Err(error) => {
-                    failed.insert(folder.to_string_lossy().into_owned(), error.to_string());
+                    found.insert(folder, Err(error.to_string()));
                     continue;
                 }
             };
-            let folder = folder.to_string_lossy().into_owned();
             let mut named = Vec::new();
             for login in logins {
                 let mut held = login.credential.and_then(|credential| {
@@ -407,7 +393,7 @@ fn gather(
                         .hold(credential);
                 }
             }
-            read.push((folder, named));
+            found.insert(folder, Ok(named));
         }
         // A login gone from a folder read is signed out of, and so is every
         // login of a folder no longer listed. A home that can't be listed,
@@ -416,18 +402,13 @@ fn gather(
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })? {
             let (folder, provider, account): (String, String, String) = row?;
-            if let Some(why) = failed.get(&folder) {
-                unreadable.entry(account).or_insert_with(|| why.clone());
-                continue;
-            }
-            let gone = match read.iter().find(|(read, _)| *read == folder) {
-                Some((_, named)) => !named.contains(&provider),
-                None => {
-                    listable
-                        && !folders
-                            .iter()
-                            .any(|listed| listed.to_string_lossy() == folder)
+            let gone = match found.get(&folder) {
+                Some(Err(why)) => {
+                    unreadable.entry(account).or_insert_with(|| why.clone());
+                    continue;
                 }
+                Some(Ok(named)) => !named.contains(&provider),
+                None => listable,
             };
             if gone {
                 signed_in.push(SignedIn {
@@ -846,26 +827,25 @@ fn same_plan(tx: &Transaction, answers: &[(Read, Held)]) -> Result<BTreeMap<Stri
         .filter(|(read, _)| read.limits.is_some() || read.problem != Some(Problem::SignIn))
         .map(|(_, held)| held.account.id.as_str())
         .collect();
+    // Every account of a plan is of a provider marked, so these are all of
+    // its accounts stored before.
+    let mut existing = HashSet::new();
     let mut by_provider = tx.prepare("SELECT id FROM account WHERE provider = ?1")?;
     for (&provider, &impl_) in &marked {
         let ids: Vec<String> = by_provider
             .query_map([provider], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         for id in ids {
-            if skip_stored.contains(id.as_str()) {
-                continue;
-            }
-            if let Some(mark) = stored_limits(tx, &id)?.and_then(|limits| impl_.plan_mark(&limits))
+            if !skip_stored.contains(id.as_str())
+                && let Some(mark) =
+                    stored_limits(tx, &id)?.and_then(|limits| impl_.plan_mark(&limits))
                 && let Some(group) = plans.get_mut(&(provider, mark))
             {
-                group.push(id);
+                group.push(id.clone());
             }
+            existing.insert(id);
         }
     }
-    let existing: HashSet<String> = tx
-        .prepare("SELECT id FROM account")?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
     let mut one = BTreeMap::new();
     for ids in plans.values().filter(|ids| ids.len() > 1) {
         let first = ids
@@ -1015,6 +995,14 @@ fn keys(provider: &dyn Provider, keys: &[&Credential], now: i64, by: Instant) ->
         // Of two others, an answer over none, then the longest `Retry-After`,
         // so the log says why it waits.
         Err(error) => {
+            let asked_for = |problem: &Problem| match problem {
+                Problem::Unavailable {
+                    answered,
+                    retry_after,
+                    ..
+                } => (*answered, *retry_after),
+                Problem::SignIn | Problem::Expired => (false, None),
+            };
             problem = Some(match (problem.take(), error) {
                 (Some(Problem::SignIn), _) | (_, Problem::SignIn) => Problem::SignIn,
                 (Some(before), error) if asked_for(&before) > asked_for(&error) => before,
@@ -1787,11 +1775,14 @@ mod tests {
 
     #[test]
     fn a_login_held_in_two_folders_is_sent_once() {
-        let mut held = held("fake:key-a");
+        let (provider, mut held) = fake(Kind::ApiKey, &[]);
         for secret in ["sk-go-a", "sk-go-a", "sk-go-b"] {
             held.hold(credential(secret, true, None));
         }
-        assert_eq!(held.credentials.len(), 2);
+        read(&mut held, now());
+        let mut asked = provider.asked.lock().unwrap().clone();
+        asked.sort();
+        assert_eq!(asked, ["credits", "sk-go-a", "sk-go-b"]);
     }
 
     #[test]
@@ -2146,6 +2137,17 @@ mod tests {
         std::fs::create_dir(folder(".fake-written")).unwrap();
         std::fs::write(home.path().join(".fake-written/login"), "{").unwrap();
         assert_eq!(signed(home.path()), all[..2]);
+        // A folder read whose logins no longer name the provider.
+        std::fs::write(home.path().join(".fake/login"), r#"{"fake-too":"sk-too"}"#).unwrap();
+        let too = Some("fake-too:api".to_owned());
+        assert_eq!(
+            signed(home.path()),
+            [
+                (folder(".fake"), None),
+                (folder(".fake"), too),
+                all[1].clone()
+            ]
+        );
         // A home that can't be listed, as one on a volume that's away, says
         // nothing of its folders.
         assert!(signed(&home.path().join("away")).is_empty());

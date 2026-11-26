@@ -2,14 +2,25 @@
 
 ## Unreleased
 
+- **Codex's responses after fast mode is turned off cost the standard
+  rate**, not the fast one. The history is read again once, to price them
+  anew.
 - **`turnscope guard` passes while the standing isn't known**: before any
   account is read, or while none of its limits are. It exited 1 with an
   error, which a hook shows at every tool call.
+- **A notification clicked as the panel opens shows its account once the
+  limits are read**, even if Settings was opened meanwhile. The account
+  opened on its own later instead.
 - **An API key whose limits were never read doesn't say it has none.** The
   panel says they couldn't be read yet, as `turnscope status` does, not
   "No limit" and "You can keep going".
+- **Settings shows the notification switches once it knows them.** Before
+  the first read, all four showed on, whatever you had set.
 - **A key's pace isn't said once it rounds below what's spent**, late in a
   month: "$155 this month" no longer comes with "On pace for about $150".
+- **Hours of work left are told once an hour of work is measured.** Work
+  in several stretches could add up to just under an hour, and say there
+  was too little to tell.
 - **Credits used up say so** in their row, not "Credits back later": they
   come back only when bought.
 - **A limit used up again after its use was given back is told again**,
@@ -19,9 +30,15 @@
   early, and ⌘R could start another refresh.
 - **Copy Diagnostics lists each line of `app.log` once.** The latest were
   in doctor's notes, then again after them.
+- **A key's limit says whose key it is** in `turnscope status` and agents'
+  answers: "Pi's weekly key limit", not "Weekly key limit", which two keys
+  with the same period both said. `--limit pi` names it.
 - **A login refused or expired names its agents as a list**: "open Claude
   Code, OpenCode or Pi to sign in again", not "open Claude Code or
   OpenCode or Pi".
+- **A ChatGPT plan is read even when one of its model limits isn't
+  understood.** That limit is left out, instead of the whole plan reading
+  as failed.
 - **A refused login is told again after a read that worked in between**,
   however soon. One within 5 minutes of the last read that worked before
   was taken for the same refusal.

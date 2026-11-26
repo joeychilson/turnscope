@@ -340,27 +340,19 @@ impl Subagents<'_> {
     }
 
     fn read(&mut self, child: &str) -> Result<Vec<Turn>> {
-        let sibling = self
-            .own_dir
-            .map(|dir| dir.join(child).join("updates.jsonl"))
-            .filter(|updates| updates.is_file());
-        // One whose folder is gone takes nothing off.
-        let updates = match sibling {
-            Some(updates) => updates,
-            None => {
-                let sessions = self.own_dir.and_then(Path::parent);
-                let folders = self
-                    .folders
-                    .get_or_insert_with(|| sessions.into_iter().flat_map(super::entries).collect());
-                let Some(updates) = folders
-                    .iter()
-                    .map(|folder| folder.join(child).join("updates.jsonl"))
-                    .find(|updates| updates.is_file())
-                else {
-                    return Ok(Vec::new());
-                };
-                updates
-            }
+        let sessions = self.own_dir.and_then(Path::parent);
+        let at = |folder: &Path| {
+            Some(folder.join(child).join("updates.jsonl")).filter(|updates| updates.is_file())
+        };
+        // Beside its parent, or else in any session's folder; one whose
+        // folder is gone takes nothing off.
+        let Some(updates) = self.own_dir.and_then(at).or_else(|| {
+            self.folders
+                .get_or_insert_with(|| sessions.into_iter().flat_map(super::entries).collect())
+                .iter()
+                .find_map(|folder| at(folder))
+        }) else {
+            return Ok(Vec::new());
         };
         let mut turns = Vec::new();
         super::lines(&updates, 0, |bytes| {

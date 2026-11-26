@@ -11,7 +11,6 @@ struct UnusedAccounts: View {
 
     var body: some View {
         let panel = bridge.panel
-        let openAccount = ui.openAccount
         VStack(alignment: .leading, spacing: Row.spacing) {
             Fold(text: label, open: ui.unusedOpen, focus: focus, target: .unusedFold) {
                 ui.toggleUnused(panel: panel)
@@ -19,7 +18,7 @@ struct UnusedAccounts: View {
             if ui.unusedOpen {
                 VStack(spacing: Row.spacing) {
                     ForEach(panel.unused) {
-                        AccountRow(row: $0, isOpen: openAccount == $0.id, focus: focus)
+                        AccountRow(row: $0, focus: focus)
                     }
                     if let hiddenLabel = panel.hiddenFoldLabel {
                         Fold(text: hiddenLabel, open: ui.hiddenShown, focus: focus, target: .hiddenFold) {

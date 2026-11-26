@@ -398,7 +398,7 @@ says how to run it). `status.rs` applies it.
   account is still used up. Showing the account or turning the kind on
   later doesn't bring back the past.
 - An alert waits until the app acknowledges it (`Engine::acknowledge`).
-  Until then the engine tells it again when it starts (`Event::Pending`): a `runningOut` or `usedUp` while its window lasts, or
+  Until then the engine tells it again with its first status: a `runningOut` or `usedUp` while its window lasts, or
   with no window while its limit is still used up; a `reset` for a day; and
   a `signIn` for a day while its account still can't be read.
 

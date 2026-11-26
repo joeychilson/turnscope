@@ -204,9 +204,10 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
     // A copy's entry id is its parent's, under the parent's own
     // session, so it can't name a response of this one.
     let entry = || {
-        (!copy)
-            .then(|| line.id.as_deref().map(|id| format!("{session}:{id}")))
-            .flatten()
+        line.id
+            .as_deref()
+            .filter(|_| !copy)
+            .map(|id| format!("{session}:{id}"))
     };
     let (usage, provider, model, id, at) = match &*line.kind {
         "session_info" if !copy => {
@@ -263,13 +264,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
                     let (Some(provider), Some(model)) = (message.provider.as_deref(), model) else {
                         return;
                     };
-                    if cursor
-                        .model
-                        .as_ref()
-                        .is_none_or(|(p, m)| p != provider || m != model)
-                    {
-                        cursor.model = Some((provider.to_owned(), model.to_owned()));
-                    }
+                    cursor.model = Some((provider.to_owned(), model.to_owned()));
                     // A copy without a response id couldn't be told
                     // from its parent's.
                     let Some(id) = message

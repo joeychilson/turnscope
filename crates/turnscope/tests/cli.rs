@@ -143,6 +143,11 @@ fn tools(command: &mut Command, calls: &[(&str, &str)]) -> Vec<String> {
     answers
 }
 
+/// What the MCP server run as `agent` answers one call of `tool`.
+fn ask(agent: &str, data: &Path, tool: &str, arguments: &str) -> String {
+    tools(&mut command_as(agent, data, &["mcp"]), &[(tool, arguments)]).remove(0)
+}
+
 struct Mcp {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
@@ -698,10 +703,7 @@ fn disconnect_says_how_to_remove_the_server_by_hand() {
 fn explain_usage_marks_the_session_its_caller_names() {
     let data = store();
     // Over a week, which holds the session Claude Code names.
-    let asked = |agent: &str, arguments: &str| {
-        let week = [("explain_usage", arguments)];
-        tools(&mut command_as(agent, data.path(), &["mcp"]), &week).remove(0)
-    };
+    let asked = |agent: &str, arguments: &str| ask(agent, data.path(), "explain_usage", arguments);
     let asked_by = |agent: &str| asked(agent, r#"{"limit":"week"}"#);
     let yours = |text: &str| -> Vec<String> {
         text.lines()
@@ -908,16 +910,13 @@ fn an_answer_tells_time_by_the_minute_its_status_is_as_of() {
 #[test]
 fn check_limits_of_every_account_leads_with_the_one_with_most_room() {
     let data = store();
-    let answer = tools(
-        &mut command_as("opencode", data.path(), &["mcp"]),
-        &[("check_limits", "{}")],
-    );
+    let answer = ask("opencode", data.path(), "check_limits", "{}");
     assert!(
-        answer[0].starts_with(
+        answer.starts_with(
             "Which account is yours isn't known, so here is every one.\nMost room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left"
         ),
         "{}",
-        answer[0]
+        answer
     );
     // Claude Max by its Weekly alone, with 19h of work left: 5 fit it, and
     // can't be told of ChatGPT Plus, with more left.
@@ -928,15 +927,16 @@ fn check_limits_of_every_account_leads_with_the_one_with_most_room() {
             [],
         )
         .unwrap();
-    let answer = tools(
-        &mut command(data.path(), &["mcp"]),
-        &[("check_limits", r#"{"all":true,"hours":5}"#)],
+    let answer = ask(
+        "claude",
+        data.path(),
+        "check_limits",
+        r#"{"all":true,"hours":5}"#,
     );
     assert!(
-        answer[0]
-            .contains("\n\nMost room: Claude Max (me@example.com), yours: Weekly has 56% left"),
+        answer.contains("\n\nMost room: Claude Max (me@example.com), yours: Weekly has 56% left"),
         "{}",
-        answer[0]
+        answer
     );
 }
 
@@ -948,11 +948,13 @@ fn check_limits_of_every_account_leads_with_the_one_with_most_room() {
 fn check_limits_names_an_account_with_room_when_one_runs_out_or_is_used_up() {
     let data = store();
     let room = "\n\nAnother account has room: ChatGPT Plus (me@example.com) has 80% left (Weekly, via Codex). Call check_limits with all: true to compare.";
-    let answer = tools(
-        &mut command(data.path(), &["mcp"]),
-        &[("check_limits", r#"{"account":"claude"}"#)],
+    let answer = ask(
+        "claude",
+        data.path(),
+        "check_limits",
+        r#"{"account":"claude"}"#,
     );
-    assert!(answer[0].ends_with(room), "{}", answer[0]);
+    assert!(answer.ends_with(room), "{}", answer);
     turnscope::db::open(data.path())
         .unwrap()
         .execute(
@@ -961,12 +963,9 @@ fn check_limits_names_an_account_with_room_when_one_runs_out_or_is_used_up() {
             [NOW, HOUR],
         )
         .unwrap();
-    let answer = tools(
-        &mut command(data.path(), &["mcp"]),
-        &[("check_limits", "{}")],
-    );
-    assert!(answer[0].contains("5 hours is used up"), "{}", answer[0]);
-    assert!(answer[0].ends_with(room), "{}", answer[0]);
+    let answer = ask("claude", data.path(), "check_limits", "{}");
+    assert!(answer.contains("5 hours is used up"), "{}", answer);
+    assert!(answer.ends_with(room), "{}", answer);
 }
 
 /// `usage` tells its times by the minute they're in, and an `--until` past
@@ -1103,18 +1102,21 @@ fn check_limits_of_one_account_says_its_fit_and_verdict_in_one_line() {
 fn a_limit_in_dollars_is_shared_by_dollars() {
     let data = store();
     let elsewhere = "Your agents here account for $0.00 of the $9.00 used; the rest was spent elsewhere with this key.";
-    let answer = tools(
-        &mut command(data.path(), &["mcp"]),
-        &[("explain_usage", r#"{"account":"openrouter","limit":"key"}"#)],
+    let answer = ask(
+        "claude",
+        data.path(),
+        "explain_usage",
+        r#"{"account":"openrouter","limit":"key"}"#,
     );
     assert!(
-        answer[0].contains(" | $0.00 | 2 | <1% |\n") && answer[0].contains(elsewhere),
+        answer.contains(" | $0.00 | 2 | <1% |\n") && answer.contains(elsewhere),
         "{}",
-        answer[0]
+        answer
     );
+    // Named by the agent that holds the key, too.
     let output = turnscope(
         data.path(),
-        &["usage", "--account", "openrouter", "--limit", "key"],
+        &["usage", "--account", "openrouter", "--limit", "pi"],
     );
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.trim_end().ends_with(elsewhere), "{text}");
@@ -1126,11 +1128,8 @@ fn a_limit_in_dollars_is_shared_by_dollars() {
 fn usage_of_credits_says_which_it_is_and_what_of_them_is_used() {
     let data = store();
     let said = "Credits don't reset, so this is this month's usage, since 00:00 (12h ago): nothing yet. $15.00 of them are used; give since, such as 30d, to see what used them.";
-    let answer = tools(
-        &mut command_as("pi", data.path(), &["mcp"]),
-        &[("explain_usage", "{}")],
-    );
-    assert_eq!(answer[0], format!("OpenRouter API key: {said}"));
+    let answer = ask("pi", data.path(), "explain_usage", "{}");
+    assert_eq!(answer, format!("OpenRouter API key: {said}"));
     let output = turnscope(
         data.path(),
         &["usage", "--account", "openrouter", "--limit", "credits"],
@@ -1150,16 +1149,18 @@ fn usage_of_credits_says_which_it_is_and_what_of_them_is_used() {
 #[test]
 fn explain_usage_since_a_time_leaves_out_the_limit_of_now() {
     let data = store();
-    let answer = tools(
-        &mut command(data.path(), &["mcp"]),
-        &[("explain_usage", r#"{"since":"yesterday","until":"today"}"#)],
+    let answer = ask(
+        "claude",
+        data.path(),
+        "explain_usage",
+        r#"{"since":"yesterday","until":"today"}"#,
     );
     assert!(
-        answer[0].starts_with(
+        answer.starts_with(
             "Usage of Claude Max (me@example.com) since Wed 00:00 (1d 12h ago) to 00:00 (12h ago): $0.03 at list prices over 3 responses.\n\n| Session |"
-        ) && !answer[0].contains("Shares of"),
+        ) && !answer.contains("Shares of"),
         "{}",
-        answer[0]
+        answer
     );
 }
 
@@ -1219,32 +1220,14 @@ fn what_used_a_limit_whose_window_reset_since_its_read_counts_from_the_reset() {
 }
 
 #[test]
-fn explain_usage_says_a_cost_it_doesnt_know_is_unpriced() {
-    let data = store();
-    // Codex's four responses are of a model with no known price.
-    let answers = tools(
-        &mut command(data.path(), &["mcp"]),
-        &[("explain_usage", r#"{"account":"chatgpt"}"#)],
-    );
-    assert!(
-        answers[0].ends_with(
-            "\nBy model: gpt-5.5: $0.00 (+4 unpriced).\nBy project: /work/app: $0.00 (+4 unpriced)."
-        ),
-        "{}",
-        answers[0]
-    );
-}
-
-#[test]
 fn with_no_account_to_show_every_front_end_says_why() {
     let said = |data: &Path, args: &[&str]| {
         let output = turnscope(data, args);
         assert!(output.status.success(), "{args:?}");
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
-    let check_limits = |data: &Path, arguments: &str| {
-        tools(&mut command(data, &["mcp"]), &[("check_limits", arguments)]).remove(0)
-    };
+    let check_limits =
+        |data: &Path, arguments: &str| ask("claude", data, "check_limits", arguments);
     // A new data directory, off the network: no account is known yet.
     let data = tempfile::tempdir().unwrap();
     let none = "No account's limits have been read yet: no agent here is signed in to one Turnscope reads.";

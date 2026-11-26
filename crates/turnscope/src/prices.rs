@@ -32,7 +32,6 @@ struct Cost {
     base: Rates,
     #[serde(default)]
     tiers: Vec<Tiered>,
-    context_over_200k: Option<Rates>,
 }
 
 #[derive(Deserialize)]
@@ -70,11 +69,6 @@ impl Prices {
                 .iter()
                 .map(|tier| (tier.tier.size, tier.rates))
                 .collect();
-            if tiers.is_empty()
-                && let Some(long) = cost.context_over_200k
-            {
-                tiers.push((200_000, long));
-            }
             tiers.sort_by_key(|(above, _)| *above);
             let priority = row
                 .get_ref(4)?
@@ -184,7 +178,7 @@ const CLAIMED: i64 = 2 * crate::time::MINUTE;
 /// Claim the refresh for this process: for 2 minutes, until `take` records it
 /// for 6 hours, so a process that dies meanwhile holds it up 2 minutes.
 fn claim(db: &mut Connection, now: i64) -> Result<bool> {
-    crate::db::claim(db, crate::db::Claim::Prices, now, DUE, now - DUE + CLAIMED)
+    crate::db::claim(db, "prices_at", now, DUE, now - DUE + CLAIMED)
 }
 
 type Catalog = Vec<((String, String), (String, Option<String>))>;

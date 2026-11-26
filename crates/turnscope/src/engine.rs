@@ -53,15 +53,14 @@ pub struct UsedMost {
 /// What the engine tells the app.
 #[derive(Debug)]
 pub enum Event {
-    /// What to show, and the alerts it raised. Told when anything it shows
-    /// changed, but not when only its minute did (`Showing::next`), so
+    /// What to show, and the alerts it raised. The first status after the
+    /// data opens comes with those raised before but never acknowledged too,
+    /// as when the app quit before it could tell them. Told when anything it
+    /// shows changed, but not when only its minute did (`Showing::next`), so
     /// `at` can be minutes old. Told too after each `hide`,
     /// `save_settings` and `connect`, changed or not, so a change the app
     /// showed at once goes back if the request failed or was refused.
     Shown(Box<Shown>, Vec<Alert>),
-    /// Alerts raised but never acknowledged, as when the app quit before it
-    /// could tell them: told once, when the data opens.
-    Pending(Vec<Alert>),
     /// Whether the data is kept current: None once a catch-up has read
     /// every agent, or why the last one failed. Told when it changes.
     Kept(Option<Stopped>),
@@ -274,9 +273,9 @@ impl Engine {
         }
     }
 
-    /// Ask for a limit read skipping staleness (`DUE`/`IDLE`), while still
-    /// respecting provider backoff and `CLAIM`: told as the status, changed
-    /// or not, then `Event::Refreshed`.
+    /// Ask for a limit read skipping staleness (`DUE`/`IDLE`) and Turnscope's
+    /// own backoff, but not a provider's `Retry-After` or `CLAIM`: told as the
+    /// status, changed or not, then `Event::Refreshed`.
     pub fn refresh_now(&self) {
         let sent = locked(&self.inner.wake).as_ref().is_some_and(|wake| {
             self.inner.forcing.store(true, Ordering::Release);
@@ -359,8 +358,7 @@ impl Inner {
             if self.showing().is_none() {
                 match Showing::open(&self.data, &self.home, &self.binary) {
                     Ok(opened) => {
-                        // Before the first status, whose alerts aren't pending.
-                        self.pending(self.showing().insert(opened));
+                        *self.showing() = Some(opened);
                         self.give(Tell::Always);
                     }
                     Err(error) => {
@@ -516,17 +514,6 @@ impl Inner {
             Ok(Some((shown, alerts))) => (self.tell)(Event::Shown(Box::new(shown), alerts)),
             Ok(None) => {}
             Err(error) => self.failed("working out the status", error),
-        }
-    }
-
-    fn pending(&self, showing: &Showing) {
-        let now = crate::now();
-        let pending = status::status(&showing.db, now)
-            .and_then(|status| alerts::pending(&showing.db, &status, now));
-        match pending {
-            Ok(alerts) if !alerts.is_empty() => (self.tell)(Event::Pending(alerts)),
-            Ok(_) => {}
-            Err(error) => log(&self.data, &error.to_string()),
         }
     }
 }
@@ -761,6 +748,8 @@ struct Showing {
     binary: PathBuf,
     shown: Option<Shown>,
     agents: Option<(i64, Vec<Agent>)>,
+    /// Whether the alerts pending when the data opened were told.
+    pending_told: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -781,6 +770,7 @@ impl Showing {
             binary: binary.to_path_buf(),
             shown: None,
             agents: None,
+            pending_told: false,
         })
     }
 
@@ -808,15 +798,24 @@ impl Showing {
         if self.shown.as_ref().is_some_and(|told| same(told, &shown)) {
             return Ok((tell != Tell::IfChanged).then_some((shown, Vec::new())));
         }
+        // Read before `raise`, which adds alerts not yet acknowledged.
+        let mut told = Vec::new();
+        if !std::mem::replace(&mut self.pending_told, true) {
+            match alerts::pending(&self.db, &shown.status, now) {
+                Ok(pending) => told = pending,
+                Err(error) => log(&self.data, &format!("reading pending alerts: {error}")),
+            }
+        }
         match alerts::raise(&mut self.db, &shown.status) {
             Ok(raised) => {
                 self.shown = Some(shown.clone());
-                Ok(Some((shown, raised)))
+                told.extend(raised);
+                Ok(Some((shown, told)))
             }
             Err(error @ Error::Newer { .. }) => Err(error),
             Err(error) => {
                 log(&self.data, &format!("raising alerts: {error}"));
-                Ok(Some((shown, Vec::new())))
+                Ok(Some((shown, told)))
             }
         }
     }
@@ -937,6 +936,26 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    /// One the app quit before it could tell.
+    #[test]
+    fn an_alert_never_acknowledged_comes_with_the_first_status() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        read_just_now(data.path())
+            .execute(
+                "INSERT INTO alert (account, limit_key, kind, window, at, detail)
+                 VALUES ('anthropic:a', 'five_hour', 'reset', 1, ?1, '{\"accountTitle\":\"Claude Max\"}')",
+                [crate::now()],
+            )
+            .unwrap();
+        let (_engine, told) = start(data.path(), home.path());
+        let alerts = next(&told, 10, |event| match event {
+            Event::Shown(_, alerts) => Some(alerts),
+            _ => None,
+        });
+        let kinds: Vec<_> = alerts.iter().map(|alert| alert.kind).collect();
+        assert_eq!(kinds, [crate::alerts::Kind::Reset]);
     }
 
     #[test]

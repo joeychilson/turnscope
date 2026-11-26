@@ -176,7 +176,6 @@ pub struct AgentRowModel {
 pub struct SettingsModel {
     pub menu_shows: MenuShows,
     pub notify: Option<Notify>,
-    pub can_edit_notify: bool,
     pub agents_empty: Option<EmptyMessage>,
     pub agents_title: String,
     pub agents: Vec<AgentRowModel>,
@@ -416,11 +415,9 @@ fn build_settings(s: &State) -> SettingsModel {
         .iter()
         .partition::<Vec<_>, _>(|a| a.kind == turnscope::providers::Kind::ApiKey);
 
-    let notify = s.status.as_ref().map(|status| status.settings.notify);
     SettingsModel {
         menu_shows: s.preferences.menu_shows,
-        notify,
-        can_edit_notify: notify.is_some() && !s.stopped(),
+        notify: s.status.as_ref().map(|status| status.settings.notify),
         agents_empty,
         agents_title,
         agents,

@@ -284,30 +284,13 @@ pub fn write(db: &mut Connection) -> Result<Transaction<'_>> {
     Ok(tx)
 }
 
-/// A periodic job claimed in the `state` table so no two processes run it at once.
-#[derive(Clone, Copy)]
-pub enum Claim {
-    Prices,
-    Limits,
-}
-
-impl Claim {
-    fn column(self) -> &'static str {
-        match self {
-            Claim::Prices => "prices_at",
-            Claim::Limits => "limits_at",
-        }
-    }
-}
-
-/// Claim a job for this process, in one statement, unless another claimed
-/// it less than `gap` ago, so no two do it at once: `state`'s column for
-/// `job` is set to `to`. A claim more than five minutes ahead of now is of
-/// a clock set back since. Looked at first: claiming waits for the write
-/// lock, which a hook shouldn't when nothing is due.
-pub fn claim(db: &mut Connection, job: Claim, now: i64, gap: i64, to: i64) -> Result<bool> {
+/// Claim a periodic job for this process, in one statement, unless another
+/// claimed it less than `gap` ago, so no two do it at once: the job's
+/// `column` of `state` is set to `to`. A claim more than five minutes ahead
+/// of now is of a clock set back since. Looked at first: claiming waits for
+/// the write lock, which a hook shouldn't when nothing is due.
+pub fn claim(db: &mut Connection, column: &str, now: i64, gap: i64, to: i64) -> Result<bool> {
     const AHEAD: i64 = 5 * crate::time::MINUTE;
-    let column = job.column();
     let free = format!("{column} IS NULL OR {column} <= ?1 - ?2 OR {column} > ?1 + ?3");
     let at = rusqlite::params![now, gap, AHEAD];
     if !db.query_row(&format!("SELECT {free} FROM state"), at, |row| row.get(0))? {
