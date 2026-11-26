@@ -565,11 +565,11 @@ pub fn unreset(
 /// size, and of a key's, what that adds up to besides what its read says
 /// is used. Otherwise its share of the cost, times the points used:
 /// approximate, as providers say how much of a limit is used but not by
-/// what. None, and the line says why, from a read before work agents here
-/// did since (`Account::worked_since_read`), or of usage with no known
-/// price, as a share is of cost. None either for a window that reset since
-/// it was read, as how much of the new one is used isn't known, and for
-/// usage asked `between` other times than the window's.
+/// what. None, and the line says why, of usage with no known price, as a
+/// share is of cost, or of points from a read before work agents here did
+/// since (`Account::worked_since_read`). None either for a window that
+/// reset since it was read, as how much of the new one is used isn't known,
+/// and for usage asked `between` other times than the window's.
 pub fn shares(
     usage: &Usage,
     account: &crate::status::Account,
@@ -584,12 +584,6 @@ pub fn shares(
         let line = format!("No shares of {} are given: {why}.", limit.named());
         (None, Some(line))
     };
-    if let Some((read_at, _)) = account.worked_since_read() {
-        return unshared(format!(
-            "it was last read at {}, and your agents have worked on it since",
-            time::clock(read_at, now)
-        ));
-    }
     if usage.total.unpriced > 0 {
         return unshared(format!(
             "{} with no known price, and a share is of cost",
@@ -600,10 +594,16 @@ pub fn shares(
     // made, was given to the sessions here: $0.00 took 45% of $20.
     let scale = match limit.money {
         Some(money) => 100.0 / money.size_usd,
-        None if usage.total.cost_usd > 0.0 => {
-            f64::from(100 - limit.left_percent) / usage.total.cost_usd
-        }
-        None => return (None, None),
+        None if usage.total.cost_usd == 0.0 => return (None, None),
+        None => match account.worked_since_read() {
+            Some((read_at, _)) => {
+                return unshared(format!(
+                    "it was last read at {}, and your agents have worked on it since",
+                    time::clock(read_at, now)
+                ));
+            }
+            None => f64::from(100 - limit.left_percent) / usage.total.cost_usd,
+        },
     };
     // The rest's are `fold`'s to add up.
     let shares = Shares {

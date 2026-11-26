@@ -275,8 +275,9 @@ whose window reset since it was read gives no shares, so no line says how
 to get them. Usage with no known price gives none either, as a share is
 of cost, nor does a limit whose account's last read is out of date while
 your agents have worked on it since, as `check_limits` can't tell then
-either; a line says why. A key's own limit counts only the usage made
-with that key.
+either; a line says why. A limit in dollars still gives them then: a share
+of it is cost over its size, which needs no read. A key's own limit counts
+only the usage made with that key.
 
 When the caller's account isn't known and neither `account` nor `all` is
 given, the answer is every account's, and opens by saying so; with

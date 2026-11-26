@@ -225,7 +225,8 @@ rows get no share either: how much of the new window is used isn't known.
 Nor do they while some of the usage has no known price, since a share is
 of cost, or when the account's last read is out of date and your agents
 have worked on it since, which that read doesn't hold: a line says so. A
-key's own limit counts only the usage made
+limit in dollars still gives them then, as a share of it is cost over its
+size, which needs no read. A key's own limit counts only the usage made
 with that key. With `--json`, `sharePercents` holds each row's share in
 the rows' order, and `restSharePercent` the share of the row adding up
 the rest, each `null` when rows get none.
