@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A refused login is told again after a read that worked in between**,
+  however soon. One within 5 minutes of the last read that worked before
+  was taken for the same refusal.
 - **"Refreshing limits…" shows until the limits are read.** Hiding an
   account, changing a setting or connecting an agent meanwhile ended it
   early, and ⌘R could start another refresh.

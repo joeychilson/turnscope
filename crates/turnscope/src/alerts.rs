@@ -86,8 +86,10 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
      -> Result<()> {
         let key = limit.map_or("", |limit| limit.key.as_str());
         // A reset drifts from read to read. A size, below zero, doesn't, and
-        // within the drift $10 more would match.
-        let drift = if window < 0 { 0 } else { forecast::DRIFT };
+        // within the drift $10 more would match; nor does a sign-in's last
+        // read that worked, and one minutes after it is a sign-in since.
+        let exact = window < 0 || kind == Kind::SignIn;
+        let drift = if exact { 0 } else { forecast::DRIFT };
         let known = tx
             .prepare_cached(
                 "SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3 AND window BETWEEN ?4 - ?5 AND ?4 + ?5",
@@ -500,6 +502,14 @@ mod tests {
             pending(&db, &refused, 2 * DAY + MINUTE).unwrap().is_empty(),
             "for a day"
         );
+        // Refused again after the read that worked, however soon: told again.
+        let mut again = status(DAY + 3 * MINUTE, 60, LASTS);
+        again.accounts[0].state = State::AsOf {
+            read_at: DAY + MINUTE,
+            why: crate::status::Stale::SignIn,
+            worked_hours: 0.0,
+        };
+        assert_eq!(kinds(&raise(&mut db, &again).unwrap()), [Kind::SignIn]);
     }
 
     /// Due to run out at day 5, as likely the soonest.
