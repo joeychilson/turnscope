@@ -123,8 +123,7 @@ impl<'a> Update<'a> {
     /// Each model's usage in a finished turn: `None` for one that can't be
     /// read.
     fn used(&self) -> impl Iterator<Item = (Cow<'a, str>, Option<Used>)> {
-        self.usage
-            .and_then(|raw| serde_json::from_str::<TurnUsage<'a>>(raw.get()).ok())
+        super::parsed::<TurnUsage<'a>>(self.usage)
             .and_then(|usage| usage.models)
             .into_iter()
             .flatten()
@@ -161,7 +160,7 @@ impl Agent for GrokBuild {
         match file.file_name().and_then(|name| name.to_str()) {
             // Rewritten whole.
             Some("summary.json") => {
-                let json = super::json_file(file)?.unwrap_or_default();
+                let json = super::json_file(file)?;
                 // A session opened and left before anything was said.
                 if json["num_messages"] == 0 {
                     return Ok(read);
@@ -178,7 +177,7 @@ impl Agent for GrokBuild {
     }
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
-        let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
+        let kept = super::json_file(&folder.join("auth.json"))?;
         // The SuperGrok sign-in, under its issuer and client.
         let entry = &kept["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"];
         Ok(vec![Login {
@@ -248,9 +247,7 @@ fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> 
                 }
             }
             Some("user_message_chunk") if !cursor.titled => {
-                if let Some(text) = update
-                    .content
-                    .and_then(|raw| serde_json::from_str::<super::Text<'_>>(raw.get()).ok())
+                if let Some(text) = super::parsed::<super::Text<'_>>(update.content)
                     .and_then(|content| content.text)
                 {
                     let text = super::typed_in(&text, "user_query", INJECTED);

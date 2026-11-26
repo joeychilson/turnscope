@@ -1861,9 +1861,7 @@ mod tests {
 
         fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<agents::Login>> {
             self.asked.store(true, Ordering::Relaxed);
-            let Some(kept) = agents::json_file(&folder.join("login"))? else {
-                return Ok(Vec::new());
-            };
+            let kept = agents::json_file(&folder.join("login"))?;
             let kept = kept.as_object().into_iter().flatten();
             Ok(kept
                 .map(|(provider, key)| agents::Login {

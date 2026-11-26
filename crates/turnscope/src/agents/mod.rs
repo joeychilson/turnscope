@@ -610,12 +610,10 @@ fn expiry(credential: &Credential) -> i64 {
     credential.expires.unwrap_or(i64::MAX)
 }
 
-pub(crate) fn json_file(path: &Path) -> Result<Option<Value>> {
+pub(crate) fn json_file(path: &Path) -> Result<Value> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| reading(path, error)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| reading(path, error)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Value::Null),
         Err(error) => Err(reading(path, error)),
     }
 }
@@ -759,9 +757,6 @@ fn inner<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 /// `text` without the agent's `<tag>…</tag>` blocks. A tag never closed is
 /// the agent's only at the start, so "Add a <skill> element" is kept.
 fn without_tags(text: &str, tags: &[&str]) -> String {
-    if !text.contains('<') {
-        return text.trim().to_owned();
-    }
     let mut text = text.to_owned();
     for tag in tags {
         while let Some((start, inside)) = mark(&text, "<", tag)
@@ -780,15 +775,18 @@ fn without_tags(text: &str, tags: &[&str]) -> String {
             .any(|tag| mark(trimmed, "<", tag).is_some_and(|(start, _)| start == 0));
     if opens {
         String::new()
-    } else if trimmed.len() == text.len() {
-        text
     } else {
         trimmed.to_owned()
     }
 }
 
+/// A field held unparsed, parsed as `T`, if it reads as one.
+fn parsed<'a, T: Deserialize<'a>>(raw: Option<&'a RawValue>) -> Option<T> {
+    serde_json::from_str(raw?.get()).ok()
+}
+
 fn json_mcp_command(path: &Path, pointer: &str) -> Option<String> {
-    let config = json_file(path).ok()??;
+    let config = json_file(path).ok()?;
     Some(config.pointer(pointer)?.as_str()?.to_owned())
 }
 

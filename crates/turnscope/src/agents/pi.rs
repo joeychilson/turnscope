@@ -167,7 +167,7 @@ impl Agent for Pi {
     }
 
     fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
-        let kept = super::json_file(&folder.join("auth.json"))?.unwrap_or_default();
+        let kept = super::json_file(&folder.join("auth.json"))?;
         let logins = kept.as_object().into_iter().flatten().map(|(name, entry)| {
             let reads = match name.as_str() {
                 "openai-codex" => "openai",
@@ -292,10 +292,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         }
         _ => return,
     };
-    let (Some(usage), Some(at)) = (
-        usage.and_then(|raw| serde_json::from_str::<Usage>(raw.get()).ok()),
-        at,
-    ) else {
+    let (Some(usage), Some(at)) = (super::parsed::<Usage>(usage), at) else {
         read.skipped += 1;
         return;
     };

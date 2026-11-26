@@ -138,8 +138,7 @@ impl Agent for Antigravity {
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
         let (service, account) = SIGN_IN;
         let kept = super::keychain(home, service, Some(account), signed_in).map(Option::flatten);
-        let file = super::json_file(&folder.join(FALLBACK))
-            .map(|file| file.and_then(|file| credential(&file)));
+        let file = super::json_file(&folder.join(FALLBACK)).map(|file| credential(&file));
         let mut credential = super::fresher(kept, file)?;
         if let Some(refresh) = credential.as_mut().and_then(|c| c.refresh.as_mut()) {
             refresh.programs = programs(home);
@@ -151,7 +150,7 @@ impl Agent for Antigravity {
     }
 
     fn mcp_command(&self, folder: &Path, _home: &Path) -> Option<String> {
-        let config = super::json_file(&folder.join("config/mcp_config.json")).ok()??;
+        let config = super::json_file(&folder.join("config/mcp_config.json")).ok()?;
         let server = &config["mcpServers"]["turnscope"];
         // One switched off, as `agy mcp disable` does, isn't run.
         if server["disabled"] == true {
