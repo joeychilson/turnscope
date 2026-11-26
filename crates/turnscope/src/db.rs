@@ -177,6 +177,25 @@ UPDATE account SET full_read_at = read_at, checked_at = read_at;
 -- it's worked out again.
 UPDATE session SET project = NULL WHERE project = '';
 "#,
+    r#"
+-- A limit used up again after its use was given back is told again in the
+-- same window (`alerts::raise`), so a kind and window can be raised twice.
+CREATE TABLE alert_raised (
+    id INTEGER PRIMARY KEY,
+    account TEXT NOT NULL,
+    limit_key TEXT NOT NULL,       -- '' for the account itself
+    kind TEXT NOT NULL CHECK (kind IN ('runningOut', 'usedUp', 'reset', 'signIn')),
+    window INTEGER NOT NULL,       -- the window's reset, or for signIn the last good read
+    at INTEGER NOT NULL,
+    acknowledged INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL           -- JSON: what the notification says
+) STRICT;
+INSERT INTO alert_raised SELECT id, account, limit_key, kind, window, at, acknowledged, detail FROM alert;
+DROP TABLE alert;
+ALTER TABLE alert_raised RENAME TO alert;
+CREATE INDEX alert_window ON alert (account, limit_key, kind, window);
+CREATE INDEX alert_pending ON alert (acknowledged) WHERE acknowledged = 0;
+"#,
 ];
 
 /// "TRNS", in the header, so a file with another program's is never written.
@@ -553,6 +572,12 @@ mod tests {
             [],
         )
         .unwrap();
+        db.execute(
+            "INSERT INTO alert (account, limit_key, kind, window, at, acknowledged, detail)
+             VALUES ('anthropic:a', 'five_hour', 'usedUp', 5000, 1234, 1, '{}')",
+            [],
+        )
+        .unwrap();
         drop(db);
 
         let migrated = open(dir.path()).unwrap();
@@ -567,6 +592,14 @@ mod tests {
         assert_eq!(
             rows(&migrated, "SELECT id, project FROM session ORDER BY id"),
             ["claude-code:a|NULL", "claude-code:b|/work/web"]
+        );
+        // Kept, so it isn't told again.
+        assert_eq!(
+            rows(
+                &migrated,
+                "SELECT account, kind, window, acknowledged FROM alert"
+            ),
+            ["anthropic:a|usedUp|5000|1"]
         );
     }
 

@@ -386,7 +386,9 @@ says how to run it). `status.rs` applies it.
   changed status. The CLI and the MCP server don't.
 - Each is raised once per account, limit, kind and window (the window's
   reset, within 5 minutes; for `signIn`, the last read that worked), so
-  neither a restart nor a pace near the line repeats one.
+  neither a restart nor a pace near the line repeats one. A `reset` ends
+  what was told before it: a limit whose use was given back and that runs
+  out again in the same window is told used up again, and back after.
 - Money that never resets has no window, so its size stands in for one:
   credits used up are told once, and again when more were bought and used
   up too. A limit with neither a window nor a size, a window whose reset
