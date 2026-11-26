@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Codex's responses after fast mode is turned off cost the standard
+  rate**, not the fast one. The history is read again once, to price them
+  anew.
 - **`turnscope guard` passes while the standing isn't known**: before any
   account is read, or while none of its limits are. It exited 1 with an
   error, which a hook shows at every tool call.
