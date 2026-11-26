@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Codex's own limits stay the plan's own** when a rollout names them in
+  `limit_name`, instead of showing as separate model limits.
 - **Codex's responses after fast mode is turned off cost the standard
   rate**, not the fast one. The history is read again once, to price them
   anew.
