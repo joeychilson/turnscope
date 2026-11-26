@@ -110,9 +110,8 @@ limit. Beyond the doc comments on `Reading`:
   the limit never decides how the account stands.
 - `name` is as the user knows it: `5 hours`, `Weekly`, `Credits`. A limit
   of money whose name ends in `s` is said as plural: "Credits are used up".
-- `starts` and `resets` are Unix milliseconds. `starts` is `None` for a
-  window that rolls, which then has no outlook or work left; `resets` is
-  `None` for a limit that never resets, such as credits.
+- `starts` and `resets` are Unix milliseconds, both `None` for a limit
+  that never resets, such as credits.
 - A limit with a `scope` never decides how its account stands while one
   without does.
 
@@ -121,12 +120,6 @@ account itself, as OpenRouter's credits, implement `account_limits` for
 them, and keep them out of `limits`: they're asked once a read, with one
 key after another until one isn't refused, as a key may have no access to
 them.
-
-For a window that rolls, implement `rolls`: given the limit's `key`, how
-long the window is. What used the limit is then the use of the last so
-long, as OpenCode Go's 5 hours is. The default, `None`, counts a limit
-with no start over this month for an API key, and the last 7 days
-otherwise.
 
 If the provider's keys don't say which plan they're to, implement
 `plan_mark`: a value read from `Limits` that tells one plan from another.
@@ -153,8 +146,10 @@ A failure is a `Problem`:
   for anything else, `Problem::unavailable(why)`.
 
 The helpers in `src/providers/mod.rs` make requests (`ask`, `asked`,
-`post_form`) and read answers (`absent`, `reset`, `window`, `windowed`,
-`window_name`, `words`).
+`requested`, `post_form`) and read answers (`answer`, `absent`, `reset`,
+`window`, `windowed`, `window_name`, `words`). `requested` gives the
+status and body as they came, for a status that means something of its
+own, as OpenCode Go's 403 says a key has no Go plan.
 
 How Turnscope calls it, as each account's limits come due
 (`limits::Schedule`), or less often while it answers but is unavailable

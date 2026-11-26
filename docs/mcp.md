@@ -145,11 +145,10 @@ The answer has three parts:
    says after how much work, with how little it could be and its reset, as
    the verdict does; one used up says when it's back. Work past a limit's
    reset counts in the windows after it. A limit with too little work
-   measured, or a window that rolls, as OpenCode Go's 5 hours does, means
-   it can't be told: the answer names the limit, what's left of it and,
-   unless its window rolls, where the clock's pace takes it by its reset,
-   then what the others would leave. An account with no limit read can't
-   be told either, and one not read now says why, such as `its login was
+   measured means it can't be told: the answer names the limit, what's
+   left of it and where the clock's pace takes it by its reset, then what
+   the others would leave. An account with no limit read can't be told
+   either, and one not read now says why, such as `its login was
    refused`. Nor can one whose limits couldn't be read since an earlier
    read when its agents have worked on it since: the answer says what was
    left then of the limit it stands by with the fewest hours of work left,
@@ -234,7 +233,7 @@ together, as for "what did I spend across my agents".
 | `account` | string | the caller's | One account: its id, or text in its title, label or id. If the text matches several, the error lists them. |
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
 | `limit` | string | the limit that decides how the account stands, unless `since` is given | Text in a limit's name or key, any case, such as `week` or `5 hours`, or the name the status line shows, such as `5h`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
-| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). A window that rolls, as OpenCode Go's 5 hours, is the last of its length. For another limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. Given without `limit`, the usage is the account's, with no limit's line. A `since` at or after now is an error, as it is for the command line's `usage`. |
+| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. Given without `limit`, the usage is the account's, with no limit's line. A `since` at or after now is an error, as it is for the command line's `usage`. |
 | `until` | string | now | With `since`: up to when, in the same forms or `now`. Without `since`, the usage runs to now, and `until` is an error. |
 | `by` | `session`, `project`, `model`, `agent`, `account`, `day`, `week` or `month` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |

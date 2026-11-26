@@ -227,7 +227,6 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             }
             Unknown::Stale => format!("Not read since {}.", time::clock(limit.read_at, now)),
             Unknown::NoReset => "Doesn't reset.".to_owned(),
-            Unknown::Rolling => "Rolling: use drops out as the window moves.".to_owned(),
         },
     };
     if let Some(work) = &limit.work
@@ -327,8 +326,8 @@ pub fn fits(accounts: &[&Account], hours: f64, now: i64) -> String {
 
 /// Whether `hours` more of work fit the limits `account` stands by, at the
 /// work rate so far. One with no work rate says it can't be told: said to
-/// fit with a note after, OpenCode Go's rolling 5 hours at 4% left read as
-/// room for hours of work.
+/// fit with a note after, a 5 hours at 4% left read as room for hours of
+/// work.
 pub fn fit(account: &Account, hours: f64, now: i64) -> String {
     capital(&judge(account, hours, now).1)
 }
@@ -402,25 +401,13 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
         .filter(|limit| account.stands_by(limit))
     {
         let Some(work) = &limit.work else {
-            let rolls = limit
-                .window
-                .is_some_and(|window| window.starts_at.is_none());
             // Where the clock's pace takes it, to weigh until hours of work
-            // are measured; a window that rolls has no pace.
-            let why = match rolls {
-                true => format!(
-                    "{} {} {} left, and {} a window that rolls, so it isn't forecast",
-                    limit.named(),
-                    agree(limit, "has", "have"),
-                    left(limit),
-                    agree(limit, "is", "are")
-                ),
-                false => format!(
-                    "{}, but too little work on {} has been measured",
-                    paced(limit, now),
-                    agree(limit, "it", "them")
-                ),
-            };
+            // are measured.
+            let why = format!(
+                "{}, but too little work on {} has been measured",
+                paced(limit, now),
+                agree(limit, "it", "them")
+            );
             untold_why = untold_why.or(Some(why));
             continue;
         };
@@ -540,9 +527,9 @@ fn resets(limit: &Limit, now: i64) -> String {
 /// How `account`, read, stands: used up until the limit that decides it is
 /// back, or else by the limit it stands by closest to running out, by the
 /// work left or else the clock's pace. The deciding limit with no work rate
-/// is said by the clock's pace, over another's work left: OpenCode Go's
-/// rolling 5 hours at 4% left was passed over for "about 12h of work left
-/// before Weekly runs out".
+/// is said by the clock's pace, over another's work left: a 5 hours at 4%
+/// left was passed over for "about 12h of work left before Weekly runs
+/// out".
 fn standing(account: &Account, title: &str, now: i64) -> String {
     if let Some(said) = used_up(account, now) {
         return format!("{title}: {said}.");
@@ -750,7 +737,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hours_of_work_fit_or_dont_and_a_window_that_rolls_says_so() {
+    fn hours_of_work_fit_or_dont_or_cant_be_told() {
         let example = example();
         let now = example["at"].as_i64().unwrap();
         let claude = &example["accounts"][0];
@@ -832,17 +819,19 @@ mod tests {
         let unmeasured: Account = serde_json::from_value(account).unwrap();
         let said = verdict(&unmeasured, now);
         assert!(!said.contains("room"), "{said}");
-        // Its 5 hours made a window that rolls, as OpenCode Go's is: said,
-        // rather than taken for too little work. Its weekly is forecast.
+        // Its 5 hours with too little work measured, and its weekly
+        // forecast: said, with what the weekly would leave.
         let mut account = claude.clone();
         let five = &mut account["limits"][0];
-        five["window"]["startsAt"] = serde_json::Value::Null;
         five["work"] = serde_json::Value::Null;
-        five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "rolling"});
-        let rolling: Account = serde_json::from_value(account.clone()).unwrap();
+        five["outlook"] = serde_json::json!({"kind": "unknown", "reason": "notEnoughData"});
+        let unforecast: Account = serde_json::from_value(account.clone()).unwrap();
+        let resets = time::ahead(unforecast.limits[0].resets().unwrap(), now);
         assert_eq!(
-            fit(&rolling, 1.0, now),
-            "Whether 1 more hour of work fits can't be told: 5 hours has 28% left, and is a window that rolls, so it isn't forecast. At your work rate they'd leave about 59% of Weekly."
+            fit(&unforecast, 1.0, now),
+            format!(
+                "Whether 1 more hour of work fits can't be told: 5 hours has 28% left; it resets {resets}, but too little work on it has been measured. At your work rate they'd leave about 59% of Weekly."
+            )
         );
         // Deciding the account, it's said over Weekly's hours of work, and
         // over them as of a read since which agents worked.

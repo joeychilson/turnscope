@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **OpenCode Go's 5 hours is forecast,** with work left, a running-out
+  alert and each session's share of it. OpenCode's docs say the window
+  starts at the first use and lasts five hours; it was read as a window
+  that rolls, and said only "Rolling". `status --json` no longer gives the
+  `rolling` reason, and a window's `startsAt` is never null.
+- **An OpenCode Go key with no Go plan isn't said to need signing in
+  again.** OpenCode answers such a key 403, which read as a refused login:
+  "Sign in again", a sign-in alert, and a try every 5 minutes for good. It
+  now reads as a limit that couldn't be read, tried again every 5 to 30
+  minutes.
+- **OpenCode Go's limits are asked of the address its docs give,**
+  `opencode.ai/inference/go/v1/usage`.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

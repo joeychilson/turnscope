@@ -452,7 +452,7 @@ mod tests {
     use turnscope::time::MINUTE;
 
     #[test]
-    fn time_left_fraction_is_set_only_for_fixed_active_windows() {
+    fn time_left_fraction_is_set_only_for_active_windows() {
         let state = State::fixed(example());
         let panel = build_panel(&state);
         // Claude Max 5 hours: 3h left of 5h -> 0.60.
@@ -461,9 +461,8 @@ mod tests {
         // Claude Max Weekly: 50h left of 168h -> ~0.2976.
         let week = &panel.in_use[0].limits[1];
         assert!((week.time_left_fraction.unwrap() - (50.0 / 168.0)).abs() < 1e-3);
-        // ChatGPT Pro: primary reset since read, secondary rolling -> neither has a tick.
+        // ChatGPT Pro: primary reset since read -> no tick.
         assert_eq!(panel.recent[0].limits[0].time_left_fraction, None);
-        assert_eq!(panel.recent[0].limits[1].time_left_fraction, None);
         // Nor 5 minutes into 5 hours, where the tick would sit on the bar's end.
         let mut early = example();
         early.status.at = early.status.accounts[0].limits[0].started().unwrap() + 5 * MINUTE;

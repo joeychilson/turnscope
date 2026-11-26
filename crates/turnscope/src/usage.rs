@@ -477,9 +477,8 @@ pub fn breakdown(
 
 /// `account`'s usage of `limit`, in its window or `between` a start and an
 /// end. A window that reset since it was read counts from the reset, or one
-/// length back where that's later. A window that rolls counts the last of
-/// its length (`Provider::rolls`). With no window start, a key's spend
-/// counts by the month, anything else over the last week.
+/// length back where that's later. With no window, a key's spend counts by
+/// the month, anything else over the last week.
 pub fn query(
     account: &crate::status::Account,
     limit: Option<&crate::status::Limit>,
@@ -487,18 +486,11 @@ pub fn query(
     by: By,
     now: i64,
 ) -> Query {
-    let rolls = limit.and_then(|limit| {
-        crate::providers::by_id(&account.provider)?
-            .rolls(&limit.key)
-            .map(|length| now - length)
+    let start = limit.and_then(crate::status::Limit::started).or_else(|| {
+        let limit = limit?;
+        let reset = limit.reset_since?;
+        Some(reset.max(limit.length().map_or(reset, |length| now - length)))
     });
-    let start = rolls
-        .or_else(|| limit.and_then(crate::status::Limit::started))
-        .or_else(|| {
-            let limit = limit?;
-            let reset = limit.reset_since?;
-            Some(reset.max(limit.length().map_or(reset, |length| now - length)))
-        });
     let (models, key) = limit
         .map(|limit| of_limit(&limit.key, limit.scope.as_deref()))
         .unwrap_or_default();
@@ -764,40 +756,6 @@ mod tests {
         assert!(usage.rows.is_empty());
     }
 
-    /// OpenCode Go's 5 hours, a window that rolls, whose reset passed since
-    /// it was read: what used it is the use of the last five hours.
-    #[test]
-    fn a_window_that_rolls_counts_the_last_of_its_length() {
-        let (accounts, now) = example();
-        let account = &accounts[3];
-        let mut rolling = accounts[0].limits[0].clone();
-        rolling.key = "rolling".to_owned();
-        let reset = now - time::HOUR;
-        rolling.window = Some(crate::status::LimitWindow {
-            starts_at: None,
-            resets: crate::status::Moment::of(reset, now),
-        });
-        rolling.reset_since = Some(reset);
-        let responses = [
-            ("this hour", "glm-5", 2.0, now - time::MINUTE),
-            ("four hours ago", "glm-5", 1.0, now - 4 * time::HOUR),
-            ("six hours ago", "glm-5", 1.0, now - 6 * time::HOUR),
-            ("two days ago", "glm-5", 1.0, now - 2 * time::DAY),
-        ];
-        let (_dir, db) = store(account, "opencode", &responses);
-        let (usage, ..) = breakdown(&db, account, &rolling, None, By::Session, now).unwrap();
-        assert_eq!(usage.since, now - 5 * time::HOUR);
-        assert_eq!(keys(&usage), ["this hour", "four hours ago"]);
-        // Its reset still ahead.
-        rolling.window = Some(crate::status::LimitWindow {
-            starts_at: None,
-            resets: crate::status::Moment::of(now + time::HOUR, now),
-        });
-        rolling.reset_since = None;
-        let (usage, ..) = breakdown(&db, account, &rolling, None, By::Session, now).unwrap();
-        assert_eq!(keys(&usage), ["this hour", "four hours ago"]);
-    }
-
     /// ChatGPT's Weekly, read last 16 days ago, in a week that reset 9 days
     /// ago: the week that began then has ended too, and this one began 7
     /// days ago at the earliest.
@@ -813,7 +771,7 @@ mod tests {
         let mut late = account.limits[0].clone();
         let reset = now - 9 * time::DAY;
         late.window = Some(crate::status::LimitWindow {
-            starts_at: Some(reset - 7 * time::DAY),
+            starts_at: reset - 7 * time::DAY,
             resets: crate::status::Moment::of(reset, now),
         });
         late.reset_since = Some(reset);

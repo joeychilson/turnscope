@@ -64,11 +64,6 @@ pub trait Provider: Sync {
     ) -> Result<Vec<Reading>, Problem> {
         Ok(Vec::new())
     }
-    /// How long the window of its limit `key` is, when that window rolls:
-    /// the use that counts is that of the last so long.
-    fn rolls(&self, _key: &str) -> Option<i64> {
-        None
-    }
     /// For a provider whose keys don't say which plan they're to, what
     /// tells the plan `limits` were read from apart from any other. Accounts
     /// whose limits give the same mark are one plan.
@@ -258,6 +253,17 @@ fn asked(
     refused: &[u16],
     by: Instant,
 ) -> Result<Value, Problem> {
+    answer(url, &requested(url, token, headers, body, by)?, refused)
+}
+
+/// `asked`, with the answer as it came.
+fn requested(
+    url: &str,
+    token: &Secret,
+    headers: &[&str],
+    body: Option<&Value>,
+    by: Instant,
+) -> Result<Answered, Problem> {
     let authorization = format!("Authorization: Bearer {}", token.expose());
     let mut lines = vec![authorization.as_str()];
     if body.is_some() {
@@ -276,7 +282,7 @@ fn asked(
     if let Some(body) = &body {
         args.extend(["--data-raw", body]);
     }
-    answer(url, &sent(url, &args, request.as_bytes(), by)?, refused)
+    sent(url, &args, request.as_bytes(), by)
 }
 
 /// Run curl for `url` by `by`. Under 1 ms, curl's `--max-time` formats as
@@ -333,9 +339,7 @@ fn answer(url: &str, answered: &Answered, refused: &[u16]) -> Result<Value, Prob
     match answered.status {
         200..=299 => serde_json::from_slice(body)
             .map_err(|_| Problem::unavailable(format!("{url}: an answer that isn't JSON"))),
-        status if refused.contains(&status) && !body.trim_ascii_start().starts_with(b"<") => {
-            Err(Problem::SignIn)
-        }
+        status if refused.contains(&status) && !answered.page() => Err(Problem::SignIn),
         _ => Err(answered.unavailable(url)),
     }
 }
@@ -347,6 +351,12 @@ struct Answered {
 }
 
 impl Answered {
+    /// Whether its body is an HTML page, as a bot check's is, rather than
+    /// the provider's own answer.
+    fn page(&self) -> bool {
+        self.body.trim_ascii_start().starts_with(b"<")
+    }
+
     fn unavailable(&self, url: &str) -> Problem {
         Problem::Unavailable {
             why: format!("{url}: answered {}", self.status),

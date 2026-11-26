@@ -34,7 +34,7 @@ formats correctly, and the forecast.
 | Limit | One cap on an account, in percent used, as the provider reports it: a 5-hour or weekly limit, credits, a key's spending limit. |
 | Pool | A group of models whose limits an account has in place of limits on all its usage, as a Google AI plan has a pool for Gemini and one for Claude and GPT. |
 | Deciding limit | The limit that says how an account stands: of its limits on all its usage, or of the pool it last drew on, the most urgent. [Status](#status) says how it's chosen. |
-| Window | The time a limit counts, from its start to its reset. A rolling window has no start. |
+| Window | The time a limit counts, from its start to its reset. |
 | Reset | When a window ends and its limit is full again. |
 | Outlook | Where a limit is headed by its reset: `lasts`, `runsOut`, `usedUp` or `unknown`. |
 | Standing | How the app shows an outlook: lasts (gray), running out (amber) or used up (red). An `unknown` outlook stands as lasts. An account's standing is its deciding limit's. |

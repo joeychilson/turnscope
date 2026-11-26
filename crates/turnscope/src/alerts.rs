@@ -382,7 +382,7 @@ mod tests {
         account.limits.truncate(1);
         let limit = &mut account.limits[0];
         limit.window = Some(LimitWindow {
-            starts_at: Some(0),
+            starts_at: 0,
             resets: Moment {
                 at: 10 * DAY,
                 horizon: Horizon::Later,
@@ -643,7 +643,7 @@ mod tests {
         let mut week = used_up.accounts[0].limits[0].clone();
         week.key = "seven_day".to_owned();
         week.window = Some(LimitWindow {
-            starts_at: Some(0),
+            starts_at: 0,
             resets: Moment {
                 at: 20 * DAY,
                 horizon: Horizon::Later,
@@ -669,7 +669,7 @@ mod tests {
         raise(&mut db, &status(DAY, 0, Outlook::UsedUp { back: None })).unwrap();
         let mut early = status(3 * DAY, 100, LASTS);
         early.accounts[0].limits[0].window = Some(LimitWindow {
-            starts_at: Some(3 * DAY),
+            starts_at: 3 * DAY,
             resets: Moment {
                 at: 13 * DAY,
                 horizon: Horizon::Later,

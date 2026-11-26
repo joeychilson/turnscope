@@ -695,7 +695,7 @@ fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
     };
     let standing = format!("{} has {what}", account.title);
     match reason {
-        Unknown::NotEnoughData | Unknown::Rolling => format!("{standing}."),
+        Unknown::NotEnoughData => format!("{standing}."),
         Unknown::Stale => format!("As last read, {standing}."),
         Unknown::NoReset => format!("{standing}; it doesn't reset."),
     }
@@ -902,7 +902,7 @@ mod tests {
 
     fn window(text: &str, horizon: Horizon) -> Option<LimitWindow> {
         Some(LimitWindow {
-            starts_at: None,
+            starts_at: 0,
             resets: moment(text, horizon),
         })
     }
@@ -1405,7 +1405,6 @@ mod tests {
                 Unknown::Stale,
                 "As last read, Claude Max has 50% left of 5 hours.",
             ),
-            (Unknown::Rolling, "Claude Max has 50% left of 5 hours."),
             (
                 Unknown::NoReset,
                 "Claude Max has 50% left of 5 hours; it doesn't reset.",
