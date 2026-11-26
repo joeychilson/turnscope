@@ -9,6 +9,7 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead as _, BufReader, Write as _};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -107,11 +108,21 @@ fn command_as(agent: &str, data: &Path, args: &[&str]) -> Command {
 
 /// `command_as`, running the binary at `binary`.
 fn command_of(binary: &Path, agent: &str, data: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("/bin/sh");
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg0(agent)
+            .args(["-c", r#""$@"; exit $?"#, "sh"])
+            .arg(binary);
+        command
+    };
+    #[cfg(not(unix))]
+    let mut command = {
+        let _ = agent;
+        Command::new(binary)
+    };
     command
-        .arg0(agent)
-        .args(["-c", r#""$@"; exit $?"#, "sh"])
-        .arg(binary)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         // As Claude Code sets it in what it starts, and so in what another
@@ -204,6 +215,78 @@ fn count(db: &Connection, sql: &str) -> i64 {
     db.query_row(sql, [], |row| row.get(0)).unwrap()
 }
 
+/// The fixture store, seeded once a run and copied per test.
+fn seed() -> &'static Path {
+    static SEED: OnceLock<PathBuf> = OnceLock::new();
+    SEED.get_or_init(|| {
+        // Holds `home.lock` for the process lifetime before writing `seed`.
+        let home = home();
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("seed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = turnscope::db::open(&dir).unwrap();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, label, read_at, problem) VALUES
+                 ('anthropic:acct-1:org-1', 'anthropic', 'subscription', 'Claude Max', 'me@example.com', ?1, NULL),
+                 ('openai:acct-2', 'openai', 'subscription', 'ChatGPT Plus', 'me@example.com', ?1, NULL),
+                 ('openrouter:api', 'openrouter', 'apiKey', 'OpenRouter API key', NULL, ?1, NULL),
+                 ('xai:user-3', 'xai', 'subscription', 'SuperGrok', 'me@example.com', NULL, 'signIn')",
+            [NOW - HOUR / 6],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO failing (account, reads) VALUES ('xai:user-3', 2)",
+            [],
+        )
+        .unwrap();
+        // Read, and its window started and resets, hours before now.
+        db.execute(
+            "WITH read (account, key, name, ago, used, size, starts, resets) AS (VALUES
+                 -- Five hours from three hours ago, and a week from Monday.
+                 ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1.5, 35, NULL, 3, -2),
+                 ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1.5, 40, NULL, 84, -84),
+                 ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1, 45, NULL, 3, -2),
+                 ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1, 42, NULL, 84, -84),
+                 ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 0.5, 60, NULL, 3, -2),
+                 ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 0.5, 43, NULL, 84, -84),
+                 ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1 / 6.0, 75, NULL, 3, -2),
+                 ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1 / 6.0, 44, NULL, 84, -84),
+                 ('openai:acct-2', 'secondary_window', 'Weekly', 26, 12, NULL, 60, -108),
+                 ('openai:acct-2', 'secondary_window', 'Weekly', 1, 20, NULL, 60, -108),
+                 ('openai:acct-2', 'secondary_window', 'Weekly', 1 / 6.0, 20, NULL, 60, -108),
+                 ('openrouter:api', 'credits', 'Credits', 1 / 6.0, 30, 50, NULL, NULL),
+                 ('openrouter:api', 'key-0123456789abcdef', 'Weekly key limit', 1 / 6.0, 45, 20, 60, -108))
+             INSERT INTO reading (account, limit_key, at, name, used, size, starts, resets)
+             SELECT account, key, ?1 - ago * ?2, name, used, size, ?1 - starts * ?2, ?1 - resets * ?2 FROM read",
+            [NOW, HOUR],
+        )
+        .unwrap();
+        // Signed in since two days ago, so the fixture's sessions a day ago drew
+        // on these accounts; OpenCode's, signed in to none, on no account.
+        db.execute(
+            "INSERT INTO sign_in (agent, folder, provider, since, account, key) VALUES
+                 ('claude-code', ?1 || '/.claude', 'anthropic', ?2, 'anthropic:acct-1:org-1', NULL),
+                 ('codex', ?1 || '/.codex', 'openai', ?2, 'openai:acct-2', NULL),
+                 ('pi', ?1 || '/.pi/agent', 'openrouter', ?2, 'openrouter:api', '0123456789abcdef'),
+                 ('grok-build', ?1 || '/.grok', 'xai', ?2, 'xai:user-3', NULL)",
+            params![home.to_string_lossy(), NOW - 48 * HOUR],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO price (provider, model, since, cost)
+             VALUES ('anthropic', 'claude-opus-5', 0, '{\"input\":5,\"output\":25,\"cache_read\":0.5,\"cache_write\":6.25}')",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        assert!(turnscope(&dir, &["accounts"]).status.success());
+        let file = dir.join("turnscope.db");
+        let db = Connection::open(&file).unwrap();
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        file
+    })
+}
+
 /// A store with the fixture's history read, and four accounts:
 /// - Claude Max, Claude Code's: its five hours running out within the hour
 ///   at the pace of the last three, its week lasting;
@@ -214,62 +297,7 @@ fn count(db: &Connection, sql: &str) -> i64 {
 ///   read.
 fn store() -> tempfile::TempDir {
     let data = tempfile::tempdir().unwrap();
-    let db = turnscope::db::open(data.path()).unwrap();
-    db.execute(
-        "INSERT INTO account (id, provider, kind, title, label, read_at, problem) VALUES
-             ('anthropic:acct-1:org-1', 'anthropic', 'subscription', 'Claude Max', 'me@example.com', ?1, NULL),
-             ('openai:acct-2', 'openai', 'subscription', 'ChatGPT Plus', 'me@example.com', ?1, NULL),
-             ('openrouter:api', 'openrouter', 'apiKey', 'OpenRouter API key', NULL, ?1, NULL),
-             ('xai:user-3', 'xai', 'subscription', 'SuperGrok', 'me@example.com', NULL, 'signIn')",
-        [NOW - HOUR / 6],
-    )
-    .unwrap();
-    db.execute(
-        "INSERT INTO failing (account, reads) VALUES ('xai:user-3', 2)",
-        [],
-    )
-    .unwrap();
-    // Read, and its window started and resets, hours before now.
-    db.execute(
-        "WITH read (account, key, name, ago, used, size, starts, resets) AS (VALUES
-             -- Five hours from three hours ago, and a week from Monday.
-             ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1.5, 35, NULL, 3, -2),
-             ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1.5, 40, NULL, 84, -84),
-             ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1, 45, NULL, 3, -2),
-             ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1, 42, NULL, 84, -84),
-             ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 0.5, 60, NULL, 3, -2),
-             ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 0.5, 43, NULL, 84, -84),
-             ('anthropic:acct-1:org-1', 'five_hour', '5 hours', 1 / 6.0, 75, NULL, 3, -2),
-             ('anthropic:acct-1:org-1', 'seven_day', 'Weekly', 1 / 6.0, 44, NULL, 84, -84),
-             ('openai:acct-2', 'secondary_window', 'Weekly', 26, 12, NULL, 60, -108),
-             ('openai:acct-2', 'secondary_window', 'Weekly', 1, 20, NULL, 60, -108),
-             ('openai:acct-2', 'secondary_window', 'Weekly', 1 / 6.0, 20, NULL, 60, -108),
-             ('openrouter:api', 'credits', 'Credits', 1 / 6.0, 30, 50, NULL, NULL),
-             ('openrouter:api', 'key-0123456789abcdef', 'Weekly key limit', 1 / 6.0, 45, 20, 60, -108))
-         INSERT INTO reading (account, limit_key, at, name, used, size, starts, resets)
-         SELECT account, key, ?1 - ago * ?2, name, used, size, ?1 - starts * ?2, ?1 - resets * ?2 FROM read",
-        [NOW, HOUR],
-    )
-    .unwrap();
-    // Signed in since two days ago, so the fixture's sessions a day ago drew
-    // on these accounts; OpenCode's, signed in to none, on no account.
-    db.execute(
-        "INSERT INTO sign_in (agent, folder, provider, since, account, key) VALUES
-             ('claude-code', ?1 || '/.claude', 'anthropic', ?2, 'anthropic:acct-1:org-1', NULL),
-             ('codex', ?1 || '/.codex', 'openai', ?2, 'openai:acct-2', NULL),
-             ('pi', ?1 || '/.pi/agent', 'openrouter', ?2, 'openrouter:api', '0123456789abcdef'),
-             ('grok-build', ?1 || '/.grok', 'xai', ?2, 'xai:user-3', NULL)",
-        params![home().to_string_lossy(), NOW - 48 * HOUR],
-    )
-    .unwrap();
-    db.execute(
-        "INSERT INTO price (provider, model, since, cost)
-         VALUES ('anthropic', 'claude-opus-5', 0, '{\"input\":5,\"output\":25,\"cache_read\":0.5,\"cache_write\":6.25}')",
-        [],
-    )
-    .unwrap();
-    drop(db);
-    assert!(turnscope(data.path(), &["accounts"]).status.success());
+    std::fs::copy(seed(), data.path().join("turnscope.db")).unwrap();
     data
 }
 
@@ -1336,9 +1364,16 @@ fn with_no_account_to_show_every_front_end_says_why() {
         format!("turnscope: {none}")
     );
     assert_eq!(said(data.path(), &["accounts", "--json"]), "[]");
+    let empty_status: serde_json::Value =
+        serde_json::from_str(&said(data.path(), &["status", "--json"])).unwrap();
     assert_eq!(
-        said(data.path(), &["status", "--json"]),
-        "{\n  \"accounts\": [],\n  \"fit\": null\n}"
+        empty_status,
+        json!({
+            "at": NOW,
+            "historyRead": true,
+            "accounts": [],
+            "fit": null,
+        })
     );
     // Every account hidden: there are accounts, and each front end says how
     // it shows one.
@@ -1358,7 +1393,7 @@ fn with_no_account_to_show_every_front_end_says_why() {
     );
     assert_eq!(
         check_limits(data.path(), r#"{"all":true}"#),
-        "Every account is hidden: name one with account to see its limits."
+        "Every account is hidden: name one with account to see its limits; there are: Claude Max (me@example.com) (anthropic:acct-1:org-1), ChatGPT Plus (me@example.com) (openai:acct-2), OpenRouter API key (openrouter:api), SuperGrok (me@example.com) (xai:user-3)."
     );
     // An agent with no account of its own, as OpenCode here, isn't given a
     // hidden one.
@@ -1617,4 +1652,353 @@ fn guard_and_mcp_leave_limits_to_the_app() {
         })
         .unwrap();
     assert_eq!(claimed, (None, None));
+}
+
+#[test]
+fn guard_handles_read_only_data_below_zero_stale_credits_and_key_owner() {
+    let data = store();
+    // `--below 0` is rejected (bad guard args exit 1, blocking nothing).
+    assert_eq!(
+        turnscope(
+            data.path(),
+            &[
+                "guard",
+                "--account",
+                "claude",
+                "--limit",
+                "5h",
+                "--below",
+                "0"
+            ]
+        )
+        .status
+        .code(),
+        Some(1)
+    );
+    // `--json` stays global before data commands (`--json status`), and is
+    // rejected on commands that don't print structured data.
+    assert!(
+        turnscope(data.path(), &["--json", "status"])
+            .status
+            .success()
+    );
+    for args in [
+        &[
+            "guard",
+            "--account",
+            "claude",
+            "--limit",
+            "5h",
+            "--below",
+            "50",
+            "--json",
+        ][..],
+        &[
+            "--json",
+            "guard",
+            "--account",
+            "claude",
+            "--limit",
+            "5h",
+            "--below",
+            "50",
+        ][..],
+    ] {
+        assert_eq!(turnscope(data.path(), args).status.code(), Some(1));
+    }
+    for args in [
+        &["statusline", "--json"][..],
+        &["--json", "statusline"][..],
+        &["mcp", "--json"][..],
+        &["--json", "mcp"][..],
+    ] {
+        assert_eq!(turnscope(data.path(), args).status.code(), Some(2));
+    }
+    // Credits use plural wording without "limit"; key limits keep their owner.
+    let credits = turnscope(
+        data.path(),
+        &[
+            "guard",
+            "--account",
+            "openrouter",
+            "--limit",
+            "credits",
+            "--below",
+            "80",
+        ],
+    );
+    assert_eq!(credits.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&credits.stderr).trim(),
+        "OpenRouter API key's credits have 70% left, under 80%."
+    );
+    let key = turnscope(
+        data.path(),
+        &[
+            "guard",
+            "--account",
+            "openrouter",
+            "--limit",
+            "pi",
+            "--below",
+            "60",
+        ],
+    );
+    assert_eq!(key.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&key.stderr).trim(),
+        "OpenRouter API key: Pi's weekly key limit has 55% left, under 60%. It resets Tue 00:00 (in 4d 12h)."
+    );
+    // Stale `State::AsOf` reading notes `(as of <time>)` when blocking.
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    let shift = HOUR * 25 / 60;
+    db.execute_batch(&format!(
+        "UPDATE reading SET at = at - {shift} WHERE account = 'anthropic:acct-1:org-1';
+         UPDATE account SET read_at = read_at - {shift} WHERE id = 'anthropic:acct-1:org-1';"
+    ))
+    .unwrap();
+    drop(db);
+    let stale = turnscope(
+        data.path(),
+        &[
+            "guard",
+            "--account",
+            "claude",
+            "--limit",
+            "5h",
+            "--below",
+            "50",
+        ],
+    );
+    assert_eq!(stale.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr).trim(),
+        "Claude Max's 5-hour limit has 25% left (as of 11:25), under 50%. It resets 14:00 (in 2h)."
+    );
+    // In a read-only data directory (as an agent sandbox), online `guard`
+    // falls back to `read_db` instead of failing with exit 1.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let db_file = data.path().join("turnscope.db");
+        std::fs::set_permissions(&db_file, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(data.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let ro = command(
+            data.path(),
+            &[
+                "guard",
+                "--account",
+                "claude",
+                "--limit",
+                "5h",
+                "--below",
+                "50",
+            ],
+        )
+        .env("TURNSCOPE_OFFLINE", "0")
+        .output()
+        .unwrap();
+        std::fs::set_permissions(data.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&db_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            ro.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&ro.stderr)
+        );
+    }
+}
+
+#[test]
+fn cli_json_reports_status_fit_and_usage_limit_note() {
+    let data = store();
+    let out = turnscope(
+        data.path(),
+        &["status", "--account", "claude", "--hours", "0.65", "--json"],
+    );
+    assert!(out.status.success());
+    let status_json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(status_json["at"], NOW);
+    assert_eq!(status_json["historyRead"], true);
+    assert_eq!(status_json["fit"][0]["fits"], "no");
+    assert!(
+        status_json["fit"][0]["fit"]
+            .as_str()
+            .unwrap()
+            .starts_with("0.65 more hours of work don't fit: 5 hours runs out"),
+        "{status_json}"
+    );
+    let out = turnscope(
+        data.path(),
+        &[
+            "usage",
+            "--account",
+            "openrouter",
+            "--limit",
+            "pi",
+            "--json",
+        ],
+    );
+    assert!(out.status.success());
+    let usage_json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        usage_json["note"],
+        "Your agents here account for $0.00 of the $9.00 used; the rest was spent elsewhere with this key."
+    );
+}
+
+#[test]
+fn accounts_preserves_status_rank_order() {
+    let data = store();
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    // Make `openai:acct-2` in use (response within the last half hour) and
+    // `anthropic:acct-1:org-1` refused & idle, reversing alphabetical id order.
+    let shift = 48 * HOUR;
+    db.execute_batch(&format!(
+        "UPDATE response SET at = at - {shift} WHERE account = 'anthropic:acct-1:org-1';
+         UPDATE reading SET at = at - {shift} WHERE account = 'anthropic:acct-1:org-1';
+         UPDATE account SET problem = 'signIn', read_at = read_at - {shift}, checked_at = {now}
+             WHERE id = 'anthropic:acct-1:org-1';
+         INSERT INTO failing (account, reads) VALUES ('anthropic:acct-1:org-1', 2);
+         UPDATE response SET at = {recent} WHERE account = 'openai:acct-2';",
+        now = NOW - HOUR / 6,
+        recent = NOW - HOUR / 12,
+    ))
+    .unwrap();
+    drop(db);
+    let status_out = turnscope(data.path(), &["status", "--json"]);
+    assert!(status_out.status.success());
+    let status_json: serde_json::Value = serde_json::from_slice(&status_out.stdout).unwrap();
+    let accounts_out = turnscope(data.path(), &["accounts", "--json"]);
+    assert!(accounts_out.status.success());
+    let accounts_json: serde_json::Value = serde_json::from_slice(&accounts_out.stdout).unwrap();
+    fn ids(items: &[serde_json::Value]) -> Vec<&str> {
+        items
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect()
+    }
+    let status_ids = ids(status_json["accounts"].as_array().unwrap());
+    let account_ids = ids(accounts_json.as_array().unwrap());
+    assert_eq!(account_ids, status_ids);
+    assert_eq!(account_ids[0], "openai:acct-2");
+}
+
+#[test]
+fn caller_detection_falls_back_to_sign_in_for_new_and_switched_folders() {
+    let data = store();
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    let work_folder = format!("{}/.codex-work", home().display());
+    db.execute(
+        "INSERT INTO account (id, provider, kind, title, label, read_at)
+         VALUES ('openai:work', 'openai', 'subscription', 'ChatGPT Team', 'work@example.com', ?1)",
+        [NOW - HOUR / 6],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+         VALUES ('openai:work', 'secondary_window', ?1, 'Weekly', 10, ?2, ?3)",
+        [NOW - HOUR / 6, NOW - 60 * HOUR, NOW + 108 * HOUR],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('codex', ?1, 'openai', ?2, 'openai:work')",
+        params![&work_folder, NOW - HOUR],
+    )
+    .unwrap();
+    // Brand-new folder with zero responses resolves via active `sign_in`.
+    let out = command_as("codex", data.path(), &["statusline"])
+        .env("CODEX_HOME", &work_folder)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "ChatGPT Team · weekly 90%"
+    );
+    let answer = tools(
+        command_as("codex", data.path(), &["mcp"]).env("CODEX_HOME", &work_folder),
+        &[("check_limits", "{}")],
+    )
+    .remove(0);
+    assert!(
+        answer.starts_with("ChatGPT Team (work@example.com): Weekly has 90% left"),
+        "{answer}"
+    );
+    // Switching sign-in on an existing folder picks the new account even before
+    // any response is recorded on it.
+    let default_codex = format!("{}/.codex", home().display());
+    db.execute(
+        "INSERT INTO sign_in (agent, folder, provider, since, account)
+         VALUES ('codex', ?1, 'openai', ?2, 'openai:work')",
+        params![&default_codex, NOW - HOUR / 6],
+    )
+    .unwrap();
+    let out = command_as("codex", data.path(), &["statusline"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "ChatGPT Team · weekly 90%"
+    );
+}
+
+#[test]
+fn mcp_validates_window_whitespace_meta_version_partial_and_avoids_duplicate_verdict() {
+    let data = store();
+    let mut mcp = Mcp::spawn(&mut command(data.path(), &["mcp"]));
+    let (win_until, err) = mcp.call(
+        "explain_usage",
+        r#"{"account":"claude","since":"window","until":"today"}"#,
+    );
+    assert!(err);
+    assert_eq!(
+        win_until,
+        "since: \"window\" runs to now, not until: give a time for since to use until"
+    );
+    let (win_all, err) = mcp.call("explain_usage", r#"{"all":true,"since":"window"}"#);
+    assert!(err);
+    assert_eq!(
+        win_all,
+        "since: \"window\" is for one account's limit, not every account: give account or a time for since"
+    );
+    // Whitespace-only account input is treated as not given.
+    let (blank, err) = mcp.call("check_limits", r#"{"account":"   "}"#);
+    assert!(!err);
+    let (default, _) = mcp.call("check_limits", "{}");
+    assert_eq!(blank, default);
+    // Multiple accounts with `hours` and no `most_room` omit redundant verdict.
+    let (multi, err) = mcp.call("check_limits", r#"{"account":"me@example.com","hours":2}"#);
+    assert!(!err);
+    assert!(
+        !multi.contains("about 40m of work left (as little as 20m) before 5 hours runs out"),
+        "{multi}"
+    );
+    mcp.close();
+    // Older protocol version in `_meta` reports only `MODERN` as supported.
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}}"#;
+    let out = fed(
+        &mut command(data.path(), &["mcp"]),
+        format!("{req}\n").as_bytes(),
+    );
+    let reply = replies(&out).remove(0);
+    assert_eq!(reply["error"]["code"], -32022);
+    assert_eq!(reply["error"]["data"]["supported"], json!(["2026-07-28"]));
+    // Partial history note on `check_limits` talks about accounts/work rates,
+    // not "the usage here is only part of it".
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    db.execute("UPDATE state SET readers = 0", []).unwrap();
+    let reading = std::fs::File::create(data.path().join("ingest.lock")).unwrap();
+    reading.lock().unwrap();
+    let mut mcp = Mcp::spawn(&mut command(data.path(), &["mcp"]));
+    let (limits, err) = mcp.call("check_limits", r#"{"account":"claude"}"#);
+    assert!(!err);
+    assert!(
+        limits.ends_with(
+            "\n\nYour agents' history is still being read, so which accounts are in use and \
+             their work rates may be incomplete: ask again in a few minutes."
+        ),
+        "{limits}"
+    );
+    mcp.close();
 }

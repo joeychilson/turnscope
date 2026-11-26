@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **`usage --by session` and `usage --limit` pre-aggregate by session**
+  before walking subagent parents, so queries on large histories no longer
+  scan the whole `session` table. `statusline`, `guard`, `accounts` and
+  `usage --account` skip measuring work rates they don't show, and
+  `statusline` waits at most 50 ms (down from 300 ms) on an idle pipe.
+- **Scoped or other-apps limits no longer hijack an account's deciding
+  limit** when its whole-account limits reset since the last read, and an
+  API-key account with only key limits shows its deciding key (with its
+  owner) in `statusline` and reports used-up keys in verdicts.
+- **`status --hours` and `check_limits` no longer say hours fit with 0%
+  left** when they exhaust a limit or leave half a percent or less (saying
+  `under 1%` instead), and tiny non-zero work rates clamp to `0.1%` an
+  hour consistently across rate and minutes left. Work rates also count
+  first-window work after idle gaps and ignore non-local usage with zero
+  local work.
+- **`guard` works inside read-only agent sandboxes** (falling back to the
+  read-only database), requires `--below` in `1..=100`, notes `(as of
+  <time>)` when blocking on an earlier read, names key limits by their
+  owner, and uses plural wording for Credits.
+- **`--json` is rejected on `guard`, `statusline`, and `mcp`** instead of
+  being silently ignored, while remaining global on commands that print
+  data. `status --json` adds `at`, `historyRead`, and structured `fits`
+  (`yes`/`no`/`unknown`); `usage --limit --json` adds `note`.
+- **MCP caller detection and error recovery:** falls back to active
+  `sign_in` for brand-new agent folders and switched accounts, skips
+  leading runtime flags such as `node --no-warnings`, trims blank-only
+  inputs, lists hidden accounts when every account is hidden, gives clear
+  errors for `since: "window"` with `until` or `all`, suppresses a
+  redundant verdict line when `hours` is given, reports only the `_meta`
+  version in `-32022` errors, and tailors the partial-history note for
+  `check_limits`.
+- **Monthly spend on API keys excludes responses past the month's end**,
+  and work done in the same 5-minute slot after a reading (such as Codex
+  in-band snapshots) is no longer dropped from `worked_since_read`.
 - **Codex's responses after fast mode is turned off cost the standard
   rate**, not the fast one. The history is read again once, to price them
   anew.

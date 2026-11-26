@@ -97,8 +97,8 @@ static TOOLS: &[Tool] = &[
             "account": {"type": "string", "description": "One account, by id or part of its title or label. Default: yours."},
             "all": {"type": "boolean", "description": "Every account's usage together, as across your agents, with no share of a limit; since is then 30 days back unless given."},
             "limit": {"type": "string", "description": "Part of a limit's name, such as week, 5h or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: without since, the one that decides the account."},
-            "since": {"type": "string", "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, an RFC 3339 time, or now."},
-            "until": {"type": "string", "description": "Up to when, in the same forms as since, with since. Default: now."},
+            "since": {"type": "string", "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, or an RFC 3339 time."},
+            "until": {"type": "string", "description": "Up to when, in the same forms as since or now, with since. Default: now."},
             "by": {"type": "string", "enum": ["session", "project", "model", "agent", "account", "day", "week", "month"], "description": "Default session."},
             "top": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Rows, default 5; the rest are added up."}
         }, "additionalProperties": false}"#,
@@ -129,6 +129,7 @@ pub struct Caller {
 impl Caller {
     pub fn detect() -> Caller {
         let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+        #[cfg(unix)]
         let ancestor = || {
             let table = Command::new("/bin/ps")
                 .args(["-A", "-ww", "-o", "pid=,ppid=,args="])
@@ -137,6 +138,8 @@ impl Caller {
             let table = String::from_utf8_lossy(&table.stdout);
             nearest(&table, std::os::unix::process::parent_id())
         };
+        #[cfg(not(unix))]
+        let ancestor = || None;
         let agent = ancestor().or_else(|| {
             agents::ALL
                 .iter()
@@ -165,24 +168,53 @@ impl Caller {
         };
         if id.is_none()
             && let Some(agent) = self.agent
-        {
-            let folder = self
+            && let Some(folder) = self
                 .agent_folder
                 .clone()
-                .or_else(|| agent.folders(home).into_iter().next());
-            id = db
+                .or_else(|| agent.folders(home).into_iter().next())
+                .map(|folder| folder.to_string_lossy().into_owned())
+        {
+            let latest: Option<(String, String)> = db
                 .prepare_cached(
-                    "SELECT account FROM response WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
+                    "SELECT account, provider FROM response
+                     WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
                      ORDER BY at DESC LIMIT 1",
                 )?
-                .query_row(
-                    rusqlite::params![
-                        agent.info().id,
-                        folder.map(|folder| folder.to_string_lossy().into_owned())
-                    ],
-                    |row| row.get(0),
-                )
+                .query_row(rusqlite::params![agent.info().id, &folder], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
                 .optional()?;
+            id = match latest {
+                Some((account, provider)) => {
+                    let current: Option<Option<String>> = db
+                        .prepare_cached(&format!(
+                            "SELECT s.account FROM sign_in s
+                             WHERE s.folder = ?1 AND s.provider = ?2 AND {}",
+                            turnscope::limits::SIGNED_IN_NOW
+                        ))?
+                        .query_row(rusqlite::params![&folder, &provider], |row| row.get(0))
+                        .optional()?;
+                    match current {
+                        Some(Some(signed_in)) => Some(signed_in),
+                        None => Some(account),
+                        Some(None) => None,
+                    }
+                }
+                None => None,
+            };
+            if id.is_none() {
+                id = db
+                    .prepare_cached(&format!(
+                        "SELECT s.account FROM sign_in s
+                         WHERE s.agent = ?1 AND s.folder = ?2 AND s.account IS NOT NULL AND {}
+                         ORDER BY s.since DESC LIMIT 1",
+                        turnscope::limits::SIGNED_IN_NOW
+                    ))?
+                    .query_row(rusqlite::params![agent.info().id, &folder], |row| {
+                        row.get(0)
+                    })
+                    .optional()?;
+            }
         }
         Ok(id.and_then(|id| status.accounts.iter().find(|account| account.id == id)))
     }
@@ -216,6 +248,7 @@ fn folded(given: &Path) -> PathBuf {
 /// The agent nearest above the process `pid`, itself included. An ancestor
 /// is an agent by its command, or by being the program in its app that
 /// starts the server without its command, as Antigravity's does.
+#[cfg(any(unix, test))]
 fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
     let rows: Vec<(u32, u32, &str)> = table
         .lines()
@@ -234,9 +267,7 @@ fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
         let program = words.next().unwrap_or_default();
         let first = program.rsplit('/').next().unwrap_or(program);
         let name = match first {
-            "node" | "bun" | "deno" | "python" | "python3" => words
-                .next()
-                .map_or("", |word| word.rsplit('/').next().unwrap_or(word)),
+            "node" | "bun" | "deno" | "python" | "python3" => runtime_script(words),
             _ => first,
         };
         // A versioned build adds its version, as `grok-1.0.41-macos-aarch64`.
@@ -254,6 +285,31 @@ fn nearest(table: &str, mut pid: u32) -> Option<&'static dyn Agent> {
     None
 }
 
+/// The script filename run by `node`, `bun`, `deno`, `python`, or `python3`,
+/// or `""` when the command evaluates inline code or names no script.
+#[cfg(any(unix, test))]
+fn runtime_script<'a>(mut words: impl Iterator<Item = &'a str>) -> &'a str {
+    while let Some(word) = words.next() {
+        match word {
+            "-e" | "--eval" | "-p" | "--print" | "-c" | "-m" => return "",
+            flag if flag.starts_with("--eval=") || flag.starts_with("--print=") => return "",
+            "--" => {
+                return words
+                    .next()
+                    .map_or("", |script| script.rsplit('/').next().unwrap_or(script));
+            }
+            "-r" | "--require" | "--import" | "--loader" | "--env-file" | "-C" | "--conditions"
+            | "-W" | "-X" => {
+                words.next();
+            }
+            flag if flag.starts_with('-') => {}
+            script => return script.rsplit('/').next().unwrap_or(script),
+        }
+    }
+    ""
+}
+
+#[cfg(any(unix, test))]
 fn matches_app(args: &str, app: &str) -> bool {
     let Some((prefix, rest)) = args.split_once(app) else {
         return false;
@@ -338,7 +394,7 @@ fn reply(server: &mut Server, line: &str) -> Option<Value> {
     let modern = params["_meta"].get("io.modelcontextprotocol/protocolVersion");
     if let Some(version) = modern.filter(|version| *version != MODERN) {
         let mut reply = failure(id, -32022, "Unsupported protocol version");
-        reply["error"]["data"] = json!({ "supported": SUPPORTED, "requested": version });
+        reply["error"]["data"] = json!({ "supported": [MODERN], "requested": version });
         return Some(reply);
     }
     let instructions = || {
@@ -461,8 +517,14 @@ fn call(server: &mut Server, tool: &Tool, arguments: Value) -> Value {
         (Ok(text), Ok(_)) => answer(text, false),
         (Ok(text), Err(_)) if partial => answer(
             format!(
-                "{text}\n\nYour agents' history is still being read, so the usage here is only \
-                 part of it: ask again in a few minutes."
+                "{text}\n\nYour agents' history is still being read, so {}: ask again in a few \
+                 minutes.",
+                match tool.name {
+                    "check_limits" => {
+                        "which accounts are in use and their work rates may be incomplete"
+                    }
+                    _ => "the usage here is only part of it",
+                }
             ),
             false,
         ),
@@ -489,7 +551,8 @@ fn fitted(tool: &Tool, arguments: Value) -> std::result::Result<Value, String> {
     let Value::Object(mut given) = arguments else {
         return Err(format!("arguments are an object, not {arguments}"));
     };
-    let unsaid = |value: &Value| value.is_null() || value == "";
+    let unsaid =
+        |value: &Value| value.is_null() || value.as_str().is_some_and(|s| s.trim().is_empty());
     let schema: Value = serde_json::from_str(tool.input).unwrap_or_default();
     let properties = &schema["properties"];
     for (name, value) in &given {
@@ -568,10 +631,11 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     };
     shown.sort_by_key(|account| Some(account.id.as_str()) != yours);
     let Some(first) = shown.first() else {
-        return Ok(status::none(
-            &status,
-            "name one with account to see its limits",
-        ));
+        let show = format!(
+            "name one with account to see its limits; there are: {}",
+            status::format_accounts(&status.accounts)
+        );
+        return Ok(status::none(&status, &show));
     };
     // Whether the hours fit each account shown, so one call compares them.
     let fit = match input.hours {
@@ -589,8 +653,8 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
         (true, Some(room)) => format!("{unknown_line}\n{room}\n\n"),
         (true, None) => format!("{unknown_line}\n\n"),
         (false, Some(room)) => format!("{room}\n\n"),
-        // One account's fit is its verdict.
-        (false, None) if input.hours.is_some() && shown.len() == 1 => String::new(),
+        // The fit lines already report each account's standing.
+        (false, None) if input.hours.is_some() => String::new(),
         (false, None) => format!("{}\n\n", status::verdict(first, status.at)),
     };
     let alternate = (shown.len() == 1)
@@ -656,9 +720,21 @@ fn usage_asked<'a>(
         },
     };
     let between = match (input.since.as_deref(), input.until.as_deref()) {
-        (None | Some("window"), Some(_)) => {
+        (None, Some(_)) => {
             return Err(Error::Usage(
                 "until is with since: without since, the usage runs to now".to_owned(),
+            ));
+        }
+        (Some("window"), Some(_)) => {
+            return Err(Error::Usage(
+                "since: \"window\" runs to now, not until: give a time for since to use until"
+                    .to_owned(),
+            ));
+        }
+        (Some("window"), None) if account.is_none() => {
+            return Err(Error::Usage(
+                "since: \"window\" is for one account's limit, not every account: give account or a time for since"
+                    .to_owned(),
             ));
         }
         (None | Some("window"), None) => None,
@@ -688,6 +764,8 @@ fn usage_asked<'a>(
 }
 
 fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
+    use std::fmt::Write as _;
+
     let now = turnscope::now();
     let status = status::status(ask.db, now)?;
     let UsageAsked {
@@ -741,38 +819,42 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     // Times are told as of the status's minute, as `check_limits` tells
     // them: at 12:00:40, a reset at 14:00 is in 2h, not 1h 59m.
     let minute = status.at;
-    let mut out = match (account, limit) {
-        (Some(account), Some(limit)) if limit.window.is_none() && between.is_none() => format!(
-            "{}: {}\n",
-            account.full_title(),
-            usage::unreset(account, limit, &used, minute, "")
-        ),
+    let mut out = String::new();
+    match (account, limit) {
+        (Some(account), Some(limit)) if limit.window.is_none() && between.is_none() => {
+            let _ = writeln!(
+                out,
+                "{}: {}",
+                account.full_title(),
+                usage::unreset(account, limit, &used, minute, "")
+            );
+        }
         _ => {
             let to = match until_given {
                 true => format!(" to {}", time::ago(query.until, minute)),
                 false => String::new(),
             };
-            let mut out = format!(
-                "{lead}Usage of {} since {}{to}: {}.\n",
+            let _ = writeln!(
+                out,
+                "{lead}Usage of {} since {}{to}: {}.",
                 account.map_or("every account".to_owned(), |account| account.full_title()),
                 time::ago(used.since, minute),
                 usage::spent(&used.total),
             );
             if let Some(limit) = limit {
-                out += &format!("{}\n", status::limit_text(limit, minute));
+                let _ = writeln!(out, "{}", status::limit_text(limit, minute));
             }
-            out
         }
-    };
+    }
     if !used.rows.is_empty() {
         let shares = limit.zip(shares.as_ref());
-        out += &format!("\n{}", usage::markdown(&used, shares, yours));
+        let _ = write!(out, "\n{}", usage::markdown(&used, shares, yours));
     }
     if let Some(line) = own_line {
-        out += &line;
+        out.push_str(&line);
     }
     if let Some(line) = line {
-        out += &format!("\n{line}\n");
+        let _ = writeln!(out, "\n{line}");
     }
     // Asked since a time, as the calendar week for "this week" of a weekly
     // limit, the shares are left out: say how to get them. There are none
@@ -780,20 +862,24 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
     if let (Some(limit), Some(_)) = (limit, between)
         && let Some(start) = limit.started()
     {
-        out += &format!(
-            "\nShares of {} are known only over its window, since {}: leave since out for them.\n",
+        let _ = writeln!(
+            out,
+            "\nShares of {} are known only over its window, since {}: leave since out for them.",
             limit.named(),
             time::ago(start, minute),
         );
     }
-    out += &by_others(ask.db, &query)?;
+    if !used.rows.is_empty() {
+        by_others(ask.db, &query, &mut out)?;
+    }
     Ok(out.trim_end().to_owned())
 }
 
 /// What `query` asked by model and project, and by account when it's every
 /// account's, the top three of each, so one call says what used it.
-fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
-    let mut out = String::new();
+fn by_others(db: &Connection, query: &usage::Query, out: &mut String) -> Result<()> {
+    use std::fmt::Write as _;
+
     for by in [By::Model, By::Project, By::Account] {
         if by == query.by || (by == By::Account && query.account.is_some()) {
             continue;
@@ -812,10 +898,10 @@ fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
             })
             .collect();
         if !listed.is_empty() {
-            out += &format!("\nBy {}: {}.", by.noun(), listed.join("; "));
+            let _ = write!(out, "\nBy {}: {}.", by.noun(), listed.join("; "));
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -867,6 +953,13 @@ mod tests {
           700   650 /opt/turnscope mcp
           300     1 /bin/zsh
           310   300 node /opt/homebrew/bin/codex
+          311   300 node --no-warnings --max-old-space-size=4096 /opt/homebrew/bin/codex
+          312   300 python3 -u /opt/bin/pi
+          313   300 node -e pi = 1
+          314   300 node --eval=pi foo
+          315   300 python3 -c import pi
+          316   300 node --require preload.js /opt/homebrew/bin/codex
+          317   300 node -r pi.js -- /opt/homebrew/bin/codex
           320   300 /opt/grok/grok-1.0.41-macos-aarch64 --resume
           330   300 /usr/bin/vim agy.md
           340   300 /opt/Other.app/Contents/Resources/bin/language_server
@@ -882,6 +975,13 @@ mod tests {
         assert_eq!(above(640), None);
         assert_eq!(above(650), Some("claude-code"));
         assert_eq!(above(310), Some("codex"));
+        assert_eq!(above(311), Some("codex"));
+        assert_eq!(above(312), Some("pi"));
+        assert_eq!(above(313), None);
+        assert_eq!(above(314), None);
+        assert_eq!(above(315), None);
+        assert_eq!(above(316), Some("codex"));
+        assert_eq!(above(317), Some("codex"));
         assert_eq!(above(320), Some("grok-build"));
         // A file's name isn't a command's, nor another app's program this
         // one's, and a shell is no agent.

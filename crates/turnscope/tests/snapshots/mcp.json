@@ -88,7 +88,7 @@
                 "type": "string"
               },
               "since": {
-                "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, an RFC 3339 time, or now.",
+                "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01, or an RFC 3339 time.",
                 "type": "string"
               },
               "top": {
@@ -98,7 +98,7 @@
                 "type": "integer"
               },
               "until": {
-                "description": "Up to when, in the same forms as since, with since. Default: now.",
+                "description": "Up to when, in the same forms as since or now, with since. Default: now.",
                 "type": "string"
               }
             },
@@ -211,11 +211,7 @@
       "data": {
         "requested": "2024-01-01",
         "supported": [
-          "2026-07-28",
-          "2025-11-25",
-          "2025-06-18",
-          "2025-03-26",
-          "2024-11-05"
+          "2026-07-28"
         ]
       },
       "message": "Unsupported protocol version"

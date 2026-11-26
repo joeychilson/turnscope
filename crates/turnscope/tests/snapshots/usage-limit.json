@@ -1,6 +1,7 @@
 {
   "account": "anthropic:acct-1:org-1",
   "limit": "seven_day",
+  "note": null,
   "restSharePercent": null,
   "sharePercents": [
     41.332798073063024,

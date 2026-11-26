@@ -56,9 +56,9 @@ Claude Code calls from.
 
 | What | How it's found |
 |---|---|
-| Agent | The nearest agent's command (`claude`, `codex`, `opencode`, `pi`, `grok` or `agy`) among the server's parent processes, up to eight levels up, found with `/bin/ps`. A script run by `node`, `bun`, `deno`, `python` or `python3` counts by the script's name. A versioned build such as `grok-1.0.41-macos-aarch64` counts as `grok`. Antigravity's app starts the server from its own language server, without `agy`, so that program counts as well. With none found, `CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a server it starts, says Claude Code. So Codex run from Claude Code's shell, where the variable is set too, is Codex. |
+| Agent | The nearest agent's command (`claude`, `codex`, `opencode`, `pi`, `grok` or `agy`) among the server's parent processes, up to eight levels up, found with `/bin/ps`. A script run by `node`, `bun`, `deno`, `python` or `python3` counts by the script's name, skipping leading runtime flags such as `--no-warnings`. A versioned build such as `grok-1.0.41-macos-aarch64` counts as `grok`. Antigravity's app starts the server from its own language server, without `agy`, so that program counts as well. With none found, `CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a server it starts, says Claude Code. So Codex run from Claude Code's shell, where the variable is set too, is Codex. |
 | Session | `CLAUDE_CODE_SESSION_ID` for Claude Code. The other agents don't say, so their session isn't known. |
-| Account | The account of the session's latest response. Otherwise the account of the agent's latest response from its agent folder: the one `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME` points to, or else its default folder. |
+| Account | The account of the session's latest response. Otherwise the current sign-in for the provider of the agent's latest response in its agent folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, or its default folder), or the folder's latest active sign-in when no response is there yet or that provider was signed out. |
 
 When the account isn't known, `check_limits` lists every account, and
 `explain_usage` answers with every account's usage; given `limit`, it asks
@@ -102,9 +102,10 @@ way.
   after a newer Turnscope wrote the data
   ([architecture.md](architecture.md#data)), the tool still answers from
   what's known, and ends by saying it's as of the last read, and why.
-  While all of history is read, the first time and after an update, it
-  ends instead by saying its usage is only part of it, and to ask again in
-  a few minutes.
+  While all of history is read, the first time and after an update,
+  `explain_usage` ends instead by saying its usage is only part of it, and
+  `check_limits` by saying which accounts are in use and their work rates
+  may be incomplete, and to ask again in a few minutes.
 
 ## Tools
 
@@ -113,8 +114,8 @@ way.
 | [`check_limits`](#check_limits) | Check limits | See whether planned work fits, before costly work |
 | [`explain_usage`](#explain_usage) | Explain usage | Find out what used a limit or what something cost |
 
-Every input is optional, and one given as `null` or `""` is taken as not
-given. An input the schema doesn't list is an error.
+Every input is optional, and one given as `null` or blank text is taken as
+not given. An input the schema doesn't list is an error.
 
 The examples come from `crates/turnscope/tests/snapshots/mcp.json`:
 synthetic accounts and sessions, with the clock at Thu Oct 1 12:00 UTC.
@@ -153,7 +154,8 @@ The answer has three parts:
    read when its agents have worked on it since: the answer says what was
    left then of the limit it stands by with the fewest hours of work left,
    of those not reset since, and how long they've worked. Of one account,
-   the line is its verdict too, and the second part is left out.
+   the line is its verdict too. With `hours`, the second part is left out
+   unless every account is shown and one has the most room.
 2. A one-sentence verdict on the first account: how much work is left
    before which limit runs out, and when that limit resets. When the
    deciding limit has no work rate measured, it says what's left of it
@@ -171,8 +173,8 @@ The answer has three parts:
    told. Of those as roomy, one the calling agent uses comes first, then a
    subscription before an API key. It's marked `yours` when it's the
    caller's, and otherwise names the agents that use it when the calling
-   agent doesn't. With none that roomy, the line is the verdict on the
-   first account, as without `all`.
+   agent doesn't. With none that roomy and no `hours`, the line is the
+   verdict on the first account, as without `all`.
 
    When the caller's account isn't known and neither `account` nor `all`
    is given, a line first says every account is shown. The account with
@@ -192,7 +194,7 @@ The answer has three parts:
 
 With no account to show, the answer is one line saying why, as the command
 line's `status` says it: no account's limits have been read yet, or every
-account is hidden, and then to name one with `account`.
+account is hidden, listing them by title and id to name with `account`.
 
 Called with `{"all": true, "hours": 2}`:
 
@@ -233,8 +235,8 @@ together, as for "what did I spend across my agents".
 | `account` | string | the caller's | One account: its id, or text in its title, label or id. If the text matches several, the error lists them. |
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
 | `limit` | string | the limit that decides how the account stands, unless `since` is given | Text in a limit's name or key, any case, such as `week` or `5 hours`, or the name the status line shows, such as `5h`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
-| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). A window that rolls, as OpenCode Go's 5 hours, is the last of its length. For another limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. Given without `limit`, the usage is the account's, with no limit's line. A `since` at or after now is an error, as it is for the command line's `usage`. |
-| `until` | string | now | With `since`: up to when, in the same forms. Without `since`, the usage runs to now, and `until` is an error. |
+| `since` | string | `window` | `window` for one account's limit's current window (not with `all` or `until`), or a [time form](cli.md#time-forms). A window that rolls, as OpenCode Go's 5 hours, is the last of its length. For another limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. Given without `limit`, the usage is the account's, with no limit's line. A `since` at or after now is an error, as it is for the command line's `usage`. |
+| `until` | string | now | With a time for `since`: up to when, in the same forms or `now`. Without `since` (or with `since: "window"`), the usage runs to now, and `until` is an error. |
 | `by` | `session`, `project`, `model`, `agent`, `account`, `day`, `week` or `month` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
 

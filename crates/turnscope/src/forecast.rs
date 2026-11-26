@@ -152,16 +152,17 @@ pub fn same_reset(a: Option<i64>, b: Option<i64>) -> bool {
 /// counts nights and breaks: for a week it understated what more hours of
 /// work use about 2 times, where this showed no bias.
 ///
-/// `worked` holds the start of each slot of work on its account, oldest
-/// first, and is whose work it is only from `known`, when the sign-ins it
-/// rests on were first read. A window's first reading counts from the
-/// window's start only where both reach back past it: work from before would
-/// otherwise be counted as none, and work on another account before
-/// Turnscope ran as this one's. `None` with less than an hour of work or 2
-/// points measured.
+/// `worked` holds the start of each slot of work on its account since
+/// `since`, oldest first, and is whose work it is only from `known`, when
+/// the sign-ins it rests on were first read. A window's first reading counts
+/// from the window's start only where both reach back past it: work from
+/// before would otherwise be counted as none, and work on another account
+/// before Turnscope ran as this one's. `None` with less than an hour of work
+/// or 2 points measured.
 pub fn work_rate(
     readings: &[Reading],
     worked: &[i64],
+    since: i64,
     known: Option<i64>,
     enough: f64,
 ) -> Option<f64> {
@@ -179,12 +180,15 @@ pub fn work_rate(
                 rose += (reading.used - before.used).max(0.0);
                 slots += slots_worked(worked, before.at, reading.at);
             }
-            (_, Some(starts))
-                if known.is_some_and(|known| known <= starts)
-                    && worked.first().is_some_and(|first| *first <= starts) =>
-            {
-                rose += reading.used;
-                slots += slots_worked(worked, starts, reading.at);
+            (_, Some(starts)) if known.is_some_and(|known| known <= starts) && since <= starts => {
+                let first = slots_worked(worked, starts, reading.at);
+                // With zero local work in `(starts, reading.at]`, `reading.used`
+                // came from elsewhere (e.g. web or another device) and shouldn't
+                // inflate the local work rate.
+                if first > 0 {
+                    rose += reading.used;
+                    slots += first;
+                }
             }
             _ => {}
         }
@@ -321,19 +325,32 @@ mod tests {
         worked.extend((37..=48).map(|slot| slot * SLOT));
         // 14 points over 3 hours of work, walking back to the window's start.
         assert_eq!(
-            work_rate(&readings, &worked, Some(0), 5.0),
+            work_rate(&readings, &worked, 0, Some(0), 5.0),
             Some(14.0 / 3.0)
         );
         // Enough once the latest stretches hold an hour of work: 4 points.
-        assert_eq!(work_rate(&readings, &worked, Some(0), 1.0), Some(4.0));
-        // Work seen only after the window began can't say what was used
+        assert_eq!(work_rate(&readings, &worked, 0, Some(0), 1.0), Some(4.0));
+        // An idle gap before the window started (no response at or before
+        // `starts`) still counts work in the first segment when `since <= starts`.
+        assert_eq!(
+            work_rate(&readings, &worked[1..], 0, Some(0), 5.0),
+            Some(14.0 / 3.0)
+        );
+        // Work queried only from after the window began can't say what was used
         // before its first reading: 9 points over 2 hours.
-        assert_eq!(work_rate(&readings, &worked[1..], Some(0), 5.0), Some(4.5));
+        assert_eq!(
+            work_rate(&readings, &worked[1..], at(0.1), Some(0), 5.0),
+            Some(4.5)
+        );
         // Nor can work from before whose account was known.
-        assert_eq!(work_rate(&readings, &worked, Some(at(0.5)), 5.0), Some(4.5));
-        assert_eq!(work_rate(&readings, &worked, None, 5.0), Some(4.5));
+        assert_eq!(
+            work_rate(&readings, &worked, 0, Some(at(0.5)), 5.0),
+            Some(4.5)
+        );
+        assert_eq!(work_rate(&readings, &worked, 0, None, 5.0), Some(4.5));
         // A window's start, as its reset gives it, can drift past its first
-        // reading by seconds: no work between them, not less than none.
+        // reading by seconds: no work between them, not less than none, and
+        // usage before the first local slot doesn't inflate the local rate.
         let drifted = [(10.0, 1.0), (12.0, 9.0)].map(|(hours, used)| Reading {
             at: at(hours),
             used,
@@ -343,7 +360,8 @@ mod tests {
         let worked: Vec<i64> = (0..24)
             .map(|slot| at(10.0) + 10_000 + slot * SLOT)
             .collect();
-        assert_eq!(work_rate(&drifted, &worked, Some(0), 5.0), Some(4.5));
+        assert_eq!(slots_worked(&worked, at(10.0) + 30_000, at(10.0)), 0);
+        assert_eq!(work_rate(&drifted, &worked, 0, Some(0), 5.0), Some(4.0));
         // Stretches of 2, 8 and 2 slots are an hour of work, not just under.
         let readings =
             [(1.0, 0.0), (2.0, 2.0), (3.0, 4.0), (4.0, 6.0)].map(|(hours, used)| Reading {
@@ -356,7 +374,7 @@ mod tests {
             .into_iter()
             .flat_map(|(hours, slots)| (1..=slots).map(move |slot| at(hours) + slot * SLOT))
             .collect();
-        assert_eq!(work_rate(&readings, &worked, None, 5.0), Some(6.0));
+        assert_eq!(work_rate(&readings, &worked, 0, None, 5.0), Some(6.0));
         let fast = work_fast(Some(at(168.0)));
         assert_eq!(
             work_left(86.0, 4.0, fast, Some(164.0)),
@@ -577,7 +595,7 @@ mod tests {
                 let walked = &readings[readings.partition_point(|old| old.at < since)..=at];
                 let slots = &worked[worked.partition_point(|slot| *slot < since)
                     ..worked.partition_point(|slot| *slot <= reading.at)];
-                let Some(rate) = work_rate(walked, slots, known, enough) else {
+                let Some(rate) = work_rate(walked, slots, since, known, enough) else {
                     continue;
                 };
                 let (mut rose, mut slots_next) = (0.0, 0);

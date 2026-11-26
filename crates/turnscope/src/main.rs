@@ -4,6 +4,7 @@
 
 mod mcp;
 
+use std::fmt::Write as _;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -25,15 +26,15 @@ use turnscope::{
     next_help_heading = "Global options"
 )]
 struct Cli {
+    /// Print JSON instead of text (commands that print data)
+    #[arg(long, global = true)]
+    json: bool,
     /// Where Turnscope keeps its data [default: ~/Library/Application Support/com.joeychilson.turnscope]
     #[arg(long, global = true, value_name = "DIR")]
     data: Option<PathBuf>,
     /// Whose agents' history and logins to read [default: $HOME]
     #[arg(long, global = true, value_name = "DIR")]
     home: Option<PathBuf>,
-    /// Print JSON instead of text
-    #[arg(long, global = true)]
-    json: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -79,7 +80,7 @@ enum Command {
         #[arg(long)]
         limit: String,
         /// Block under this percent left
-        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
         below: u8,
         /// The account [default: the calling agent's]
         #[arg(long)]
@@ -98,10 +99,10 @@ enum Command {
 
 #[derive(clap::Args)]
 struct UsageArgs {
-    /// From when [default: 30 days back]: today, yesterday, week (since Monday), month (since the 1st), 24h, 7d, 4w, a date, an RFC 3339 time, or now
+    /// From when [default: 30 days back]: today, yesterday, week (since Monday), month (since the 1st), 24h, 7d, 4w, a date, or an RFC 3339 time
     #[arg(long)]
     since: Option<String>,
-    /// Until when [default: now], in the same forms
+    /// Until when [default: now], in the same forms or now
     #[arg(long)]
     until: Option<String>,
     /// How to group the rows [default: day, or session with --limit]
@@ -144,7 +145,12 @@ fn main() -> ExitCode {
     let (home, data) = turnscope::places(cli.home, cli.data);
     let outcome = match cli.command {
         // The server reads what's new at each call, not before it starts.
+        Command::Mcp if cli.json => Err(Error::Usage("mcp doesn't take --json".to_owned())),
         Command::Mcp => mcp::run(&home, &data).map(|()| String::new()),
+        Command::Guard { .. } if cli.json => {
+            eprintln!("turnscope guard: guard doesn't take --json");
+            return ExitCode::FAILURE;
+        }
         Command::Guard {
             limit,
             below,
@@ -162,6 +168,9 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             };
+        }
+        Command::Statusline { .. } if cli.json => {
+            Err(Error::Usage("statusline doesn't take --json".to_owned()))
         }
         // A status line shows what's printed, so it never fails.
         Command::Statusline { account } => {
@@ -338,12 +347,17 @@ fn cmd_status(
                 shown
                     .iter()
                     .map(|account| {
-                        let fit = status::fit(account, hours, status.at);
-                        json!({ "account": account.id, "fit": fit })
+                        let (fits, fit) = status::fit_result(account, hours, status.at);
+                        json!({ "account": account.id, "fits": fits, "fit": fit })
                     })
                     .collect::<Vec<_>>()
             });
-            json!({ "accounts": shown, "fit": fit })
+            json!({
+                "at": status.at,
+                "historyRead": status.history_read,
+                "accounts": shown,
+                "fit": fit,
+            })
         },
         || match (shown.is_empty(), hours) {
             (true, _) => status::none(&status, "`turnscope status --all` shows them"),
@@ -384,6 +398,7 @@ fn cmd_usage_limit(
                 "usage": used,
                 "sharePercents": shares.as_ref().map(|shares| &shares.rows),
                 "restSharePercent": shares.as_ref().and_then(|shares| shares.rest),
+                "note": line,
             })
         },
         || {
@@ -401,7 +416,7 @@ fn cmd_usage_limit(
                     status.at,
                 );
             if let Some(line) = &line {
-                text += &format!("\n{line}");
+                let _ = write!(text, "\n{line}");
             }
             text
         },
@@ -414,11 +429,7 @@ fn cmd_usage(db: &rusqlite::Connection, now: i64, json: bool, args: UsageArgs) -
         agents::find(agent)?;
     }
     let account = match args.account.as_deref() {
-        Some(name) => Some(
-            status::one_account(&status::status(db, now)?, name)?
-                .id
-                .clone(),
-        ),
+        Some(name) => Some(status::account_id(db, name)?),
         None => None,
     };
     let since = args.since.as_deref().unwrap_or(usage::SINCE);
@@ -447,7 +458,7 @@ fn cmd_accounts(
     json: bool,
     action: Option<AccountAction>,
 ) -> Result<String> {
-    let mut status = status::status(db, now)?;
+    let mut status = status::without_work(db, now)?;
     if let Some(AccountAction::Hide { account } | AccountAction::Show { account }) = &action {
         let id = status::one_account(&status, account)?.id.clone();
         let hidden = matches!(action, Some(AccountAction::Hide { .. }));
@@ -459,20 +470,19 @@ fn cmd_accounts(
     Ok(print(
         json,
         || {
-            let listed: Vec<_> = status
-                .accounts
-                .iter()
-                .map(|account| {
-                    json!({
+            json!(
+                status
+                    .accounts
+                    .iter()
+                    .map(|account| json!({
                         "id": account.id,
                         "title": account.title,
                         "label": account.label,
                         "kind": account.kind,
                         "hidden": account.hidden,
-                    })
-                })
-                .collect();
-            json!(listed)
+                    }))
+                    .collect::<Vec<_>>()
+            )
         },
         || {
             if status.accounts.is_empty() {
@@ -557,18 +567,23 @@ fn guard(
         return Ok(None);
     };
     // The limits read before still guard when this one can't read them
-    // again, as once a newer Turnscope has written here, or does while they
-    // are read: a hook that fails guards nothing. While the menu bar app
-    // holds `app.lock`, it keeps limits current outside any agent sandbox.
+    // again, as once a newer Turnscope has written here, inside a read-only
+    // sandbox, or while they are read: a hook that fails guards nothing.
+    // While the menu bar app holds `app.lock`, it keeps limits current
+    // outside any agent sandbox.
     let db = if online() && !turnscope::engine::running(data) {
-        drop(read_db);
-        let mut db = db::open(data)?;
-        let _ = limits::refresh(&mut db, home, limits::Ask::Scheduled);
-        db
+        match db::open(data) {
+            Ok(mut writable) => {
+                drop(read_db);
+                let _ = limits::refresh(&mut writable, home, limits::Ask::Scheduled);
+                writable
+            }
+            Err(_) => read_db,
+        }
     } else {
         read_db
     };
-    let status = status::status(&db, now())?;
+    let status = status::without_work(&db, now())?;
     if status.accounts.is_empty() {
         return Ok(None);
     }
@@ -587,30 +602,49 @@ fn guard(
     if found.left_percent >= below {
         return Ok(None);
     }
-    // As a sentence names it: "weekly limit", "5-hour limit", "Opus weekly
-    // limit".
+    // As a sentence names it: "Claude Max's 5-hour limit", "OpenRouter API
+    // key's credits", or "OpenRouter API key: Pi's weekly key limit".
     let called = found.lowercase("-hour");
-    let called = match called.ends_with("limit") {
-        true => format!("{}'s {called}", account.title),
-        false => format!("{}'s {called} limit", account.title),
+    let called = if !found.held_by.is_empty() {
+        match called.ends_with("limit") {
+            true => format!("{}: {called}", account.title),
+            false => format!("{}: {called} limit", account.title),
+        }
+    } else if found.plural() || called.ends_with("limit") {
+        format!("{}'s {called}", account.title)
+    } else {
+        format!("{}'s {called} limit", account.title)
+    };
+    let as_of = match account.state {
+        status::State::AsOf { read_at, .. } => {
+            format!(" (as of {})", time::clock(read_at, status.at))
+        }
+        _ => String::new(),
+    };
+    let (is_are, has_have) = match found.plural() {
+        true => ("are", "have"),
+        false => ("is", "has"),
     };
     let ahead = |at: i64| time::ahead(at, status.at);
     Ok(Some(match &found.outlook {
         status::Outlook::UsedUp { back } => format!(
-            "{called} is used up{}.",
+            "{called} {is_are} used up{as_of}{}.",
             back.map_or(String::new(), |back| format!(
                 "; it's back {}",
                 ahead(back.at)
             ))
         ),
         outlook => {
-            let mut said = format!("{called} has {}% left, under {below}%.", found.left_percent);
+            let mut said = format!(
+                "{called} {has_have} {}% left{as_of}, under {below}%.",
+                found.left_percent
+            );
             if let Some(resets) = found.resets() {
-                said += &format!(" It resets {}", ahead(resets));
+                let _ = write!(said, " It resets {}", ahead(resets));
                 if let status::Outlook::RunsOut { likely, .. } = outlook {
-                    said += &format!("; at this pace it runs out {}", ahead(likely.at));
+                    let _ = write!(said, "; at this pace it runs out {}", ahead(likely.at));
                 }
-                said += ".";
+                said.push('.');
             }
             said
         }
@@ -624,7 +658,7 @@ fn guard(
 /// latest response's, may be signed out since.
 fn statusline(home: &Path, data: &Path, account: Option<&str>) -> Option<String> {
     let db = db::read(data)?;
-    let status = status::status(&db, now()).ok()?;
+    let status = status::without_work(&db, now()).ok()?;
     let account = match account {
         // A line is better than none: of several named, the first.
         Some(name) => *status::named(&status, name).ok()?.first()?,
@@ -661,12 +695,13 @@ fn harness(db: &rusqlite::Connection) -> Option<String> {
         let _ = std::io::stdin().take(1 << 20).read_to_string(&mut text);
         let _ = send.send(text);
     });
-    let text = receive.recv_timeout(Duration::from_millis(300)).ok()?;
+    let text = receive.recv_timeout(Duration::from_millis(50)).ok()?;
     let given: serde_json::Value = serde_json::from_str(&text).ok()?;
     // The agent names its session by its own id, whichever agent's it is.
     let native = given["session_id"].as_str()?;
-    agents::ALL.iter().find_map(|agent| {
-        let session = agent.info().session(native);
-        usage::session_account(db, &session).ok().flatten()
-    })
+    let sessions: Vec<String> = agents::ALL
+        .iter()
+        .map(|agent| agent.info().session(native))
+        .collect();
+    usage::sessions_account(db, &sessions).ok().flatten()
 }

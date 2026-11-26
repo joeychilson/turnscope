@@ -118,15 +118,6 @@ impl Row {
     }
 }
 
-/// A session whose parent was never read is the top of its own tree.
-const TREES: &str = "
-WITH RECURSIVE tree (root, id) AS (
-    SELECT id, id FROM session s
-    WHERE parent IS NULL OR NOT EXISTS (SELECT 1 FROM session p WHERE p.id = s.parent)
-    UNION ALL
-    SELECT tree.root, s.id FROM session s JOIN tree ON s.parent = tree.id
-)";
-
 impl Query {
     fn where_clause(&self) -> (String, Vec<Value>) {
         let mut sql = "r.at >= ? AND r.at < ?".to_owned();
@@ -145,40 +136,68 @@ impl Query {
 }
 
 pub fn usage(db: &Connection, query: &Query) -> Result<Usage> {
-    // Time is grouped by quarter hours here and into local days in Rust: every
-    // time zone's offset is a whole number of them.
-    let (key, name, join) = match query.by {
-        By::Day | By::Week | By::Month => ("r.at / 900000 * 900000", "NULL", ""),
-        By::Model => ("r.model", "NULL", ""),
-        By::Agent => ("r.agent", "NULL", ""),
-        By::Account => (
-            "coalesce(r.account, '')",
-            crate::status::Account::FULL_TITLE,
-            "LEFT JOIN account a ON a.id = r.account",
-        ),
-        By::Project => (
-            "coalesce(s.project, '')",
-            "NULL",
-            "LEFT JOIN session s ON s.id = r.session",
-        ),
-        // A subagent's usage counts toward the session at the top of its
-        // tree. A fork's or a continuation's is its own.
-        By::Session => (
-            "coalesce(t.root, r.session)",
-            "s.title",
-            "LEFT JOIN tree t ON t.id = r.session LEFT JOIN session s ON s.id = coalesce(t.root, r.session)",
-        ),
-    };
-    let trees = match query.by {
-        By::Session => TREES,
-        _ => "",
-    };
     let (where_sql, values) = query.where_clause();
-    let sql = format!(
-        "{trees} SELECT {key}, {name}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
-             sum(r.cache_write_1h), sum(r.output), sum(r.reasoning), total(r.cost), count(*) - count(r.cost)
-         FROM response r {join} WHERE {where_sql} GROUP BY 1",
-    );
+    let sql = if query.by == By::Session {
+        // A subagent's usage counts toward the session at the top of its tree;
+        // a session whose parent was never read is the top of its own. A fork's
+        // or a continuation's is its own. Pre-aggregate by session first so the
+        // recursive walk touches only matched sessions rather than every
+        // session ever recorded.
+        format!(
+            "WITH RECURSIVE
+             used AS (
+                 SELECT r.session AS id, count(*) AS responses, sum(r.input) AS input,
+                     sum(r.cache_read) AS cache_read, sum(r.cache_write_5m) AS cache_write_5m,
+                     sum(r.cache_write_1h) AS cache_write_1h, sum(r.output) AS output,
+                     sum(r.reasoning) AS reasoning, total(r.cost) AS cost,
+                     count(*) - count(r.cost) AS unpriced
+                 FROM response r WHERE {where_sql} GROUP BY r.session
+             ),
+             walk (id, title, parent, depth, responses, input, cache_read, cache_write_5m,
+                   cache_write_1h, output, reasoning, cost, unpriced) AS (
+                 SELECT u.id, s.title, p.id, 0, u.responses, u.input, u.cache_read, u.cache_write_5m,
+                     u.cache_write_1h, u.output, u.reasoning, u.cost, u.unpriced
+                 FROM used u
+                 LEFT JOIN session s ON s.id = u.id
+                 LEFT JOIN session p ON p.id = s.parent
+                 UNION ALL
+                 SELECT s.id, s.title, p.id, w.depth + 1, w.responses, w.input, w.cache_read,
+                     w.cache_write_5m, w.cache_write_1h, w.output, w.reasoning, w.cost, w.unpriced
+                 FROM walk w
+                 JOIN session s ON s.id = w.parent
+                 LEFT JOIN session p ON p.id = s.parent
+                 WHERE w.parent IS NOT NULL AND w.depth < 32
+             )
+             SELECT id, title, responses, input, cache_read, cache_write_5m,
+                 cache_write_1h, output, reasoning, cost, unpriced
+             FROM walk
+             WHERE parent IS NULL OR depth = 32"
+        )
+    } else {
+        // Time is grouped by quarter hours here and into local days in Rust: every
+        // time zone's offset is a whole number of them.
+        let (key, name, join) = match query.by {
+            By::Day | By::Week | By::Month => ("r.at / 900000 * 900000", "NULL", ""),
+            By::Model => ("r.model", "NULL", ""),
+            By::Agent => ("r.agent", "NULL", ""),
+            By::Account => (
+                "coalesce(r.account, '')",
+                crate::status::Account::FULL_TITLE,
+                "LEFT JOIN account a ON a.id = r.account",
+            ),
+            By::Project => (
+                "coalesce(s.project, '')",
+                "NULL",
+                "LEFT JOIN session s ON s.id = r.session",
+            ),
+            By::Session => unreachable!(),
+        };
+        format!(
+            "SELECT {key}, {name}, count(*), sum(r.input), sum(r.cache_read), sum(r.cache_write_5m),
+                 sum(r.cache_write_1h), sum(r.output), sum(r.reasoning), total(r.cost), count(*) - count(r.cost)
+             FROM response r {join} WHERE {where_sql} GROUP BY 1",
+        )
+    };
     let period = query.by.period().map(|period| (period, TimeZone::system()));
     let mut groups: BTreeMap<String, Row> = BTreeMap::new();
     let mut statement = db.prepare(&sql)?;
@@ -677,6 +696,20 @@ pub fn session_account(db: &Connection, id: &str) -> rusqlite::Result<Option<Str
     .optional()
 }
 
+pub fn sessions_account(db: &Connection, ids: &[String]) -> rusqlite::Result<Option<String>> {
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    let sql = format!(
+        "SELECT account FROM response WHERE session IN ({placeholders}) AND account IS NOT NULL
+         ORDER BY at DESC LIMIT 1"
+    );
+    db.prepare_cached(&sql)?
+        .query_row(params_from_iter(ids), |row| row.get(0))
+        .optional()
+}
+
 /// First 8 chars of the agent's native id (over the full ~45-char id): only
 /// disambiguates duplicate titles.
 fn start(id: &str) -> String {
@@ -1005,5 +1038,72 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn subagent_trees_roll_up_to_root_and_stop_on_missing_or_cyclic_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        db.execute_batch(
+            "INSERT INTO session (id, agent, project, title, parent) VALUES
+                 ('claude-code:root', 'claude-code', '/work', 'Root task', NULL),
+                 ('claude-code:child', 'claude-code', '/work', 'Child', 'claude-code:root'),
+                 ('claude-code:grand', 'claude-code', '/work', 'Grand', 'claude-code:child'),
+                 ('claude-code:orphan', 'claude-code', '/work', 'Orphan', 'claude-code:missing'),
+                 ('claude-code:cyc-a', 'claude-code', '/work', 'Cycle A', 'claude-code:cyc-b'),
+                 ('claude-code:cyc-b', 'claude-code', '/work', 'Cycle B', 'claude-code:cyc-a');",
+        )
+        .unwrap();
+        let from = ("claude-code", "/f", "anthropic", Some("anthropic:a"));
+        for (id, session, cost) in [
+            ("r1", "claude-code:root", 1.0),
+            ("r2", "claude-code:child", 2.0),
+            ("r3", "claude-code:grand", 3.0),
+            ("r4", "claude-code:orphan", 4.0),
+            ("r5", "claude-code:cyc-a", 0.5),
+            ("r6", "claude-code:ghost", 0.25),
+        ] {
+            crate::db::test::response(&db, from, id, 1_000, "claude-opus-5", Some(cost));
+            db.execute(
+                "UPDATE response SET session = ?1 WHERE id = ?2",
+                rusqlite::params![session, id],
+            )
+            .unwrap();
+        }
+        let used = usage(
+            &db,
+            &Query {
+                since: 0,
+                until: 2_000,
+                by: By::Session,
+                agent: None,
+                account: None,
+                models: Vec::new(),
+                key: None,
+            },
+        )
+        .unwrap();
+        let summary: Vec<(&str, Option<&str>, u64, f64)> = used
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.key.as_str(),
+                    row.name.as_deref(),
+                    row.responses,
+                    row.cost_usd,
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("claude-code:root", Some("Root task"), 3, 6.0),
+                ("claude-code:orphan", Some("Orphan"), 1, 4.0),
+                ("claude-code:cyc-a", Some("Cycle A"), 1, 0.5),
+                ("claude-code:ghost", None, 1, 0.25),
+            ]
+        );
+        assert_eq!(used.total.responses, 6);
     }
 }

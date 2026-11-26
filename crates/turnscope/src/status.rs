@@ -18,8 +18,8 @@ use crate::{Result, agents};
 
 mod text;
 pub use text::{
-    NONE_READ, agent_names, alternate_note, fit, fits, limit_text, line, list, most_room, none,
-    stale, text, verdict, via,
+    Fits, NONE_READ, agent_names, alternate_note, fit, fit_result, fits, limit_text, line, list,
+    most_room, none, stale, text, verdict, via,
 };
 
 /// How recently a response must have drawn on an account for it to be in use.
@@ -143,10 +143,7 @@ impl Account {
 
     /// `Claude Max (me@example.com)`.
     pub fn full_title(&self) -> String {
-        match &self.label {
-            Some(label) => format!("{} ({label})", self.title),
-            None => self.title.clone(),
-        }
+        full_title(&self.title, self.label.as_deref())
     }
 
     /// When it was last read, and the minutes agents here worked on it
@@ -314,7 +311,8 @@ impl Limit {
     }
 
     /// Its name in lowercase, with `hours` after a count of hours and its
-    /// model before it: "weekly", "5h" or "5-hour", "Opus weekly".
+    /// model before it: "weekly", "5h" or "5-hour", "Opus weekly". A key's
+    /// keeps whose key it is: "Pi's weekly key limit".
     pub fn lowercase(&self, hours: &str) -> String {
         let name = self.name.to_lowercase();
         let name = match name.split_once(' ') {
@@ -323,6 +321,9 @@ impl Limit {
         };
         match &self.scope {
             Some(scope) => format!("{scope} {name}"),
+            None if !self.held_by.is_empty() => {
+                format!("{}'s {name}", text::agent_names(&self.held_by, "and"))
+            }
             None => name,
         }
     }
@@ -582,8 +583,26 @@ pub fn hide(db: &rusqlite::Connection, account: &str, hidden: bool) -> Result<()
     Ok(())
 }
 
+fn full_title(title: &str, label: Option<&str>) -> String {
+    match label {
+        Some(label) => format!("{title} ({label})"),
+        None => title.to_owned(),
+    }
+}
+
 /// How every account stands at `now`.
 pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
+    build(db, now, true)
+}
+
+/// How every account stands at `now`, without measuring each limit's work
+/// rate: for callers that never read `Limit::work`, as `statusline` and
+/// `guard`.
+pub fn without_work(db: &rusqlite::Connection, now: i64) -> Result<Status> {
+    build(db, now, false)
+}
+
+fn build(db: &rusqlite::Connection, now: i64, with_work: bool) -> Result<Status> {
     // Between readings it changes at most once a minute.
     let now = time::minute(now);
     let mut signed: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -640,25 +659,48 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             Some(_) => Some(Stale::ReadFailed),
             None => None,
         };
+        let latest = match read_at {
+            Some(read_at) => {
+                let since = full_read_at.map_or(i64::MIN, |full| full.min(read_at));
+                latest(db, &id, since, now, with_work)?
+            }
+            None => Vec::new(),
+        };
+        // Shared between `State::AsOf`'s worked-since-read check and `work()`
+        // so the 14-day `worked()` CTE never runs twice for the same account.
+        let mut slots = Slots::new();
         let state = match (read_at, why) {
             (Some(read_at), None) if now - read_at <= STALE => State::Live { read_at },
-            (Some(read_at), why) => State::AsOf {
-                read_at,
-                why: why.unwrap_or(Stale::ReadFailed),
-                worked_minutes: minutes(forecast::hours(forecast::slots_worked(
-                    &worked(db, &id, &[], None, read_at)?,
+            (Some(read_at), why) => {
+                let worked_minutes = if with_work {
+                    let needs_whole = latest.iter().any(|limit| {
+                        (limit.starts.is_some() || limit.resets.is_none())
+                            && limit.scope.is_none()
+                            && crate::providers::key_limit_fingerprint(&limit.key).is_none()
+                    });
+                    worked_since_read(db, &id, read_at, now, needs_whole, &mut slots)?
+                } else {
+                    0
+                };
+                State::AsOf {
                     read_at,
-                    now,
-                ))),
-            },
+                    why: why.unwrap_or(Stale::ReadFailed),
+                    worked_minutes,
+                }
+            }
             (None, why) => State::Unread {
                 why: why.unwrap_or(Stale::ReadFailed),
             },
         };
-        let limits = match read_at {
-            Some(read_at) => limits(db, &id, read_at, full_read_at, known, &keys, now)?,
-            None => Vec::new(),
-        };
+        let limits = limits(
+            db,
+            &id,
+            latest,
+            known,
+            &keys,
+            with_work.then_some(&mut slots),
+            now,
+        )?;
         let kind: Kind = row.get(2)?;
         let in_use = row.get(12)?;
         accounts.push(Account {
@@ -690,6 +732,55 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
         accounts,
         settings: crate::alerts::settings(db)?,
     })
+}
+
+/// Cached 5-minute work slots per `(models, key)` filter within one `status` call.
+type Slots = BTreeMap<(Vec<String>, Option<String>), Vec<i64>>;
+
+/// Minutes agents worked on `account` strictly after `read_at`, up to `now`.
+/// When `needs_whole` is true, loads from `(now - WORKED).min(read_at + 1)`
+/// and caches the slots for `work()` so `worked()` runs once per account.
+fn worked_since_read(
+    db: &rusqlite::Connection,
+    account: &str,
+    read_at: i64,
+    now: i64,
+    needs_whole: bool,
+    slots: &mut Slots,
+) -> Result<i64> {
+    if read_at >= now {
+        return Ok(0);
+    }
+    if !needs_whole {
+        let after = worked(db, account, &[], None, read_at + 1)?;
+        return Ok(minutes(forecast::hours(forecast::slots_worked(
+            &after, read_at, now,
+        ))));
+    }
+    let since = (now - WORKED).min(read_at + 1);
+    let whole = worked(db, account, &[], None, since)?;
+    let mut count = forecast::slots_worked(&whole, read_at, now);
+    // `worked()` keeps `min(r.at)` per 5-minute slot: if a response landed at
+    // or before `read_at` in the same slot (as Codex's in-band snapshot does),
+    // check whether any later response in that slot followed `read_at`.
+    if since <= read_at && read_at >= 0 {
+        let bucket_start = read_at / forecast::SLOT * forecast::SLOT;
+        let bucket_end = (bucket_start + forecast::SLOT).min(now + 1);
+        let earlier = whole.partition_point(|at| *at < bucket_start)
+            < whole.partition_point(|at| *at <= read_at);
+        if earlier && read_at + 1 < bucket_end {
+            let after: bool = db
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM response WHERE account = ?1 AND at > ?2 AND at < ?3)",
+                )?
+                .query_row(params![account, read_at, bucket_end], |row| row.get(0))?;
+            if after {
+                count += 1;
+            }
+        }
+    }
+    slots.insert((Vec::new(), None), whole);
+    Ok(minutes(forecast::hours(count)))
 }
 
 /// Every agent, by `in_use`, whether an agent by id is in use. Kept out of
@@ -844,7 +935,13 @@ struct Latest {
 }
 
 /// `account`'s limits as last read since `since`, by key.
-fn latest(db: &rusqlite::Connection, account: &str, since: i64, now: i64) -> Result<Vec<Latest>> {
+fn latest(
+    db: &rusqlite::Connection,
+    account: &str,
+    since: i64,
+    now: i64,
+    with_work: bool,
+) -> Result<Vec<Latest>> {
     // Each limit's newest row, kept by key. Chosen over `GROUP BY
     // limit_key`, which sorts every row: with 90 days of made-up readings
     // of 11 limits and no `full_read_at`, a status took 144 ms that way and
@@ -876,10 +973,29 @@ fn latest(db: &rusqlite::Connection, account: &str, since: i64, now: i64) -> Res
     // is last in `reading`'s primary key, so each such query reads every
     // limit's rows. With five limits read every 5 minutes for 30 days, made
     // up, that took 6.6 ms an account, and this 2.7 ms.
-    let from = latest
-        .iter()
-        .filter_map(|limit| limit.starts)
-        .fold(now - WORKED, i64::min);
+    let from = if with_work {
+        Some(
+            latest
+                .iter()
+                .filter_map(|limit| limit.starts)
+                .fold(now - WORKED, i64::min),
+        )
+    } else {
+        // Without work rates, history is only needed for non-stale fixed
+        // windows that aren't already used up (`outlook`).
+        latest
+            .iter()
+            .filter(|limit| {
+                limit.used < 100.0
+                    && now - limit.at <= STALE
+                    && limit.resets.is_some_and(|resets| resets > now)
+            })
+            .filter_map(|limit| limit.starts)
+            .min()
+    };
+    let Some(from) = from else {
+        return Ok(latest);
+    };
     let mut rows = db.prepare_cached(
         "SELECT limit_key, at, used, starts, resets FROM reading
          WHERE account = ?1 AND at >= ?2 ORDER BY at",
@@ -899,25 +1015,20 @@ fn latest(db: &rusqlite::Connection, account: &str, since: i64, now: i64) -> Res
     Ok(latest)
 }
 
-/// An account's limits, each as last read since its last read in full,
-/// `full_read_at`, or ever with none: an agent writes only the limits that
-/// moved (`limits::record_in_band`).
+/// An account's limits from `latest` readings. `slots` is `None` when work
+/// rates are skipped (`without_work`).
 fn limits(
     db: &rusqlite::Connection,
     account: &str,
-    read_at: i64,
-    full_read_at: Option<i64>,
+    latest: Vec<Latest>,
     known: Option<i64>,
     keys: &BTreeMap<String, Vec<String>>,
+    mut slots: Option<&mut Slots>,
     now: i64,
 ) -> Result<Vec<Limit>> {
-    let since = full_read_at.map_or(i64::MIN, |full| full.min(read_at));
-    let latest = latest(db, account, since, now)?;
     if latest.is_empty() {
         return Ok(Vec::new());
     }
-    // The slots of work, by the models and key whose responses count.
-    let mut slots: BTreeMap<(Vec<String>, Option<String>), Vec<i64>> = BTreeMap::new();
     let mut limits = Vec::new();
     for limit in latest {
         let reset_since = limit.resets.filter(|resets| *resets <= now);
@@ -926,7 +1037,10 @@ fn limits(
         } else {
             (100.0 - limit.used).clamp(0.0, 100.0)
         };
-        let work = work(db, account, &limit, left, known, &mut slots, now)?;
+        let work = match &mut slots {
+            Some(slots) => work(db, account, &limit, left, known, slots, now)?,
+            None => None,
+        };
         let Latest {
             key,
             at: limit_read_at,
@@ -1004,7 +1118,7 @@ fn work(
     limit: &Latest,
     left: f64,
     known: Option<i64>,
-    slots: &mut BTreeMap<(Vec<String>, Option<String>), Vec<i64>>,
+    slots: &mut Slots,
     now: i64,
 ) -> Result<Option<Work>> {
     let Latest {
@@ -1030,13 +1144,16 @@ fn work(
     };
     // Work is known only for the last two weeks: a rise before then would
     // count with no hours of work beside it.
-    let walked = &history[history.partition_point(|reading| reading.at < now - WORKED)..];
+    let since = now - WORKED;
+    let walked = &history[history.partition_point(|reading| reading.at < since)..];
     // Not `Limit::length`, whose reset is rounded to the minute.
     let length = starts.zip(*resets).map(|(starts, resets)| resets - starts);
-    let Some(rate) = forecast::work_rate(walked, slots, known, forecast::enough_work(length))
+    let Some(rate) =
+        forecast::work_rate(walked, slots, since, known, forecast::enough_work(length))
     else {
         return Ok(None);
     };
+    let rate = tenths(rate).max(0.1);
     let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
     let left_minutes =
         forecast::work_left(left, rate, forecast::work_fast(length), until).map(|(low, likely)| {
@@ -1046,7 +1163,7 @@ fn work(
             }
         });
     Ok(Some(Work {
-        rate_per_hour: tenths(rate),
+        rate_per_hour: rate,
         left_minutes,
     }))
 }
@@ -1159,9 +1276,16 @@ fn outlook(window: &Window, now: i64) -> Outlook {
 /// it draws on one. Of several used up, the last back decides: the account
 /// can't be used until every one is back.
 fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
+    let whole = limits.iter().any(Limit::whole);
     let standing: Vec<&Limit> = limits
         .iter()
-        .filter(|limit| pool.is_none_or(|pool| limit.scope.as_deref() == Some(pool)))
+        .filter(|limit| {
+            if whole {
+                limit.whole()
+            } else {
+                pool.is_none_or(|pool| limit.scope.as_deref() == Some(pool))
+            }
+        })
         .collect();
     standing
         .iter()
@@ -1175,7 +1299,6 @@ fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
                 _ => limit.left_percent,
             };
             (
-                !limit.whole(),
                 Reverse(limit.standing()),
                 Reverse(limit.back()),
                 limit.runs_out().unwrap_or(i64::MAX),
@@ -1204,17 +1327,23 @@ fn pool<'a>(
             pools.push(scope);
         }
     }
-    for &pool in &pools {
-        let (limited, mut values) = crate::usage::limited(&crate::usage::models(Some(pool)), None);
-        values.push(account.to_owned().into());
-        let drew: Option<bool> = db
-            .prepare_cached(&format!(
-                "SELECT {limited} FROM response r WHERE r.account = ? ORDER BY r.at DESC LIMIT 1"
-            ))?
-            .query_row(rusqlite::params_from_iter(values), |row| row.get(0))
-            .optional()?;
-        if drew == Some(true) {
-            return Ok(Some(pool));
+    if pools.is_empty() {
+        return Ok(None);
+    }
+    let model: Option<String> = db
+        .prepare_cached(
+            "SELECT lower(model) FROM response WHERE account = ?1 ORDER BY at DESC LIMIT 1",
+        )?
+        .query_row([account], |row| row.get(0))
+        .optional()?;
+    if let Some(model) = model {
+        for &pool in &pools {
+            if crate::usage::models(Some(pool))
+                .iter()
+                .any(|part| model.contains(part))
+            {
+                return Ok(Some(pool));
+            }
         }
     }
     Ok(pools.first().copied())
@@ -1254,8 +1383,9 @@ fn rank(accounts: &mut [Account], history_read: bool) {
 fn spend(db: &rusqlite::Connection, account: &str, now: i64) -> Result<Spend> {
     let (month, next) = time::window(time::Period::Month, now, &TimeZone::system());
     let (cost, unpriced): (f64, i64) = db.query_row(
-        "SELECT total(cost), count(*) - count(cost) FROM response WHERE account = ?1 AND at >= ?2",
-        params![account, month],
+        "SELECT total(cost), count(*) - count(cost) FROM response
+         WHERE account = ?1 AND at >= ?2 AND at < ?3",
+        params![account, month, next],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let whole = (next - month) as f64;
@@ -1292,50 +1422,90 @@ fn two_figures(usd: f64) -> f64 {
 
 /// The one account `name` names, or why it names more than one.
 pub fn one_account<'a>(status: &'a Status, name: &str) -> crate::Result<&'a Account> {
-    match named(status, name)?.as_slice() {
-        [one] => Ok(one),
-        many => Err(crate::Error::Usage(format!(
-            "{name} names {} accounts: {}. Name one by more of its title or label, or by its id.",
-            many.len(),
-            format_accounts(many.iter().copied())
-        ))),
-    }
+    one_in(&status.accounts, name, |account| {
+        (&account.id, &account.title, account.label.as_deref())
+    })
 }
 
-fn format_accounts<'a>(accounts: impl IntoIterator<Item = &'a Account>) -> String {
-    accounts
+/// The id of the one account `name` names, without building a full status.
+pub fn account_id(db: &rusqlite::Connection, name: &str) -> crate::Result<String> {
+    let mut rows = db.prepare_cached("SELECT id, title, label FROM account ORDER BY id")?;
+    let accounts: Vec<(String, String, Option<String>)> = rows
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let found = one_in(&accounts, name, |(id, title, label)| {
+        (id.as_str(), title.as_str(), label.as_deref())
+    })?;
+    Ok(found.0.clone())
+}
+
+pub fn format_accounts<'a>(accounts: impl IntoIterator<Item = &'a Account>) -> String {
+    format_named(accounts, |account| {
+        (&account.id, &account.title, account.label.as_deref())
+    })
+}
+
+fn format_named<'a, T: 'a>(
+    items: impl IntoIterator<Item = &'a T>,
+    fields: impl Fn(&'a T) -> (&'a str, &'a str, Option<&'a str>),
+) -> String {
+    items
         .into_iter()
-        .map(|account| format!("{} ({})", account.full_title(), account.id))
+        .map(|item| {
+            let (id, title, label) = fields(item);
+            format!("{} ({id})", full_title(title, label))
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 /// The accounts `name` names: its id, or part of its title, label or id.
 pub fn named<'a>(status: &'a Status, name: &str) -> crate::Result<Vec<&'a Account>> {
-    if let Some(exact) = status.accounts.iter().find(|account| account.id == name) {
+    named_in(&status.accounts, name, |account| {
+        (&account.id, &account.title, account.label.as_deref())
+    })
+}
+
+fn one_in<'a, T>(
+    items: &'a [T],
+    name: &str,
+    fields: impl Fn(&'a T) -> (&'a str, &'a str, Option<&'a str>) + Copy,
+) -> crate::Result<&'a T> {
+    match named_in(items, name, fields)?.as_slice() {
+        [one] => Ok(one),
+        many => Err(crate::Error::Usage(format!(
+            "{name} names {} accounts: {}. Name one by more of its title or label, or by its id.",
+            many.len(),
+            format_named(many.iter().copied(), fields)
+        ))),
+    }
+}
+
+fn named_in<'a, T>(
+    items: &'a [T],
+    name: &str,
+    fields: impl Fn(&'a T) -> (&'a str, &'a str, Option<&'a str>) + Copy,
+) -> crate::Result<Vec<&'a T>> {
+    if let Some(exact) = items.iter().find(|item| fields(item).0 == name) {
         return Ok(vec![exact]);
     }
     let wanted = name.to_lowercase();
-    let found: Vec<&Account> = status
-        .accounts
+    let found: Vec<&T> = items
         .iter()
-        .filter(|account| {
-            [
-                Some(&account.title),
-                account.label.as_ref(),
-                Some(&account.id),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|text| text.to_lowercase().contains(&wanted))
+        .filter(|item| {
+            let (id, title, label) = fields(item);
+            [Some(title), label, Some(id)]
+                .into_iter()
+                .flatten()
+                .any(|text| text.to_lowercase().contains(&wanted))
         })
         .collect();
     if found.is_empty() {
-        return Err(crate::Error::NotFound(match status.accounts.is_empty() {
+        return Err(crate::Error::NotFound(match items.is_empty() {
             true => NONE_READ.to_owned(),
             false => format!(
                 "no account is named {name}; there are: {}",
-                format_accounts(&status.accounts)
+                format_named(items, fields)
             ),
         }));
     }
@@ -1755,5 +1925,139 @@ mod tests {
         assert_eq!(limits[1].key, "seven_day_opus");
         assert_eq!(limits[1].left_percent, 85);
         assert_eq!(limits[1].read_at, full_at);
+    }
+
+    #[test]
+    fn a_scoped_limit_never_hijacks_deciding_when_whole_limits_reset() {
+        let mut account = example().accounts[0].clone();
+        let now = example().at;
+        // Both whole-account limits reset since last read; Opus stays used up.
+        for limit in &mut account.limits[0..2] {
+            limit.reset_since = Some(now - 5 * MINUTE);
+            limit.left_percent = 100;
+            limit.outlook = Outlook::Unknown {
+                reason: Unknown::Stale,
+            };
+        }
+        account.limits[0].reset_since = Some(now - 10 * MINUTE);
+        account.limits[1].reset_since = Some(now - 5 * MINUTE);
+        assert_eq!(account.limits[2].scope.as_deref(), Some("Opus"));
+        assert_eq!(account.limits[2].standing(), Standing::UsedUp);
+        let picked = deciding(&account.limits, None).unwrap();
+        assert_eq!(picked.key, "seven_day");
+        assert_eq!(picked.standing(), Standing::Lasts);
+    }
+
+    #[test]
+    fn monthly_spend_excludes_future_month_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        // 2026-10-15 12:00 UTC.
+        let now = 1_792_065_600_000;
+        let pi = ("pi", "f", "openrouter", Some("openrouter:api"));
+        response(&db, pi, "oct", now - HOUR, "m", Some(12.5));
+        // Next month (2026-11-15) must not bleed into October spend.
+        response(&db, pi, "nov", now + 31 * DAY, "m", Some(99.0));
+        let spent = spend(&db, "openrouter:api", now).unwrap();
+        assert_eq!(spent.month_usd, 12.5);
+    }
+
+    #[test]
+    fn worked_since_read_counts_work_in_the_same_slot_after_read_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let read_at = 1_792_065_600_000; // exact 5-minute slot boundary
+        let now = read_at + 40 * MINUTE;
+        db.execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+                 VALUES ('openai:a', 'openai', 'subscription', 'ChatGPT Plus', {read_at});
+             INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('codex', '/a', 'openai', 0, 'openai:a');
+             INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+                 VALUES ('openai:a', 'five_hour', {read_at}, '5 hours', 30.0, {starts}, {resets});",
+            starts = read_at - 2 * HOUR,
+            resets = read_at + 3 * HOUR,
+        ))
+        .unwrap();
+        let codex = ("codex", "/a", "openai", Some("openai:a"));
+        // Snapshot landed at exact `read_at`: no work since the read yet.
+        response(&db, codex, "r0", read_at, "gpt-5.5", None);
+        assert_eq!(
+            status(&db, now).unwrap().accounts[0].worked_since_read(),
+            None
+        );
+        // A response 1 minute later in the same 5-minute bucket counts as work.
+        response(&db, codex, "r1", read_at + MINUTE, "gpt-5.5", None);
+        let full = status(&db, now).unwrap();
+        assert_eq!(full.accounts[0].worked_since_read(), Some((read_at, 5)));
+        // `without_work` skips work measurement while preserving limits and deciding.
+        let light = without_work(&db, now).unwrap();
+        assert_eq!(light.accounts[0].deciding, full.accounts[0].deciding);
+        assert!(light.accounts[0].limits.iter().all(|l| l.work.is_none()));
+        assert_eq!(light.accounts[0].worked_since_read(), None);
+    }
+
+    #[test]
+    fn tiny_work_rate_clamps_to_a_tenth_consistently_with_left_minutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let now = 1_792_065_600_000;
+        let start = now - 5 * DAY;
+        db.execute_batch(&format!(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+                 VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', {now});
+             INSERT INTO sign_in (agent, folder, provider, since, account)
+                 VALUES ('claude-code', '/a', 'anthropic', 0, 'anthropic:a');
+             INSERT INTO reading (account, limit_key, at, name, used, starts, resets) VALUES
+                 ('anthropic:a', 'seven_day', {start}, 'Weekly', 97.0, {start}, {resets}),
+                 ('anthropic:a', 'seven_day', {now}, 'Weekly', 99.0, {start}, {resets});",
+            resets = now + 2 * DAY,
+        ))
+        .unwrap();
+        // 60 hours of work (720 slots) for a 2-point rise -> 0.033%/h, clamped to 0.1%/h.
+        // With 1% left, 1% / 0.1%/h = 10h = 600m (not 30h from raw 0.033%/h).
+        let claude = ("claude-code", "/a", "anthropic", Some("anthropic:a"));
+        for slot in 1..=720 {
+            response(
+                &db,
+                claude,
+                &format!("r{slot}"),
+                start + slot * forecast::SLOT,
+                "claude-opus-5",
+                None,
+            );
+        }
+        // Resets in 48h: left_minutes matches clamped 0.1%/h (10h), 12h & 25h don't fit.
+        let account = &status(&db, now).unwrap().accounts[0];
+        let work = account.limits[0].work.unwrap();
+        assert_eq!(work.rate_per_hour, 0.1);
+        assert_eq!(work.left_minutes.unwrap().likely, 600);
+        assert_eq!(fit_result(account, 12.0, now).0, Fits::No);
+        assert_eq!(fit_result(account, 25.0, now).0, Fits::No);
+        // Resets in 24h: still 10h left (< 24h), monotonic across 12h and 25h.
+        db.execute(
+            "UPDATE reading SET resets = ?1 WHERE account = 'anthropic:a'",
+            [now + DAY],
+        )
+        .unwrap();
+        let account = &status(&db, now).unwrap().accounts[0];
+        let work = account.limits[0].work.unwrap();
+        assert_eq!(work.rate_per_hour, 0.1);
+        assert_eq!(work.left_minutes.unwrap().likely, 600);
+        assert_eq!(fit_result(account, 12.0, now).0, Fits::No);
+        assert_eq!(fit_result(account, 25.0, now).0, Fits::No);
+        // Resets in 8h (< 10h left): lasts until reset (`left_minutes == None`),
+        // so both 6h (before reset) and 12h (across reset) fit.
+        db.execute(
+            "UPDATE reading SET resets = ?1 WHERE account = 'anthropic:a'",
+            [now + 8 * HOUR],
+        )
+        .unwrap();
+        let account = &status(&db, now).unwrap().accounts[0];
+        let work = account.limits[0].work.unwrap();
+        assert_eq!(work.rate_per_hour, 0.1);
+        assert_eq!(work.left_minutes, None);
+        assert_eq!(fit_result(account, 6.0, now).0, Fits::Yes);
+        assert_eq!(fit_result(account, 12.0, now).0, Fits::Yes);
     }
 }

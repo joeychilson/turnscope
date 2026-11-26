@@ -91,10 +91,13 @@
       ]
     }
   ],
+  "at": 1790856000000,
   "fit": [
     {
       "account": "anthropic:acct-1:org-1",
-      "fit": "3 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h)."
+      "fit": "3 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h).",
+      "fits": "no"
     }
-  ]
+  ],
+  "historyRead": true
 }

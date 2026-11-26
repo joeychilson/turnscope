@@ -80,7 +80,7 @@ and `until`, take:
 | A count back | `24h`, `7d`, `4w` | That many hours, days or weeks before now |
 | A date | `2026-10-01` | From midnight that day |
 | A time | `2026-10-01T09:00:00Z` | RFC 3339, with `Z` or an offset such as `-05:00` |
-| Now | `now` | Now |
+| Now | `now` | Now (for `--until` and `until`) |
 
 Times are read and shown in the Mac's time zone, or the one `TZ` names. A
 date in another year than now's shows its year, `Jan 1 2020 00:00`, and a
@@ -152,12 +152,13 @@ are at a pace that went faster only 1 time in 10.
 
 With no account to show, it says why in one line: no account's limits have
 been read yet, or every account is hidden, and then that `--all` shows
-them. With `--json`, `accounts` is empty.
+them. With `--json`, `at` is the minute the status is as of, `historyRead`
+is whether the first read of history finished, and `accounts` is empty.
 
 With `--hours`, whether that many more hours of work fit comes first, as
 `check_limits` says it ([mcp.md](mcp.md#check_limits)): a line for each
 account, named. With `--json`, `fit` is a list of each account's
-`account` id and `fit` line.
+`account` id, `fits` (`yes`, `no` or `unknown`), and `fit` line.
 
 ```console
 $ turnscope status --hours 3
@@ -227,8 +228,10 @@ have worked on it since, which that read doesn't hold: a line says so. A
 limit in dollars still gives them then, as a share of it is cost over its
 size, which needs no read. A key's own limit counts only the usage made
 with that key. With `--json`, `sharePercents` holds each row's share in
-the rows' order, and `restSharePercent` the share of the row adding up
-the rest, each `null` when rows get none.
+the rows' order, `restSharePercent` the share of the row adding up
+the rest (each `null` when rows get none), and `note` the line saying why
+shares were left out or how a key's spend differs from its last read, or
+`null`.
 
 ```console
 $ turnscope usage --account claude --limit week
@@ -345,9 +348,9 @@ turnscope guard --limit <name> --below <percent> [--account <name>] [--say <text
 
 `guard` turns a limit into an exit code, for an agent's hook.
 
-`--limit` is named as in [Names](#names). `--below` is 0 to 100.
+`--limit` is named as in [Names](#names). `--below` is 1 to 100.
 `--account` must match one account. `--say` replaces the reason printed
-when it blocks.
+when it blocks. Blocking on an earlier read notes `(as of <time>)`.
 
 In Claude Code's `settings.json`, this stops subagents from starting when
 the weekly limit has under 10% left:
@@ -393,9 +396,10 @@ turnscope statusline [--account <name>]
 
 `statusline` prints one line for an agent's status line: the account it
 draws on, the limits it stands by (those on all its usage, or of the
-[pool](architecture.md#glossary) it last drew on), and any other limit
-running out or used up. When one it stands by is used up, only those show.
-`--account` takes the first account it names.
+[pool](architecture.md#glossary) it last drew on, or its deciding limit
+for an API key with only key limits), and any other limit running out or
+used up. When one it stands by is used up, only those show. `--account`
+takes the first account it names.
 
 From the tests:
 
