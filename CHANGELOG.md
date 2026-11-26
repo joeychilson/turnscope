@@ -20,6 +20,9 @@
 - **A login refused or expired names its agents as a list**: "open Claude
   Code, OpenCode or Pi to sign in again", not "open Claude Code or
   OpenCode or Pi".
+- **A ChatGPT plan is read even when one of its model limits isn't
+  understood.** That limit is left out, instead of the whole plan reading
+  as failed.
 - **A refused login is told again after a read that worked in between**,
   however soon. One within 5 minutes of the last read that worked before
   was taken for the same refusal.
