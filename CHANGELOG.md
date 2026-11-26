@@ -12,8 +12,8 @@
   without waiting for history to finish reading.
 - **Responses priced from their maker's catalog replace earlier estimates
   once that model is first listed.** Usage recorded under another
-  provider, such as Claude on Antigravity, kept an agent's own estimate
-  instead of taking the maker's price.
+  provider with an agent's own estimate, as in OpenCode or Pi, kept that
+  estimate instead of taking the maker's price.
 - **`connect` and `disconnect` show an agent's error when it writes to
   standard output**, instead of a blank message, and aren't thrown off
   when a login shell prints text on exit.
