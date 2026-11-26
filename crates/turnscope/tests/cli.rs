@@ -1112,9 +1112,10 @@ fn a_limit_in_dollars_is_shared_by_dollars() {
         "{}",
         answer[0]
     );
+    // Named by the agent that holds the key, too.
     let output = turnscope(
         data.path(),
-        &["usage", "--account", "openrouter", "--limit", "key"],
+        &["usage", "--account", "openrouter", "--limit", "pi"],
     );
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.trim_end().ends_with(elsewhere), "{text}");
