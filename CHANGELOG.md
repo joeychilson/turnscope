@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **The spinner no longer uses CPU while the panel is closed.** It took
+  2–5% of a core in Turnscope the whole time Turnscope read your agents'
+  history, refreshed limits or connected an agent, panel open or not. Now
+  Turnscope's own share is too small to measure. While the panel is open,
+  macOS still draws the turning arc: on a 100 Hz screen, that took about
+  25% of a core in WindowServer and now takes about 11%, as the arc turns
+  60 times a second rather than at every refresh. Its look and speed are
+  the same.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

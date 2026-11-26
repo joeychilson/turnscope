@@ -310,17 +310,91 @@ struct Switch: View {
 struct Spinner: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isSnapshot) private var isSnapshot
-    @State private var turning = false
 
     var body: some View {
-        let spinning = turning && !reduceMotion && !isSnapshot
-        Circle()
-            .trim(from: 0, to: 0.7)
-            .stroke(.secondary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-            .frame(width: 9, height: 9)
-            .rotationEffect(.degrees(spinning ? 360 : 0))
-            .animation(spinning ? .linear(duration: 0.9).repeatForever(autoreverses: false) : nil, value: spinning)
-            .onAppear { turning = true }
-            .accessibilityHidden(true)
+        Group {
+            if reduceMotion || isSnapshot {
+                Circle()
+                    .trim(from: 0, to: 0.7)
+                    .stroke(.secondary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            } else {
+                TurningArc()
+            }
+        }
+        .frame(width: 9, height: 9)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The spinner's arc, turned by Core Animation in the render server, and only while its window is
+/// on screen. SwiftUI's `repeatForever` rotation cost the app 2–5% of a core, on screen or ordered
+/// out; this, nothing measurable (measured 2026-11-26).
+private struct TurningArc: NSViewRepresentable {
+    func makeNSView(context: Context) -> TurningArcView { TurningArcView() }
+    func updateNSView(_ view: TurningArcView, context: Context) {}
+}
+
+private final class TurningArcView: NSView {
+    private let arc = CAShapeLayer()
+    private var occlusion: NSObjectProtocol?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        arc.fillColor = nil
+        arc.lineWidth = 1.5
+        arc.lineCap = .round
+        arc.strokeEnd = 0.7
+        arc.actions = ["bounds": NSNull(), "position": NSNull(), "path": NSNull(), "strokeColor": NSNull()]
+        layer?.addSublayer(arc)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    // As SwiftUI draws the arc: from 3 o'clock, clockwise.
+    override var isFlipped: Bool { true }
+
+    // Clicks and the footer's tooltip go to SwiftUI, as over the arc SwiftUI drew.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func layout() {
+        super.layout()
+        arc.frame = bounds
+        arc.path = CGPath(ellipseIn: bounds, transform: nil)
+    }
+
+    override func updateLayer() {
+        arc.strokeColor = NSColor.secondaryLabelColor.cgColor
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let occlusion { NotificationCenter.default.removeObserver(occlusion) }
+        occlusion = window.map { window in
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.turn() }
+            }
+        }
+        turn()
+    }
+
+    private func turn() {
+        guard window?.occlusionState.contains(.visible) == true else {
+            arc.removeAnimation(forKey: "turn")
+            return
+        }
+        guard arc.animation(forKey: "turn") == nil else { return }
+        let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+        turn.byValue = 2 * Double.pi
+        turn.duration = 0.9
+        turn.repeatCount = .infinity
+        // On a 100 Hz screen, WindowServer took 23% of a core to draw it at every refresh, 11% at
+        // 60 a second, and 7% at 30, which held some frames 40 ms (measured 2026-11-26).
+        turn.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60)
+        arc.add(turn, forKey: "turn")
     }
 }
