@@ -276,8 +276,9 @@ pub struct Limit {
     /// The provider's name: `5 hours`, `Weekly`, `Credits`.
     pub name: String,
     /// The model it applies to, such as `Opus`, several joined with "and",
-    /// such as `Claude and GPT`, or use no agent here makes, as `Other
-    /// apps`. None for all the account's usage.
+    /// such as `Claude and GPT`, a kind of model, as `Free models`, or use
+    /// no agent here makes, as `Other apps`. None for all the account's
+    /// usage.
     pub scope: Option<String>,
     /// None for a limit that never resets, such as credits.
     pub window: Option<LimitWindow>,

@@ -637,10 +637,13 @@ pub fn of_limit(key: &str, scope: Option<&str>) -> (Vec<String>, Option<String>)
     (models(scope), key)
 }
 
+/// What the ids of a scope's models hold: `opus` of Opus, and `free` of
+/// Free models.
 pub fn models(scope: Option<&str>) -> Vec<String> {
     scope
         .into_iter()
         .flat_map(|scope| scope.split(" and "))
+        .map(|model| model.strip_suffix(" models").unwrap_or(model))
         .map(|model| model.trim().to_lowercase().replace(' ', "-"))
         .collect()
 }
@@ -762,6 +765,24 @@ mod tests {
         either.scope = Some("Haiku and GPT".to_owned());
         let (usage, ..) = breakdown(&db, account, &either, None, By::Model, now).unwrap();
         assert!(usage.rows.is_empty());
+    }
+
+    #[test]
+    fn a_limit_on_free_models_counts_their_responses_alone() {
+        let (accounts, now) = example();
+        let account = &accounts[0];
+        let free = crate::status::Limit {
+            scope: Some("Free models".to_owned()),
+            ..account.limits[0].clone()
+        };
+        let at = now - time::HOUR;
+        let responses = [
+            ("r1", "made-up/model:free", 0.0, at),
+            ("r2", "made-up/model", 1.0, at),
+        ];
+        let (_dir, db) = store(account, "pi", &responses);
+        let (usage, ..) = breakdown(&db, account, &free, None, By::Model, now).unwrap();
+        assert_eq!(keys(&usage), ["model:free"]);
     }
 
     /// OpenCode Go's 5 hours, a window that rolls, whose reset passed since

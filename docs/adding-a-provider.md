@@ -120,7 +120,9 @@ Where every key of an API-key account reads the same limits of the
 account itself, as OpenRouter's credits, implement `account_limits` for
 them, and keep them out of `limits`: they're asked once a read, with one
 key after another until one isn't refused, as a key may have no access to
-them.
+them. A limit of the account that comes in each key's own answer, as
+OpenRouter's free models' requests do, is read in `limits` under the same
+`key` for every key.
 
 For a window that rolls, implement `rolls`: given the limit's `key`, how
 long the window is. What used the limit is then the use of the last so

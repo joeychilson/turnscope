@@ -619,10 +619,14 @@ fn spent(spend: &Spend) -> String {
 /// What a line too short for [`name`] calls a limit, and whether that's
 /// plural. One on some models, as a Google AI plan's pool, goes by its
 /// models: with its own name too, a row's "Claude and GPT weekly resets Sat
-/// 12 PM" was cut short, and the headline ran to two lines.
+/// 12 PM" was cut short, and the headline ran to two lines. Models listed,
+/// or named as "Free models", are plural.
 fn short_name(limit: &Limit) -> (String, bool) {
     match &limit.scope {
-        Some(models) => (models.clone(), models.contains(" and ")),
+        Some(models) => {
+            let plural = models.contains(" and ") || models.ends_with(" models");
+            (models.clone(), plural)
+        }
         None => (name(limit), plural(limit)),
     }
 }
@@ -1118,6 +1122,11 @@ mod tests {
             ..weekly(lasts(), 40)
         };
         assert_eq!(w.short(&pool), "Claude and GPT reset Sun 12 AM");
+        let free = Limit {
+            scope: Some("Free models".into()),
+            ..weekly(lasts(), 40)
+        };
+        assert_eq!(w.short(&free), "Free models reset Sun 12 AM");
 
         let held = Limit {
             key: "key-1".into(),

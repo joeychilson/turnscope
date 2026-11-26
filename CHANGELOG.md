@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **OpenRouter shows its guardrails and workspace budgets** beside credits
+  and the key's limit: "Daily guardrail: $3.00 of $4.00 left, resets Fri
+  00:00". A guardrail on the key alone is a "key guardrail".
+- **OpenRouter shows free models' requests today once some are made**:
+  "Daily (Free models): 98% left, resets Fri 00:00", by the UTC day.
+  An account that makes none has no row for them. `usage --limit free`
+  lists the responses of `:free` models.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that
