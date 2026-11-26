@@ -136,13 +136,9 @@ pub fn text(status: &Status, accounts: &[&Account], yours: Option<&str>) -> Stri
         if let Some(spend) = &account.spend {
             let partial = partial(spend);
             let spent = crate::usage::dollars(spend.month_usd);
-            // A pace that reads as what was spent says nothing more, as for
-            // a key that spent nothing: "$0.00, on pace for about $0.00".
-            let pace = spend
-                .forecast_usd
-                .map(forecast_dollars)
-                .filter(|pace| *pace != forecast_dollars(super::two_figures(spend.month_usd)))
-                .map_or(String::new(), |pace| format!(", on pace for about {pace}"));
+            let pace = spend.pace().map_or(String::new(), |pace| {
+                format!(", on pace for about {}", forecast_dollars(pace))
+            });
             out += &format!("  This month, across its keys: {spent}{pace}{partial}.\n");
         }
         out += "\n";

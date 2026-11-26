@@ -130,10 +130,8 @@ impl Words {
         let (named, plural) = short_name(limit);
         let s = if plural { "" } else { "s" };
         match &limit.outlook {
-            Outlook::UsedUp { back } => format!(
-                "{named} back {}",
-                back.as_ref().map_or("later".into(), |b| self.at(b))
-            ),
+            Outlook::UsedUp { back: Some(back) } => format!("{named} back {}", self.at(back)),
+            Outlook::UsedUp { back: None } => format!("{named} used up"),
             Outlook::RunsOut { likely, .. } => format!("{named} run{s} out {}", self.at(likely)),
             Outlook::Lasts { .. } | Outlook::Unknown { .. } => {
                 if let Some(window) = &limit.window {
@@ -163,7 +161,7 @@ impl Words {
                 None => self.short(limit),
             };
         }
-        if let Some(spend) = &account.spend {
+        if let Some(spend) = no_limit(account) {
             return spent_line(spend);
         }
         match account.state.why() {
@@ -220,7 +218,7 @@ impl Words {
                     sign_in(account),
                 );
             }
-            if let Some(spend) = &account.spend {
+            if let Some(spend) = no_limit(account) {
                 let detail =
                     pace(spend).unwrap_or_else(|| format!("Your {} has no limit.", account.title));
                 return ("You can keep going".into(), detail);
@@ -568,6 +566,15 @@ pub fn size(limit: &Limit) -> Option<String> {
         .map(|m| format!("of {}", dollars(m.size_usd, false)))
 }
 
+/// What an API key with no deciding limit spent, once it's been read: one
+/// never read has no limits known.
+fn no_limit(account: &Account) -> Option<&Spend> {
+    account
+        .spend
+        .as_ref()
+        .filter(|_| !matches!(account.state, State::Unread { .. }))
+}
+
 fn unknown(spend: &Spend) -> bool {
     spend.partial && spend.month_usd == 0.0
 }
@@ -592,15 +599,9 @@ fn spent_line(spend: &Spend) -> String {
 }
 
 fn pace(spend: &Spend) -> Option<String> {
-    let forecast = spend.forecast_usd?;
-    if unknown(spend) {
-        return None;
-    }
-    let projected = dollars(forecast, false);
-    if projected == dollars(spend.month_usd, false) {
-        return None;
-    }
-    Some(format!("On pace for about {projected} this month."))
+    spend
+        .pace()
+        .map(|pace| format!("On pace for about {} this month.", dollars(pace, false)))
 }
 
 /// What an account with no limit spent this month, as a phrase.
@@ -1133,6 +1134,10 @@ mod tests {
         assert_eq!(left(&money), "$8.70");
         assert_eq!(size(&money).as_deref(), Some("of $30"));
         assert_eq!((w.window(&money), w.ahead(&money)), (None, None));
+        assert_eq!(
+            w.short(&credits(0, 30.0, 0.0, used_up(None))),
+            "Credits used up"
+        );
     }
 
     #[test]
@@ -1544,13 +1549,33 @@ mod tests {
             w.opened(&keys, false).as_deref(),
             Some("On pace for about $210 this month.")
         );
+        // Late in a month, its forecast to two figures falls below what's spent.
+        let late = Spend {
+            month_usd: 154.6,
+            forecast_usd: Some(150.0),
+            partial: false,
+        };
+        assert_eq!(pace(&late), None);
+        let cent = Spend {
+            month_usd: 0.011,
+            forecast_usd: Some(0.014),
+            partial: false,
+        };
+        assert_eq!(pace(&cent), None);
+        // One never read has no limits known.
+        let unread = Account {
+            state: State::Unread {
+                why: Stale::ReadFailed,
+            },
+            ..keys.clone()
+        };
+        assert_eq!(w.status(&unread), "Couldn't be read yet");
         assert_eq!(
-            pace(&Spend {
-                month_usd: 1.0,
-                forecast_usd: None,
-                partial: false
-            }),
-            None
+            w.verdict(Some(&unread), false, &[]),
+            (
+                "OpenRouter API key's limits are unknown".into(),
+                "It couldn't be read yet.".into()
+            )
         );
         assert_eq!(
             spent(&Spend {
