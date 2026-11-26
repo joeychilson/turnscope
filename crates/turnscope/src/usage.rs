@@ -47,7 +47,7 @@ impl By {
         }
     }
 
-    fn noun(self) -> &'static str {
+    pub fn noun(self) -> &'static str {
         match self {
             By::Day => "day",
             By::Week => "week",

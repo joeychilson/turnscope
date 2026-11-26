@@ -555,17 +555,16 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     let status = status::status(ask.db, turnscope::now())?;
     let mine = ask.caller.account(ask.db, ask.home, &status)?;
     let yours = mine.map(|mine| mine.id.as_str());
-    let (mut shown, unknown) = match (&input.account, input.all, mine) {
-        (Some(name), _, _) => (status::named(&status, name)?, false),
-        (None, false, Some(mine)) => (vec![mine], false),
-        (None, all, _) => (
-            status
-                .accounts
-                .iter()
-                .filter(|account| !account.hidden)
-                .collect(),
-            !all && mine.is_none(),
-        ),
+    let every = input.account.is_none() && (input.all || mine.is_none());
+    let unknown = every && !input.all;
+    let mut shown = match (&input.account, mine) {
+        (Some(name), _) => status::named(&status, name)?,
+        (None, Some(mine)) if !every => vec![mine],
+        _ => status
+            .accounts
+            .iter()
+            .filter(|account| !account.hidden)
+            .collect(),
     };
     shown.sort_by_key(|account| Some(account.id.as_str()) != yours);
     let Some(first) = shown.first() else {
@@ -582,7 +581,6 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
     let caller_agent = ask.caller.agent.map(|agent| agent.info().id);
     // Of every account, the one to work on leads, not the verdict on the
     // first: its lines follow anyway.
-    let every = input.account.is_none() && (input.all || mine.is_none());
     let room = every
         .then(|| status::most_room(&status, input.hours, yours, caller_agent))
         .flatten();
@@ -595,7 +593,7 @@ fn check_limits(ask: &Ask, arguments: Value) -> Result<String> {
         (false, None) if input.hours.is_some() && shown.len() == 1 => String::new(),
         (false, None) => format!("{}\n\n", status::verdict(first, status.at)),
     };
-    let alternate = (shown.len() == 1 && !unknown)
+    let alternate = (shown.len() == 1)
         .then(|| status::alternate_note(&status, first, caller_agent))
         .flatten()
         .map_or(String::new(), |note| {
@@ -793,11 +791,7 @@ fn explain_usage(ask: &Ask, arguments: Value) -> Result<String> {
 /// account's, the top three of each, so one call says what used it.
 fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
     let mut out = String::new();
-    for (by, what) in [
-        (By::Model, "model"),
-        (By::Project, "project"),
-        (By::Account, "account"),
-    ] {
+    for by in [By::Model, By::Project, By::Account] {
         if by == query.by || (by == By::Account && query.account.is_some()) {
             continue;
         }
@@ -815,7 +809,7 @@ fn by_others(db: &Connection, query: &usage::Query) -> Result<String> {
             })
             .collect();
         if !listed.is_empty() {
-            out += &format!("\nBy {what}: {}.", listed.join("; "));
+            out += &format!("\nBy {}: {}.", by.noun(), listed.join("; "));
         }
     }
     Ok(out)

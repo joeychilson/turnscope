@@ -233,7 +233,7 @@ together, as for "what did I spend across my agents".
 | `account` | string | the caller's | One account: its id, or text in its title, label or id. If the text matches several, the error lists them. |
 | `all` | boolean | `false` | Every account's usage together, when `account` isn't given. There's no limit then, so no shares, and `since` defaults to 30 days back, as the command line's `usage` does. With `limit` it's an error. |
 | `limit` | string | the limit that decides how the account stands, unless `since` is given | Text in a limit's name or key, any case, such as `week` or `5 hours`, or the name the status line shows, such as `5h`. A model's limit takes its model after its name or before it: `weekly (opus)` or `opus weekly`. |
-| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). For a limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. Given without `limit`, the usage is the account's, with no limit's line. A `since` at or after now is an error, as it is for the command line's `usage`. |
+| `since` | string | `window` | `window` for the limit's current window, or a [time form](cli.md#time-forms). A window that rolls, as OpenCode Go's 5 hours, is the last of its length. For another limit with no window start, `window` means this month for an API key, and the last 7 days otherwise. Only `window` gives each row's share of the limit, and the description says "this week" of a weekly limit is its window. Given without `limit`, the usage is the account's, with no limit's line. A `since` at or after now is an error, as it is for the command line's `usage`. |
 | `until` | string | now | With `since`: up to when, in the same forms. Without `since`, the usage runs to now, and `until` is an error. |
 | `by` | `session`, `project`, `model`, `agent`, `account`, `day`, `week` or `month` | `session` | How to group the rows. |
 | `top` | integer, 1 to 20 | 5 | The rows to show. The rest are added up in one row. |
@@ -255,7 +255,8 @@ The answer:
    title in quotes, or `(untitled)`. The caller's own is marked `(yours)`
    when its agent names it, as Claude Code does.
 4. The top three models and projects of the same usage, except the one
-   grouped by, and with `all` the top three accounts, each with its cost.
+   grouped by, and of every account's usage the top three accounts, each
+   with its cost.
    Usage with no known price shows as `(+N unpriced)` after the cost, as
    in the table.
 
@@ -274,8 +275,9 @@ says so. A key's own limit counts only the usage made with that key.
 
 When the caller's account isn't known and neither `account` nor `all` is
 given, the answer is every account's, and opens by saying so; with
-`limit`, it's an error. When the caller's session isn't among the rows,
-a line after the table gives its cost, responses and share.
+`limit`, it's an error. When rows are sessions and the caller's is added
+up in the rest, a line after the table gives its cost, responses and
+share.
 
 An account with no limit read, such as one whose login expired, still has
 its usage broken down, without the limit's line or shares: unless `since`
