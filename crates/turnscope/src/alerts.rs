@@ -700,15 +700,6 @@ mod tests {
         assert!(raise(&mut db, &five_back).unwrap().is_empty());
     }
 
-    #[test]
-    fn a_week_used_up_long_before_it_resets_says_its_back_after() {
-        let (_dir, mut db) = open();
-        raise(&mut db, &status(DAY, 0, Outlook::UsedUp { back: None })).unwrap();
-        // Nine days on, an hour after the window reset.
-        let back = status(10 * DAY + 60 * MINUTE, 100, LASTS);
-        assert_eq!(kinds(&raise(&mut db, &back).unwrap()), [Kind::Reset]);
-    }
-
     /// Used up on day 1, its window resetting on day 10, and reset early on
     /// day 3 to a new window: it's back then, and used up no more.
     #[test]

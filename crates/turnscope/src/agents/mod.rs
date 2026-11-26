@@ -266,21 +266,15 @@ impl Session {
         if self.title.as_ref().is_some_and(|(had, _)| kind < *had) {
             return;
         }
-        let mut out = String::new();
-        let mut left = TITLE;
-        for word in text.split_whitespace() {
-            if !out.is_empty() {
-                if left <= 1 {
-                    break;
-                }
-                out.push(' ');
-                left -= 1;
-            }
-            for ch in word.chars().take(left) {
-                out.push(ch);
-                left -= 1;
-            }
-        }
+        // The cut can end on the space between two words.
+        let mut out: String = text
+            .split_whitespace()
+            .flat_map(|word| [" ", word])
+            .skip(1)
+            .flat_map(str::chars)
+            .take(TITLE)
+            .collect();
+        out.truncate(out.trim_end().len());
         if !out.is_empty() {
             self.title = Some((kind, out));
         }
@@ -594,20 +588,14 @@ fn fresher(
     file: Result<Option<Credential>>,
 ) -> Result<Option<Credential>> {
     match (kept, file) {
-        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(if expiry(&file) > expiry(&kept) {
-            file
-        } else {
-            kept
-        })),
+        // One with no expiry expires last; of two alike, the Keychain's wins.
+        (Ok(Some(kept)), Ok(Some(file))) => Ok(Some(std::cmp::max_by_key(file, kept, |login| {
+            login.expires.unwrap_or(i64::MAX)
+        }))),
         (Ok(Some(one)), _) | (_, Ok(Some(one))) => Ok(Some(one)),
         (Err(error), _) | (_, Err(error)) => Err(error),
         (Ok(None), Ok(None)) => Ok(None),
     }
-}
-
-/// When a sign-in expires, one with no expiry last.
-fn expiry(credential: &Credential) -> i64 {
-    credential.expires.unwrap_or(i64::MAX)
 }
 
 pub(crate) fn json_file(path: &Path) -> Result<Value> {
@@ -627,11 +615,10 @@ fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> Logi
     // A sign-in to a provider that sells no plan gives the agent a key.
     let sells_none = reads.is_some_and(|reads| reads.info().subscription.is_none());
     let (secret, key) = match kept["type"].as_str() {
-        Some(kind) if kind == key_type => (kept["key"].as_str(), true),
-        Some("oauth") => (kept["access"].as_str(), sells_none),
+        Some(kind) if kind == key_type => (non_empty(&kept["key"]), true),
+        Some("oauth") => (non_empty(&kept["access"]), sells_none),
         _ => (None, false),
     };
-    let secret = secret.filter(|secret| !secret.is_empty());
     Login {
         credential: reads.zip(secret).map(|(reads, secret)| Credential {
             provider: reads.info().id,

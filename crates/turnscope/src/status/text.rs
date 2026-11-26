@@ -613,21 +613,16 @@ pub fn line(account: &Account, now: i64) -> String {
         return format!("{} · sign in again", account.title);
     }
     let mut parts = vec![account.title.clone()];
-    let used_up = |limit: &&Limit| matches!(limit.outlook, Outlook::UsedUp { .. });
     let blocking: Vec<&Limit> = account
         .limits
         .iter()
-        .filter(|limit| account.stands_by(limit) && used_up(limit))
+        .filter(|limit| account.stands_by(limit) && limit.standing() == Standing::UsedUp)
         .collect();
     let shown: Vec<&Limit> = if blocking.is_empty() {
         account
             .limits
             .iter()
-            .filter(|limit| {
-                account.stands_by(limit)
-                    || used_up(limit)
-                    || matches!(limit.outlook, Outlook::RunsOut { .. })
-            })
+            .filter(|limit| account.stands_by(limit) || limit.standing() != Standing::Lasts)
             .collect()
     } else {
         blocking

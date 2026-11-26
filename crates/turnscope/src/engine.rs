@@ -282,10 +282,7 @@ impl Engine {
             wake.send(Wake::Force).is_ok()
         });
         if !sent {
-            Engine::ask(&self.requests, |inner| {
-                inner.give(Tell::Always);
-                (inner.tell)(Event::Refreshed);
-            });
+            Engine::ask(&self.requests, Inner::refreshed);
         }
     }
 
@@ -383,8 +380,7 @@ impl Inner {
                     *locked(&self.wake) = None;
                     drop(lock);
                     if self.forcing.swap(false, Ordering::AcqRel) {
-                        self.give(Tell::Always);
-                        (self.tell)(Event::Refreshed);
+                        self.refreshed();
                     }
                     let why = match kept {
                         Ok(Ok(())) => continue,
@@ -433,20 +429,23 @@ impl Inner {
                 (new, forced)
             }
             Caught::Failed { error, forced } => {
-                if self.stopped(error) {
-                    return false;
-                }
+                self.stopped(error);
                 (true, forced)
             }
         };
         if forced {
-            self.give(Tell::Always);
             self.forcing.store(false, Ordering::Release);
-            (self.tell)(Event::Refreshed);
+            self.refreshed();
         } else if new {
             self.give(Tell::IfChanged);
         }
         !self.ended() && self.newer().is_none()
+    }
+
+    /// The status, changed or not, then that a refresh asked for is done.
+    fn refreshed(&self) {
+        self.give(Tell::Always);
+        (self.tell)(Event::Refreshed);
     }
 
     fn stopped(&self, error: Error) -> bool {
@@ -613,8 +612,7 @@ fn keep(
     let mut pushed = None;
     // The limits before history: on a first launch that reads all of it (12 s
     // for a made-up 5,000 files), the app showed no account until it ended.
-    if crate::online() && read_limits(&mut db, home, data, Ask::Scheduled)? && !told(Caught::Limits)
-    {
+    if crate::online() && read_limits(&mut db, home, Ask::Scheduled)? && !told(Caught::Limits) {
         return Ok(());
     }
     // Limits asked for and not read yet, and when they last were.
@@ -629,7 +627,7 @@ fn keep(
         if let Some(ask) = reading {
             (asked, asked_at) = (None, Some(Instant::now()));
             // Offline, the catch-up still takes in limits agents wrote.
-            read_asked = crate::online() && read_limits(&mut db, home, data, ask)?;
+            read_asked = crate::online() && read_limits(&mut db, home, ask)?;
         }
         let forced = reading == Some(Ask::Force);
         let caught = match crate::catch_up(&mut db, home, None) {
@@ -730,11 +728,11 @@ fn wait(
 /// Read the limits due (`limits::refresh`), or asked for; whether any were.
 /// A failure is logged, and counts as a read so the status is told again,
 /// unless a newer Turnscope wrote.
-fn read_limits(db: &mut Connection, home: &Path, data: &Path, ask: Ask) -> Result<bool> {
+fn read_limits(db: &mut Connection, home: &Path, ask: Ask) -> Result<bool> {
     match crate::limits::refresh(db, home, ask) {
         Err(error @ Error::Newer { .. }) => Err(error),
         Err(error) => {
-            log(data, &error.to_string());
+            log(crate::db::dir(db), &error.to_string());
             Ok(true)
         }
         read => read,
@@ -834,7 +832,7 @@ impl Showing {
                 Some((account, limit))
             })
             .ok_or_else(|| Error::NotFound(format!("no limit {limit} of {account}")))?;
-        let (used, shares) =
+        let (used, shares, _) =
             usage::breakdown(&self.db, account, limit, None, usage::By::Session, now)?;
         let mut sessions = Vec::new();
         for (at, row) in used.rows.iter().enumerate().take(3) {

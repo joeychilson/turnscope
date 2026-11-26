@@ -208,7 +208,6 @@ impl Account {
             return limit.whole();
         }
         limit.scope.is_some()
-            && !limit.is_key()
             && self
                 .deciding_limit()
                 .is_some_and(|deciding| deciding.scope == limit.scope)
@@ -817,9 +816,12 @@ fn drawn(db: &rusqlite::Connection, now: i64) -> Result<BTreeMap<String, Vec<Str
 /// for the work rate.
 pub(crate) const WORKED: i64 = 14 * DAY;
 
-/// The hours from `now` until a window resets. One that reset since it was
-/// read is a new one, as long: its start isn't known, and is taken as now.
+/// The hours from `now` until a window resets, at the minute it's shown:
+/// work held at the reset read 20 s earlier read as ending first. One that
+/// reset since it was read is a new one, as long: its start isn't known, and
+/// is taken as now.
 fn hours_to_reset(starts: Option<i64>, resets: i64, reset: bool, now: i64) -> Option<f64> {
+    let resets = time::round_minute(resets);
     let until = if reset {
         resets - starts?
     } else {
@@ -1036,10 +1038,7 @@ fn work(
     else {
         return Ok(None);
     };
-    // The reset as shown, rounded to the minute, as `Limit::hours_to_reset`
-    // has it: work held at the reset read 20 s earlier read as ending first.
-    let until = resets
-        .and_then(|resets| hours_to_reset(*starts, time::round_minute(resets), resets <= now, now));
+    let until = resets.and_then(|resets| hours_to_reset(*starts, resets, resets <= now, now));
     let left_minutes = forecast::work_left(left, rate, forecast::work_band(length), until).map(
         |(low, likely, high)| MinutesLeft {
             low: minutes(low),
@@ -1201,10 +1200,8 @@ fn pool<'a>(
         return Ok(None);
     }
     let mut pools: Vec<&str> = Vec::new();
-    for limit in limits.iter().filter(|limit| !limit.is_key()) {
-        if let Some(scope) = limit.scope.as_deref()
-            && !pools.contains(&scope)
-        {
+    for scope in limits.iter().filter_map(|limit| limit.scope.as_deref()) {
+        if !pools.contains(&scope) {
             pools.push(scope);
         }
     }

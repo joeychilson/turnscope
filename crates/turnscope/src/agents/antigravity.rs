@@ -247,7 +247,7 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
                 Ok(row
                     .get_ref(0)?
                     .as_bytes_or_null()?
-                    .and_then(|about| within(about, &[1, 1]))
+                    .and_then(|about| bytes(bytes(about, 1)?, 1))
                     .and_then(folder))
             },
         )
@@ -427,10 +427,7 @@ fn titles(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
 }
 
 fn made(metadata: &[u8]) -> Option<i64> {
-    time(bytes(metadata, 1)?)
-}
-
-fn time(stamp: &[u8]) -> Option<i64> {
+    let stamp = bytes(metadata, 1)?;
     let seconds = i64::try_from(number(stamp, 1)?).ok()?;
     let nanos = i64::try_from(number(stamp, 2).unwrap_or(0)).ok()?;
     seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000)
@@ -523,11 +520,6 @@ fn text(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes)
         .ok()
         .filter(|text| !text.is_empty())
-}
-
-fn within<'a>(message: &'a [u8], path: &[u64]) -> Option<&'a [u8]> {
-    path.iter()
-        .try_fold(message, |message, &number| bytes(message, number))
 }
 
 #[cfg(test)]
