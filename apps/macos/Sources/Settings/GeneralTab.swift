@@ -55,39 +55,41 @@ struct GeneralTab: View {
         }
     }
 
-    private var notifications: some View {
-        let settings = bridge.panel.settings
-        return SettingGroup(title: "Notify me when") {
-            if notifier.denied {
-                SettingRow(title: "Notifications are off for Turnscope") {
-                    Button("Open") {
-                        closePanel()
-                        notifier.openSettings()
+    /// Shown once the settings are read: before, a switch would show a guess.
+    @ViewBuilder private var notifications: some View {
+        if let current = bridge.panel.settings.notify {
+            SettingGroup(title: "Notify me when") {
+                if notifier.denied {
+                    SettingRow(title: "Notifications are off for Turnscope") {
+                        Button("Open") {
+                            closePanel()
+                            notifier.openSettings()
+                        }
+                        .buttonStyle(PillButton())
+                        .accessibilityLabel("Open Notifications in System Settings")
                     }
-                    .buttonStyle(PillButton())
-                    .accessibilityLabel("Open Notifications in System Settings")
+                    .transition(appears)
                 }
-                .transition(appears)
+                Group {
+                    SettingRow(
+                        "A limit will run out",
+                        help: "Before it resets, at your pace",
+                        isOn: notify(\.runningOut, in: current)
+                    )
+                    SettingRow("A limit is used up", isOn: notify(\.usedUp, in: current))
+                    SettingRow(
+                        "A limit is back",
+                        help: "After it was used up, once the account can be used again",
+                        isOn: notify(\.reset, in: current)
+                    )
+                    SettingRow(
+                        "An account needs signing in",
+                        help: "Its login was refused, so its limits can't be read",
+                        isOn: notify(\.signIn, in: current)
+                    )
+                }
+                .disabled(bridge.panel.stopped)
             }
-            Group {
-                SettingRow(
-                    "A limit will run out",
-                    help: "Before it resets, at your pace",
-                    isOn: notify(\.runningOut)
-                )
-                SettingRow("A limit is used up", isOn: notify(\.usedUp))
-                SettingRow(
-                    "A limit is back",
-                    help: "After it was used up, once the account can be used again",
-                    isOn: notify(\.reset)
-                )
-                SettingRow(
-                    "An account needs signing in",
-                    help: "Its login was refused, so its limits can't be read",
-                    isOn: notify(\.signIn)
-                )
-            }
-            .disabled(!settings.canEditNotify)
         }
     }
 
@@ -152,13 +154,13 @@ struct GeneralTab: View {
         }
     }
 
-    private func notify(_ keyPath: WritableKeyPath<NotifySettings, Bool>) -> Binding<Bool> {
+    private func notify(_ keyPath: WritableKeyPath<NotifySettings, Bool>, in notify: NotifySettings) -> Binding<Bool> {
         Binding(
-            get: { bridge.panel.settings.notify?[keyPath: keyPath] ?? true },
+            get: { notify[keyPath: keyPath] },
             set: { value in
-                guard var current = bridge.panel.settings.notify else { return }
-                current[keyPath: keyPath] = value
-                bridge.send(.setNotify(notify: current))
+                var changed = notify
+                changed[keyPath: keyPath] = value
+                bridge.send(.setNotify(notify: changed))
             }
         )
     }

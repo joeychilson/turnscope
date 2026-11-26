@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Settings shows the notification switches once it knows them.** Before
+  the first read, all four showed on, whatever you had set.
 - **`turnscope guard` passes while the standing isn't known**: before any
   account is read, or while none of its limits are. It exited 1 with an
   error, which a hook shows at every tool call.

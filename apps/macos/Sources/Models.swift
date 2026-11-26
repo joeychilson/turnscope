@@ -234,7 +234,6 @@ struct AgentRowModel: Decodable, Equatable, Identifiable {
 struct SettingsModel: Decodable, Equatable {
     var menuShows: MenuShows
     var notify: NotifySettings?
-    var canEditNotify: Bool
     var agentsEmpty: EmptyMessage?
     var agentsTitle: String
     var agents: [AgentRowModel]
@@ -242,7 +241,7 @@ struct SettingsModel: Decodable, Equatable {
     var apiKeys: [AccountModel]
 
     static let empty = SettingsModel(
-        menuShows: .all, notify: nil, canEditNotify: false,
+        menuShows: .all, notify: nil,
         agentsEmpty: nil, agentsTitle: "", agents: [],
         subscriptions: [], apiKeys: []
     )
