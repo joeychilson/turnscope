@@ -354,9 +354,9 @@ impl Inner {
         while !self.ended() && self.newer().is_none() {
             if self.showing().is_none() {
                 match Showing::open(&self.data, &self.home, &self.binary) {
-                    Ok(opened) => {
+                    Ok(mut opened) => {
+                        opened.keeps = false;
                         *self.showing() = Some(opened);
-                        self.give(Tell::Always);
                     }
                     Err(error) => {
                         if self.stopped(error) {
@@ -372,12 +372,19 @@ impl Inner {
             }
             match lock(&self.data) {
                 Ok(Some(lock)) => {
+                    if let Some(showing) = self.showing().as_mut() {
+                        showing.keeps = true;
+                    }
+                    self.give(Tell::IfChanged);
                     let kept = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         keep(&self.home, &self.data, &self.wake, &self.ended, |caught| {
                             self.caught(caught)
                         })
                     }));
                     *locked(&self.wake) = None;
+                    if let Some(showing) = self.showing().as_mut() {
+                        showing.keeps = false;
+                    }
                     drop(lock);
                     if self.forcing.swap(false, Ordering::AcqRel) {
                         self.refreshed();
@@ -404,10 +411,11 @@ impl Inner {
                         self.stopped(error);
                         return;
                     }
-                    self.kept(None);
                     self.give(Tell::IfChanged);
+                    self.kept(None);
                 }
                 Err(error) => {
+                    self.give(Tell::IfChanged);
                     if self.stopped(error) {
                         return;
                     }
@@ -423,7 +431,7 @@ impl Inner {
     // limit read), so persistent failures like an unwritable lock stay visible.
     fn caught(&self, caught: Caught) -> bool {
         let (new, forced) = match caught {
-            Caught::Limits => (true, false),
+            Caught::Limits { forced } => (true, forced),
             Caught::Read { new, forced } => {
                 self.kept(None);
                 (new, forced)
@@ -563,7 +571,7 @@ const GAP: Duration = Duration::from_secs(5);
 const ASKED: Duration = Duration::from_secs(30);
 
 enum Caught {
-    Limits,
+    Limits { forced: bool },
     Read { new: bool, forced: bool },
     Failed { error: Error, forced: bool },
 }
@@ -612,7 +620,10 @@ fn keep(
     let mut pushed = None;
     // The limits before history: on a first launch that reads all of it (12 s
     // for a made-up 5,000 files), the app showed no account until it ended.
-    if crate::online() && read_limits(&mut db, home, Ask::Scheduled)? && !told(Caught::Limits) {
+    if crate::online()
+        && read_limits(&mut db, home, Ask::Scheduled)?
+        && !told(Caught::Limits { forced: false })
+    {
         return Ok(());
     }
     // Limits asked for and not read yet, and when they last were.
@@ -623,20 +634,29 @@ fn keep(
         }
         watch(&mut watcher);
         let reading = asked.filter(|_| due(asked, asked_at));
-        let mut read_asked = false;
+        let mut forced = reading == Some(Ask::Force);
         if let Some(ask) = reading {
             (asked, asked_at) = (None, Some(Instant::now()));
             // Offline, the catch-up still takes in limits agents wrote.
-            read_asked = crate::online() && read_limits(&mut db, home, ask)?;
+            if crate::online() {
+                let read = read_limits(&mut db, home, ask)?;
+                if read || forced {
+                    let emit_forced = std::mem::take(&mut forced);
+                    if !told(Caught::Limits {
+                        forced: emit_forced,
+                    }) {
+                        return Ok(());
+                    }
+                }
+            }
         }
-        let forced = reading == Some(Ask::Force);
-        let caught = match crate::catch_up(&mut db, home, None) {
+        let caught = match catch_up(&mut db, home, reading.is_none()) {
             Ok(read) => {
                 let now = (
                     crate::time::minute(crate::now()),
                     db.pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))?,
                 );
-                let new = read || read_asked || pushed != Some(now);
+                let new = read || pushed != Some(now);
                 pushed = Some(now);
                 Caught::Read { new, forced }
             }
@@ -739,6 +759,16 @@ fn read_limits(db: &mut Connection, home: &Path, ask: Ask) -> Result<bool> {
     }
 }
 
+/// Catch up: prices, limits unless already read on this wake, and history.
+fn catch_up(db: &mut Connection, home: &Path, limits: bool) -> Result<bool> {
+    if limits {
+        return crate::catch_up(db, home, None);
+    }
+    let priced = crate::online() && crate::prices::refresh(db).unwrap_or(false);
+    let read = crate::ingest::ingest(db, home, None)?;
+    Ok(priced || read)
+}
+
 struct Showing {
     db: Connection,
     data: PathBuf,
@@ -748,6 +778,8 @@ struct Showing {
     agents: Option<(i64, Vec<Agent>)>,
     /// Whether the alerts pending when the data opened were told.
     pending_told: bool,
+    /// Whether this engine holds `app.lock` and raises alerts.
+    keeps: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -769,6 +801,7 @@ impl Showing {
             shown: None,
             agents: None,
             pending_told: false,
+            keeps: true,
         })
     }
 
@@ -793,8 +826,13 @@ impl Showing {
             }
         };
         let shown = Shown { status, agents };
-        if self.shown.as_ref().is_some_and(|told| same(told, &shown)) {
+        let unchanged = self.shown.as_ref().is_some_and(|told| same(told, &shown));
+        if unchanged && (!self.keeps || self.pending_told) {
             return Ok((tell != Tell::IfChanged).then_some((shown, Vec::new())));
+        }
+        if !self.keeps {
+            self.shown = Some(shown.clone());
+            return Ok(Some((shown, Vec::new())));
         }
         // Read before `raise`, which adds alerts not yet acknowledged.
         let mut told = Vec::new();
@@ -808,7 +846,11 @@ impl Showing {
             Ok(raised) => {
                 self.shown = Some(shown.clone());
                 told.extend(raised);
-                Ok(Some((shown, told)))
+                if unchanged && told.is_empty() && tell == Tell::IfChanged {
+                    Ok(None)
+                } else {
+                    Ok(Some((shown, told)))
+                }
             }
             Err(error @ Error::Newer { .. }) => Err(error),
             Err(error) => {
@@ -1438,6 +1480,128 @@ mod tests {
                 _ => None,
             });
             assert!(shown.get(), "another keeps: {another_keeps}");
+        }
+    }
+
+    /// A second copy of the app raises and delivers no alerts while another
+    /// holds `app.lock`, and takes over once the first exits.
+    #[test]
+    fn a_second_app_raises_and_delivers_no_alerts() {
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let db = read_just_now(data.path());
+        let now = crate::now();
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at)
+             VALUES ('anthropic:a', 'anthropic', 'subscription', 'Claude Max', ?1)",
+            [now],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO reading (account, limit_key, at, name, used, starts, resets)
+             VALUES ('anthropic:a', 'five_hour', ?1, '5 hours', 100.0, ?2, ?3)",
+            rusqlite::params![now, now - crate::time::HOUR, now + 4 * crate::time::HOUR],
+        )
+        .unwrap();
+        crate::db::test::response(
+            &db,
+            ("claude-code", "/w", "anthropic", Some("anthropic:a")),
+            "r1",
+            now,
+            "claude-opus-5",
+            None,
+        );
+        db.execute(
+            "INSERT INTO alert (account, limit_key, kind, window, at, detail)
+             VALUES ('anthropic:a', 'seven_day', 'reset', 1, ?1, '{\"accountTitle\":\"Claude Max\"}')",
+            [now],
+        )
+        .unwrap();
+        let other = lock(data.path()).unwrap().unwrap();
+        let (_engine, told) = start(data.path(), home.path());
+        let alerts = next(&told, 10, |event| match event {
+            Event::Shown(_, alerts) => Some(alerts),
+            _ => None,
+        });
+        assert!(alerts.is_empty(), "{alerts:?}");
+        let count: i64 = db
+            .query_row("SELECT count(*) FROM alert", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        // Once the first copy exits, the second takes over and tells alerts.
+        drop(other);
+        let taken = next(&told, 10, |event| match event {
+            Event::Shown(_, alerts) if !alerts.is_empty() => Some(alerts),
+            _ => None,
+        });
+        let kinds: Vec<_> = taken.iter().map(|alert| alert.kind).collect();
+        assert_eq!(
+            kinds,
+            [crate::alerts::Kind::Reset, crate::alerts::Kind::UsedUp]
+        );
+    }
+
+    /// Opening the panel (`Wake::Asked`) or refreshing (`Engine::refresh_now`)
+    /// emits limits as soon as they are read, without waiting for history
+    /// ingest, and still finishes history ingest once unblocked.
+    #[test]
+    fn asked_and_forced_limit_reads_are_told_before_history_is_read() {
+        if !crate::online() {
+            return;
+        }
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        drop(read_just_now(data.path()));
+        let wake = Arc::new(Mutex::new(None));
+        let (sender, messages) = mpsc::channel();
+        let (home_kept, data_kept, wake_kept) = (
+            home.path().to_path_buf(),
+            data.path().to_path_buf(),
+            Arc::clone(&wake),
+        );
+        std::thread::spawn(move || {
+            let ended = AtomicBool::new(false);
+            keep(&home_kept, &data_kept, &wake_kept, &ended, |_| {
+                sender.send(()).is_ok()
+            })
+        });
+        messages.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        // Panel open while another Turnscope holds `ingest.lock`: told before
+        // ingest can begin, then ingest finishes once the lock is released.
+        let reading = crate::db::lock(&data.path().join("ingest.lock")).unwrap();
+        locked(&wake).as_ref().unwrap().send(Wake::Asked).unwrap();
+        assert!(
+            messages.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "Wake::Asked blocked on ingest.lock"
+        );
+        drop(reading);
+        assert!(messages.recv_timeout(Duration::from_secs(2)).is_ok());
+
+        // Forced refresh (`⌘R`) via `Engine`: emits Shown + Refreshed while
+        // `ingest.lock` is held, and never emits a second Refreshed after.
+        let (data, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        drop(read_just_now(data.path()));
+        let (engine, told) = start(data.path(), home.path());
+        next(&told, 10, |event| match event {
+            Event::Shown(shown, _) if shown.status.history_read => Some(()),
+            _ => None,
+        });
+        let reading = crate::db::lock(&data.path().join("ingest.lock")).unwrap();
+        engine.refresh_now();
+        let saw_shown = std::cell::Cell::new(false);
+        next(&told, 2, |event| match event {
+            Event::Shown(..) => {
+                saw_shown.set(true);
+                None
+            }
+            Event::Refreshed => Some(()),
+            _ => None,
+        });
+        assert!(saw_shown.get());
+        drop(reading);
+        // Once unblocked, ingest runs without firing a duplicate Refreshed.
+        let until = Instant::now() + Duration::from_millis(300);
+        while let Ok(event) = told.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            assert!(!matches!(event, Event::Refreshed), "duplicate Refreshed");
         }
     }
 }

@@ -7,6 +7,52 @@
   `usage --limit` and the MCP tools.
 - **`--since` / `since` help no longer lists `now`**, which is refused as a
   start time; `now` is listed under `--until` / `until`.
+- **Hidden accounts and limits that have recovered aren't alerted on
+  launch.** Unacknowledged alerts from before hiding an account or before
+  use was given back early were still sent when the app reopened.
+- **A second open copy of the app sends no alerts.** Only the copy keeping
+  the data current raises and sends notifications, so alerts aren't sent
+  twice.
+- **Opening the panel or pressing ⌘R shows fresh limits right away**,
+  without waiting for history to finish reading.
+- **Responses priced from their maker's catalog replace earlier estimates
+  once that model is first listed.** Usage recorded under another
+  provider with an agent's own estimate, as in OpenCode or Pi, kept that
+  estimate instead of taking the maker's price.
+- **`connect` and `disconnect` show an agent's error when it writes to
+  standard output**, instead of a blank message, and aren't thrown off
+  when a login shell prints text on exit.
+- **A model limit no longer decides an account after its whole-account
+  limits reset**: when 5 hours and Weekly have both reset since the last
+  read, one of them stays the deciding limit instead of Weekly (Opus).
+- **An OpenRouter API key with only key limits shows its limit on the
+  status line** instead of its title alone, and says when that key limit
+  is used up instead of "$0.00 left".
+- **`status --hours` and `check_limits` no longer say work fits with
+  "about 0%" left**: when under 1% stays they say "under 1%", and exact
+  100% consumption after a reset doesn't fit.
+- **Work right after a read in the same 5-minute slot counts as work
+  since the read**, so `status --hours` and usage shares don't miss it
+  when a response shares the read's timestamp.
+- **Codex's own limits stay the plan's own** when a rollout names them in
+  `limit_name`, instead of showing as separate model limits.
+- **The panel keeps focus and smooth scrolling when a row expands past
+  the screen height**, lets ⌘C and ⌘A copy selectable text, and no longer
+  adds invisible Tab stops for hidden shortcuts. VoiceOver can choose
+  between All in use and Most urgent in Settings, can hide non-openable
+  rows, and no longer reads switch labels twice; Full Keyboard Access
+  reveals a row's Hide button on focus.
+- **Reduce Motion now stops every spring animation** in the panel,
+  including row expansion, folds, list reordering, and switches.
+- **Settings' tabs and its Show choice are segmented controls**, and the
+  Show choice lines up with the switches below. Settings → Accounts labels
+  read at secondary contrast, and the footer's "Update available" pill
+  shortens to "Update" beside a status note.
+- **A limit that reset since it was last read says it's full since the
+  reset** in the panel's headline detail instead of "As last read, ...
+  has 100% left".
+- **The macOS app binary is 3.6 MiB smaller** (10.0 MiB instead of 13.6 MiB
+  universal): release builds strip dead code when linking.
 - **Codex's responses after fast mode is turned off cost the standard
   rate**, not the fast one. The history is read again once, to price them
   anew.

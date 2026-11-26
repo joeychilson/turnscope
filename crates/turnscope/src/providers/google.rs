@@ -42,16 +42,13 @@
 //! with a real sign-in.
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{Read as _, Seek as _, SeekFrom};
-use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use serde_json::{Value, json};
 
 use super::{Answered, Info, Limits, Problem, Provider, Reading};
-use crate::agents::{Credential, Refresh, Secret, non_empty};
+use crate::agents::{self, Client, Credential, Refresh, Secret, non_empty};
 use crate::time::{DAY, HOUR, MINUTE};
 
 pub struct Google;
@@ -69,59 +66,46 @@ const PLAN: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssis
 const QUOTA: &str = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 const TOKEN: &str = "https://oauth2.googleapis.com/token";
 
-/// How Antigravity's app names itself.
-#[cfg(target_arch = "aarch64")]
-const CLIENT: &str = "User-Agent: antigravity/2.31.0 (aidev_client; os_type=darwin; arch=arm64)";
-#[cfg(not(target_arch = "aarch64"))]
-const CLIENT: &str = "User-Agent: antigravity/2.31.0 (aidev_client; os_type=darwin; arch=amd64)";
-
-/// The OAuth client Antigravity's sign-in is renewed with: its id. Its
-/// secret is in the app's program.
-const CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-
-/// How a client secret begins, and how long one is.
-const SECRET: (&[u8], usize) = (b"GOCSPX-", 35);
-
-/// The most of a program read for its client, so a program that isn't
-/// what it should be can't ask for more: its `__TEXT,__rodata` was 12 MiB
-/// and its load commands 4 KiB in 2.34.0, and reading it for the secrets
-/// took 34 ms (measured 2026-11-22, a release build).
-const MOST: usize = 64 * 1024 * 1024;
-
 impl Provider for Google {
     fn info(&self) -> &'static Info {
         &INFO
     }
 
     fn limits(&self, credential: &Credential, now: i64, by: Instant) -> Result<Limits, Problem> {
+        let client = agents::client(INFO.id)
+            .ok_or_else(|| Problem::unanswered("no agent client for Google"))?;
         match &credential.refresh {
-            Some(refresh) if !credential.fresh(now) => renewed(refresh, now, by),
+            Some(refresh) if !credential.fresh(now) => renewed(refresh, client, now, by),
             // A token refused before it expires, or with no expiry read, is
             // renewed: one without would be refused until signing in again.
-            Some(refresh) => match read(&credential.secret, by) {
-                Err(Problem::SignIn) => renewed(refresh, now, by),
+            Some(refresh) => match read(&credential.secret, client, by) {
+                Err(Problem::SignIn) => renewed(refresh, client, now, by),
                 limits => limits,
             },
-            None => read(&credential.secret, by),
+            None => read(&credential.secret, client, by),
         }
     }
 }
 
-/// The plan's limits, asked with `token`.
-fn read(token: &Secret, by: Instant) -> Result<Limits, Problem> {
-    let client = json!({"metadata": {
-        "ideType": "ANTIGRAVITY",
+/// The plan's limits, asked with `token` as `client`.
+fn read(token: &Secret, client: &Client, by: Instant) -> Result<Limits, Problem> {
+    let header = format!("User-Agent: {}", client.user_agent);
+    let body = json!({"metadata": {
+        "ideType": client.ide_type,
         "platform": "PLATFORM_UNSPECIFIED",
         "pluginType": "GEMINI",
     }});
-    let signed_in = super::asked(PLAN, token, &[CLIENT], Some(&client), &[401], by)?;
+    let signed_in = super::asked(PLAN, token, &[header.as_str()], Some(&body), &[401], by)?;
     let project = non_empty(&signed_in["cloudaicompanionProject"]).ok_or_else(|| {
-        Problem::unavailable("no project to ask: Antigravity makes one when first used")
+        Problem::unavailable(format!(
+            "no project to ask: {} makes one when first used",
+            client.agent
+        ))
     })?;
     let answer = super::asked(
         QUOTA,
         token,
-        &[CLIENT],
+        &[header.as_str()],
         Some(&json!({"project": project})),
         &[401],
         by,
@@ -150,17 +134,17 @@ fn locked<T>(kept: &Mutex<T>) -> MutexGuard<'_, T> {
 /// The plan's limits, asked with a token renewed from `refresh`: the one
 /// renewed before, while it's good and taken, or else a new one. A token
 /// that's refused isn't kept.
-fn renewed(refresh: &Refresh, now: i64, by: Instant) -> Result<Limits, Problem> {
+fn renewed(refresh: &Refresh, client: &Client, now: i64, by: Instant) -> Result<Limits, Problem> {
     let key = refresh.token.fingerprint();
     // Its own statement, so the lock goes before the request.
     let kept = locked(&RENEWED).remove(&key);
     let tried = kept
         .filter(|(_, expires)| *expires > now + MINUTE)
-        .map(|(token, expires)| (read(&token, by), token, expires));
+        .map(|(token, expires)| (read(&token, client, by), token, expires));
     let (limits, token, expires) = match tried {
         Some((Err(Problem::SignIn), ..)) | None => {
-            let (token, expires) = renew(refresh, now, by)?;
-            (read(&token, by), token, expires)
+            let (token, expires) = renew(refresh, client, now, by)?;
+            (read(&token, client, by), token, expires)
         }
         Some(tried) => tried,
     };
@@ -173,19 +157,26 @@ fn renewed(refresh: &Refresh, now: i64, by: Instant) -> Result<Limits, Problem> 
 }
 
 /// A new token for `refresh`'s login, and when it expires, from Google.
-fn renew(refresh: &Refresh, now: i64, by: Instant) -> Result<(Secret, i64), Problem> {
+fn renew(
+    refresh: &Refresh,
+    client: &Client,
+    now: i64,
+    by: Instant,
+) -> Result<(Secret, i64), Problem> {
     let mut secrets = refresh
         .programs
         .iter()
-        .find_map(|program| secrets(program))
-        .ok_or_else(|| Problem::unanswered("no Antigravity program holds its client"))?;
+        .find_map(|program| (client.secrets)(program))
+        .ok_or_else(|| {
+            Problem::unanswered(format!("no {} program holds its client", client.agent))
+        })?;
     let taken = locked(&TAKEN).clone();
     secrets.sort_by_key(|secret| Some(secret.fingerprint()) != taken);
     for secret in &secrets {
         let answered = super::post_form(
             TOKEN,
             &[
-                ("client_id", CLIENT_ID),
+                ("client_id", client.oauth_id),
                 ("client_secret", secret.expose()),
                 ("refresh_token", refresh.token.expose()),
                 ("grant_type", "refresh_token"),
@@ -198,7 +189,8 @@ fn renew(refresh: &Refresh, now: i64, by: Instant) -> Result<(Secret, i64), Prob
         }
     }
     Err(Problem::unavailable(format!(
-        "{TOKEN}: took none of Antigravity's {} client secrets",
+        "{TOKEN}: took none of {}'s {} client secrets",
+        client.agent,
         secrets.len()
     )))
 }
@@ -223,74 +215,6 @@ fn token(answered: &Answered, now: i64) -> Result<Option<(Secret, i64)>, Problem
         (400 | 401, Some("invalid_client" | "unauthorized_client")) => Ok(None),
         _ => Err(answered.unavailable(TOKEN)),
     }
-}
-
-/// The client secrets `program` holds, in the order it holds them, if it's
-/// Antigravity's: if it holds its client's id.
-fn secrets(program: &Path) -> Option<Vec<Secret>> {
-    let strings = rodata(program)?;
-    let id = CLIENT_ID.as_bytes();
-    strings.windows(id.len()).any(|at| at == id).then_some(())?;
-    let (begins, length) = SECRET;
-    let mut secrets: Vec<Secret> = Vec::new();
-    for at in 0..strings.len().saturating_sub(length - 1) {
-        let candidate = &strings[at..at + length];
-        let rest = &candidate[begins.len()..];
-        if candidate.starts_with(begins)
-            && rest
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(byte))
-            && let Ok(text) = std::str::from_utf8(candidate)
-            && !secrets.iter().any(|secret| secret.expose() == text)
-        {
-            secrets.push(Secret::new(text));
-        }
-    }
-    (!secrets.is_empty()).then_some(secrets)
-}
-
-/// The `__TEXT,__rodata` section of `program`, a 64-bit Mach-O, as
-/// Antigravity's programs are: built for one architecture, not universal
-/// (the app 2.34.0's and `agy`, read 2026-11-22).
-fn rodata(program: &Path) -> Option<Vec<u8>> {
-    fn word(bytes: &[u8], at: usize) -> Option<usize> {
-        let word = u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
-        usize::try_from(word).ok()
-    }
-    fn name(bytes: &[u8]) -> &[u8] {
-        bytes.split(|byte| *byte == 0).next().unwrap_or_default()
-    }
-    let mut file = File::open(program).ok()?;
-    let mut header = [0; 32];
-    file.read_exact(&mut header).ok()?;
-    // `MH_MAGIC_64`, and the size of the load commands that follow.
-    let size = word(&header, 20).filter(|size| *size <= MOST)?;
-    if word(&header, 0)? != 0xFEED_FACF {
-        return None;
-    }
-    let mut commands = vec![0; size];
-    file.read_exact(&mut commands).ok()?;
-    let mut at = 0;
-    while let (Some(kind), Some(size)) = (word(&commands, at), word(&commands, at + 4)) {
-        // `LC_SEGMENT_64`: 72 bytes, then 80 for each of its sections: its
-        // name, its segment's, its address, size and offset.
-        if kind == 0x19 {
-            for section in (0..word(&commands, at + 64)?).map(|index| at + 72 + 80 * index) {
-                let named = commands.get(section..section + 52)?;
-                if name(&named[..16]) == b"__rodata" && name(&named[16..32]) == b"__TEXT" {
-                    let size = u64::from_le_bytes(named[40..48].try_into().ok()?);
-                    let size = usize::try_from(size).ok().filter(|size| *size <= MOST)?;
-                    let offset = u64::try_from(word(named, 48)?).ok()?;
-                    file.seek(SeekFrom::Start(offset)).ok()?;
-                    let mut strings = vec![0; size];
-                    file.read_exact(&mut strings).ok()?;
-                    return Some(strings);
-                }
-            }
-        }
-        at = at.checked_add(size.max(8))?;
-    }
-    None
 }
 
 /// The plan in `loadCodeAssist`'s answer: the name of the tier paid for,
@@ -543,63 +467,5 @@ mod tests {
             token(503, "down"),
             Err(Problem::Unavailable { answered: true, .. })
         ));
-    }
-
-    /// A 64-bit Mach-O whose one section, `__TEXT,__rodata`, holds `strings`.
-    fn program(strings: &[u8]) -> Vec<u8> {
-        let name = |name: &str| {
-            let mut padded = [0; 16];
-            padded[..name.len()].copy_from_slice(name.as_bytes());
-            padded
-        };
-        let commands: u32 = 72 + 80;
-        let mut program = Vec::new();
-        for word in [0xFEED_FACF_u32, 0x0100_000C, 0, 2, 1, commands, 0, 0] {
-            program.extend(word.to_le_bytes());
-        }
-        program.extend(0x19_u32.to_le_bytes());
-        program.extend(commands.to_le_bytes());
-        program.extend(name("__TEXT"));
-        program.extend([0; 40]);
-        program.extend(1_u32.to_le_bytes());
-        program.extend(0_u32.to_le_bytes());
-        program.extend(name("__rodata"));
-        program.extend(name("__TEXT"));
-        program.extend(0_u64.to_le_bytes());
-        program.extend((strings.len() as u64).to_le_bytes());
-        program.extend((32 + commands).to_le_bytes());
-        program.extend([0; 28]);
-        program.extend(strings);
-        program
-    }
-
-    #[test]
-    fn the_secrets_are_read_from_the_program_that_holds_the_client() {
-        let dir = tempfile::tempdir().unwrap();
-        let (one, two) = (
-            format!("GOCSPX-{}", "a".repeat(28)),
-            format!("GOCSPX-{}", "B_-9".repeat(7)),
-        );
-        // Go packs its strings one against the next, with nothing between.
-        let strings = format!("{one}gzip{}{two}{one}GOCSPX-short", super::CLIENT_ID);
-        let held = dir.path().join("language_server");
-        std::fs::write(&held, program(strings.as_bytes())).unwrap();
-        let secrets: Vec<String> = super::secrets(&held)
-            .unwrap()
-            .iter()
-            .map(|secret| secret.expose().to_owned())
-            .collect();
-        assert_eq!(secrets, [one.clone(), two]);
-
-        // Not Antigravity's: no client id, or not a Mach-O, or cut short.
-        let other = dir.path().join("other");
-        std::fs::write(&other, program(one.as_bytes())).unwrap();
-        assert!(super::secrets(&other).is_none());
-        std::fs::write(&other, strings.as_bytes()).unwrap();
-        assert!(super::secrets(&other).is_none());
-        let whole = program(strings.as_bytes());
-        std::fs::write(&other, &whole[..whole.len() - 10]).unwrap();
-        assert!(super::secrets(&other).is_none());
-        assert!(super::secrets(&dir.path().join("missing")).is_none());
     }
 }

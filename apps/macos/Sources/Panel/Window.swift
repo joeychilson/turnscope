@@ -18,9 +18,12 @@ extension View {
         environment(bridge).environment(ui).environment(updater).environment(notifier).environment(login)
     }
 
-    /// Keeps a button for its keyboard shortcut, unseen and unread by VoiceOver.
+    /// Keeps a button for its keyboard shortcut, unseen, unfocusable, and unread by VoiceOver.
     func hiddenShortcut() -> some View {
-        frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        frame(width: 0, height: 0)
+            .opacity(0)
+            .focusable(false)
+            .accessibilityHidden(true)
     }
 }
 
@@ -74,7 +77,7 @@ struct Panel: View {
         .frame(width: panelWidth)
         .fixedSize(horizontal: false, vertical: true)
         .background {
-            // Keep ⌘Q active on both FirstPage and SettingsPage since the app has no main menu bar.
+            // Keep ⌘Q active on both FirstPage and SettingsPage since the menu bar has no Quit item.
             Button("Quit Turnscope") { NSApp.terminate(nil) }
                 .keyboardShortcut("q", modifiers: .command)
                 .hiddenShortcut()
@@ -82,35 +85,39 @@ struct Panel: View {
     }
 }
 
-/// Renders content unwrapped for single-spring animations, activating vertical scroll only
-/// when content actually exceeds `maxHeight` (e.g. a very long account list on a small screen).
+/// Keeps `ScrollView` permanently in the tree sized to `min(contentHeight, maxHeight)` so crossing
+/// the overflow threshold never tears down child state, `@FocusState`, or bar animations.
 struct OverflowScroll<Content: View>: View {
     var maxHeight: CGFloat
     @ViewBuilder var content: () -> Content
     @Environment(\.isSnapshot) private var isSnapshot
-    @State private var overflow = false
+    @State private var contentHeight: CGFloat?
 
     var body: some View {
-        if overflow && !isSnapshot {
-            ScrollView(.vertical) {
-                measured
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .frame(height: maxHeight)
+        if isSnapshot {
+            inner
         } else {
-            measured
+            let scrolling = (contentHeight ?? 0) > maxHeight
+            ScrollView(.vertical) {
+                inner
+            }
+            .scrollIndicators(scrolling ? .automatic : .hidden)
+            .scrollDisabled(!scrolling)
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: contentHeight.map { min($0, maxHeight) })
         }
     }
 
-    private var measured: some View {
+    private var inner: some View {
         content()
             .frame(maxWidth: .infinity, alignment: .leading)
             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
-                guard !isSnapshot else { return }
-                if !overflow && height > maxHeight {
-                    overflow = true
-                } else if overflow && height < maxHeight - 40 {
-                    overflow = false
+                if !isSnapshot {
+                    if contentHeight != nil {
+                        withMotion { contentHeight = height }
+                    } else {
+                        contentHeight = height
+                    }
                 }
             }
     }

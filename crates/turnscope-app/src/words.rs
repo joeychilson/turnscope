@@ -341,7 +341,7 @@ impl Words {
             return Some(trouble);
         }
         if refilled(account) {
-            return Some("Full since the reset, unless used on the web or another device.".into());
+            return Some(RESET_FULL.into());
         }
         if !account.limits.is_empty() {
             return None;
@@ -685,6 +685,9 @@ pub fn row_figure_spoken(account: &Account) -> String {
 }
 
 fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
+    if reason == Unknown::Stale && limit.reset_since.is_some() {
+        return RESET_FULL.into();
+    }
     let what = if limit.money.is_none() {
         format!("{} left {}", left(limit), of(limit))
     } else {
@@ -739,6 +742,7 @@ pub fn hidden(count: usize) -> String {
     format!("{count} hidden")
 }
 
+const RESET_FULL: &str = "Full since the reset, unless used on the web or another device.";
 pub const UNTITLED_SESSION: &str = "Untitled session";
 pub const READING_TEXT: &str = "Reading your agents' history…";
 pub const READING_HELP: &str = "Turnscope reads your agents' history once, when it first runs. Limits show up as soon as they are read.";
@@ -1168,6 +1172,31 @@ mod tests {
         assert_eq!(
             w.opened(&full, false).as_deref(),
             Some("Full since the reset, unless used on the web or another device.")
+        );
+    }
+
+    #[test]
+    fn the_verdict_says_a_reset_limit_is_full_since_the_reset() {
+        let w = words();
+        let reset = Limit {
+            left_percent: 100,
+            reset_since: Some(at("2026-09-30T11:00:00Z")),
+            ..limit(unknown(Unknown::Stale))
+        };
+        let full = Account {
+            state: State::AsOf {
+                read_at: at("2026-09-30T10:00:00Z"),
+                why: Stale::Expired,
+                worked_minutes: 0,
+            },
+            ..account(vec![reset])
+        };
+        assert_eq!(
+            w.verdict(Some(&full), false, &[]),
+            (
+                "You can keep going".into(),
+                "Full since the reset, unless used on the web or another device.".into()
+            )
         );
     }
 

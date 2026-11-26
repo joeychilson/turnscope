@@ -34,7 +34,7 @@ private struct AgentRow: View {
                 on: Binding(
                     get: { agent.connected },
                     set: { on in
-                        withAnimation(spring) {
+                        withMotion {
                             bridge.send(.setConnected(id: agent.id, connecting: on))
                         }
                     }
@@ -62,7 +62,7 @@ struct AgentLabel: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                    .help(configured.map { "Configured to run \($0)" } ?? "")
+                    .optionalHelp(configured.map { "Configured to run \($0)" })
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

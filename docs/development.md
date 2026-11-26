@@ -87,7 +87,7 @@ cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 shellcheck scripts/*.sh
 actionlint
-cargo deny check advisories
+cargo deny --locked check advisories
 scripts/app.sh && scripts/check-app.sh target/debug/Turnscope.app
 ```
 

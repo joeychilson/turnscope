@@ -199,7 +199,7 @@ limits. A provider out of reach leaves things as they were.
 | `guard` | Limits only, when due, and not while an app runs. A hook waits for it, so it reads no history or prices. |
 | `statusline` | Never. It reads the database alone. |
 | `mcp` | Before each tool call, history only while an app runs. |
-| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, or an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits more than 5 minutes old, and those whose read failed, right away, at most every 30 s (`limits::refresh`); while another process reads them, it waits for that read, then reads those it didn't ask. |
+| An app | On a thread of its own (`engine`): at start, with the limits first; 250 ms after the agents' folders stop changing (a second at most) but no sooner than 5 s after the last catch-up; and at least every minute. As the panel opens, on ⌘R, or as an agent writes a login file (`Info::login_file`; a login in the Keychain is found at the next 5-minute gather), it reads the limits due (or every limit on ⌘R) right away and tells the status before waiting for history to finish reading, at most every 30 s (`limits::refresh`); while another process reads them, it waits for that read, then reads those it didn't ask. |
 
 While an app runs, the other processes rarely find anything new to read.
 
@@ -226,7 +226,7 @@ Four files in the data directory keep processes apart:
   at once, and one refused login isn't counted as two. A read asked for
   waits for it; one as limits come due gives way.
 - `app.lock`, while an app keeps the data current. A second app shows what
-  the first writes, and takes over once it's gone.
+  the first writes, raises no alerts, and takes over once it's gone.
 
 Prices, and limits as they come due, are claimed with one `UPDATE` of
 `state`, so a process doesn't read again what another just read.
@@ -385,8 +385,9 @@ says how to run it). `status.rs` applies it.
 | `reset` | A limit that was used up is back: its window ended in the last day, use was given back early, or money that never resets has some left |
 | `signIn` | An account in use can't be read because its login was refused at two reads in a row |
 
-- An app's engine raises alerts (`alerts::raise`) each time it tells a
-  changed status. The CLI and the MCP server don't.
+- The app engine holding `app.lock` raises alerts (`alerts::raise`) each
+  time it tells a changed status. A second app instance, the CLI, and the
+  MCP server don't.
 - Each is raised once per account, limit, kind and window (the window's
   reset, within 5 minutes; for `signIn`, the last read that worked), so
   neither a restart nor a pace near the line repeats one. A `reset` ends
