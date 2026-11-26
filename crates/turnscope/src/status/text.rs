@@ -20,9 +20,9 @@ fn worked(minutes: i64) -> String {
     }
 }
 
-/// The likely minutes of work left, as a sentence says them: `about 1h 50m`,
-/// or `under 10m` alone, which is already no exact amount.
-fn about(minutes: i64) -> String {
+/// Minutes of work, as a sentence says them: `about 1h 50m`, or `under 10m`
+/// alone, which is already no exact amount.
+pub fn about(minutes: i64) -> String {
     match worked(minutes) {
         under if under == UNDER => under,
         amount => format!("about {amount}"),

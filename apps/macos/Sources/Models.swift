@@ -127,6 +127,7 @@ struct MenuBarSlot: Decodable, Equatable {
     var provider: String
     var standing: Standing
     var figure: String
+    var outOfDate: Bool
 }
 
 struct MenuBarModel: Decodable, Equatable {

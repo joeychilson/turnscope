@@ -158,6 +158,7 @@ impl Words {
         if let Some(limit) = account.deciding_limit() {
             return match limit.reset_since {
                 Some(reset) => format!("{} reset {}", short_name(limit).0, self.ago(reset)),
+                None if stale(limit) => format!("Not read since {}", self.ago(limit.read_at)),
                 None => self.short(limit),
             };
         }
@@ -271,11 +272,33 @@ impl Words {
                     .map_or(String::new(), |w| format!("Back {}.", self.at(&w.resets)));
                 (headline, with_alternate(back))
             }
+            Outlook::Unknown { .. } if stale(limit) => (
+                format!("{} isn't up to date", account.title),
+                self.last_read(limit, account),
+            ),
             Outlook::Unknown { reason } => (
                 "You can keep going".into(),
                 unforecast(limit, account, *reason),
             ),
             Outlook::Lasts { .. } => ("You can keep going".into(), self.lasting(limit, account)),
+        }
+    }
+
+    /// What `limit` had left at its last read, too long ago to say where it's headed, and how
+    /// long agents here have worked on it since.
+    fn last_read(&self, limit: &Limit, account: &Account) -> String {
+        let then = format!(
+            "Last read {}, when {} had {} left.",
+            self.ago(limit.read_at),
+            name(limit),
+            left_of(limit)
+        );
+        match account.worked_since_read() {
+            Some((_, worked)) => format!(
+                "{then} Your agents have worked {} since.",
+                turnscope::status::about(worked)
+            ),
+            None => then,
         }
     }
 
@@ -404,7 +427,14 @@ impl Words {
         } else {
             accounts
                 .iter()
-                .map(|a| format!("{}, {}", called(a, twinned(a, all)), self.spoken_figure(a)))
+                .map(|a| {
+                    let said = format!("{}, {}", called(a, twinned(a, all)), self.spoken_figure(a));
+                    if !out_of_date && read_out_of_date(a) {
+                        format!("{said}, not up to date")
+                    } else {
+                        said
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("; ")
         };
@@ -566,6 +596,21 @@ pub fn size(limit: &Limit) -> Option<String> {
         .map(|m| format!("of {}", dollars(m.size_usd, false)))
 }
 
+/// Whether `limit` is as of a read too old to say where it's headed, and neither reset nor used
+/// up since.
+fn stale(limit: &Limit) -> bool {
+    limit.reset_since.is_none()
+        && limit.outlook
+            == (Outlook::Unknown {
+                reason: Unknown::Stale,
+            })
+}
+
+/// Whether what `account`'s figure says is as of a read that's out of date.
+pub fn read_out_of_date(account: &Account) -> bool {
+    account.deciding_limit().is_some_and(stale)
+}
+
 /// What an API key with no deciding limit spent, once it's been read: one
 /// never read has no limits known.
 fn no_limit(account: &Account) -> Option<&Spend> {
@@ -685,9 +730,6 @@ pub fn row_figure_spoken(account: &Account) -> String {
 }
 
 fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
-    if reason == Unknown::Stale && limit.reset_since.is_some() {
-        return RESET_FULL.into();
-    }
     let what = if limit.money.is_none() {
         format!("{} left {}", left(limit), of(limit))
     } else {
@@ -696,7 +738,8 @@ fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
     let standing = format!("{} has {what}", account.title);
     match reason {
         Unknown::NotEnoughData | Unknown::Rolling => format!("{standing}."),
-        Unknown::Stale => format!("As last read, {standing}."),
+        // Reset since: one that wasn't is said to be out of date (`stale`).
+        Unknown::Stale => RESET_FULL.into(),
         Unknown::NoReset => format!("{standing}; it doesn't reset."),
     }
 }
@@ -1401,10 +1444,6 @@ mod tests {
                 Unknown::NotEnoughData,
                 "Claude Max has 50% left of 5 hours.",
             ),
-            (
-                Unknown::Stale,
-                "As last read, Claude Max has 50% left of 5 hours.",
-            ),
             (Unknown::Rolling, "Claude Max has 50% left of 5 hours."),
             (
                 Unknown::NoReset,
@@ -1420,6 +1459,34 @@ mod tests {
                 ("You can keep going".into(), said.into())
             );
         }
+        // Read too long ago to tell, it says what was left then and how long agents have
+        // worked since, not that you can keep going.
+        let read_at = at("2026-09-30T11:20:00Z");
+        let dated = |worked_minutes| Account {
+            state: State::AsOf {
+                read_at,
+                why: Stale::ReadFailed,
+                worked_minutes,
+            },
+            ..account(vec![Limit {
+                read_at,
+                left_percent: 28,
+                ..limit(unknown(Unknown::Stale))
+            }])
+        };
+        assert_eq!(
+            w.verdict(Some(&dated(40)), false, &[]),
+            (
+                "Claude Max isn't up to date".into(),
+                "Last read 11:20 AM, when 5 hours had 28% left. Your agents have worked about 40m since."
+                    .into()
+            )
+        );
+        assert_eq!(
+            w.verdict(Some(&dated(0)), false, &[]).1,
+            "Last read 11:20 AM, when 5 hours had 28% left."
+        );
+        assert_eq!(w.status(&dated(40)), "Not read since 11:20 AM");
 
         // Multiple other limits used up: names the last back, prioritizing used-up over running-out.
         let five = |outlook| Limit {
