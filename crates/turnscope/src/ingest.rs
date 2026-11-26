@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::agents::{self, Agent, Read, Response};
 use crate::prices::{History, Prices, in_force};
-use crate::{Error, Result};
+use crate::{Error, Result, providers};
 
 /// Raised when a reader would read a file it read before differently. A
 /// file last read with an older one is read again from the start when it's
@@ -63,8 +63,8 @@ const SELECT_REPRICED: &str = concat!(
     ", agent, cost FROM response
      WHERE cost IS NULL OR EXISTS (
          SELECT 1 FROM repriced
-         WHERE repriced.provider = response.provider
-           AND repriced.model = response.model
+         WHERE repriced.model = response.model
+           AND repriced.provider IN (response.provider, '')
      )"
 );
 
@@ -574,26 +574,31 @@ impl Derived {
 }
 
 /// Price again, in `tx`, every response of `models` (by provider and
-/// model), priced for the first time in it, and every response with no
-/// known cost, which may take a model's maker's price (`prices::Prices::cost`).
-/// A model's usage from before its first price takes it: kept, an agent's
-/// own estimate left an OpenCode response of 1M input tokens at $0.001,
-/// where a fresh read gave $2.00.
+/// model, or by model alone when the provider listing it is its maker, since
+/// `prices::Prices::cost` falls back to a model's maker), and every response
+/// with no known cost. A model's usage from before its first price takes it:
+/// kept, an agent's own estimate left an OpenCode response of 1M input tokens
+/// at $0.001, where a fresh read gave $2.00.
 pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> {
     // One scan, over a query per model, as `response` has no index on
     // `(provider, model)`: 12 ms against 72 ms on 50,000 responses and 20
     // models (2026-11-20).
     tx.execute(
         "CREATE TEMP TABLE repriced (
-             provider TEXT NOT NULL,
              model TEXT NOT NULL,
-             PRIMARY KEY (provider, model)
-         )",
+             provider TEXT NOT NULL,
+             PRIMARY KEY (model, provider)
+         ) WITHOUT ROWID",
         [],
     )?;
-    let mut add = tx.prepare("INSERT OR IGNORE INTO repriced (provider, model) VALUES (?1, ?2)")?;
+    let mut add = tx.prepare("INSERT OR IGNORE INTO repriced (model, provider) VALUES (?1, ?2)")?;
     for (provider, model) in models {
-        add.execute(params![provider, model])?;
+        let key = if providers::maker(model).is_some_and(|maker| maker.info().id == provider) {
+            ""
+        } else {
+            provider.as_str()
+        };
+        add.execute(params![model, key])?;
     }
     drop(add);
     let rows: Vec<(String, Option<f64>, Response)> = tx
@@ -1302,5 +1307,50 @@ mod tests {
         write(now - 30_000, 90.0);
         assert!(ingest(&mut db, home.path(), None).unwrap());
         assert_eq!(left(&db), (true, vec![70, 85]));
+    }
+
+    #[test]
+    fn price_again_reprices_maker_fallback_without_repricing_on_aggregator_listings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::open(dir.path()).unwrap();
+        db.execute(
+            "INSERT INTO price VALUES
+                 ('anthropic', 'claude-opus-5-5', 0, '{\"input\":5,\"output\":25}', NULL),
+                 ('vercel', 'claude-opus-5-5', 0, '{\"input\":6,\"output\":30}', NULL)",
+            [],
+        )
+        .unwrap();
+        // OpenCode response under another provider with an agent estimate from
+        // before models.dev listed Anthropic's price for the model.
+        response(
+            &db,
+            ("opencode", "/o", "openrouter", None),
+            "r1",
+            0,
+            "claude-opus-5-5",
+            Some(0.001),
+        );
+        db.execute("UPDATE response SET recorded = 0.001 WHERE id = 'r1'", [])
+            .unwrap();
+        // An aggregator listing the model must not reprice responses under other providers.
+        let tx = crate::db::write(&mut db).unwrap();
+        price_again(&tx, &[("vercel".to_owned(), "claude-opus-5-5".to_owned())]).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            one::<f64>(&db, "SELECT cost FROM response WHERE id = 'r1'"),
+            0.001
+        );
+        // The model's maker listing it reprices the maker-fallback response.
+        let tx = crate::db::write(&mut db).unwrap();
+        price_again(
+            &tx,
+            &[("anthropic".to_owned(), "claude-opus-5-5".to_owned())],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            one::<f64>(&db, "SELECT cost FROM response WHERE id = 'r1'"),
+            5.0
+        );
     }
 }

@@ -99,11 +99,22 @@ fn failed(
     );
     match ran {
         Ok(output) if output.status.success() => None,
-        Ok(output) => Some(format!(
-            "{} couldn't {act} the server: {}. To {act} it by hand, run: {by_hand}",
-            info.name,
-            String::from_utf8_lossy(&output.stderr).trim(),
-        )),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let why = match stderr.trim() {
+                "" => stdout.trim(),
+                text => text,
+            };
+            let reason = match why.is_empty() {
+                true => format!(" ({})", output.status),
+                false => format!(": {why}"),
+            };
+            Some(format!(
+                "{} couldn't {act} the server{reason}. To {act} it by hand, run: {by_hand}",
+                info.name,
+            ))
+        }
         Err(error) => Some(format!(
             "couldn't run {}: {error}. Is {} installed? To {act} the server by hand, run: {by_hand}",
             info.command, info.name
@@ -190,14 +201,23 @@ pub fn connection(agent: &dyn Agent, home: &Path, engine: &Path) -> (Connection,
 /// and `zsh -ilc` all four, in 0.15 s.
 fn login_path() -> Option<String> {
     let shell = std::env::var("SHELL").unwrap_or("/bin/zsh".to_owned());
+    login_path_from(Path::new(&shell))
+}
+
+fn login_path_from(shell: &Path) -> Option<String> {
     let mut command = Command::new(shell);
-    command.args(["-ilc", "printf '__path__=%s' \"$PATH\""]);
+    command.args(["-ilc", "printf '__path__=%s__end__' \"$PATH\""]);
     let output = output_within(&mut command, Duration::from_secs(10)).ok()?;
     if !output.status.success() {
         return None;
     }
     let said = String::from_utf8_lossy(&output.stdout);
-    let path = said.rsplit_once("__path__=")?.1.trim();
+    let path = said
+        .rsplit_once("__path__=")?
+        .1
+        .split_once("__end__")?
+        .0
+        .trim();
     (!path.is_empty()).then(|| path.to_owned())
 }
 
@@ -320,5 +340,73 @@ mod tests {
         ] {
             assert_eq!(super::temporary(Path::new(exe)), temporary, "{exe}");
         }
+    }
+
+    #[test]
+    fn failed_falls_back_to_stdout_when_stderr_is_empty() {
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::process::{ExitStatus, Output};
+
+        let info = crate::agents::by_id("claude-code").unwrap().info();
+        let home = Path::new("/made-up/home");
+        let output = |stdout: &[u8], stderr: &[u8]| Output {
+            status: ExitStatus::from_raw(1 << 8),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        };
+        let from_stdout = super::failed(
+            info,
+            "add",
+            Ok(output(b"already configured\n", b"")),
+            &["mcp", "add"],
+            None,
+            home,
+        )
+        .unwrap();
+        assert!(
+            from_stdout.contains("couldn't add the server: already configured."),
+            "{from_stdout}"
+        );
+        let neither = super::failed(
+            info,
+            "remove",
+            Ok(output(b"", b"  \n")),
+            &["mcp", "remove"],
+            None,
+            home,
+        )
+        .unwrap();
+        assert!(!neither.contains(": ."), "{neither}");
+        let from_stderr = super::failed(
+            info,
+            "add",
+            Ok(output(b"stdout noise", b"stderr reason\n")),
+            &["mcp", "add"],
+            None,
+            home,
+        )
+        .unwrap();
+        assert!(
+            from_stderr.contains("couldn't add the server: stderr reason."),
+            "{from_stderr}"
+        );
+    }
+
+    #[test]
+    fn login_path_ignores_trailing_shell_output() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("fake-shell");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\nprintf 'banner\\n'\nPATH='/made-up/first:/made-up/last' eval \"$2\"\nprintf '\\nSaving session...completed.\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            super::login_path_from(&shell).as_deref(),
+            Some("/made-up/first:/made-up/last")
+        );
     }
 }

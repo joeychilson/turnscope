@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Hidden accounts and limits that have recovered aren't alerted on
+  launch.** Unacknowledged alerts from before hiding an account or before
+  use was given back early were still sent when the app reopened.
+- **A second open copy of the app sends no alerts.** Only the copy keeping
+  the data current raises and sends notifications, so alerts aren't sent
+  twice.
+- **Opening the panel or pressing ⌘R shows fresh limits right away**,
+  without waiting for history to finish reading.
+- **Responses priced from their maker's catalog replace earlier estimates
+  once that model is first listed.** Usage recorded under another
+  provider with an agent's own estimate, as in OpenCode or Pi, kept that
+  estimate instead of taking the maker's price.
+- **`connect` and `disconnect` show an agent's error when it writes to
+  standard output**, instead of a blank message, and aren't thrown off
+  when a login shell prints text on exit.
 - **A model limit no longer decides an account after its whole-account
   limits reset**: when 5 hours and Weekly have both reset since the last
   read, one of them stays the deciding limit instead of Weekly (Opus).
