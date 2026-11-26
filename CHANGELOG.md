@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **An API key whose limits were never read doesn't say it has none.** The
+  panel says they couldn't be read yet, as `turnscope status` does, not
+  "No limit" and "You can keep going".
+- **A key's pace isn't said once it rounds below what's spent**, late in a
+  month: "$155 this month" no longer comes with "On pace for about $150".
+- **Credits used up say so** in their row, not "Credits back later": they
+  come back only when bought.
 - **"Refreshing limits…" shows until the limits are read.** Hiding an
   account, changing a setting or connecting an agent meanwhile ended it
   early, and ⌘R could start another refresh.

@@ -533,6 +533,15 @@ pub struct Spend {
     pub partial: bool,
 }
 
+impl Spend {
+    /// The forecast, where it says more than what's spent: late in a month,
+    /// one rounded to two figures can come out below it.
+    pub fn pace(&self) -> Option<f64> {
+        self.forecast_usd
+            .filter(|pace| *pace > two_figures(self.month_usd))
+    }
+}
+
 /// Leave an account out of lists and alerts, or show it again.
 pub fn hide(db: &rusqlite::Connection, account: &str, hidden: bool) -> Result<()> {
     crate::db::writing(db)?;
