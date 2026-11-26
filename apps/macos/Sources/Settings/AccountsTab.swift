@@ -40,7 +40,7 @@ private struct AccountSwitch: View {
                 on: Binding(
                     get: { account.shown },
                     set: { shown in
-                        withAnimation(spring) {
+                        withMotion {
                             if !shown { ui.didHide(account.id) }
                             bridge.send(.setHidden(id: account.id, hidden: !shown))
                         }
