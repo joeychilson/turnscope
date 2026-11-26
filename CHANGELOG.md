@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Usage over a long range is read about twice as fast.** On a made-up
+  year of heavy use, a year by month took 5.2 s instead of 11.1 s, and
+  `explain_usage` over the year 20 s instead of 43 s. The database is read
+  through a memory map, and the memory Activity Monitor shows stays the
+  same.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that
