@@ -93,8 +93,8 @@ such as a new one, gets Turnscope's tables, whatever else it holds.
 - **A response is one row**, however many files report it: a line
   rewritten as it streams, a fork's copy, a continuation's.
   `agents::Response::merge` combines reports the same way in any order: the
-  largest of each count, the latest time, and the session that owns the
-  response over one holding a copy.
+  largest of each count, and the session and latest time of the reports
+  that aren't copies over a copy's.
 - **Cost and account are set when a response is written**: its cost at the
   price in force when it ran, and its account from its agent folder's
   sign-in in force then (before the first sign-in recorded, the first).

@@ -33,6 +33,9 @@
 //!   A fork of a legacy thread (`history_mode` `legacy`) copies it: the
 //!   copy's records name the parent's thread, and nothing else in it is the
 //!   fork's.
+//! - **Times.** A line is stamped when it's written, a copy's too, so a
+//!   fork's copy of a response can be days later than the response
+//!   (`write_rollout_item`, at `58cb1cc`, read 2026-11-26).
 //! - **Limits.** A `token_count`'s `rate_limits` are the account's as of that
 //!   response, as `RateLimitSnapshot` names them, `resets_at` in Unix seconds.
 
@@ -908,6 +911,40 @@ mod tests {
         assert_eq!(fork.title.as_ref().unwrap().1, "Try it on staging.");
         // A fork is a thread of its own.
         assert!(copy.sessions["codex:t2"].parent.is_none());
+    }
+
+    #[test]
+    fn a_fork_made_later_leaves_its_parents_usage_when_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = line(
+            1,
+            "token_usage_record",
+            json!({"response_id": "resp_1", "thread_id": "t1", "usage": usage(1000, 0, 10)}),
+        );
+        let parent = rollout(
+            dir.path(),
+            "t1",
+            &[line(0, "session_meta", json!({"id": "t1"})), record.clone()],
+        );
+        let mut copied = [
+            line(
+                0,
+                "session_meta",
+                json!({"id": "t2", "forked_from_id": "t1", "history_mode": "legacy"}),
+            ),
+            line(0, "session_meta", json!({"id": "t1"})),
+            record,
+        ];
+        for line in &mut copied {
+            line["timestamp"] = json!("2026-10-11T09:00:00Z");
+        }
+        let fork = rollout(dir.path(), "t2", &copied);
+        let [parent, fork] =
+            [parent, fork].map(|file| Codex.read(&file, "").unwrap().responses["resp_1"].clone());
+        for (mut first, then) in [(parent.clone(), fork.clone()), (fork, parent.clone())] {
+            first.merge(then);
+            assert_eq!(first.at, parent.at);
+        }
     }
 
     #[test]

@@ -313,7 +313,8 @@ pub struct Response {
     pub session: String,
     /// A report that is, or may be, of another session's response, as a
     /// fork's copy of its parent's history: it adds to what is known of the
-    /// response, and its session gives way to a report that isn't a copy.
+    /// response, and its session and time give way to a report that isn't
+    /// a copy.
     pub copy: bool,
     pub at: i64,
     /// As the agent names it, which may not be a provider's id: one agent
@@ -336,11 +337,15 @@ impl Response {
     /// streamed, or a copy in another file. Every choice is the same in any
     /// order, so files read in any order agree.
     pub fn merge(&mut self, other: Response) {
+        // An agent can stamp a copy with when it copied it, days after the
+        // response.
+        if (!other.copy, other.at) > (!self.copy, self.at) {
+            self.at = other.at;
+        }
         if (other.copy, &other.session) < (self.copy, &self.session) {
             self.copy = other.copy;
             self.session = other.session;
         }
-        self.at = self.at.max(other.at);
         if other.provider > self.provider {
             self.provider = other.provider;
         }
