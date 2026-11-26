@@ -75,7 +75,7 @@ enum Command {
     Mcp,
     /// For an agent's hook: exit 2 when your account's limit is under a percent left
     Guard {
-        /// Part of the limit's name, such as week or "5 hours"
+        /// Part of the limit's name, such as week, "5 hours" or "5-hour limit"
         #[arg(long)]
         limit: String,
         /// Block under this percent left

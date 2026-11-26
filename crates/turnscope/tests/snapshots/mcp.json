@@ -84,7 +84,7 @@
                 "type": "string"
               },
               "limit": {
-                "description": "Part of a limit's name, such as week, 5h or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: without since, the one that decides the account.",
+                "description": "Part of a limit's name, such as week, 5h, \"5 hours\" or \"5-hour limit\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: without since, the one that decides the account.",
                 "type": "string"
               },
               "since": {

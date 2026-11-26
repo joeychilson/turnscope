@@ -768,8 +768,10 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
         "Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at this pace it runs out 13:00 (in 1h)."
     );
     assert_eq!(guard("claude", "5 hours", "20").status.code(), Some(0));
-    // Named as the status line shows it, `5h 25%`.
+    // Named as the status line shows it, `5h 25%`, or as its own reason
+    // above names it.
     assert_eq!(guard("claude", "5h", "50").status.code(), Some(2));
+    assert_eq!(guard("claude", "5-hour limit", "50").status.code(), Some(2));
     // One it can't follow blocks nothing.
     assert_eq!(guard("claude", "month", "50").status.code(), Some(1));
     // Nor does one mistyped.
@@ -807,6 +809,43 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
 /// A new session isn't read yet, as a status line never catches up: its
 /// agent's own account shows, not that of whichever agent ran last in its
 /// folder.
+/// A limit named as Turnscope writes it in a sentence, and a time in any
+/// case, answer as the names `status` shows and the times `--help` lists.
+#[test]
+fn explain_usage_reads_names_and_times_as_turnscope_writes_them() {
+    let data = store();
+    let same = [
+        (
+            r#"{"account":"claude","limit":"5-hour limit","since":"Window"}"#,
+            r#"{"account":"claude","limit":"5 hours"}"#,
+        ),
+        (
+            r#"{"account":"claude","limit":"5 hour limit"}"#,
+            r#"{"account":"claude","limit":"5 hours"}"#,
+        ),
+        (
+            r#"{"account":"claude","limit":"weekly limit"}"#,
+            r#"{"account":"claude","limit":"weekly"}"#,
+        ),
+        (
+            r#"{"account":"claude","since":"Week","until":"NOW"}"#,
+            r#"{"account":"claude","since":"week","until":"now"}"#,
+        ),
+        (
+            r#"{"account":"claude","since":"24H"}"#,
+            r#"{"account":"claude","since":"24h"}"#,
+        ),
+    ];
+    let calls: Vec<(&str, &str)> = same
+        .iter()
+        .flat_map(|(asked, shown)| [("explain_usage", *asked), ("explain_usage", *shown)])
+        .collect();
+    let answers = tools(&mut command(data.path(), &["mcp"]), &calls);
+    for ((asked, _), answers) in same.iter().zip(answers.chunks(2)) {
+        assert_eq!(answers[0], answers[1], "{asked}");
+    }
+}
+
 #[test]
 fn a_status_line_for_a_session_not_read_yet_says_its_agents_account() {
     let data = store();

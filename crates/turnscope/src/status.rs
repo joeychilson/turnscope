@@ -383,15 +383,18 @@ impl Limit {
 
     /// Whether `name` names it: part of its name as shown, with its models
     /// after it as the command line shows them or before it as the app
-    /// does, as the status line shows it, or part of its key. So `week`
-    /// names Weekly and `seven_day`, `5h` names 5 hours, `weekly (claude`
-    /// and `gpt weekly` name Weekly (Claude and GPT), and `pi` names Pi's
-    /// key limit. Of the limits
+    /// does, as the status line shows it, or part of its key; or any of
+    /// those as a sentence says it, as `guard` does, with "limit" after and
+    /// "-" for a space. So `week` names Weekly and `seven_day`, `5h` and
+    /// `5-hour limit` name 5 hours, `weekly (claude` and `gpt weekly` name
+    /// Weekly (Claude and GPT), and `pi` names Pi's key limit. Of the limits
     /// a name fits, the first by key is taken: `gpt` alone is 5 hours
     /// (Claude and GPT).
     pub fn answers_to(&self, name: &str) -> bool {
-        let name = name.to_lowercase();
-        let holds = |text: &str| text.to_lowercase().contains(&name);
+        let plain = |text: &str| text.to_lowercase().replace('-', " ");
+        let name = plain(name);
+        let name = name.strip_suffix(" limit").unwrap_or(&name);
+        let holds = |text: &str| plain(text).contains(name);
         holds(&self.named())
             || holds(&self.short_name())
             || holds(&self.key)

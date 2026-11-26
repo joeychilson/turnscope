@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **A limit is named as Turnscope says it**, as `guard` does: `--limit
+  "5-hour limit"` or `"weekly limit"` names 5 hours or Weekly, where it
+  was refused, so a hook written that way never blocked. Times are read in
+  any case: `Week`, `TODAY`, `24H`.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

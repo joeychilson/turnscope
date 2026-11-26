@@ -96,7 +96,7 @@ static TOOLS: &[Tool] = &[
         input: r#"{"type": "object", "properties": {
             "account": {"type": "string", "description": "One account, by id or part of its title or label. Default: yours."},
             "all": {"type": "boolean", "description": "Every account's usage together, as across your agents, with no share of a limit; since is then 30 days back unless given."},
-            "limit": {"type": "string", "description": "Part of a limit's name, such as week, 5h or \"5 hours\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: without since, the one that decides the account."},
+            "limit": {"type": "string", "description": "Part of a limit's name, such as week, 5h, \"5 hours\" or \"5-hour limit\"; a model's limit with its model before or after its name, as \"opus weekly\". Default: without since, the one that decides the account."},
             "since": {"type": "string", "description": "From when: window (the default), the limit's current window, which is what this week means for a weekly limit, with each row's share of it. Or today, yesterday, week (since Monday), month, 24h, 7d, 4w, a date such as 2026-10-01 or an RFC 3339 time."},
             "until": {"type": "string", "description": "Up to when, in the same forms as since or now, with since. Default: now."},
             "by": {"type": "string", "enum": ["session", "project", "model", "agent", "account", "day", "week", "month"], "description": "Default session."},
@@ -682,13 +682,17 @@ fn usage_asked<'a>(
             }
         },
     };
-    let between = match (input.since.as_deref(), input.until.as_deref()) {
-        (None | Some("window"), Some(_)) => {
+    let since = input
+        .since
+        .as_deref()
+        .filter(|since| !since.eq_ignore_ascii_case("window"));
+    let between = match (since, input.until.as_deref()) {
+        (None, Some(_)) => {
             return Err(Error::Usage(
                 "until is with since: without since, the usage runs to now".to_owned(),
             ));
         }
-        (None | Some("window"), None) => None,
+        (None, None) => None,
         (Some(since), until) => Some(time::between(since, until, now, "")?),
     };
     // Since a time, unless a limit is named, the usage is the account's, as
