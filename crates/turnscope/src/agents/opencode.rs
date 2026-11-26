@@ -67,6 +67,17 @@ struct Cursor {
 /// can be committed after one stamped later (its code, read 2026-10-12).
 const LATE: i64 = 10_000;
 
+/// Where a read of a table starts, from its cursor `seen`. A clock behind
+/// the cursor was set back after the read that set it: what's saved since is
+/// stamped before what was seen, from a time that isn't known, so the table
+/// is read again from the start.
+fn start(seen: &mut i64, now: i64) -> i64 {
+    if *seen > now {
+        *seen = 0;
+    }
+    *seen - LATE
+}
+
 impl Agent for OpenCode {
     fn info(&self) -> &'static Info {
         &INFO
@@ -194,7 +205,7 @@ fn sessions(
              END
          FROM session_v2 s WHERE s.time_updated >= ?1"
     ))?;
-    let mut rows = sessions.query([cursor.sessions - LATE])?;
+    let mut rows = sessions.query([start(&mut cursor.sessions, now)])?;
     while let Some(row) = rows.next()? {
         let native = row.get_ref(0)?.as_str()?;
         let parent = row.get_ref(1)?.as_str_or_null()?;
@@ -229,7 +240,7 @@ fn messages(
          WHERE m.time_updated >= ?1 AND m.type = 'assistant' AND {OWN}"
     ))?;
     let mark = cursor.messages;
-    let mut rows = messages.query([mark - LATE])?;
+    let mut rows = messages.query([start(&mut cursor.messages, now)])?;
     while let Some(row) = rows.next()? {
         let message: String = row.get(0)?;
         let native = row.get_ref(1)?.as_str()?;
@@ -475,5 +486,37 @@ mod tests {
             [first.skipped, later.skipped, passed.skipped, after.skipped],
             [0, 0, 1, 0]
         );
+    }
+
+    #[test]
+    fn what_is_saved_after_the_clock_is_set_back_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = database(dir.path());
+        let db = Connection::open(&file).unwrap();
+        let save = |session: &str, message: &str, at: i64| {
+            let reply = json!({"model": {"providerID": "opencode-go", "id": "glm-5.3"}, "time": {"created": at, "completed": at},
+                "tokens": {"input": 50, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}}});
+            db.execute_batch(&format!(
+                "INSERT OR REPLACE INTO session_v2 VALUES ('{session}', NULL, NULL, '/work/web', 'Footer', {at}, {at});
+                 INSERT INTO session_message VALUES ('{message}', '{session}', 'assistant', 1, {at}, {at}, '{reply}');"
+            ))
+            .unwrap();
+        };
+        // Saved and read while the clock was an hour ahead.
+        let ahead = 3_620_000;
+        save("s3", "m4", ahead);
+        let first = read_at(&file, "", ahead).unwrap();
+        // The clock put right, a session saved at 30,000 and read a minute
+        // on, then a reply in it.
+        save("s4", "m5", 30_000);
+        let back = read_at(&file, &first.cursor, 90_000).unwrap();
+        save("s4", "m6", 100_000);
+        let on = read_at(&file, &back.cursor, 160_000).unwrap();
+        let footer = back
+            .sessions
+            .get("opencode:s4")
+            .and_then(|s4| s4.title.as_ref());
+        assert_eq!(footer.map(|(_, title)| title.as_str()), Some("Footer"));
+        assert!(back.responses.contains_key("m5") && on.responses.contains_key("m6"));
     }
 }

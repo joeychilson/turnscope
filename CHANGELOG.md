@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **OpenCode usage saved after the Mac's clock is set back is read.** Once
+  Turnscope had read OpenCode while the clock was ahead, what was saved
+  after the clock was put right, until it passed where it had been, was
+  never read, and `doctor` said nothing. The first read after the clock is
+  set back reads OpenCode's history again from the start.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that
