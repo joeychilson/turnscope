@@ -57,6 +57,11 @@ struct Cursor {
     /// The provider and model of the latest response, which a summary is
     /// written with.
     model: Option<(String, String)>,
+    /// Whether every entry has an id. Pi's session format 1, with no
+    /// `version`, gave none, and a file of it not opened since still has
+    /// none; `responseId` is optional in pi-ai's `AssistantMessage`.
+    #[serde(default)]
+    ids: bool,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +74,8 @@ struct Line<'a> {
     timestamp: Option<Cow<'a, str>>,
     #[serde(borrow, default, deserialize_with = "super::lenient")]
     cwd: Option<Cow<'a, str>>,
+    #[serde(default, deserialize_with = "super::lenient")]
+    version: Option<u64>,
     #[serde(borrow, default, deserialize_with = "super::lenient")]
     name: Option<Cow<'a, str>>,
     #[serde(borrow)]
@@ -193,6 +200,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         read.session(&session);
         read.cwd(&session, line.cwd.as_deref());
         (cursor.session, cursor.began) = (Some(session), at);
+        cursor.ids = line.version.is_some();
         return;
     }
     let session = cursor.session.as_deref();
@@ -283,7 +291,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         _ => return,
     };
     // A copy without a response id couldn't be told from its parent's.
-    if copy && id.is_none() {
+    if id.is_none() && (copy || !cursor.ids) {
         return;
     }
     let (Some(session), Some(usage), Some(provider), Some(model), Some(id), Some(at)) = (
@@ -503,25 +511,42 @@ mod tests {
             dir.path(),
             "2026-09-30T09-00-00-000Z_s1.jsonl",
             &[
-                json!({"type": "session", "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z"}),
+                json!({"type": "session", "version": 3, "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z"}),
                 reply.clone(),
             ],
         );
-        let mut unprovided = reply;
+        let mut unprovided = reply.clone();
         let message = unprovided["message"].as_object_mut().unwrap();
         let provider = message.remove("provider").unwrap();
         message.insert("providerName".to_owned(), provider);
+        // A reply with neither an entry id nor a response id, as only Pi's
+        // format 1 writes it.
+        let mut unidentified = reply;
+        unidentified.as_object_mut().unwrap().remove("id");
+        unidentified["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("responseId");
         let named = session(
             dir.path(),
             "2026-09-30T09-00-00-000Z_s2.jsonl",
             &[
-                json!({"type": "session", "id": "s2", "timestamp": "2026-09-30T09:00:00Z"}),
+                json!({"type": "session", "version": 3, "id": "s2", "timestamp": "2026-09-30T09:00:00Z"}),
                 unprovided,
                 json!({"type": "usage", "entryId": "e2", "timestamp": "2026-09-30T09:10:00Z", "provider": "xai",
                     "model": "grok-4.6", "usage": usage(5, 0.001)}),
+                unidentified.clone(),
             ],
         );
-        for (file, skipped) in [(unnamed, 1), (named, 2)] {
+        let old = session(
+            dir.path(),
+            "2026-09-30T09-00-00-000Z_s3.jsonl",
+            &[
+                json!({"type": "session", "id": "s3", "timestamp": "2026-09-30T09:00:00Z"}),
+                unidentified,
+            ],
+        );
+        for (file, skipped) in [(unnamed, 1), (named, 3), (old, 0)] {
             let read = Pi.read(&file, "").unwrap();
             assert_eq!((read.responses.len(), read.skipped), (0, skipped));
         }

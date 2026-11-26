@@ -194,7 +194,9 @@ Rules:
   field the reader needs to count it, such as a count, the response's id,
   its time or its session, adds to `read.skipped`, so `doctor` says the
   agent may write a newer format. Only a field the agent leaves out on
-  purpose, as a count before any usage, is passed over without a word.
+  purpose, as a count before any usage, the usage of a turn stopped before
+  any call, or an id an older format didn't write, is passed over without
+  a word: check the agent's source for which fields it always writes.
 - **Growing files.** Reading a file in two parts, the second from the
   cursor the first returned, gives what reading it whole does.
 - **Changing a reader later.** If a change would read a file already read
