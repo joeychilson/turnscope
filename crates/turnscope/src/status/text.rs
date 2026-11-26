@@ -1144,7 +1144,7 @@ mod tests {
         assert_eq!(
             alternate_note(&status, &status.accounts[0], Some("claude-code")).as_deref(),
             Some(
-                "Another account has room: OpenRouter API key has $8.70 of $30.00 left (Key limit)."
+                "Another account has room: OpenRouter API key has $8.70 of $30.00 left (Pi's key limit)."
             )
         );
         // Without a caller agent, subscription is preferred over API key without a via suffix.

@@ -284,10 +284,17 @@ pub struct Limit {
 }
 
 impl Limit {
-    /// Its name, and the model it's on if it's on one: "Weekly (Opus)".
+    /// Its name, and the model it's on if it's on one: "Weekly (Opus)". A
+    /// key's, whose name is only its period, says whose key it is: "Pi's
+    /// monthly key limit".
     pub fn named(&self) -> String {
         match &self.scope {
             Some(scope) => format!("{} ({scope})", self.name),
+            None if !self.held_by.is_empty() => format!(
+                "{}'s {}",
+                text::agent_names(&self.held_by, "and"),
+                self.name.to_lowercase()
+            ),
             None => self.name.clone(),
         }
     }
@@ -362,8 +369,9 @@ impl Limit {
     /// Whether `name` names it: part of its name as shown, with its models
     /// after it as the command line shows them or before it as the app
     /// does, as the status line shows it, or part of its key. So `week`
-    /// names Weekly and `seven_day`, `5h` names 5 hours, and `weekly
-    /// (claude` and `gpt weekly` name Weekly (Claude and GPT). Of the limits
+    /// names Weekly and `seven_day`, `5h` names 5 hours, `weekly (claude`
+    /// and `gpt weekly` name Weekly (Claude and GPT), and `pi` names Pi's
+    /// key limit. Of the limits
     /// a name fits, the first by key is taken: `gpt` alone is 5 hours
     /// (Claude and GPT).
     pub fn answers_to(&self, name: &str) -> bool {

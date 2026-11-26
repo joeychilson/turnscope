@@ -57,8 +57,9 @@ wait for it, and after a second say
   `opus` names Weekly (Opus). The name the [status line](#status-line)
   shows names a limit too: `5h`. A model's limit takes its model after its
   name, as `status` shows it, or before it, as the app does:
-  `"weekly (opus)"` or `"opus weekly"`. A name that fits several limits
-  names the first by key.
+  `"weekly (opus)"` or `"opus weekly"`. A key's limit is named by the
+  agents that hold the key too: `pi` names Pi's key limit. A name that fits
+  several limits names the first by key.
 - **Agents** are named by id: `claude-code`, `codex`, `opencode`, `pi`,
   `grok-build`, `antigravity`.
 
@@ -136,7 +137,7 @@ ChatGPT Plus (me@example.com) · via Codex
 
 OpenRouter API key · via Pi
   Credits: $35.00 of $50.00 left. Doesn't reset.
-  Weekly key limit: $11.00 of $20.00 left, resets Tue 00:00 (in 4d 12h). No forecast yet.
+  Pi's weekly key limit: $11.00 of $20.00 left, resets Tue 00:00 (in 4d 12h). No forecast yet.
   This month, across its keys: $0.00.
 
 SuperGrok (me@example.com) · via Grok Build

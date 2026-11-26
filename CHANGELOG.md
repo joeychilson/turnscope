@@ -28,6 +28,9 @@
   early, and ⌘R could start another refresh.
 - **Copy Diagnostics lists each line of `app.log` once.** The latest were
   in doctor's notes, then again after them.
+- **A key's limit says whose key it is** in `turnscope status` and agents'
+  answers: "Pi's weekly key limit", not "Weekly key limit", which two keys
+  with the same period both said. `--limit pi` names it.
 - **A login refused or expired names its agents as a list**: "open Claude
   Code, OpenCode or Pi to sign in again", not "open Claude Code or
   OpenCode or Pi".
