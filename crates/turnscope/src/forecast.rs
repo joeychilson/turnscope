@@ -547,9 +547,9 @@ mod tests {
         // the rate measured, and whether its band held it.
         let mut scores: std::collections::BTreeMap<String, Vec<(f64, bool)>> = Default::default();
         for ((account, key, scope), readings) in &limits {
-            let models = crate::usage::models(scope.as_deref());
-            let fingerprint = crate::providers::key_limit_fingerprint(key);
-            let worked = crate::status::worked(&db, account, &models, fingerprint, 0).unwrap();
+            let (models, fingerprint) = crate::usage::of_limit(key, scope.as_deref());
+            let worked =
+                crate::status::worked(&db, account, &models, fingerprint.as_deref(), 0).unwrap();
             let known: Option<i64> = db
                 .query_row(
                     "SELECT min(since) FROM sign_in WHERE account = ?1",

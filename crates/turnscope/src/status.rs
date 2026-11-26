@@ -980,11 +980,7 @@ fn work(
     }
     // By the work on its own models or key: by all the account's, 1h of Opus
     // that rose Weekly (Opus) 8 points after 3h of Sonnet read as 2% an hour.
-    let counted = (
-        crate::usage::models(scope.as_deref()),
-        crate::providers::key_limit_fingerprint(key).map(str::to_owned),
-    );
-    let slots = match slots.entry(counted) {
+    let slots = match slots.entry(crate::usage::of_limit(key, scope.as_deref())) {
         Entry::Occupied(slots) => slots.into_mut(),
         Entry::Vacant(slot) => {
             let (models, key) = slot.key();
