@@ -1,6 +1,6 @@
 //! The providers whose accounts' limits Turnscope reads. Each is one module
 //! implementing [`Provider`], listed in [`ALL`]. This is Turnscope's only way
-//! to the network: `/usr/bin/curl`.
+//! to the network: `curl` (`/usr/bin/curl` on macOS).
 
 mod anthropic;
 mod google;
@@ -362,6 +362,12 @@ pub fn get(url: &str, seconds: u32) -> crate::Result<(u16, Vec<u8>)> {
         .map_err(|why| Error::Failed(format!("asking {url}: {why}")))
 }
 
+const CURL: &str = if cfg!(target_os = "macos") {
+    "/usr/bin/curl"
+} else {
+    "curl"
+};
+
 /// Run curl for `url` with `args`, writing `input` to its standard input,
 /// giving up after `time`. Headers go on standard input, out of process
 /// listings; `-q` ignores `~/.curlrc`. `--connect-timeout 5` gives up on a
@@ -372,7 +378,7 @@ fn curl(
     input: &[u8],
     time: Duration,
 ) -> std::result::Result<Answered, String> {
-    let mut curl = Command::new("/usr/bin/curl")
+    let mut curl = Command::new(CURL)
         .args(["-q", "--silent", "--show-error", "--compressed"])
         .args(["--proto", "=https"])
         .args(["--connect-timeout", "5"])
@@ -516,9 +522,9 @@ fn windowed(
 
 /// What a window `length` ms long is called: `5 hours`, `Weekly`.
 fn window_name(length: i64) -> String {
-    let hours = (length + HOUR / 2) / HOUR;
+    let hours = length.saturating_add(HOUR / 2) / HOUR;
     // Whole days, as a window across a clock change is an hour off.
-    let days = (length + DAY / 2) / DAY;
+    let days = length.saturating_add(DAY / 2) / DAY;
     match (hours, days) {
         (..=1, _) => "Hourly".to_owned(),
         (2..23, _) => format!("{hours} hours"),
@@ -597,6 +603,7 @@ mod tests {
             expires: None,
             identity: None,
             plan: None,
+            client: None,
             refresh: None,
         };
         let spent = std::time::Instant::now();
@@ -634,6 +641,22 @@ mod tests {
         assert_eq!(super::window_name(28 * DAY), "Monthly");
         assert_eq!(super::window_name(31 * DAY), "Monthly");
         assert_eq!(super::window_name(32 * DAY), "32 days");
+        assert!(super::window_name(i64::MAX).ends_with(" days"));
+    }
+
+    #[test]
+    fn maker_matches_each_providers_model_prefixes() {
+        let maker = |model| super::maker(model).map(|provider| provider.info().id);
+        assert_eq!(maker("claude-opus-5-5"), Some("anthropic"));
+        assert_eq!(maker("gpt-5.5"), Some("openai"));
+        assert_eq!(maker("o3-mini"), Some("openai"));
+        assert_eq!(maker("o1"), Some("openai"));
+        assert_eq!(maker("codex-mini-latest"), Some("openai"));
+        assert_eq!(maker("chatgpt-4o-latest"), Some("openai"));
+        assert_eq!(maker("gemini-3.8-flash"), Some("google"));
+        assert_eq!(maker("grok-4.6-build"), Some("xai"));
+        assert_eq!(maker("openai/gpt-oss-120b-maas"), None);
+        assert_eq!(maker("omen-alpha"), None);
     }
 
     #[test]

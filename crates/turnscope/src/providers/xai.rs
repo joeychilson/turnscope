@@ -31,6 +31,10 @@ impl Provider for Xai {
         &INFO
     }
 
+    fn makes(&self, model: &str) -> bool {
+        model.starts_with("grok-")
+    }
+
     fn account(&self, credential: &Credential) -> Option<Account> {
         super::account(INFO.id, credential, || {
             credential.identity.clone().or_else(|| {
@@ -69,10 +73,11 @@ fn parse(answer: &Value) -> Option<Reading> {
     let starts = millis(period["start"].as_str()?)?;
     let resets = millis(period["end"].as_str()?)?;
     let used = match config.get("creditUsagePercent") {
+        None | Some(Value::Null) => 0.0,
         Some(used) => used.as_f64()?,
-        None => 0.0,
     };
-    (resets > starts).then(|| super::window("pool", None, used, resets - starts, Some(resets)))
+    let length = resets.checked_sub(starts).filter(|&length| length > 0)?;
+    Some(super::window("pool", None, used, length, Some(resets)))
 }
 
 #[cfg(test)]
@@ -84,6 +89,10 @@ mod tests {
         let answer = json!({"config": {"currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "2026-09-22T00:00:00Z", "end": "2026-09-29T00:00:00Z"}}});
         let pool = super::parse(&answer).unwrap();
         assert_eq!((pool.name.as_str(), pool.used), ("Weekly", 0.0));
+        let null_used = json!({"config": {"creditUsagePercent": null, "currentPeriod": {"start": "2026-09-22T00:00:00Z", "end": "2026-09-29T00:00:00Z"}}});
+        assert_eq!(super::parse(&null_used).unwrap().used, 0.0);
+        let reversed = json!({"config": {"currentPeriod": {"start": "2026-09-29T00:00:00Z", "end": "2026-09-22T00:00:00Z"}}});
+        assert!(super::parse(&reversed).is_none());
         assert!(super::parse(&json!({"config": {}})).is_none());
     }
 }

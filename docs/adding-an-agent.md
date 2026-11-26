@@ -221,6 +221,7 @@ fn logins(&self, folder: &Path, _home: &Path) -> Result<Vec<Login>> {
             expires: kept["expires_at"].as_i64(),
             identity: None,
             plan: None,
+            client: None,
             refresh: None,
         }),
     }])
@@ -234,10 +235,12 @@ the account.
 The helpers `json_file`, `kept_login` and `claims` in `src/agents/mod.rs`,
 and `crate::process::output_within`, read what agents keep. An agent's
 SQLite database is read with `opened`, which leaves nothing beside it. `keychain(home, service,
-account, parse)` reads a Keychain item with `/usr/bin/security`, as Claude
-Code's and Antigravity's readers do. `parse` reads the item's bytes and
-returns why it couldn't. Its error names the item, and it's `Ok(None)`
-when there's no such item.
+account, parse)` reads a Keychain item with `/usr/bin/security` on macOS (and
+returns `Ok(None)` elsewhere), as Claude Code's and Antigravity's readers do.
+`parse` reads the item's bytes and returns why it couldn't. Its error names
+the item, and it's `Ok(None)` when there's no such item. An agent whose
+provider expects client headers or renews logins in memory sets `Credential::client`
+and `Credential::refresh` with its own `client_id` and secret loader.
 
 A folder that `folders` no longer lists is signed out of, so `folders`
 lists a folder by what's on disk alone: not by an environment variable or

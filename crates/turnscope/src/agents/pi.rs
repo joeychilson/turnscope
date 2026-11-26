@@ -69,6 +69,13 @@ struct Line<'a> {
     timestamp: Option<Cow<'a, str>>,
     #[serde(borrow, default, deserialize_with = "super::lenient")]
     cwd: Option<Cow<'a, str>>,
+    #[serde(
+        rename = "parentSession",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
+    parent_session: Option<Cow<'a, str>>,
     #[serde(borrow, default, deserialize_with = "super::lenient")]
     name: Option<Cow<'a, str>>,
     #[serde(borrow)]
@@ -186,26 +193,25 @@ impl Agent for Pi {
 fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
     let at = line.timestamp.as_deref().and_then(crate::time::millis);
     if line.kind == "session" {
-        let Some(native) = line.id.as_deref() else {
+        let Some(native) = super::non_empty_str(line.id.as_deref()) else {
             return;
         };
         let session = INFO.session(native);
         read.session(&session);
         read.cwd(&session, line.cwd.as_deref());
-        (cursor.session, cursor.began) = (Some(session), at);
+        let forked = super::non_empty_str(line.parent_session.as_deref()).is_some();
+        (cursor.session, cursor.began) = (Some(session), forked.then_some(at).flatten());
         return;
     }
     let Some(session) = cursor.session.as_deref() else {
         return;
     };
-    // An entry from before the session began is a fork's copy of its
-    // parent's.
+    // An entry from before a forked session began is a copy of its parent's.
     let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
     // A copy's entry id is its parent's, under the parent's own
     // session, so it can't name a response of this one.
     let entry = || {
-        line.id
-            .as_deref()
+        super::non_empty_str(line.id.as_deref())
             .filter(|_| !copy)
             .map(|id| format!("{session}:{id}"))
     };
@@ -217,9 +223,11 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
             return;
         }
         "usage" => {
-            let (Some(provider), Some(model), Some(id)) =
-                (line.provider.as_deref(), line.model.as_deref(), entry())
-            else {
+            let (Some(provider), Some(model), Some(id)) = (
+                super::non_empty_str(line.provider.as_deref()),
+                super::non_empty_str(line.model.as_deref()),
+                entry(),
+            ) else {
                 return;
             };
             (line.usage, provider.to_owned(), model.to_owned(), id, at)
@@ -255,22 +263,17 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
                 }
                 Some("assistant") => {
                     // The model the provider answered with, where it said.
-                    let model = message
-                        .response_model
-                        .as_deref()
-                        .filter(|model| !model.is_empty())
-                        .or(message.model.as_deref())
-                        .filter(|model| !model.is_empty());
-                    let (Some(provider), Some(model)) = (message.provider.as_deref(), model) else {
+                    let model = super::non_empty_str(message.response_model.as_deref())
+                        .or_else(|| super::non_empty_str(message.model.as_deref()));
+                    let (Some(provider), Some(model)) =
+                        (super::non_empty_str(message.provider.as_deref()), model)
+                    else {
                         return;
                     };
                     cursor.model = Some((provider.to_owned(), model.to_owned()));
                     // A copy without a response id couldn't be told
                     // from its parent's.
-                    let Some(id) = message
-                        .response_id
-                        .as_deref()
-                        .filter(|id| !id.is_empty())
+                    let Some(id) = super::non_empty_str(message.response_id.as_deref())
                         .map(str::to_owned)
                         .or_else(entry)
                     else {
@@ -504,5 +507,41 @@ mod tests {
         let response = &Pi.read(&file, "").unwrap().responses["resp_1"];
         let at = crate::time::millis("2026-09-30T09:00:05Z").unwrap();
         assert_eq!((response.at, response.cost), (at, None));
+    }
+
+    #[test]
+    fn a_backward_clock_step_in_a_normal_session_keeps_entries_and_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = session(
+            dir.path(),
+            "2026-09-30T10-00-00-000Z_s1.jsonl",
+            &[
+                json!({"type": "session", "id": "s1", "cwd": "/work/cli", "timestamp": "2026-09-30T10:00:00Z"}),
+                // Clock stepped back 1 hour after the session header.
+                json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:01Z",
+                    "message": {"role": "user", "content": "Keep entries after clock step."}}),
+                // Assistant reply with no responseId falls back to entry id.
+                json!({"type": "message", "id": "e2", "timestamp": "2026-09-30T09:00:05Z",
+                    "message": {"role": "assistant", "provider": "xai", "model": "grok-4.6", "usage": usage(50, 0.01)}}),
+                json!({"type": "usage", "id": "e3", "timestamp": "2026-09-30T09:00:06Z",
+                    "provider": "xai", "model": "grok-4.6", "usage": usage(20, 0.01)}),
+                json!({"type": "compaction", "id": "e4", "timestamp": "2026-09-30T09:00:07Z",
+                    "usage": usage(10, 0.005)}),
+                json!({"type": "session_info", "id": "e5", "timestamp": "2026-09-30T09:00:08Z",
+                    "name": "Clock step"}),
+                // Empty responseId and empty entry id are ignored.
+                json!({"type": "message", "id": "", "timestamp": "2026-09-30T09:00:09Z",
+                    "message": {"role": "assistant", "provider": "xai", "model": "grok-4.6", "responseId": "", "usage": usage(5, 0.01)}}),
+            ],
+        );
+        let read = Pi.read(&file, "").unwrap();
+        assert_eq!(read.responses.len(), 3);
+        assert!(!read.responses["pi:s1:e2"].copy);
+        assert!(!read.responses["pi:s1:e3"].copy);
+        assert!(!read.responses["pi:s1:e4"].copy);
+        assert_eq!(
+            read.sessions["pi:s1"].title.as_ref().unwrap().1,
+            "Clock step"
+        );
     }
 }

@@ -92,7 +92,7 @@ impl Agent for OpenCode {
         let rows: Vec<(String, String)> = super::opened(&file, |db| {
             db.prepare(
                 "SELECT integration_id, value FROM credential
-                 WHERE integration_id IS NOT NULL AND coalesce(active, 1) != 0
+                 WHERE integration_id IS NOT NULL AND value IS NOT NULL AND coalesce(active, 1) != 0
                  ORDER BY time_updated DESC",
             )?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -142,13 +142,17 @@ struct ModelRef<'a> {
 struct MessageTokens {
     input: Option<u64>,
     output: Option<u64>,
+    #[serde(default, deserialize_with = "super::lenient")]
     reasoning: Option<u64>,
+    #[serde(default, deserialize_with = "super::lenient")]
     cache: Option<CacheTokens>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct CacheTokens {
+    #[serde(default, deserialize_with = "super::lenient")]
     read: Option<u64>,
+    #[serde(default, deserialize_with = "super::lenient")]
     write: Option<u64>,
 }
 
@@ -244,30 +248,41 @@ fn messages(
             read.skipped += unseen;
             continue;
         };
-        // A message has no tokens until its response ends.
+        // A message has no tokens until its response ends; reasoning and cache
+        // counts may be omitted by a provider and default to 0.
         let Some(MessageTokens {
             input: Some(input),
             output: Some(output),
-            reasoning: Some(reasoning),
-            cache:
-                Some(CacheTokens {
-                    read: Some(cache_read),
-                    write: Some(cache_write),
-                }),
+            reasoning,
+            cache,
         }) = data.tokens
         else {
             continue;
         };
-        let Some((Some(provider), Some(model))) = data.model.map(|m| (m.provider_id, m.id)) else {
+        let (Some(provider), Some(model)) = (
+            data.model
+                .as_ref()
+                .and_then(|m| super::non_empty_str(m.provider_id.as_deref())),
+            data.model
+                .as_ref()
+                .and_then(|m| super::non_empty_str(m.id.as_deref())),
+        ) else {
             read.skipped += unseen;
             continue;
         };
+        if message.is_empty() || native.is_empty() {
+            read.skipped += unseen;
+            continue;
+        }
+        let reasoning = reasoning.unwrap_or(0);
+        let (cache_read, cache_write) =
+            cache.map_or((0, 0), |c| (c.read.unwrap_or(0), c.write.unwrap_or(0)));
         let tokens = Tokens {
             input,
             cache_read,
             cache_write_5m: cache_write,
             cache_write_1h: 0,
-            output: output + reasoning,
+            output: output.saturating_add(reasoning),
             reasoning,
         };
         read.respond(Response {
@@ -278,8 +293,8 @@ fn messages(
                 .time
                 .and_then(|time| time.completed.or(time.created))
                 .unwrap_or(created),
-            provider: provider.into_owned(),
-            model: model.into_owned(),
+            provider: provider.to_owned(),
+            model: model.to_owned(),
             prompt: tokens.prompt(),
             tokens,
             web_searches: 0,
@@ -475,5 +490,64 @@ mod tests {
             [first.skipped, later.skipped, passed.skipped, after.skipped],
             [0, 0, 1, 0]
         );
+    }
+
+    #[test]
+    fn missing_reasoning_or_cache_defaults_to_zero_and_null_credentials_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = database(dir.path());
+        let db = Connection::open(&file).unwrap();
+        // Minimal token payload omitting reasoning and cache, plus one with
+        // empty provider/model (skipped) and one saturating output + reasoning.
+        let minimal = json!({"model": {"providerID": "anthropic", "id": "claude-opus-5"},
+            "time": {"completed": 3000}, "tokens": {"input": 42, "output": 11}});
+        let partial_cache = json!({"model": {"providerID": "anthropic", "id": "claude-opus-5"},
+            "time": {"completed": 3100}, "tokens": {"input": 10, "output": 5, "reasoning": null, "cache": {"read": 7}}});
+        let empty_model = json!({"model": {"providerID": "", "id": "claude-opus-5"},
+            "time": {"completed": 3200}, "tokens": {"input": 10, "output": 5}});
+        let huge = json!({"model": {"providerID": "anthropic", "id": "claude-opus-5"},
+            "time": {"completed": 3300}, "tokens": {"input": 1, "output": u64::MAX, "reasoning": 5}});
+        for (id, seq, at, data) in [
+            ("m4", 3, 3000, minimal),
+            ("m5", 4, 3100, partial_cache),
+            ("m6", 5, 3200, empty_model),
+            ("m7", 6, 3300, huge),
+        ] {
+            db.execute(
+                "INSERT INTO session_message VALUES (?1, 's1', 'assistant', ?2, ?3, ?3, ?4)",
+                rusqlite::params![id, seq, at, data.to_string()],
+            )
+            .unwrap();
+        }
+        // A NULL credential value must not fail reading the remaining logins.
+        db.execute(
+            "INSERT INTO credential VALUES ('anthropic', NULL, 1, 10)",
+            [],
+        )
+        .unwrap();
+
+        let read = OpenCode.read(&file, "").unwrap();
+        assert_eq!(
+            read.responses["m4"].tokens,
+            Tokens {
+                input: 42,
+                output: 11,
+                ..Tokens::default()
+            }
+        );
+        assert_eq!(
+            (
+                read.responses["m5"].tokens.cache_read,
+                read.responses["m5"].tokens.cache_write_5m
+            ),
+            (7, 0)
+        );
+        assert!(!read.responses.contains_key("m6"));
+        assert_eq!(read.responses["m7"].tokens.output, u64::MAX);
+        assert_eq!(read.skipped, 1);
+
+        let logins = OpenCode.logins(dir.path(), dir.path()).unwrap();
+        assert_eq!(logins.len(), 1);
+        assert_eq!(logins[0].provider, "opencode-go");
     }
 }

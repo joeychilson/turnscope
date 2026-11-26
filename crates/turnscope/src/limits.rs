@@ -1187,6 +1187,7 @@ mod tests {
             expires,
             identity: None,
             plan: None,
+            client: None,
             refresh: None,
         }
     }
@@ -1813,7 +1814,8 @@ mod tests {
         let (_, mut held) = fake(Kind::Subscription, &[]);
         let renews = agents::Refresh {
             token: agents::Secret::new("refresh-token"),
-            programs: Vec::new(),
+            client_id: "fake",
+            secrets: Box::new(|| Ok(Vec::new())),
         };
         held.credentials.push(Credential {
             refresh: Some(renews),

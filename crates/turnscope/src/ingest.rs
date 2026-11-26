@@ -20,7 +20,7 @@ use crate::{Error, Result};
 /// next found, moved too: read again only at its path, a thread Codex
 /// archives kept what the older reader made of it. A file never found
 /// again, as one its agent deleted, keeps what it made.
-const READERS: i64 = 10;
+const READERS: i64 = 11;
 
 /// How long a transaction writes history before it lets the write lock go,
 /// and for how long: another process's write waits 10 s (`db::open`), and

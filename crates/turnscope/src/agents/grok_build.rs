@@ -73,10 +73,30 @@ const INJECTED: &[&str] = &[
 struct Cursor {
     offset: u64,
     titled: bool,
-    /// The subagents it spawned.
-    subagents: Vec<String>,
-    /// When its last turn ended, in Unix seconds.
-    ended: Option<i64>,
+    /// Spawned subagents and how far into each one's `updates.jsonl` turns
+    /// have already been subtracted from earlier parent turns.
+    #[serde(default)]
+    subagents: Vec<Subagent>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Subagent {
+    id: String,
+    #[serde(default)]
+    offset: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
+    #[serde(default)]
+    finished: bool,
+    #[serde(default)]
+    gone: bool,
+}
+
+fn safe_child(child: &str) -> bool {
+    let mut parts = Path::new(child).components();
+    !child.contains(['/', '\\', '\0'])
+        && matches!(parts.next(), Some(std::path::Component::Normal(_)))
+        && parts.next().is_none()
 }
 
 #[derive(Deserialize)]
@@ -194,6 +214,7 @@ impl Agent for GrokBuild {
                     )
                 }),
                 plan: None,
+                client: None,
                 refresh: None,
             }),
         }])
@@ -220,7 +241,7 @@ fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> 
     let mut subagents = Subagents {
         own_dir: file.ancestors().nth(2),
         folders: None,
-        turns: HashMap::new(),
+        next_at: HashMap::new(),
     };
     cursor.offset = super::try_lines(file, cursor.offset, |bytes| {
         let Ok(line) = serde_json::from_slice::<Line<'_>>(bytes) else {
@@ -233,17 +254,42 @@ fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> 
         match update.kind.as_deref() {
             Some("turn_completed") => {
                 if let Some(at) = at {
-                    let theirs = subagents.used(&cursor.subagents, cursor.ended, at)?;
+                    let theirs = subagents.used(&mut cursor.subagents, at)?;
                     turn(&update, at, session, &theirs, read);
-                    cursor.ended = Some(at);
                 }
             }
             Some("subagent_spawned") => {
-                if let Some(child) = update.child_session_id.filter(|child| !child.is_empty()) {
-                    read.session(&INFO.session(&child)).parent = Some(session.to_owned());
-                    if !cursor.subagents.iter().any(|known| *known == child) {
-                        cursor.subagents.push(child.into_owned());
+                if let Some(child) = update
+                    .child_session_id
+                    .as_deref()
+                    .filter(|child| safe_child(child))
+                {
+                    read.session(&INFO.session(child)).parent = Some(session.to_owned());
+                    if let Some(known) = cursor.subagents.iter_mut().find(|known| known.id == child)
+                    {
+                        known.finished = false;
+                        known.gone = false;
+                        subagents.next_at.remove(child);
+                    } else {
+                        cursor.subagents.push(Subagent {
+                            id: child.to_owned(),
+                            offset: 0,
+                            folder: None,
+                            finished: false,
+                            gone: false,
+                        });
                     }
+                }
+            }
+            Some("subagent_finished") => {
+                if let Some(child) = update
+                    .child_session_id
+                    .as_deref()
+                    .filter(|child| safe_child(child))
+                    && let Some(known) = cursor.subagents.iter_mut().find(|known| known.id == child)
+                {
+                    known.finished = true;
+                    known.gone = false;
                 }
             }
             Some("user_message_chunk") if !cursor.titled => {
@@ -283,13 +329,42 @@ struct Used {
     ticks: Option<u64>,
 }
 
+/// Usage split into disjoint input (`uncached` + cache) and output
+/// (`non_reasoning` + `reasoning`) counts before subtracting subagents, so
+/// saturating subtraction preserves `input >= cached` and `output >= reasoning`.
+#[derive(Clone, Copy)]
+struct Normalized {
+    uncached: u64,
+    cache_read: u64,
+    cache_write: u64,
+    non_reasoning: u64,
+    reasoning: u64,
+    calls: u64,
+    ticks: Option<u64>,
+}
+
 impl Used {
-    fn less(self, theirs: Used) -> Used {
-        Used {
-            input: self.input.saturating_sub(theirs.input),
+    fn normalize(self) -> Option<Normalized> {
+        let cached = self.cache_read.checked_add(self.cache_write)?;
+        Some(Normalized {
+            uncached: self.input.checked_sub(cached)?,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+            non_reasoning: self.output.saturating_sub(self.reasoning),
+            reasoning: self.reasoning,
+            calls: self.calls,
+            ticks: self.ticks,
+        })
+    }
+}
+
+impl Normalized {
+    fn less(self, theirs: Normalized) -> Normalized {
+        Normalized {
+            uncached: self.uncached.saturating_sub(theirs.uncached),
             cache_read: self.cache_read.saturating_sub(theirs.cache_read),
             cache_write: self.cache_write.saturating_sub(theirs.cache_write),
-            output: self.output.saturating_sub(theirs.output),
+            non_reasoning: self.non_reasoning.saturating_sub(theirs.non_reasoning),
             reasoning: self.reasoning.saturating_sub(theirs.reasoning),
             calls: self.calls.saturating_sub(theirs.calls),
             // A charge not known in theirs makes what's left unknown.
@@ -301,76 +376,114 @@ impl Used {
     }
 }
 
-/// A subagent's turn: when it ended, in Unix seconds, and what each model
-/// used.
-type Turn = (i64, Vec<(String, Used)>);
-
-/// A session's subagents' turns, from their own updates in `sessions`:
-/// each subagent's read once a read, however many of its parent's turns
-/// end in it.
+/// Reads each subagent's `updates.jsonl` incrementally from its saved byte
+/// offset up to the parent turn's timestamp.
 struct Subagents<'a> {
     own_dir: Option<&'a Path>,
     folders: Option<Vec<PathBuf>>,
-    turns: HashMap<String, Vec<Turn>>,
+    /// Timestamp of the next unread `turn_completed` in each subagent, so
+    /// earlier parent turns don't reopen it.
+    next_at: HashMap<String, i64>,
 }
 
 impl Subagents<'_> {
-    /// What the turns of `subagents` that ended after `after` and no later
-    /// than `until` used, model by model. Fails when a subagent's updates
-    /// are there and can't be read, so its parent's turn is read again later
-    /// rather than counted whole.
+    /// What unread turns of `subagents` that ended no later than `until` used,
+    /// advancing each subagent's offset past the turns taken. Fails when a
+    /// subagent's updates are there and can't be read, so its parent's turn is
+    /// read again later rather than counted whole.
     fn used(
         &mut self,
-        subagents: &[String],
-        after: Option<i64>,
+        subagents: &mut [Subagent],
         until: i64,
-    ) -> Result<Vec<(String, Used)>> {
+    ) -> Result<Vec<(String, Normalized)>> {
         let mut used = Vec::new();
         for child in subagents {
-            if !self.turns.contains_key(child) {
-                let turns = self.read(child)?;
-                self.turns.insert(child.clone(), turns);
+            if child.gone || !safe_child(&child.id) {
+                continue;
             }
-            let ended = |at: i64| after.is_none_or(|after| at > after) && at <= until;
-            for (_, theirs) in self.turns[child].iter().filter(|(at, _)| ended(*at)) {
-                used.extend(theirs.iter().cloned());
+            if self.next_at.get(&child.id).is_some_and(|&at| at > until) {
+                continue;
+            }
+            let Some((updates, len)) = self.locate(child) else {
+                if child.offset > 0 || child.finished {
+                    child.gone = true;
+                }
+                continue;
+            };
+            if len < child.offset {
+                child.offset = 0;
+            }
+            if len == child.offset {
+                if child.finished {
+                    self.next_at.insert(child.id.clone(), i64::MAX);
+                }
+                continue;
+            }
+            self.next_at.remove(&child.id);
+            let mut unread = 0;
+            let mut next_at = None;
+            let next = super::try_lines(&updates, child.offset, |bytes| {
+                let Some((Some(at), update)) = serde_json::from_slice::<Line<'_>>(bytes)
+                    .ok()
+                    .and_then(Line::update)
+                else {
+                    return Ok(ControlFlow::Continue(()));
+                };
+                if update.kind.as_deref() == Some("turn_completed") {
+                    if at > until {
+                        unread = bytes.len() as u64;
+                        next_at = Some(at);
+                        return Ok(ControlFlow::Break(()));
+                    }
+                    for (model, counted) in update.used() {
+                        if !model.is_empty()
+                            && let Some(counted) = counted.and_then(Used::normalize)
+                        {
+                            used.push((model.into_owned(), counted));
+                        }
+                    }
+                }
+                Ok(ControlFlow::Continue(()))
+            })?;
+            child.offset = next.saturating_sub(unread);
+            if let Some(at) = next_at {
+                self.next_at.insert(child.id.clone(), at);
+            } else if child.finished && child.offset == len {
+                self.next_at.insert(child.id.clone(), i64::MAX);
             }
         }
         Ok(used)
     }
 
-    fn read(&mut self, child: &str) -> Result<Vec<Turn>> {
+    fn locate(&mut self, child: &mut Subagent) -> Option<(PathBuf, u64)> {
         let sessions = self.own_dir.and_then(Path::parent);
         let at = |folder: &Path| {
-            Some(folder.join(child).join("updates.jsonl")).filter(|updates| updates.is_file())
+            let path = folder.join(&child.id).join("updates.jsonl");
+            let meta = std::fs::metadata(&path).ok()?;
+            meta.is_file().then_some((path, meta.len()))
         };
+        if let Some(folder) = child.folder.as_deref().filter(|name| safe_child(name))
+            && let Some(found) = sessions.and_then(|dir| at(&dir.join(folder)))
+        {
+            return Some(found);
+        }
+        if let Some(found) = self.own_dir.and_then(at) {
+            child.folder = None;
+            return Some(found);
+        }
         // Beside its parent, or else in any session's folder; one whose
         // folder is gone takes nothing off.
-        let Some(updates) = self.own_dir.and_then(at).or_else(|| {
-            self.folders
-                .get_or_insert_with(|| sessions.into_iter().flat_map(super::entries).collect())
-                .iter()
-                .find_map(|folder| at(folder))
-        }) else {
-            return Ok(Vec::new());
-        };
-        let mut turns = Vec::new();
-        super::lines(&updates, 0, |bytes| {
-            let Some((Some(at), update)) = serde_json::from_slice::<Line<'_>>(bytes)
-                .ok()
-                .and_then(Line::update)
-            else {
-                return;
-            };
-            if update.kind.as_deref() == Some("turn_completed") {
-                let used = update
-                    .used()
-                    .filter_map(|(model, used)| Some((model.into_owned(), used?)))
-                    .collect();
-                turns.push((at, used));
-            }
-        })?;
-        Ok(turns)
+        let (folder, found) = self
+            .folders
+            .get_or_insert_with(|| sessions.into_iter().flat_map(super::entries).collect())
+            .iter()
+            .find_map(|folder| Some((folder.clone(), at(folder)?)))?;
+        child.folder = folder
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| safe_child(name))
+            .map(str::to_owned);
+        Some(found)
     }
 }
 
@@ -378,14 +491,18 @@ fn turn(
     update: &Update<'_>,
     at: i64,
     session: &str,
-    subagents: &[(String, Used)],
+    subagents: &[(String, Normalized)],
     read: &mut Read,
 ) {
-    let Some(prompt) = update.prompt_id.as_deref() else {
+    let Some(prompt) = super::non_empty_str(update.prompt_id.as_deref()) else {
         return;
     };
     for (model, used) in update.used() {
-        let Some(used) = used else {
+        let Some(used) = (!model.is_empty())
+            .then_some(used)
+            .flatten()
+            .and_then(Used::normalize)
+        else {
             read.skipped += 1;
             continue;
         };
@@ -393,9 +510,13 @@ fn turn(
             .iter()
             .filter(|(theirs, _)| theirs == &*model)
             .fold(used, |used, (_, theirs)| used.less(*theirs));
-        let Some(uncached) = used.input.checked_sub(used.cache_read + used.cache_write) else {
-            read.skipped += 1;
-            continue;
+        let tokens = Tokens {
+            input: used.uncached,
+            cache_read: used.cache_read,
+            cache_write_5m: used.cache_write,
+            cache_write_1h: 0,
+            output: used.non_reasoning.saturating_add(used.reasoning),
+            reasoning: used.reasoning,
         };
         read.respond(Response {
             id: format!("{prompt}:{model}"),
@@ -404,15 +525,8 @@ fn turn(
             at: at.saturating_mul(1000),
             provider: "xai".to_owned(),
             model: model.into_owned(),
-            tokens: Tokens {
-                input: uncached,
-                cache_read: used.cache_read,
-                cache_write_5m: used.cache_write,
-                cache_write_1h: 0,
-                output: used.output,
-                reasoning: used.reasoning,
-            },
-            prompt: used.input.div_ceil(used.calls.max(1)),
+            prompt: tokens.prompt().div_ceil(used.calls.max(1)),
+            tokens,
             web_searches: 0,
             priority: false,
             cost: used.ticks.map(|ticks| ticks as f64 / 1e10),
@@ -585,6 +699,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_subagent_that_cant_be_read_fails_its_parents_read() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -686,5 +801,125 @@ mod tests {
             ),
             "Speed up the build."
         );
+    }
+
+    #[test]
+    fn subagent_subtraction_preserves_parent_turn_when_clamped_and_handles_same_second_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        // Parent: 1000 input / 800 cached (200 uncached), 100 output / 80 reasoning (20 non-reasoning).
+        // Subagent: 900 input / 500 cached (400 uncached), 90 output / 50 reasoning (40 non-reasoning).
+        // Subtracting disjoint parts yields 0 uncached, 300 cached, and 30 output / 30 reasoning
+        // (preserving both `input >= cached` and `reasoning <= output`).
+        let mut child_used = used(900, 500, 1, 50);
+        child_used["outputTokens"] = json!(90);
+        child_used["reasoningTokens"] = json!(50);
+        let mut parent_used = used(1000, 800, 2, 120);
+        parent_used["outputTokens"] = json!(100);
+        parent_used["reasoningTokens"] = json!(80);
+        updates(
+            dir.path(),
+            "s2",
+            &[update(
+                1_790_000_050,
+                json!({"sessionUpdate": "turn_completed", "prompt_id": "c1",
+                    "usage": {"modelUsage": {"grok-4.6-build": child_used}}}),
+            )],
+        );
+        let file = updates(
+            dir.path(),
+            "s1",
+            &[
+                spawned(1_790_000_001, "s2"),
+                finished(1_790_000_055, "s2"),
+                update(
+                    1_790_000_060,
+                    json!({"sessionUpdate": "turn_completed", "prompt_id": "p1",
+                        "usage": {"modelUsage": {"grok-4.6-build": parent_used}}}),
+                ),
+            ],
+        );
+        let read = GrokBuild.read(&file, "").unwrap();
+        assert_eq!(read.skipped, 0);
+        let own = &read.responses["p1:grok-4.6-build"];
+        assert_eq!(
+            (
+                own.tokens.input,
+                own.tokens.cache_read,
+                own.tokens.output,
+                own.tokens.reasoning,
+                own.cost
+            ),
+            (0, 300, 30, 30, Some(7e-9))
+        );
+
+        // Same-second boundary: s3 is spawned and completes in the exact same
+        // second (60) that p1 ended, before p2 ends at 70. Both incremental
+        // and whole reads subtract s3 from p2.
+        let parent_lines = [
+            completed(1_790_000_060, "p1", 10_000),
+            spawned(1_790_000_060, "s3"),
+            finished(1_790_000_060, "s3"),
+            completed(1_790_000_070, "p2", 25_000),
+        ];
+        updates(dir.path(), "s3", &[completed(1_790_000_060, "c3", 6_000)]);
+        let pfile = updates(dir.path(), "p_same", &parent_lines[..1]);
+        let first = GrokBuild.read(&pfile, "").unwrap();
+        updates(dir.path(), "p_same", &parent_lines);
+        let later = GrokBuild.read(&pfile, &first.cursor).unwrap();
+        let whole = GrokBuild.read(&pfile, "").unwrap();
+        assert_eq!(input(&first, "p1"), Some(10_000));
+        assert_eq!(input(&later, "p2"), Some(19_000));
+        assert_eq!(
+            (input(&whole, "p1"), input(&whole, "p2")),
+            (Some(10_000), Some(19_000))
+        );
+    }
+
+    #[test]
+    fn path_traversal_child_session_id_is_rejected_and_settled_children_stop_reparsing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Outside sessions folder: must never be read via `..` or absolute path.
+        let escaped = dir.path().join("sessions/victim/updates.jsonl");
+        crate::agents::jsonl(escaped, &[completed(1_790_000_050, "c1", 5_000)]);
+        assert!(!safe_child("bad\0child"));
+        let file = updates(
+            dir.path(),
+            "s1",
+            &[
+                spawned(1_790_000_001, "../victim"),
+                spawned(1_790_000_002, "/etc/passwd"),
+                spawned(1_790_000_003, "a/b"),
+                spawned(1_790_000_004, "bad\0child"),
+                completed(1_790_000_060, "p1", 10_000),
+            ],
+        );
+        let read = GrokBuild.read(&file, "").unwrap();
+        assert_eq!(input(&read, "p1"), Some(10_000));
+        assert!(!read.sessions.contains_key("grok-build:../victim"));
+        assert!(!read.sessions.contains_key("grok-build:bad\0child"));
+        let cursor: Cursor = serde_json::from_str(&read.cursor).unwrap();
+        assert!(cursor.subagents.is_empty());
+
+        // Settled subagent offset is saved in cursor; once deleted, its `gone`
+        // flag prevents rescanning on subsequent turns.
+        let child_file = updates(dir.path(), "s2", &[completed(1_790_000_050, "c1", 4_000)]);
+        let lines = [
+            spawned(1_790_000_001, "s2"),
+            finished(1_790_000_055, "s2"),
+            completed(1_790_000_060, "p1", 10_000),
+            completed(1_790_000_120, "p2", 12_000),
+        ];
+        let pfile = updates(dir.path(), "p_inc", &lines[..3]);
+        let first = GrokBuild.read(&pfile, "").unwrap();
+        assert_eq!(input(&first, "p1"), Some(6_000));
+        let cursor: Cursor = serde_json::from_str(&first.cursor).unwrap();
+        assert!(cursor.subagents[0].offset > 0);
+        // Removing the child after Turn 1 marks it `gone` on Turn 2.
+        std::fs::remove_file(&child_file).unwrap();
+        updates(dir.path(), "p_inc", &lines);
+        let second = GrokBuild.read(&pfile, &first.cursor).unwrap();
+        assert_eq!(input(&second, "p2"), Some(12_000));
+        let cursor: Cursor = serde_json::from_str(&second.cursor).unwrap();
+        assert!(cursor.subagents[0].gone);
     }
 }

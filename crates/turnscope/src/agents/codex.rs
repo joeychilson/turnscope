@@ -120,9 +120,7 @@ impl Copy {
     /// The copy in the rollout that the `session_meta` `meta` opens.
     fn of(meta: &Payload) -> Copy {
         Copy {
-            copied_until: meta
-                .parent_thread_id
-                .as_ref()
+            copied_until: super::non_empty_str(meta.parent_thread_id.as_deref())
                 .and(meta.subagent_history_start_ordinal),
             legacy_fork: meta.legacy_fork(),
             copying: false,
@@ -196,13 +194,16 @@ impl Usage {
     }
 
     fn plus(&self, other: &Usage) -> Usage {
-        self.zip(other, u64::checked_add).unwrap_or(*self)
+        self.zip(other, |a, b| Some(a.saturating_add(b)))
+            .unwrap_or(*self)
     }
 
     /// Codex's input includes what was read from and written to the cache,
     /// and its output reasoning.
     fn tokens(&self) -> Option<Tokens> {
-        let cached = self.cached_input_tokens + self.cache_write_input_tokens;
+        let cached = self
+            .cached_input_tokens
+            .checked_add(self.cache_write_input_tokens)?;
         Some(Tokens {
             input: self.input_tokens.checked_sub(cached)?,
             cache_read: self.cached_input_tokens,
@@ -288,8 +289,8 @@ impl Payload<'_> {
     /// Whether this `session_meta` opens a fork of a legacy thread, which
     /// copies its parent's history; a subagent's copy ends at its ordinal.
     fn legacy_fork(&self) -> bool {
-        self.parent_thread_id.is_none()
-            && self.forked_from_id.is_some()
+        super::non_empty_str(self.parent_thread_id.as_deref()).is_none()
+            && super::non_empty_str(self.forked_from_id.as_deref()).is_some()
             && self.history_mode.as_deref() == Some("legacy")
     }
 }
@@ -389,10 +390,10 @@ impl Agent for Codex {
             cursor.offset =
                 super::lines(file, cursor.offset, |bytes| {
                     match serde_json::from_slice::<Named<'_>>(bytes) {
-                        Ok(named) => read
+                        Ok(named) if !named.id.is_empty() => read
                             .session(&INFO.session(&named.id))
                             .title(Title::Generated, &named.thread_name),
-                        Err(_) => read.skipped += 1,
+                        Ok(_) | Err(_) => read.skipped += 1,
                     }
                 })?;
         } else if !cursor.review {
@@ -441,6 +442,7 @@ impl Agent for Codex {
                 key,
                 identity,
                 plan: None,
+                client: None,
                 refresh: None,
             }),
         }])
@@ -495,7 +497,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         }
         ("token_usage_record", _) => {
             let (Some(response), Some(usage)) = (
-                payload.response_id.as_deref(),
+                super::non_empty_str(payload.response_id.as_deref()),
                 super::parsed::<Usage>(payload.usage),
             ) else {
                 read.skipped += 1;
@@ -504,9 +506,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
             if !copied {
                 cursor.recorded = cursor.recorded.plus(&usage);
             }
-            let session = payload
-                .thread_id
-                .as_deref()
+            let session = super::non_empty_str(payload.thread_id.as_deref())
                 .map_or_else(|| thread.to_owned(), |native| INFO.session(native));
             let prompt = usage.input_tokens;
             match report(response.to_owned(), session, copied, usage, prompt, line) {
@@ -538,24 +538,18 @@ fn open(meta: &Payload<'_>, cursor: &mut Cursor, read: &mut Read) {
         cursor.review = true;
         return;
     }
-    let Some(native) = meta.id.as_deref() else {
+    let Some(native) = super::non_empty_str(meta.id.as_deref()) else {
         return;
     };
     let thread = INFO.session(native);
-    cursor.provider = meta
-        .model_provider
-        .as_deref()
-        .filter(|provider| !provider.is_empty())
-        .map(str::to_owned);
+    cursor.provider = super::non_empty_str(meta.model_provider.as_deref()).map(str::to_owned);
     cursor.copy = Copy::of(meta);
     read.cwd(&thread, meta.cwd.as_deref());
     let session = read.session(&thread);
     // A subagent's parent. A fork names the thread it was forked from, and
     // is a thread of its own.
-    session.parent = meta
-        .parent_thread_id
-        .as_deref()
-        .map(|parent| INFO.session(parent));
+    session.parent =
+        super::non_empty_str(meta.parent_thread_id.as_deref()).map(|parent| INFO.session(parent));
     if let Some(nickname) = meta.agent_nickname.as_deref() {
         session.title(Title::Task, nickname);
     }
@@ -569,7 +563,7 @@ fn open(meta: &Payload<'_>, cursor: &mut Cursor, read: &mut Read) {
 }
 
 fn apply(model: Option<&str>, cursor: &mut Cursor, read: &mut Read) {
-    if let Some(model) = model.filter(|model| !model.is_empty()) {
+    if let Some(model) = super::non_empty_str(model) {
         for mut waiting in cursor.waiting.drain(..) {
             waiting.model = model.to_owned();
             read.respond(waiting);
@@ -656,9 +650,13 @@ fn report(
 /// windows, or with a `limit_name` those on some models. None of another
 /// limit with no name, which would be taken for the plan's own.
 fn in_band(limits: RateLimits, cursor: &Cursor, at: i64) -> Option<InBand> {
-    let scope = match (limits.limit_name.as_deref(), limits.limit_id.as_deref()) {
-        (Some(name), _) if !name.is_empty() => Some(name),
-        (_, None | Some("" | "codex")) => None,
+    let scope = match (
+        super::non_empty_str(limits.limit_name.as_deref()),
+        super::non_empty_str(limits.limit_id.as_deref()),
+    ) {
+        (_, Some("codex")) => None,
+        (Some(name), _) => Some(name),
+        (None, None) => None,
         _ => return None,
     };
     let readings: Vec<_> = [
@@ -1208,5 +1206,55 @@ mod tests {
                 ("secondary_window:Spark", "Weekly", Some("Spark"), 10.0),
             ]
         );
+    }
+
+    #[test]
+    fn codex_limit_id_stays_unscoped_even_with_a_limit_name_and_empty_ids_are_filtered() {
+        let dir = tempfile::tempdir().unwrap();
+        let window = |used: f64, minutes: i64| json!({"used_percent": used, "window_minutes": minutes, "resets_at": 1_790_870_000});
+        let file = rollout(
+            dir.path(),
+            "t1",
+            &[
+                line(
+                    0,
+                    "session_meta",
+                    json!({"id": "t1", "parent_thread_id": "", "model_provider": "openai"}),
+                ),
+                line(1, "turn_context", json!({"model": "gpt-5.5"})),
+                // `limit_id: "codex"` with a non-empty `limit_name` must still
+                // map to unscoped plan windows, matching `openai.rs`.
+                line(
+                    2,
+                    "event_msg",
+                    json!({"type": "token_count", "info": null, "rate_limits": {
+                        "limit_id": "codex", "limit_name": "ChatGPT",
+                        "primary": window(30.0, 300), "secondary": window(12.0, 10080)
+                    }}),
+                ),
+                // Empty thread_id falls back to the rollout's thread; empty
+                // response_id is skipped.
+                line(
+                    3,
+                    "token_usage_record",
+                    json!({"response_id": "resp_1", "thread_id": "", "usage": usage(100, 0, 10)}),
+                ),
+                line(
+                    4,
+                    "token_usage_record",
+                    json!({"response_id": "", "usage": usage(100, 0, 10)}),
+                ),
+            ],
+        );
+        let read = Codex.read(&file, "").unwrap();
+        assert!(read.sessions["codex:t1"].parent.is_none());
+        assert_eq!(read.responses["resp_1"].session, "codex:t1");
+        assert_eq!((read.responses.len(), read.skipped), (1, 1));
+        let keys: Vec<_> = read.limits[0]
+            .readings
+            .iter()
+            .map(|r| (r.key.as_str(), r.scope.as_deref()))
+            .collect();
+        assert_eq!(keys, [("primary_window", None), ("secondary_window", None)]);
     }
 }

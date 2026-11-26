@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **GPT, Gemini and Grok models used through another provider take their
+  maker's list price**, such as GPT models in Antigravity or through a
+  gateway, instead of showing as unpriced in `turnscope doctor`.
+- **Agent history readers handle concurrent calls, clock steps, and partial
+  usage fields cleanly** (history is read again once): Antigravity no longer
+  drops unfinished calls when a later call lands or permanently counts calls
+  waiting on step timestamps as skipped; Grok Build preserves parent turns
+  after subagent subtraction, handles same-second subagent boundaries, rejects
+  unsafe subagent ids, and reads subagents incrementally; OpenCode defaults
+  missing reasoning and cache counts to zero and skips `NULL` credential rows;
+  Pi drops earlier timestamps only in forked sessions; Claude Code sums
+  per-iteration thinking tokens and web searches and reads `~/.claude.json`
+  without building a full JSON DOM; Codex keeps its main `codex` rate limit
+  unscoped even when named.
+- **Google limit refreshes prefer a fresher renewed token and cache the client
+  secret in memory**, avoiding wasted 401 requests and hourly binary re-reads,
+  and xAI accepts a `null` `creditUsagePercent`.
 - **Codex's responses after fast mode is turned off cost the standard
   rate**, not the fast one. The history is read again once, to price them
   anew.

@@ -266,13 +266,15 @@ struct CacheCreation {
 }
 
 impl<Calls> Usage<'_, Calls> {
-    /// Its tokens, but for reasoning. Cache writes without a split that
-    /// splits any are taken as kept for 5 minutes, the cache's default.
+    /// Its tokens. Cache writes without a split that splits any are taken as
+    /// kept for 5 minutes, the cache's default.
     fn tokens(&self) -> Tokens {
-        let split = self
-            .cache_creation
-            .as_ref()
-            .filter(|split| split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens > 0);
+        let split = self.cache_creation.as_ref().filter(|split| {
+            split
+                .ephemeral_5m_input_tokens
+                .saturating_add(split.ephemeral_1h_input_tokens)
+                > 0
+        });
         Tokens {
             input: self.input_tokens,
             cache_read: self.cache_read_input_tokens,
@@ -281,8 +283,19 @@ impl<Calls> Usage<'_, Calls> {
             }),
             cache_write_1h: split.map_or(0, |split| split.ephemeral_1h_input_tokens),
             output: self.output_tokens,
-            reasoning: 0,
+            reasoning: self
+                .output_tokens_details
+                .as_ref()
+                .and_then(|details| details.thinking_tokens)
+                .unwrap_or_default(),
         }
+    }
+
+    fn web_searches(&self) -> u64 {
+        self.server_tool_use
+            .as_ref()
+            .and_then(|tools| tools.web_search_requests)
+            .unwrap_or_default()
     }
 }
 
@@ -312,17 +325,14 @@ impl Meta {
     /// The subagent that started this one, or when none is named, its
     /// session, `session`.
     fn parent(&self, session: &str) -> String {
-        INFO.session(
-            self.parent_agent_id
-                .as_deref()
-                .filter(|parent| !parent.is_empty())
-                .unwrap_or(session),
-        )
+        INFO.session(super::non_empty_str(self.parent_agent_id.as_deref()).unwrap_or(session))
     }
 
     /// A fork's copy of `parent`'s history, through the call that started it.
     fn copy(&self, parent: &str) -> Option<Copy> {
-        let through = self.tool_use_id.clone().filter(|_| self.is_fork)?;
+        let through = super::non_empty_str(self.tool_use_id.as_deref())
+            .filter(|_| self.is_fork)?
+            .to_owned();
         Some(Copy {
             parent: parent.to_owned(),
             through: Some(through),
@@ -373,17 +383,20 @@ impl Agent for ClaudeCode {
     }
 
     fn files(&self, folder: &Path) -> Vec<PathBuf> {
-        let jsonl = |path: &PathBuf| {
+        let jsonl = |path: &Path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
         };
         let mut files = Vec::new();
-        let projects = super::entries(&folder.join("projects"));
-        for path in projects.flat_map(|project| super::entries(&project)) {
-            if jsonl(&path) {
-                files.push(path);
-            } else if path.is_dir() {
-                files.extend(super::entries(&path.join("subagents")).filter(jsonl));
+        for project in super::entries(&folder.join("projects")) {
+            for entry in std::fs::read_dir(&project).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if jsonl(&path) {
+                    files.push(path);
+                } else if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    files
+                        .extend(super::entries(&path.join("subagents")).filter(|path| jsonl(path)));
+                }
             }
         }
         files
@@ -462,7 +475,9 @@ impl Agent for ClaudeCode {
     }
 
     fn mcp_command(&self, folder: &Path, home: &Path) -> Option<String> {
-        super::json_mcp_command(&settings(folder, home), "/mcpServers/turnscope/command")
+        let bytes = std::fs::read(settings(folder, home)).ok()?;
+        let config: Option<ClaudeConfig<'_>> = serde_json::from_slice(&bytes).ok()?;
+        config?.mcp_servers?.turnscope?.command.map(Cow::into_owned)
     }
 }
 
@@ -490,10 +505,11 @@ fn in_copy(line: &Line, cursor: &mut Cursor) -> bool {
         // A fork of the session itself, before its first prompt.
         "fork-context-ref" => {
             if !cursor.prompted && cursor.copy.is_none() {
-                cursor.copy = line.parent_session_id.as_deref().map(|parent| Copy {
-                    parent: INFO.session(parent),
-                    through: None,
-                });
+                cursor.copy =
+                    super::non_empty_str(line.parent_session_id.as_deref()).map(|parent| Copy {
+                        parent: INFO.session(parent),
+                        through: None,
+                    });
             }
             true
         }
@@ -566,60 +582,130 @@ fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
     let Some(message) = line.message.as_ref().filter(|message| !message.synthetic()) else {
         return;
     };
-    let (Some(usage), Some(message_id), Some(model), Some(at)) =
-        (&message.usage, &message.id, &message.model, line.at())
-    else {
+    let (Some(usage), Some(message_id), Some(model), Some(at)) = (
+        &message.usage,
+        super::non_empty_str(message.id.as_deref()),
+        super::non_empty_str(message.model.as_deref()),
+        line.at(),
+    ) else {
         read.skipped += 1;
         return;
     };
-    let calls: Vec<Tokens> = match usage.iterations.as_deref() {
-        Some(calls) if !calls.is_empty() => calls.iter().map(Usage::tokens).collect(),
-        _ => vec![usage.tokens()],
-    };
-    let (mut tokens, mut prompt) = (Tokens::default(), 0);
-    for call in calls {
-        prompt = prompt.max(call.prompt());
-        tokens = tokens.zip(call, |a, b| a + b);
+    let (mut tokens, mut prompt, mut web_searches) = (Tokens::default(), 0u64, 0u64);
+    match usage.iterations.as_deref() {
+        Some(calls) if !calls.is_empty() => {
+            for call in calls {
+                let counted = call.tokens();
+                prompt = prompt.max(counted.prompt());
+                tokens = tokens.zip(counted, u64::saturating_add);
+                web_searches = web_searches.saturating_add(call.web_searches());
+            }
+            tokens.reasoning = tokens.reasoning.max(usage.tokens().reasoning);
+            web_searches = web_searches.max(usage.web_searches());
+        }
+        _ => {
+            tokens = usage.tokens();
+            prompt = tokens.prompt();
+            web_searches = usage.web_searches();
+        }
     }
-    tokens.reasoning = usage
-        .output_tokens_details
-        .as_ref()
-        .and_then(|details| details.thinking_tokens)
-        .unwrap_or_default();
     read.respond(Response {
-        id: match &line.request_id {
-            Some(request) if !request.is_empty() => format!("{message_id}:{request}"),
-            _ => message_id.to_string(),
+        id: match super::non_empty_str(line.request_id.as_deref()) {
+            Some(request) => format!("{message_id}:{request}"),
+            None => message_id.to_owned(),
         },
         session: session.to_owned(),
         copy,
         at,
         provider: "anthropic".to_owned(),
-        model: model.to_string(),
+        model: model.to_owned(),
         tokens,
         prompt,
-        web_searches: usage
-            .server_tool_use
-            .as_ref()
-            .and_then(|tools| tools.web_search_requests)
-            .unwrap_or_default(),
+        web_searches,
         priority: usage.speed.as_deref() == Some("fast"),
         cost: None,
     });
 }
 
+/// Only the fields Turnscope reads from `~/.claude.json`, borrowing from the
+/// raw bytes so multi-megabyte project histories are skipped without building
+/// a DOM.
+#[derive(Deserialize, Default)]
+struct ClaudeConfig<'a> {
+    #[serde(
+        rename = "oauthAccount",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
+    oauth_account: Option<OAuthAccount<'a>>,
+    #[serde(
+        rename = "mcpServers",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
+    mcp_servers: Option<McpServers<'a>>,
+}
+
+#[derive(Deserialize)]
+struct OAuthAccount<'a> {
+    #[serde(
+        rename = "accountUuid",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
+    account_uuid: Option<Cow<'a, str>>,
+    #[serde(
+        rename = "organizationUuid",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
+    organization_uuid: Option<Cow<'a, str>>,
+    #[serde(
+        rename = "emailAddress",
+        borrow,
+        default,
+        deserialize_with = "super::lenient"
+    )]
+    email_address: Option<Cow<'a, str>>,
+}
+
+#[derive(Deserialize)]
+struct McpServers<'a> {
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
+    turnscope: Option<McpServer<'a>>,
+}
+
+#[derive(Deserialize)]
+struct McpServer<'a> {
+    #[serde(borrow, default, deserialize_with = "super::lenient")]
+    command: Option<Cow<'a, str>>,
+}
+
 /// Whose sign-in `settings` names: a plan belongs to an organization, and one
 /// account can be in several.
 fn identity(settings: &Path) -> Result<Option<(String, Option<String>)>> {
-    let config = super::json_file(settings)?;
+    let bytes = match std::fs::read(settings) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(super::reading(settings, error)),
+    };
+    let config: Option<ClaudeConfig<'_>> =
+        serde_json::from_slice(&bytes).map_err(|error| super::reading(settings, error))?;
+    let Some(account) = config.and_then(|config| config.oauth_account) else {
+        return Ok(None);
+    };
     Ok(
         match (
-            super::str_at(&config, "/oauthAccount/accountUuid"),
-            super::str_at(&config, "/oauthAccount/organizationUuid"),
+            super::non_empty_str(account.account_uuid.as_deref()),
+            super::non_empty_str(account.organization_uuid.as_deref()),
         ) {
-            (Some(account), Some(organization)) => Some((
-                format!("{account}:{organization}"),
-                super::str_at(&config, "/oauthAccount/emailAddress").map(str::to_owned),
+            (Some(user), Some(organization)) => Some((
+                format!("{user}:{organization}"),
+                super::non_empty_str(account.email_address.as_deref()).map(str::to_owned),
             )),
             _ => None,
         },
@@ -639,13 +725,14 @@ fn credential(kept: &Value, identity: (String, Option<String>)) -> Option<Creden
             .and_then(Value::as_i64),
         identity: Some(identity),
         plan: super::str_at(kept, "/claudeAiOauth/subscriptionType").map(str::to_owned),
+        client: None,
         refresh: None,
     })
 }
 
 fn begun_lately(file: &Path) -> bool {
     std::fs::metadata(file)
-        .and_then(|meta| meta.created())
+        .and_then(|meta| meta.created().or_else(|_| meta.modified()))
         .ok()
         .and_then(|begun| begun.elapsed().ok())
         .is_some_and(|age| age < Duration::from_secs(10))
@@ -748,6 +835,33 @@ mod tests {
             (4000, 200, 30)
         );
         assert_eq!(response.prompt, 3130);
+    }
+
+    #[test]
+    fn iterations_sum_thinking_tokens_and_web_searches_and_reject_empty_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut iter1 = usage(100, 20);
+        iter1["output_tokens_details"] = json!({"thinking_tokens": 12});
+        iter1["server_tool_use"] = json!({"web_search_requests": 2});
+        let mut iter2 = usage(200, 30);
+        iter2["output_tokens_details"] = json!({"thinking_tokens": 8});
+        iter2["server_tool_use"] = json!({"web_search_requests": 1});
+        let mut counted = usage(0, 0);
+        counted["iterations"] = json!([iter1, iter2]);
+        let empty_id = json!({"type": "assistant", "sessionId": "s1", "timestamp": "2026-09-30T09:00:02Z",
+            "message": {"id": "", "model": "claude-opus-5", "role": "assistant", "usage": usage(10, 5), "content": []}});
+        let file = log(
+            dir.path(),
+            "s1.jsonl",
+            &[
+                assistant("s1", 1, "2026-09-30T09:00:01Z", counted, json!([])),
+                empty_id,
+            ],
+        );
+        let read = ClaudeCode.read(&file, "").unwrap();
+        let response = &read.responses["msg_1:req_1"];
+        assert_eq!((response.tokens.reasoning, response.web_searches), (20, 3));
+        assert_eq!((read.responses.len(), read.skipped), (1, 1));
     }
 
     #[test]
@@ -1000,5 +1114,16 @@ mod tests {
         .unwrap();
         let logins = ClaudeCode.logins(&folder, home.path()).unwrap();
         assert_eq!(logins[0].credential.as_ref().unwrap().expires, None);
+
+        // `mcp_command` reads only its field from `.claude.json`.
+        std::fs::write(
+            &config,
+            json!({"projects": {"/work": {"history": ["a", "b"]}}, "mcpServers": {"turnscope": {"command": "/opt/turnscope"}}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            ClaudeCode.mcp_command(&folder, home.path()).as_deref(),
+            Some("/opt/turnscope")
+        );
     }
 }

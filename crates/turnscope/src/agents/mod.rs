@@ -197,7 +197,7 @@ impl Read {
     /// Take in the folder `session` works in: the first given, of those not
     /// empty.
     pub fn cwd(&mut self, session: &str, cwd: Option<&str>) {
-        if let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) {
+        if let Some(cwd) = non_empty_str(cwd) {
             self.session(session)
                 .cwd
                 .get_or_insert_with(|| cwd.to_owned());
@@ -228,7 +228,7 @@ impl Read {
     /// with no tokens and no charge, as one stopped before it wrote
     /// anything, is none.
     pub fn respond(&mut self, response: Response) {
-        if response.tokens == Tokens::default() && response.cost.is_none_or(|cost| cost == 0.0) {
+        if response.tokens == Tokens::default() && !response.cost.is_some_and(|cost| cost > 0.0) {
             return;
         }
         self.session(&response.session);
@@ -365,7 +365,10 @@ pub struct Tokens {
 impl Tokens {
     /// Every input count, which together are the prompt.
     pub fn prompt(&self) -> u64 {
-        self.input + self.cache_read + self.cache_write_5m + self.cache_write_1h
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write_5m)
+            .saturating_add(self.cache_write_1h)
     }
 
     pub fn zip(self, other: Tokens, f: fn(u64, u64) -> u64) -> Tokens {
@@ -402,6 +405,9 @@ pub struct Credential {
     pub identity: Option<(String, Option<String>)>,
     /// The plan, where the agent's files say, such as `max`.
     pub plan: Option<String>,
+    /// The agent client this login belongs to, where the provider's API asks
+    /// requests to name it.
+    pub client: Option<&'static Client>,
     /// What renews the login in memory once its token expires, where its
     /// provider renews logins at all: only one whose refresh token isn't
     /// replaced when used, so renewing takes nothing from the agent.
@@ -417,11 +423,22 @@ impl Credential {
     }
 }
 
-/// What renews a login: its refresh token, and the agent's programs, which
-/// hold the OAuth client to renew it with.
+/// What identifies an agent's client to a provider whose API asks for it.
+pub struct Client {
+    /// The agent's name, for messages naming it.
+    pub name: &'static str,
+    /// `User-Agent` header value (without `User-Agent: `), if required.
+    pub user_agent: &'static str,
+    /// The client's identifier in the provider's API, as `ANTIGRAVITY`.
+    pub id: &'static str,
+}
+
+/// What renews a login in memory: its refresh token, the OAuth client id, and
+/// how to load the client secret(s) tried until the provider takes one.
 pub struct Refresh {
     pub token: Secret,
-    pub programs: Vec<PathBuf>,
+    pub client_id: &'static str,
+    pub secrets: Box<dyn Fn() -> std::result::Result<Vec<Secret>, String> + Send + Sync>,
 }
 
 /// A token or key. It can't be printed, serialized or cloned, so it can't
@@ -450,11 +467,49 @@ fn reading(path: &Path, error: impl Display) -> Error {
 }
 
 pub(crate) fn non_empty(value: &Value) -> Option<&str> {
-    value.as_str().filter(|text| !text.is_empty())
+    non_empty_str(value.as_str())
+}
+
+fn non_empty_str(text: Option<&str>) -> Option<&str> {
+    text.filter(|text| !text.is_empty())
 }
 
 fn str_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(non_empty)
+}
+
+fn sqlite_uri(path: &str, windows: bool) -> String {
+    let encode = |text: &str| {
+        text.replace('%', "%25")
+            .replace('?', "%3f")
+            .replace('#', "%23")
+    };
+    if !windows {
+        let encoded = encode(path);
+        return if encoded.starts_with("//") {
+            format!("file://{encoded}?immutable=1")
+        } else {
+            format!("file:{encoded}?immutable=1")
+        };
+    }
+    let path = path.replace('\\', "/");
+    let path = path
+        .strip_prefix("//?/UNC/")
+        .map(|unc| format!("//{unc}"))
+        .or_else(|| path.strip_prefix("//?/").map(str::to_owned))
+        .unwrap_or(path);
+    let encoded = encode(&path);
+    if let Some(unc) = encoded.strip_prefix("//") {
+        format!("file:////{unc}?immutable=1")
+    } else if encoded.starts_with('/') {
+        format!("file://{encoded}?immutable=1")
+    } else if encoded.as_bytes().get(1) == Some(&b':')
+        && encoded.as_bytes()[0].is_ascii_alphabetic()
+    {
+        format!("file:///{encoded}?immutable=1")
+    } else {
+        format!("file:{encoded}?immutable=1")
+    }
 }
 
 /// Read an agent's SQLite database: with no `-wal` beside it, immutable, which
@@ -469,16 +524,10 @@ fn opened<T>(file: &Path, read: impl FnOnce(&Connection) -> rusqlite::Result<T>)
     };
     let before = file.to_str().zip(alone());
     let db = match before {
-        Some((path, _)) => {
-            let path = path
-                .replace('%', "%25")
-                .replace('?', "%3f")
-                .replace('#', "%23");
-            Connection::open_with_flags(
-                format!("file:{path}?immutable=1"),
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-            )
-        }
+        Some((path, _)) => Connection::open_with_flags(
+            sqlite_uri(path, cfg!(windows)),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        ),
         None => Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY),
     }
     .map_err(|error| {
@@ -627,6 +676,7 @@ fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> Logi
             expires: kept["expires"].as_i64(),
             identity: None,
             plan: None,
+            client: None,
             refresh: None,
         }),
         provider: provider.to_owned(),
@@ -635,6 +685,8 @@ fn kept_login(provider: &str, reads: &str, kept: &Value, key_type: &str) -> Logi
 
 /// The Keychain item `service`, read with `/usr/bin/security` as the agents
 /// write it, so macOS asks nothing; under `home`, so a test's sees no item.
+/// Outside macOS there is no macOS Keychain, so it reads as absent.
+#[cfg(target_os = "macos")]
 fn keychain<T>(
     home: &Path,
     service: &str,
@@ -654,6 +706,17 @@ fn keychain<T>(
     kept.map(|kept| parse(&kept)).transpose().map_err(failed)
 }
 
+#[cfg(not(target_os = "macos"))]
+fn keychain<T>(
+    _home: &Path,
+    _service: &str,
+    _account: Option<&str>,
+    _parse: impl FnOnce(&[u8]) -> std::result::Result<T, String>,
+) -> Result<Option<T>> {
+    Ok(None)
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn found(output: std::process::Output) -> std::result::Result<Option<Vec<u8>>, String> {
     match output.status.code() {
         Some(0) => Ok(Some(output.stdout)),
@@ -1009,6 +1072,8 @@ mod tests {
         for (id, tokens, cost) in [
             ("none", Tokens::default(), None),
             ("free", Tokens::default(), Some(0.0)),
+            ("negative", Tokens::default(), Some(-0.01)),
+            ("nan", Tokens::default(), Some(f64::NAN)),
             ("charged", Tokens::default(), Some(0.01)),
             ("used", one, None),
         ] {
@@ -1022,6 +1087,56 @@ mod tests {
                 .keys()
                 .eq(["claude-code:charged", "claude-code:used"])
         );
+        let huge = Tokens {
+            input: u64::MAX,
+            cache_read: 10,
+            ..Tokens::default()
+        };
+        assert_eq!(huge.prompt(), u64::MAX);
+    }
+
+    #[test]
+    fn sqlite_uri_encodes_posix_and_windows_paths() {
+        assert_eq!(
+            sqlite_uri("/work/a #1?%/history.db", false),
+            "file:/work/a %231%3f%25/history.db?immutable=1"
+        );
+        assert_eq!(
+            sqlite_uri("//work/history.db", false),
+            "file:////work/history.db?immutable=1"
+        );
+        assert_eq!(
+            sqlite_uri(r"C:\Users\me\a #1?\opencode.db", true),
+            "file:///C:/Users/me/a %231%3f/opencode.db?immutable=1"
+        );
+        assert_eq!(
+            sqlite_uri(r"\\?\C:\Users\me\opencode.db", true),
+            "file:///C:/Users/me/opencode.db?immutable=1"
+        );
+        assert_eq!(
+            sqlite_uri(r"\\server\share\opencode.db", true),
+            "file:////server/share/opencode.db?immutable=1"
+        );
+        assert_eq!(
+            sqlite_uri(r"\\?\UNC\server\share\opencode.db", true),
+            "file:////server/share/opencode.db?immutable=1"
+        );
+
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("test.db");
+            let db = Connection::open(&file).unwrap();
+            db.execute("CREATE TABLE t (x INTEGER)", []).unwrap();
+            db.execute("INSERT INTO t VALUES (42)", []).unwrap();
+            drop(db);
+            let double_slash = format!("/{}", file.to_str().unwrap());
+            let value: i64 = opened(Path::new(&double_slash), |conn| {
+                conn.query_row("SELECT x FROM t", [], |row| row.get(0))
+            })
+            .unwrap();
+            assert_eq!(value, 42);
+        }
     }
 
     #[test]
@@ -1065,6 +1180,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_keychain_read_says_what_security_said_and_how_it_ended() {
         use std::os::unix::process::ExitStatusExt as _;
@@ -1122,6 +1238,7 @@ mod tests {
                 expires: Some(expires),
                 identity: None,
                 plan: None,
+                client: None,
                 refresh: None,
             }))
         };

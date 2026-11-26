@@ -32,6 +32,8 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
@@ -39,8 +41,11 @@ use base64::Engine as _;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::value::RawValue;
 
-use super::{Agent, Credential, Info, Login, Read, Refresh, Response, Secret, Title, Tokens};
+use super::{
+    Agent, Client, Credential, Info, Login, Read, Refresh, Response, Secret, Title, Tokens,
+};
 use crate::Result;
 
 pub struct Antigravity;
@@ -64,6 +69,59 @@ static INFO: Info = Info {
     login_file: Some(FALLBACK),
 };
 
+/// How Antigravity's app names itself to Google's Cloud Code API.
+macro_rules! user_agent {
+    ($os:literal, $arch:literal) => {
+        concat!(
+            "antigravity/2.31.0 (aidev_client; os_type=",
+            $os,
+            "; arch=",
+            $arch,
+            ")"
+        )
+    };
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const USER_AGENT: &str = user_agent!("darwin", "arm64");
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+const USER_AGENT: &str = user_agent!("darwin", "amd64");
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const USER_AGENT: &str = user_agent!("windows", "arm64");
+#[cfg(all(target_os = "windows", not(target_arch = "aarch64")))]
+const USER_AGENT: &str = user_agent!("windows", "amd64");
+#[cfg(all(
+    not(target_os = "macos"),
+    not(target_os = "windows"),
+    target_arch = "aarch64"
+))]
+const USER_AGENT: &str = user_agent!("linux", "arm64");
+#[cfg(all(
+    not(target_os = "macos"),
+    not(target_os = "windows"),
+    not(target_arch = "aarch64")
+))]
+const USER_AGENT: &str = user_agent!("linux", "amd64");
+
+static CLIENT: Client = Client {
+    name: INFO.name,
+    user_agent: USER_AGENT,
+    id: "ANTIGRAVITY",
+};
+
+/// The OAuth client Antigravity's sign-in is renewed with: its id. Its
+/// secret is in the app's program.
+const CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+
+/// How a client secret begins, and how long one is.
+const SECRET: (&[u8], usize) = (b"GOCSPX-", 35);
+
+/// The most of a program read for its client, so a program that isn't
+/// what it should be can't ask for more: its `__TEXT,__rodata` was 12 MiB
+/// and its load commands 4 KiB in 2.34.0, and reading it for the secrets
+/// took 34 ms (measured 2026-11-22, a release build).
+const MOST: usize = 64 * 1024 * 1024;
+
 const KEPT: [&str; 2] = ["antigravity", "antigravity-cli"];
 
 const TITLES: &str = "conversation_summaries.db";
@@ -76,9 +134,15 @@ const SIGN_IN: (&str, &str) = ("gemini", "antigravity");
 const FALLBACK: &str = "jetski-standalone-oauth-token";
 const WRAPPED: &str = "go-keyring-base64:";
 
+/// Cap on unresolved pending call indices kept in the cursor so a corrupt
+/// conversation can't grow the cursor without bound.
+const MAX_PENDING: usize = 64;
+
 #[derive(Default, Serialize, Deserialize)]
 struct Rows {
     calls: i64,
+    #[serde(default)]
+    pending: Vec<i64>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -137,12 +201,10 @@ impl Agent for Antigravity {
 
     fn logins(&self, folder: &Path, home: &Path) -> Result<Vec<Login>> {
         let (service, account) = SIGN_IN;
-        let kept = super::keychain(home, service, Some(account), signed_in).map(Option::flatten);
-        let file = super::json_file(&folder.join(FALLBACK)).map(|file| credential(&file));
-        let mut credential = super::fresher(kept, file)?;
-        if let Some(refresh) = credential.as_mut().and_then(|c| c.refresh.as_mut()) {
-            refresh.programs = programs(home);
-        }
+        let kept = super::keychain(home, service, Some(account), |kept| signed_in(kept, home))
+            .map(Option::flatten);
+        let file = super::json_file(&folder.join(FALLBACK)).map(|file| credential(&file, home));
+        let credential = super::fresher(kept, file)?;
         Ok(vec![Login {
             provider: "google".to_owned(),
             credential,
@@ -163,7 +225,7 @@ impl Agent for Antigravity {
 /// The sign-in the Keychain item's value `kept` holds, base64 JSON as
 /// go-keyring writes it (read 2026-11-10). An error for a value that doesn't
 /// read: taken for signed out, it would sign its account out.
-fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
+fn signed_in(kept: &[u8], home: &Path) -> std::result::Result<Option<Credential>, String> {
     let kept = std::str::from_utf8(kept).map_err(|error| error.to_string())?;
     let kept = kept
         .trim()
@@ -173,7 +235,7 @@ fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
         .decode(kept)
         .map_err(|error| error.to_string())?;
     let kept: Value = serde_json::from_slice(&kept).map_err(|error| error.to_string())?;
-    Ok(credential(&kept))
+    Ok(credential(&kept, home))
 }
 
 /// The sign-in `kept` holds, the Keychain item's JSON or the file's: `token`
@@ -184,13 +246,26 @@ fn signed_in(kept: &[u8]) -> std::result::Result<Option<Credential>, String> {
 /// (`providers::google`). Only `auth_method` `consumer`, a Google account's,
 /// is read: Google answers a token of Antigravity's other client with
 /// limits nothing has touched (CodexBar's code, read 2026-11-10).
-fn credential(kept: &Value) -> Option<Credential> {
+fn credential(kept: &Value, home: &Path) -> Option<Credential> {
     let (Some(token), Some("consumer")) = (
         super::str_at(kept, "/token/access_token"),
         super::str_at(kept, "/auth_method"),
     ) else {
         return None;
     };
+    let refresh = super::str_at(kept, "/token/refresh_token").map(|token| {
+        let paths = programs(home);
+        Refresh {
+            token: Secret::new(token),
+            client_id: CLIENT_ID,
+            secrets: Box::new(move || {
+                paths
+                    .iter()
+                    .find_map(|program| secrets(program))
+                    .ok_or_else(|| "no Antigravity program holds its client".to_owned())
+            }),
+        }
+    });
     Some(Credential {
         provider: "google",
         secret: Secret::new(token),
@@ -199,22 +274,147 @@ fn credential(kept: &Value) -> Option<Credential> {
         identity: super::str_at(kept, "/id_token_email")
             .map(|email| (email.to_owned(), Some(email.to_owned()))),
         plan: None,
-        refresh: super::str_at(kept, "/token/refresh_token").map(|token| Refresh {
-            token: Secret::new(token),
-            programs: Vec::new(),
-        }),
+        client: Some(&CLIENT),
+        refresh,
     })
 }
 
 /// Where Antigravity's programs, which hold the client its sign-in is renewed
-/// with, may be: where the app and `agy` were on this Mac (2026-11-22), and
-/// the person's own `~/Applications`.
+/// with, may be: the person's own `~/Applications` and `~/.local/bin/agy`
+/// first, then system `/Applications` (measured 2026-11-22).
 fn programs(home: &Path) -> Vec<PathBuf> {
     vec![
-        Path::new("/Applications").join(APP),
         home.join("Applications").join(APP),
         home.join(".local/bin").join(INFO.command),
+        Path::new("/Applications").join(APP),
     ]
+}
+
+/// The client secrets `program` holds, in the order it holds them, if it's
+/// Antigravity's: if it holds its client's id.
+fn secrets(program: &Path) -> Option<Vec<Secret>> {
+    let strings = rodata(program)?;
+    let id = CLIENT_ID.as_bytes();
+    strings.windows(id.len()).any(|at| at == id).then_some(())?;
+    let (begins, length) = SECRET;
+    let mut secrets: Vec<Secret> = Vec::new();
+    for at in 0..strings.len().saturating_sub(length - 1) {
+        let candidate = &strings[at..at + length];
+        let rest = &candidate[begins.len()..];
+        if candidate.starts_with(begins)
+            && rest
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(byte))
+            && let Ok(text) = std::str::from_utf8(candidate)
+            && !secrets.iter().any(|secret| secret.expose() == text)
+        {
+            secrets.push(Secret::new(text));
+        }
+    }
+    (!secrets.is_empty()).then_some(secrets)
+}
+
+/// The `__TEXT,__rodata` section of `program`, a 64-bit Mach-O or a
+/// universal/fat Mach-O holding one (Antigravity 2.34.0 and `agy`, read
+/// 2026-11-22).
+fn rodata(program: &Path) -> Option<Vec<u8>> {
+    let mut file = File::open(program).ok()?;
+    let mut head = [0u8; 8];
+    file.read_exact(&mut head).ok()?;
+    let le = u32::from_le_bytes(head[..4].try_into().ok()?);
+    if le == 0xFEED_FACF {
+        return rodata_at(&mut file, 0);
+    }
+    let be = u32::from_be_bytes(head[..4].try_into().ok()?);
+    let count = usize::try_from(u32::from_be_bytes(head[4..8].try_into().ok()?)).ok()?;
+    if count == 0 || count > 16 {
+        return None;
+    }
+    let offsets: Vec<u64> = match be {
+        // `FAT_MAGIC`: 20-byte big-endian `fat_arch` entries, slice offset at +8.
+        0xCAFE_BABE => {
+            let mut table = vec![0u8; count * 20];
+            file.read_exact(&mut table).ok()?;
+            table
+                .as_chunks::<20>()
+                .0
+                .iter()
+                .map(|entry| {
+                    u64::from(u32::from_be_bytes([
+                        entry[8], entry[9], entry[10], entry[11],
+                    ]))
+                })
+                .collect()
+        }
+        // `FAT_MAGIC_64`: 32-byte big-endian `fat_arch_64` entries, slice offset at +8.
+        0xCAFE_BABF => {
+            let mut table = vec![0u8; count * 32];
+            file.read_exact(&mut table).ok()?;
+            table
+                .as_chunks::<32>()
+                .0
+                .iter()
+                .map(|entry| {
+                    u64::from_be_bytes([
+                        entry[8], entry[9], entry[10], entry[11], entry[12], entry[13], entry[14],
+                        entry[15],
+                    ])
+                })
+                .collect()
+        }
+        _ => return None,
+    };
+    offsets
+        .into_iter()
+        .find_map(|offset| rodata_at(&mut file, offset))
+}
+
+fn rodata_at(file: &mut File, base: u64) -> Option<Vec<u8>> {
+    fn word(bytes: &[u8], at: usize) -> Option<usize> {
+        let word = u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
+        usize::try_from(word).ok()
+    }
+    fn name(bytes: &[u8]) -> &[u8] {
+        bytes.split(|byte| *byte == 0).next().unwrap_or_default()
+    }
+    file.seek(SeekFrom::Start(base)).ok()?;
+    let mut header = [0; 32];
+    file.read_exact(&mut header).ok()?;
+    // `MH_MAGIC_64`, and the size of the load commands that follow.
+    let size = word(&header, 20).filter(|size| *size <= MOST)?;
+    if word(&header, 0)? != 0xFEED_FACF {
+        return None;
+    }
+    let mut commands = vec![0; size];
+    file.read_exact(&mut commands).ok()?;
+    let mut at = 0;
+    while let (Some(kind), Some(cmd_size)) = (word(&commands, at), word(&commands, at + 4)) {
+        let end = at.checked_add(cmd_size.max(8))?.min(commands.len());
+        // `LC_SEGMENT_64`: 72 bytes, then 80 for each of its sections: its
+        // name, its segment's, its address, size and offset.
+        if kind == 0x19
+            && let Some(sections) = word(&commands, at + 64)
+        {
+            for index in 0..sections {
+                let section = at.checked_add(72)?.checked_add(index.checked_mul(80)?)?;
+                if section.checked_add(52)? > end {
+                    break;
+                }
+                let named = commands.get(section..section + 52)?;
+                if name(&named[..16]) == b"__rodata" && name(&named[16..32]) == b"__TEXT" {
+                    let size = u64::from_le_bytes(named[40..48].try_into().ok()?);
+                    let size = usize::try_from(size).ok().filter(|size| *size <= MOST)?;
+                    let offset = u64::try_from(word(named, 48)?).ok()?;
+                    file.seek(SeekFrom::Start(base.checked_add(offset)?)).ok()?;
+                    let mut strings = vec![0; size];
+                    file.read_exact(&mut strings).ok()?;
+                    return Some(strings);
+                }
+            }
+        }
+        at = end;
+    }
+    None
 }
 
 /// What a `USER_INPUT` line's `content` holds besides what the person typed
@@ -254,79 +454,151 @@ fn conversation(db: &Connection, file: &Path, cursor: &str) -> rusqlite::Result<
         .optional()?
         .flatten();
 
+    let mut by_idx = tx.prepare("SELECT data FROM gen_metadata WHERE idx = ?1")?;
     let mut calls =
         tx.prepare("SELECT idx, data FROM gen_metadata WHERE idx >= ?1 ORDER BY idx")?;
     let mut step = tx.prepare("SELECT metadata FROM steps WHERE idx = ?1")?;
-    // The last call read is read again, as it may have had no tokens yet:
-    // the 3 calls without were each their conversation's last, still running
-    // or failed, and still the only 3 of 254 later that day.
-    let seen = cursor.calls;
-    let mut rows = calls.query([seen - 1])?;
+
+    let mut next_pending = Vec::new();
+    let mut take_row = |idx: i64, data: &[u8]| -> rusqlite::Result<()> {
+        let Some(call) = parse_call(data) else {
+            next_pending.push(idx);
+            return Ok(());
+        };
+        // Still running, or failed: read again, not skipped.
+        if call.tokens == Tokens::default() {
+            next_pending.push(idx);
+            return Ok(());
+        }
+        let step_time = match call.step.and_then(|named| i64::try_from(named).ok()) {
+            Some(named) => match step
+                .query_row([named], |row| {
+                    Ok(match row.get_ref(0)?.as_bytes_or_null()? {
+                        None => StepTime::Pending,
+                        Some(meta) => made(meta).map_or(StepTime::Missing, StepTime::At),
+                    })
+                })
+                .optional()?
+            {
+                Some(time) => time,
+                None => StepTime::Missing,
+            },
+            None => StepTime::Missing,
+        };
+        match (step_time, call.model) {
+            (StepTime::At(at), Some(model)) => {
+                let id = call
+                    .message_id
+                    .map_or_else(|| format!("{native}/{idx}"), str::to_owned);
+                read.respond(Response {
+                    id,
+                    session: session.clone(),
+                    copy: false,
+                    at,
+                    // Antigravity signs in to Google alone, so the Claude and GPT
+                    // models its plan serves are `google`'s too. Its 2.34.0 program
+                    // names Claude's as Anthropic does, which then take Anthropic's
+                    // list price (`prices`); none was seen in history.
+                    provider: "google".to_owned(),
+                    model: model.to_owned(),
+                    prompt: call.tokens.prompt(),
+                    tokens: call.tokens,
+                    web_searches: 0,
+                    priority: false,
+                    cost: None,
+                });
+            }
+            // Step exists with NULL metadata while tokens already landed: wait
+            // for its timestamp instead of permanently counting it as skipped.
+            (StepTime::Pending, Some(_)) => next_pending.push(idx),
+            _ => read.skipped += 1,
+        }
+        Ok(())
+    };
+
+    for idx in std::mem::take(&mut cursor.pending) {
+        if idx >= cursor.calls {
+            continue;
+        }
+        if let Some(data) = by_idx
+            .query_row([idx], |row| {
+                Ok(row.get_ref(0)?.as_bytes_or_null()?.unwrap_or(&[]).to_vec())
+            })
+            .optional()?
+        {
+            take_row(idx, &data)?;
+        }
+    }
+
+    let mut rows = calls.query([cursor.calls])?;
     while let Some(row) = rows.next()? {
         let idx: i64 = row.get(0)?;
         let data = row.get_ref(1)?.as_bytes_or_null()?.unwrap_or(&[]);
         cursor.calls = idx + 1;
-        let Some(chat) = bytes(data, 1) else { continue };
-        let Some(usage) = bytes(chat, 4) else {
-            continue;
-        };
-        let count = |n| number(usage, n).unwrap_or(0);
-        let tokens = Tokens {
-            input: count(2),
-            output: count(3),
-            cache_write_5m: count(4),
-            cache_read: count(5),
-            reasoning: count(9),
-            cache_write_1h: 0,
-        };
-        // Still running, or failed: read again, not skipped.
-        if tokens == Tokens::default() {
-            continue;
-        }
-        let (model, message_id) = (
-            bytes(chat, 19).and_then(text),
-            bytes(usage, 7).and_then(text),
-        );
-        let named = match field(data, 2) {
-            Some(Field::Bytes(mut steps)) => varint(&mut steps),
-            Some(Field::Number(step)) => Some(step),
-            None => None,
-        };
-        let at = match named.and_then(|named| i64::try_from(named).ok()) {
-            Some(named) => step
-                .query_row([named], |row| {
-                    Ok(row.get_ref(0)?.as_bytes_or_null()?.and_then(made))
-                })
-                .optional()?
-                .flatten(),
-            None => None,
-        };
-        let (Some(at), Some(model)) = (at, model) else {
-            // Counted when first read, not each time it's read again.
-            read.skipped += u64::from(idx >= seen);
-            continue;
-        };
-        let id = message_id.map_or_else(|| format!("{native}/{idx}"), str::to_owned);
-        read.respond(Response {
-            id,
-            session: session.clone(),
-            copy: false,
-            at,
-            // Antigravity signs in to Google alone, so the Claude and GPT
-            // models its plan serves are `google`'s too. Its 2.34.0 program
-            // names Claude's as Anthropic does, which then take Anthropic's
-            // list price (`prices`); none was seen in history.
-            provider: "google".to_owned(),
-            model: model.to_owned(),
-            prompt: tokens.prompt(),
-            tokens,
-            web_searches: 0,
-            priority: false,
-            cost: None,
-        });
+        take_row(idx, data)?;
     }
+
+    if next_pending.len() > MAX_PENDING {
+        let drop = next_pending.len() - MAX_PENDING;
+        next_pending.drain(..drop);
+    }
+    cursor.pending = next_pending;
     read.cursor = serde_json::to_string(&cursor).unwrap_or_default();
     Ok(read)
+}
+
+enum StepTime {
+    At(i64),
+    Pending,
+    Missing,
+}
+
+struct Call<'a> {
+    tokens: Tokens,
+    model: Option<&'a str>,
+    message_id: Option<&'a str>,
+    step: Option<u64>,
+}
+
+fn parse_call(data: &[u8]) -> Option<Call<'_>> {
+    let mut chat = None;
+    let mut step = None;
+    for (n, field) in Fields(data) {
+        match (n, field) {
+            (1, Field::Bytes(bytes)) if chat.is_none() => chat = Some(bytes),
+            (2, Field::Bytes(mut steps)) if step.is_none() => step = varint(&mut steps),
+            (2, Field::Number(first)) if step.is_none() => step = Some(first),
+            _ => {}
+        }
+    }
+    let mut usage = None;
+    let mut model = None;
+    for (n, field) in Fields(chat?) {
+        match (n, field) {
+            (4, Field::Bytes(bytes)) if usage.is_none() => usage = Some(bytes),
+            (19, Field::Bytes(bytes)) if model.is_none() => model = text(bytes),
+            _ => {}
+        }
+    }
+    let mut tokens = Tokens::default();
+    let mut message_id = None;
+    for (n, field) in Fields(usage?) {
+        match (n, field) {
+            (2, Field::Number(v)) => tokens.input = v,
+            (3, Field::Number(v)) => tokens.output = v,
+            (4, Field::Number(v)) => tokens.cache_write_5m = v,
+            (5, Field::Number(v)) => tokens.cache_read = v,
+            (7, Field::Bytes(bytes)) if message_id.is_none() => message_id = text(bytes),
+            (9, Field::Number(v)) => tokens.reasoning = v,
+            _ => {}
+        }
+    }
+    Some(Call {
+        tokens,
+        model,
+        message_id,
+        step,
+    })
 }
 
 /// Read a transcript on from `cursor` for its session's title: its first
@@ -353,8 +625,8 @@ fn transcript(file: &Path, cursor: &str) -> Result<Read> {
         kind: Option<Cow<'a, str>>,
         #[serde(borrow)]
         source: Option<Cow<'a, str>>,
-        #[serde(default, deserialize_with = "super::lenient")]
-        content: Option<String>,
+        #[serde(borrow)]
+        content: Option<&'a RawValue>,
     }
     let session = INFO.session(native);
     cursor.offset = super::try_lines(file, cursor.offset, |bytes| {
@@ -364,7 +636,7 @@ fn transcript(file: &Path, cursor: &str) -> Result<Read> {
         };
         if line.kind.as_deref() == Some("USER_INPUT")
             && line.source.as_deref() == Some("USER_EXPLICIT")
-            && let Some(content) = line.content
+            && let Some(content) = super::parsed::<Cow<'_, str>>(line.content)
         {
             let request = super::typed_in(&content, "USER_REQUEST", ADDED);
             if !request.is_empty() {
@@ -428,14 +700,30 @@ fn titles(db: &Connection, file: &Path) -> rusqlite::Result<Read> {
 
 fn made(metadata: &[u8]) -> Option<i64> {
     let stamp = bytes(metadata, 1)?;
-    let seconds = i64::try_from(number(stamp, 1)?).ok()?;
-    let nanos = i64::try_from(number(stamp, 2).unwrap_or(0)).ok()?;
+    let (mut seconds, mut nanos) = (None, 0u64);
+    for (n, field) in Fields(stamp) {
+        match (n, field) {
+            (1, Field::Number(v)) if seconds.is_none() => seconds = Some(v),
+            (2, Field::Number(v)) if nanos == 0 => nanos = v,
+            _ => {}
+        }
+    }
+    let seconds = i64::try_from(seconds?).ok()?;
+    let nanos = i64::try_from(nanos).ok()?;
     seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000)
 }
 
 fn folder(address: &[u8]) -> Option<String> {
-    let mut path = Vec::new();
-    let mut rest = address.strip_prefix(b"file://")?.iter();
+    let rest = address.strip_prefix(b"file://")?;
+    let rest = match rest.get(..10) {
+        Some(head) if head[..9].eq_ignore_ascii_case(b"localhost") && head[9] == b'/' => &rest[9..],
+        _ => rest,
+    };
+    if !rest.starts_with(b"/") {
+        return None;
+    }
+    let mut path = Vec::with_capacity(rest.len());
+    let mut rest = rest.iter();
     while let Some(&byte) = rest.next() {
         path.push(match byte {
             b'%' => {
@@ -445,7 +733,14 @@ fn folder(address: &[u8]) -> Option<String> {
             byte => byte,
         });
     }
-    String::from_utf8(path).ok().filter(|path| !path.is_empty())
+    let path = String::from_utf8(path).ok()?;
+    let path = match path.as_bytes() {
+        [b'/', drive, b':', b'/', ..] | [b'/', drive, b':'] if drive.is_ascii_alphabetic() => {
+            path[1..].to_owned()
+        }
+        _ => path,
+    };
+    (!path.is_empty()).then_some(path)
 }
 
 enum Field<'a> {
@@ -502,6 +797,7 @@ fn field(message: &[u8], number: u64) -> Option<Field<'_>> {
     Fields(message).find_map(|(n, value)| (n == number).then_some(value))
 }
 
+#[cfg(test)]
 fn number(message: &[u8], field_number: u64) -> Option<u64> {
     match field(message, field_number)? {
         Field::Number(number) => Some(number),
@@ -757,7 +1053,67 @@ mod tests {
         );
         assert_eq!(later.responses["bot-3"].at, 1_020_500);
         let again = Antigravity.read(&database, &later.cursor).unwrap();
-        assert_eq!(again.responses["bot-3"], later.responses["bot-3"]);
+        assert!(again.responses.is_empty());
+    }
+
+    #[test]
+    fn concurrent_pending_calls_and_missing_step_timestamps_are_not_dropped_or_skipped() {
+        let home = tempfile::tempdir().unwrap();
+        let (database, ..) = kept(home.path());
+        let db = Connection::open(&database).unwrap();
+        // Call 2 is still running (zero tokens), call 3 already has tokens but
+        // its step still has NULL metadata, while call 4 has finished.
+        let running = [b(2, &[&[5]]), b(1, &[&b(4, &[&n(1, 1318)])])].concat();
+        db.execute_batch(
+            "INSERT INTO steps VALUES (5, 15, NULL);
+             INSERT INTO steps VALUES (6, 15, NULL);",
+        )
+        .unwrap();
+        db.execute("INSERT INTO steps VALUES (7, 15, ?1)", [step(1030)])
+            .unwrap();
+        db.execute("INSERT INTO gen_metadata VALUES (2, ?1)", [running])
+            .unwrap();
+        db.execute(
+            "INSERT INTO gen_metadata VALUES (3, ?1)",
+            [call(
+                &[6],
+                "bot-pending-step",
+                "gemini-3.8-flash",
+                [8, 2, 0, 0],
+            )],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO gen_metadata VALUES (4, ?1)",
+            [call(&[7], "bot-4", "gemini-3.8-flash", [10, 4, 0, 0])],
+        )
+        .unwrap();
+
+        let first = Antigravity.read(&database, "").unwrap();
+        assert_eq!(first.skipped, 0);
+        assert!(first.responses.contains_key("bot-4"));
+        assert!(!first.responses.contains_key("bot-pending-step"));
+
+        // Now both earlier pending calls complete.
+        db.execute("UPDATE steps SET metadata = ?1 WHERE idx = 5", [step(1020)])
+            .unwrap();
+        db.execute("UPDATE steps SET metadata = ?1 WHERE idx = 6", [step(1025)])
+            .unwrap();
+        db.execute(
+            "UPDATE gen_metadata SET data = ?1 WHERE idx = 2",
+            [call(&[5], "bot-2-done", "gemini-3.8-flash", [7, 3, 0, 0])],
+        )
+        .unwrap();
+        let later = Antigravity.read(&database, &first.cursor).unwrap();
+        let mut ids: Vec<&str> = later.responses.keys().map(String::as_str).collect();
+        ids.sort();
+        assert_eq!(ids, ["bot-2-done", "bot-pending-step"]);
+        assert_eq!(later.skipped, 0);
+        assert_eq!(later.responses["bot-2-done"].at, 1_020_500);
+        assert_eq!(later.responses["bot-pending-step"].at, 1_025_500);
+        let settled = Antigravity.read(&database, &later.cursor).unwrap();
+        assert!(settled.responses.is_empty());
+        assert_eq!(settled.skipped, 0);
     }
 
     #[test]
@@ -894,6 +1250,102 @@ mod tests {
         .concat();
         assert_eq!((number(&fixed, 1), number(&fixed, 2)), (Some(7), Some(9)));
         assert_eq!(folder(b"file:///work/%4"), None);
+        assert_eq!(
+            folder(b"file://localhost/work/my%20app").as_deref(),
+            Some("/work/my app")
+        );
+        assert_eq!(
+            folder(b"file:///C:/work/my%20app").as_deref(),
+            Some("C:/work/my app")
+        );
+        assert_eq!(
+            folder(b"file:///c%3A/work/app").as_deref(),
+            Some("c:/work/app")
+        );
+        assert_eq!(
+            folder(b"file://localhost/C:/work/app").as_deref(),
+            Some("C:/work/app")
+        );
+        assert_eq!(folder(b"file://other-host/share"), None);
+    }
+
+    /// A 64-bit Mach-O whose one section, `__TEXT,__rodata`, holds `strings`.
+    fn program(strings: &[u8]) -> Vec<u8> {
+        let name = |name: &str| {
+            let mut padded = [0; 16];
+            padded[..name.len()].copy_from_slice(name.as_bytes());
+            padded
+        };
+        let commands: u32 = 72 + 80;
+        let mut program = Vec::new();
+        for word in [0xFEED_FACF_u32, 0x0100_000C, 0, 2, 1, commands, 0, 0] {
+            program.extend(word.to_le_bytes());
+        }
+        program.extend(0x19_u32.to_le_bytes());
+        program.extend(commands.to_le_bytes());
+        program.extend(name("__TEXT"));
+        program.extend([0; 40]);
+        program.extend(1_u32.to_le_bytes());
+        program.extend(0_u32.to_le_bytes());
+        program.extend(name("__rodata"));
+        program.extend(name("__TEXT"));
+        program.extend(0_u64.to_le_bytes());
+        program.extend((strings.len() as u64).to_le_bytes());
+        program.extend((32 + commands).to_le_bytes());
+        program.extend([0; 28]);
+        program.extend(strings);
+        program
+    }
+
+    /// Wrap a thin Mach-O `slice` inside a universal/fat Mach-O (`0xCAFEBABE`).
+    fn fat_program(slice: &[u8]) -> Vec<u8> {
+        let offset: u32 = 8 + 20;
+        let mut out = Vec::new();
+        out.extend(0xCAFE_BABE_u32.to_be_bytes());
+        out.extend(1_u32.to_be_bytes());
+        out.extend(0x0100_000C_u32.to_be_bytes());
+        out.extend(0_u32.to_be_bytes());
+        out.extend(offset.to_be_bytes());
+        out.extend((slice.len() as u32).to_be_bytes());
+        out.extend(14_u32.to_be_bytes());
+        out.extend(slice);
+        out
+    }
+
+    #[test]
+    fn the_secrets_are_read_from_thin_and_universal_programs_holding_the_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let (one, two) = (
+            format!("GOCSPX-{}", "a".repeat(28)),
+            format!("GOCSPX-{}", "B_-9".repeat(7)),
+        );
+        // Go packs its strings one against the next, with nothing between.
+        let strings = format!("{one}gzip{}{two}{one}GOCSPX-short", CLIENT_ID);
+        let thin = program(strings.as_bytes());
+        let held = dir.path().join("language_server");
+        std::fs::write(&held, &thin).unwrap();
+        let extract = |path: &Path| {
+            secrets(path)
+                .unwrap()
+                .iter()
+                .map(|secret| secret.expose().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(extract(&held), [one.clone(), two.clone()]);
+
+        let universal = dir.path().join("language_server_universal");
+        std::fs::write(&universal, fat_program(&thin)).unwrap();
+        assert_eq!(extract(&universal), [one.clone(), two]);
+
+        // Not Antigravity's: no client id, or not a Mach-O, or cut short.
+        let other = dir.path().join("other");
+        std::fs::write(&other, program(one.as_bytes())).unwrap();
+        assert!(secrets(&other).is_none());
+        std::fs::write(&other, strings.as_bytes()).unwrap();
+        assert!(secrets(&other).is_none());
+        std::fs::write(&other, &thin[..thin.len() - 10]).unwrap();
+        assert!(secrets(&other).is_none());
+        assert!(secrets(&dir.path().join("missing")).is_none());
     }
 
     #[test]
@@ -913,7 +1365,9 @@ mod tests {
             "id_token_email": "me@example.com",
             "writer_id": "made-up-writer",
         });
-        let credential = signed_in(wrapped(&kept).as_bytes()).unwrap().unwrap();
+        let credential = signed_in(wrapped(&kept).as_bytes(), home.path())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             (
                 credential.provider,
@@ -933,21 +1387,37 @@ mod tests {
                 Some("me@example.com".to_owned())
             ))
         );
+        assert_eq!(credential.client.unwrap().id, "ANTIGRAVITY");
         let refresh = credential.refresh.as_ref().unwrap();
         assert_eq!(refresh.token.expose(), "made-up-refresh");
+        assert_eq!(refresh.client_id, CLIENT_ID);
 
         // Another way of signing in isn't read, nor a sign-in with no token.
         let mut other = kept.clone();
         other["auth_method"] = json!("enterprise");
-        assert!(signed_in(wrapped(&other).as_bytes()).unwrap().is_none());
+        assert!(
+            signed_in(wrapped(&other).as_bytes(), home.path())
+                .unwrap()
+                .is_none()
+        );
         let mut out = kept.clone();
         out["token"]["access_token"] = json!("");
-        assert!(signed_in(wrapped(&out).as_bytes()).unwrap().is_none());
+        assert!(
+            signed_in(wrapped(&out).as_bytes(), home.path())
+                .unwrap()
+                .is_none()
+        );
 
         // A value that doesn't read isn't taken for signed out.
-        assert!(signed_in(kept.to_string().as_bytes()).is_err());
-        assert!(signed_in(format!("{WRAPPED}not base64").as_bytes()).is_err());
-        assert!(signed_in(format!("{WRAPPED}{}", STANDARD.encode("not JSON")).as_bytes()).is_err());
+        assert!(signed_in(kept.to_string().as_bytes(), home.path()).is_err());
+        assert!(signed_in(format!("{WRAPPED}not base64").as_bytes(), home.path()).is_err());
+        assert!(
+            signed_in(
+                format!("{WRAPPED}{}", STANDARD.encode("not JSON")).as_bytes(),
+                home.path()
+            )
+            .is_err()
+        );
 
         // The file is read as the item is, and one half written isn't taken
         // for signed out.
@@ -957,10 +1427,20 @@ mod tests {
         let logins = Antigravity.logins(&folder, home.path()).unwrap();
         let from_file = logins[0].credential.as_ref().unwrap();
         assert_eq!(from_file.secret.expose(), "made-up-token");
-        assert_eq!(
-            from_file.refresh.as_ref().unwrap().programs,
-            programs(home.path())
-        );
+        assert_eq!(from_file.refresh.as_ref().unwrap().client_id, CLIENT_ID);
+        // Secret loader discovers `agy` under `home/.local/bin`.
+        let bin = home.path().join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let secret = format!("GOCSPX-{}", "z".repeat(28));
+        std::fs::write(
+            bin.join(INFO.command),
+            program(format!("{CLIENT_ID}{secret}").as_bytes()),
+        )
+        .unwrap();
+        let loaded = (from_file.refresh.as_ref().unwrap().secrets)().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].expose(), secret);
+
         std::fs::write(folder.join(FALLBACK), "{").unwrap();
         assert!(Antigravity.logins(&folder, home.path()).is_err());
     }

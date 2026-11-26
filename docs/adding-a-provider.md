@@ -79,13 +79,16 @@ fn parse(answer: &Value) -> Option<Vec<Reading>> {
         if super::absent(window) {
             continue;
         }
-        let length = window["length_seconds"].as_i64()? * 1000;
+        let length = window["length_seconds"]
+            .as_i64()
+            .filter(|&seconds| seconds > 0)?
+            .checked_mul(1000)?;
         let resets = super::reset(&window["resets_at"])?;
         let key = window["id"].as_str()?.to_owned();
         let used = window["used_percent"].as_f64()?;
         readings.push(super::windowed(key, None, used, length, resets));
     }
-    Some(readings)
+    (!readings.is_empty()).then_some(readings)
 }
 ```
 
