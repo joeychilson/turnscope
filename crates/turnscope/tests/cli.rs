@@ -930,7 +930,7 @@ fn check_limits_of_every_account_leads_with_the_one_with_most_room() {
         "{}",
         answer
     );
-    // Claude Max by its Weekly alone, with 19h of work left: 5 fit it, and
+    // Claude Max by its Weekly alone, with 18h 40m of work left: 5 fit it, and
     // can't be told of ChatGPT Plus, with more left.
     turnscope::db::open(data.path())
         .unwrap()
@@ -1136,7 +1136,7 @@ fn check_limits_of_one_account_says_its_fit_and_verdict_in_one_line() {
     );
     assert!(
         answers[0].starts_with(
-            "Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h).\n\nClaude Max (me@example.com) · via"
+            "Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 30m of work (as little as 10m); it resets 14:00 (in 2h).\n\nClaude Max (me@example.com) · via"
         ),
         "{}",
         answers[0]
@@ -1151,9 +1151,11 @@ fn check_limits_of_one_account_says_its_fit_and_verdict_in_one_line() {
 }
 
 /// Claude Max's 5 hours has 25% left at 40.9% an hour of work: 36.7
-/// minutes, said as about 40m. 37 minutes of work run it out, and 36 fit.
+/// minutes, said as about 30m. 37 minutes of work run it out, and 36 fit.
+/// By its Weekly alone, 18h 40m, said as about 18h: 18.7 hours run it out.
+/// Where they run out, no more work is said to be left than was asked.
 #[test]
-fn hours_of_work_fit_by_the_minutes_left_not_as_they_are_said() {
+fn hours_of_work_fit_by_the_minutes_left_and_say_no_more_left_than_asked() {
     let data = store();
     let fit = |hours: &str| {
         let output = turnscope(
@@ -1165,12 +1167,27 @@ fn hours_of_work_fit_by_the_minutes_left_not_as_they_are_said() {
     };
     assert_eq!(
         fit("0.62"),
-        "Claude Max (me@example.com): 0.62 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h)."
+        "Claude Max (me@example.com): 0.62 more hours of work don't fit: 5 hours runs out after about 30m of work (as little as 10m); it resets 14:00 (in 2h)."
     );
     assert_eq!(
         fit("0.6"),
         "Claude Max (me@example.com): 0.6 more hours of work fit at your work rate, leaving under 1% of 5 hours, about 54% of Weekly."
     );
+    turnscope::db::open(data.path())
+        .unwrap()
+        .execute(
+            "DELETE FROM reading WHERE account = 'anthropic:acct-1:org-1' AND limit_key = 'five_hour'",
+            [],
+        )
+        .unwrap();
+    for hours in ["18.7", "19"] {
+        assert_eq!(
+            fit(hours),
+            format!(
+                "Claude Max (me@example.com): {hours} more hours of work don't fit: Weekly runs out after about 18h of work (as little as 7h 40m); it resets Mon 00:00 (in 3d 12h)."
+            )
+        );
+    }
 }
 
 /// Pi's OpenRouter key: $9.00 of its $20.00 weekly limit used, by $0.00 of

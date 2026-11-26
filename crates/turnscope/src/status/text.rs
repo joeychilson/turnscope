@@ -11,22 +11,31 @@ use crate::time::{self, MINUTE};
 
 const UNDER: &str = "under 10m";
 
-/// Minutes of work as people say them, rounded once: to ten minutes, `1h
-/// 50m`, and from ten hours, to the hour, `26h`.
-fn worked(minutes: f64) -> String {
-    if minutes < 9.5 {
+/// Minutes of work as people say them, by `round`: under ten minutes,
+/// `under 10m`, to ten minutes, `1h 50m`, and from ten hours, to the hour,
+/// `26h`.
+fn worked(minutes: f64, round: fn(f64) -> f64) -> String {
+    let tens = round(minutes / 10.0);
+    if round(minutes) < 10.0 {
         UNDER.to_owned()
-    } else if minutes < 595.0 {
-        time::span((minutes / 10.0).round() as i64 * 10 * MINUTE)
+    } else if tens < 60.0 {
+        time::span(tens as i64 * 10 * MINUTE)
     } else {
-        format!("{}h", (minutes / 60.0).round())
+        format!("{}h", round(minutes / 60.0))
     }
 }
 
-/// The likely minutes of work left, as a sentence says them: `about 1h 50m`,
-/// or `under 10m` alone, which is already no exact amount.
-fn about(minutes: f64) -> String {
-    match worked(minutes) {
+/// Minutes of work left as they're said: rounded down, as percent left is,
+/// so they're never overstated. Rounded to the nearest, 36.7 minutes left
+/// read "runs out after about 40m of work" of 37 minutes asked.
+fn work_left(minutes: f64) -> String {
+    worked(minutes, f64::floor)
+}
+
+/// An amount of work as a sentence says it: `about 1h 50m`, or `under 10m`
+/// alone, which is already no exact amount.
+fn about(amount: String) -> String {
+    match amount {
         under if under == UNDER => under,
         amount => format!("about {amount}"),
     }
@@ -240,7 +249,7 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
         out += &match work.left_minutes {
             Some(left) => format!(
                 " {} of work left{}, at {rate}% an hour of work.",
-                capital(&about(left.likely)),
+                capital(&about(work_left(left.likely))),
                 fewest(&left)
             ),
             None => {
@@ -255,7 +264,7 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
 /// the likely hours: ` (as little as 1h 10m)`, or nothing for "under 10m",
 /// which is no amount.
 fn fewest(left: &MinutesLeft) -> String {
-    match worked(left.low) {
+    match work_left(left.low) {
         low if low == UNDER => String::new(),
         low => format!(" (as little as {low})"),
     }
@@ -392,7 +401,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
         };
         let why = format!(
             "{then}, and your agents have worked {} since",
-            about(worked_minutes as f64)
+            about(worked(worked_minutes as f64, f64::round))
         );
         return (Fits::Untold, untold(&why), true);
     }
@@ -446,7 +455,7 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
             format!(
                 "{more} of work {dont_fit}: {} {run} out after {} of work{within}.",
                 limit.named(),
-                about(at)
+                about(work_left(at))
             ),
             false,
         );
@@ -556,7 +565,7 @@ fn standing(account: &Account, title: &str, now: i64) -> String {
     if !unmeasured && let Some((limit, left)) = first_out(account) {
         return format!(
             "{title}: {} of work left{} before {} {} out{}.",
-            about(left.likely),
+            about(work_left(left.likely)),
             fewest(&left),
             limit.named(),
             agree(limit, "runs", "run"),

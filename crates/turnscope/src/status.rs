@@ -497,7 +497,8 @@ pub struct Work {
 
 /// Minutes of work left: the fewest, at the fast end of the work rate, and
 /// the likely. Unrounded, as whether hours of work fit is told by them:
-/// rounded as they're said, 36.7 minutes were 40, and 37 minutes of work fit.
+/// rounded to the nearest 10, 36.7 minutes were 40, and 37 minutes of work
+/// fit.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MinutesLeft {
     pub low: f64,

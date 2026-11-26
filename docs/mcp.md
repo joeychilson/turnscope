@@ -198,7 +198,7 @@ account is hidden, and then to name one with `account`.
 Called with `{"all": true, "hours": 2}`:
 
 ```markdown
-- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets 14:00 (in 2h).
+- Claude Max (me@example.com): 2 more hours of work don't fit: 5 hours runs out after about 30m of work (as little as 10m); it resets 14:00 (in 2h).
 - ChatGPT Plus (me@example.com): whether 2 more hours of work fit can't be told: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h), but too little work on it has been measured.
 - OpenRouter API key: whether 2 more hours of work fit can't be told: Credits have $35.00 of $50.00 left, but too little work on them has been measured.
 - SuperGrok (me@example.com): whether 2 more hours of work fit can't be told: its login was refused.
@@ -206,8 +206,8 @@ Called with `{"all": true, "hours": 2}`:
 Most room: ChatGPT Plus (me@example.com), via Codex: Weekly has 80% left and lasts at this pace until it resets Tue 00:00 (in 4d 12h).
 
 Claude Max (me@example.com) · via Claude Code · yours · in use
-  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 40m of work left (as little as 20m), at 40.9% an hour of work.
-  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset. About 19h of work left (as little as 7h 50m), at 3% an hour of work.
+  5 hours: 25% left, resets 14:00 (in 2h). At this pace it runs out 13:00 (in 1h), as soon as 12:30. About 30m of work left (as little as 10m), at 40.9% an hour of work.
+  Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset. About 18h of work left (as little as 7h 40m), at 3% an hour of work.
 
 ChatGPT Plus (me@example.com) · via Codex
   Weekly: 80% left, resets Tue 00:00 (in 4d 12h). Lasts, with about 44% left at the reset.
@@ -296,7 +296,7 @@ Called with `{"account": "claude", "limit": "week", "by": "model"}`:
 
 ```markdown
 Usage of Claude Max (me@example.com) since Mon 00:00 (3d 12h ago): $0.50 at list prices over 27 responses.
-Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset. About 19h of work left (as little as 7h 50m), at 3% an hour of work.
+Weekly: 56% left, resets Mon 00:00 (in 3d 12h). Lasts, with about 12% left at the reset. About 18h of work left (as little as 7h 40m), at 3% an hour of work.
 
 | Model | Cost | Responses | % of Weekly |
 |---|--:|--:|--:|

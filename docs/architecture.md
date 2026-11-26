@@ -297,7 +297,8 @@ megabytes.
   `Moment`.
 - Minutes of work, left and since an out-of-date read, are as measured:
   whether hours of work fit is told by them, and they're rounded only as
-  they're said.
+  they're said. Work left is rounded down, as percent left is, so it's
+  never overstated.
 - An account is **recent** when it's [in use](#glossary) or was drawn on
   in the last 7 days.
 - An account's **state** says whether its limits were read at the last
