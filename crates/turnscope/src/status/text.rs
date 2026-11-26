@@ -263,16 +263,24 @@ fn range(limit: &Limit, left: &HoursLeft, now: i64) -> String {
     }
 }
 
-/// `account`'s limit it stands by that's used up, and when it's back: the
-/// limit that decides it, so of several, the last back.
-fn used_up(account: &Account) -> Option<(&Limit, Option<Moment>)> {
+/// `account`'s limit it stands by that's used up, and when it's back: "5
+/// hours is used up, back 14:00 (in 2h)". It's the limit that decides it,
+/// so of several, the last back.
+fn used_up(account: &Account, now: i64) -> Option<String> {
     let limit = account
         .deciding_limit()
         .filter(|limit| account.stands_by(limit))?;
-    match limit.outlook {
-        Outlook::UsedUp { back } => Some((limit, back)),
-        _ => None,
-    }
+    let Outlook::UsedUp { back } = limit.outlook else {
+        return None;
+    };
+    let back = back.map_or(String::new(), |back| {
+        format!(", back {}", time::ahead(back.at, now))
+    });
+    Some(format!(
+        "{} {} used up{back}",
+        limit.named(),
+        agree(limit, "is", "are")
+    ))
 }
 
 /// `account`'s limit it stands by with the fewest likely hours of work
@@ -345,15 +353,10 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
     if let Some(why) = account.unread() {
         return (Fits::Untold, untold(unread(why)), true);
     }
-    if let Some((limit, back)) = used_up(account) {
-        let are = agree(limit, "is", "are");
+    if let Some(said) = used_up(account, now) {
         return (
             Fits::No,
-            format!(
-                "{more} of work {dont_fit}: {} {are} used up{}.",
-                limit.named(),
-                back_at(back, now)
-            ),
+            format!("{more} of work {dont_fit}: {said}."),
             false,
         );
     }
@@ -531,13 +534,6 @@ fn as_of(account: &Account, now: i64) -> String {
     }
 }
 
-/// `, back 14:00 (in 2h)`: when a limit used up is back, where it resets.
-fn back_at(back: Option<Moment>, now: i64) -> String {
-    back.map_or(String::new(), |back| {
-        format!(", back {}", time::ahead(back.at, now))
-    })
-}
-
 /// `; it resets 14:00 (in 2h)`, unless `limit` reset since it was read or
 /// never does.
 fn resets(limit: &Limit, now: i64) -> String {
@@ -553,13 +549,8 @@ fn resets(limit: &Limit, now: i64) -> String {
 /// rolling 5 hours at 4% left was passed over for "about 12h of work left
 /// before Weekly runs out".
 fn standing(account: &Account, title: &str, now: i64) -> String {
-    if let Some((limit, back)) = used_up(account) {
-        let is = agree(limit, "is", "are");
-        return format!(
-            "{title}: {} {is} used up{}.",
-            limit.named(),
-            back_at(back, now)
-        );
+    if let Some(said) = used_up(account, now) {
+        return format!("{title}: {said}.");
     }
     let unmeasured = account
         .deciding_limit()
