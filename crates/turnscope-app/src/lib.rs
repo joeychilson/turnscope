@@ -684,7 +684,6 @@ mod tests {
                         reset: true,
                         sign_in: false,
                     }),
-                    can_edit_notify: true,
                     agents_empty: Some(EmptyMessage {
                         headline: "No agents".into(),
                         detail: "Install one".into(),

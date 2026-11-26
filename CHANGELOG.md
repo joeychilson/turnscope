@@ -2,14 +2,25 @@
 
 ## Unreleased
 
+- **Codex's responses after fast mode is turned off cost the standard
+  rate**, not the fast one. The history is read again once, to price them
+  anew.
 - **`turnscope guard` passes while the standing isn't known**: before any
   account is read, or while none of its limits are. It exited 1 with an
   error, which a hook shows at every tool call.
+- **A notification clicked as the panel opens shows its account once the
+  limits are read**, even if Settings was opened meanwhile. The account
+  opened on its own later instead.
 - **An API key whose limits were never read doesn't say it has none.** The
   panel says they couldn't be read yet, as `turnscope status` does, not
   "No limit" and "You can keep going".
+- **Settings shows the notification switches once it knows them.** Before
+  the first read, all four showed on, whatever you had set.
 - **A key's pace isn't said once it rounds below what's spent**, late in a
   month: "$155 this month" no longer comes with "On pace for about $150".
+- **Hours of work left are told once an hour of work is measured.** Work
+  in several stretches could add up to just under an hour, and say there
+  was too little to tell.
 - **Credits used up say so** in their row, not "Credits back later": they
   come back only when bought.
 - **"Refreshing limits…" shows until the limits are read.** Hiding an

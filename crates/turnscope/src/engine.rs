@@ -273,9 +273,9 @@ impl Engine {
         }
     }
 
-    /// Ask for a limit read skipping staleness (`DUE`/`IDLE`), while still
-    /// respecting provider backoff and `CLAIM`: told as the status, changed
-    /// or not, then `Event::Refreshed`.
+    /// Ask for a limit read skipping staleness (`DUE`/`IDLE`) and Turnscope's
+    /// own backoff, but not a provider's `Retry-After` or `CLAIM`: told as the
+    /// status, changed or not, then `Event::Refreshed`.
     pub fn refresh_now(&self) {
         let sent = locked(&self.inner.wake).as_ref().is_some_and(|wake| {
             self.inner.forcing.store(true, Ordering::Release);

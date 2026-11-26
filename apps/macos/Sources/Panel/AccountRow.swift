@@ -12,12 +12,11 @@ struct AccountRow: View {
     @Environment(Bridge.self) private var bridge
     @Environment(UIState.self) private var ui
     var row: AccountRowModel
-    var isOpen: Bool
     var focus: FocusState<PanelFocus?>.Binding
     @State private var hover = false
 
     var body: some View {
-        let open = row.openable && isOpen
+        let open = row.openable && ui.openAccount == row.id
         let lines = open && !row.limits.isEmpty
         let used = open && !row.usedMost.isEmpty
         let stopped = bridge.panel.stopped
@@ -273,7 +272,7 @@ private struct UsedMostRow: View {
     var used: UsedMostModel
     @State private var hover = false
     @State private var copied = false
-    @State private var clearCopy: Task<Void, Never>?
+    @State private var copies = 0
 
     var body: some View {
         Button(action: copyPrimary) {
@@ -322,6 +321,7 @@ private struct UsedMostRow: View {
             }
             Button("Copy Session ID") { copy(used.sessionId) }
         }
+        .flashesCopied($copied, copies: copies)
     }
 
     private func copyPrimary() {
@@ -330,13 +330,7 @@ private struct UsedMostRow: View {
 
     private func copy(_ text: String) {
         copyToPasteboard(text)
-        clearCopy?.cancel()
-        withAnimation(.easeOut(duration: 0.12)) { copied = true }
-        clearCopy = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.4))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.16)) { copied = false }
-        }
+        copies += 1
     }
 }
 

@@ -7,6 +7,19 @@ func copyToPasteboard(_ text: String) {
     pasteboard.setString(text, forType: .string)
 }
 
+extension View {
+    /// Sets `copied` for a moment each time `copies` grows.
+    func flashesCopied(_ copied: Binding<Bool>, copies: Int) -> some View {
+        task(id: copies) {
+            guard copies > 0 else { return }
+            withAnimation(.easeOut(duration: 0.12)) { copied.wrappedValue = true }
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.16)) { copied.wrappedValue = false }
+        }
+    }
+}
+
 /// Just under critically damped: it overshoots by under 0.1%, so nothing visibly wobbles.
 let spring = Animation.spring(response: 0.25, dampingFraction: 0.92)
 
