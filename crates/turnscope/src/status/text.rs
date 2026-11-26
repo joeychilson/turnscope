@@ -437,27 +437,16 @@ pub(super) fn judge(account: &Account, hours: f64, now: i64) -> (Fits, String, b
     }
     if let Some((limit, at, within)) = out {
         let run = agree(limit, "runs", "run");
-        let said = if (at as f64) < hours * 60.0 {
-            let within = within.map_or(String::new(), |left| fewest(&left) + &resets(limit, now));
+        let within = within.map_or(String::new(), |left| fewest(&left) + &resets(limit, now));
+        return (
+            Fits::No,
             format!(
                 "{more} of work {dont_fit}: {} {run} out after {} of work{within}.",
                 limit.named(),
                 about(at)
-            )
-        } else {
-            let within = within.map_or(String::new(), |left| {
-                let low = match worked(left.low) {
-                    under if under == UNDER => String::new(),
-                    low => format!(", as little as {low}"),
-                };
-                format!(" ({} of work left{low}){}", about(at), resets(limit, now))
-            });
-            format!(
-                "{more} of work {dont_fit}: {} {run} out in that time{within}.",
-                limit.named()
-            )
-        };
-        return (Fits::No, said, false);
+            ),
+            false,
+        );
     }
     let after = after.join(", ");
     let (fits, said) = match (untold_why, after.is_empty()) {
@@ -490,15 +479,13 @@ enum End {
 /// in 30 minutes left 16%, though the window after runs out 4 hours in.
 fn ends(limit: &Limit, work: &Work, hours: f64, now: i64) -> End {
     let rate = work.rate_per_hour;
-    let left = f64::from(limit.left_percent);
-    // Out before its reset, by the rate shown rather than minutes rounded to ten.
-    if let Some(left_min) = work.left_minutes
-        && hours > 0.0
-        && rate > 0.0
-        && rate * hours >= left
+    // Out before its reset, as forecast with the spread of work's pace.
+    if let Some(left) = work.left_minutes
+        && (left.likely as f64) < hours * 60.0
     {
-        return End::Out(left_min.likely, Some(left_min));
+        return End::Out(left.likely, Some(left));
     }
+    let left = f64::from(limit.left_percent);
     let Some(until) = limit.hours_to_reset(now).filter(|until| *until < hours) else {
         return End::Leaves((left - rate * hours).max(0.0));
     };
@@ -773,8 +760,7 @@ mod tests {
         // Claude Max's 5 hours with half an hour of work left: said with its
         // fewest and reset, as the verdict says them.
         let mut account = claude.clone();
-        account["limits"][0]["work"] =
-            serde_json::json!({"ratePerHour": 56.0, "leftMinutes": {"low": 20, "likely": 30}});
+        account["limits"][0]["work"]["leftMinutes"] = serde_json::json!({"low": 20, "likely": 30});
         let account: Account = serde_json::from_value(account).unwrap();
         let resets = time::ahead(account.limits[0].resets().unwrap(), now);
         assert_eq!(
@@ -793,8 +779,7 @@ mod tests {
         // the first out decides, by its likely hours, as the verdict says.
         let mut account = claude.clone();
         account["limits"][0]["work"]["leftMinutes"]["likely"] = 80.into();
-        account["limits"][1]["work"] =
-            serde_json::json!({"ratePerHour": 90.0, "leftMinutes": {"low": 20, "likely": 40}});
+        account["limits"][1]["work"]["leftMinutes"] = serde_json::json!({"low": 20, "likely": 40});
         let account: Account = serde_json::from_value(account).unwrap();
         let resets = time::ahead(account.limits[1].resets().unwrap(), now);
         assert_eq!(
@@ -983,7 +968,6 @@ mod tests {
         let now = example["at"].as_i64().unwrap();
         // Claude Max's 5 hours with 6 minutes of work left.
         let mut account = example["accounts"][0].clone();
-        account["limits"][0]["leftPercent"] = 2.into();
         account["limits"][0]["work"]["leftMinutes"] = serde_json::json!({"low": 0, "likely": 6});
         let few: Account = serde_json::from_value(account.clone()).unwrap();
         let line = limit_text(&few.limits[0], now);
@@ -1311,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn fit_near_a_rounded_work_left_never_says_zero_or_contradicts_itself() {
+    fn fit_follows_work_left_and_never_says_about_zero_percent() {
         let example = example();
         let now = example["at"].as_i64().unwrap();
         let mut raw = example["accounts"][0].clone();
@@ -1327,42 +1311,42 @@ mod tests {
             "leftMinutes": {"low": 470, "likely": 1140},
         });
         let account: Account = serde_json::from_value(raw.clone()).unwrap();
-        let resets = time::ahead(account.limits[0].resets().unwrap(), now);
 
-        // 0.60h leaves 0.46%: fits with "under 1%", never "about 0%".
-        assert_eq!(
-            fit(&account, 0.6, now),
-            "0.6 more hours of work fit at your work rate, leaving under 1% of 5 hours, about 54% of Weekly."
-        );
-        // 0.65h (39m) exceeds exact 36.7m even though rounded likely is 40m:
-        // doesn't fit, and doesn't claim it runs out after 40m.
+        // 0.65h (39m) fits within 40m of work left and says "under 1%", never "about 0%".
         assert_eq!(
             fit(&account, 0.65, now),
-            format!(
-                "0.65 more hours of work don't fit: 5 hours runs out in that time (about 40m of work left, as little as 20m); it resets {resets}."
-            )
-        );
-        // 3h keeps the existing "runs out after about 40m" wording.
-        assert_eq!(
-            fit(&account, 3.0, now),
-            format!(
-                "3 more hours of work don't fit: 5 hours runs out after about 40m of work (as little as 20m); it resets {resets}."
-            )
+            "0.65 more hours of work fit at your work rate, leaving under 1% of 5 hours, about 54% of Weekly."
         );
 
-        // 25% left at 34%/h is 44.1m exact, rounded down to 40m: 0.70h (42m)
-        // must fit leaving about 1%, not be rejected against rounded 40m.
+        // Weekly rates rounded to tenths (0.25 -> 0.3, 0.34 -> 0.3) must still
+        // follow work left rather than contradicting it.
+        raw["limits"] = serde_json::json!([raw["limits"][1].clone()]);
+        raw["deciding"] = "seven_day".into();
+        raw["limits"][0]["leftPercent"] = 10.into();
         raw["limits"][0]["work"] = serde_json::json!({
-            "ratePerHour": 34.0,
-            "leftMinutes": {"low": 20, "likely": 40},
+            "ratePerHour": 0.3,
+            "leftMinutes": {"low": 1500, "likely": 2400},
         });
-        let roomy: Account = serde_json::from_value(raw.clone()).unwrap();
-        assert_eq!(
-            fit(&roomy, 0.7, now),
-            "0.7 more hours of work fit at your work rate, leaving about 1% of 5 hours, about 54% of Weekly."
+        let forty: Account = serde_json::from_value(raw.clone()).unwrap();
+        assert!(
+            fit(&forty, 34.0, now).starts_with("34 more hours of work fit at your work rate"),
+            "{}",
+            fit(&forty, 34.0, now)
+        );
+        raw["limits"][0]["work"] = serde_json::json!({
+            "ratePerHour": 0.3,
+            "leftMinutes": {"low": 1080, "likely": 1740},
+        });
+        let twenty_nine: Account = serde_json::from_value(raw.clone()).unwrap();
+        assert!(
+            fit(&twenty_nine, 31.0, now)
+                .starts_with("31 more hours of work don't fit: Weekly runs out after about 29h"),
+            "{}",
+            fit(&twenty_nine, 31.0, now)
         );
 
         // Post-reset exact 100% consumption doesn't fit with "about 0%".
+        raw = example["accounts"][0].clone();
         raw["limits"] = serde_json::json!([raw["limits"][0].clone()]);
         raw["limits"][0]["window"]["resets"]["at"] = (now + 30 * MINUTE).into();
         raw["limits"][0]["window"]["startsAt"] = (now + 30 * MINUTE - 5 * time::HOUR).into();
@@ -1370,7 +1354,7 @@ mod tests {
         let post_reset: Account = serde_json::from_value(raw).unwrap();
         assert_eq!(
             fit(&post_reset, 2.5, now),
-            "2.5 more hours of work don't fit: 5 hours runs out in that time."
+            "2.5 more hours of work don't fit: 5 hours runs out after about 2h 30m of work."
         );
     }
 }
