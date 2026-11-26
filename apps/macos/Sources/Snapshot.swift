@@ -32,7 +32,7 @@ enum Snapshot {
         }
         let updater = Updater()
         let notifier = Notifier()
-        let login = Login()
+        let login = Login(bridge: bridge)
 
         for dark in [false, true] {
             let background = dark ? Color(hex: 0x1E1E1E) : Color.white

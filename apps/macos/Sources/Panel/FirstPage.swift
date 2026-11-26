@@ -45,6 +45,10 @@ struct FirstPage: View {
                             ConnectNudge(offer: offer)
                                 .padding(.top, Row.groups)
                         }
+                        if panel.offerOpenAtLogin {
+                            OpenAtLoginNudge()
+                                .padding(.top, Row.groups)
+                        }
                     }
                     .padding(.horizontal, 8)
                 }
@@ -170,6 +174,47 @@ private struct ConnectNudge: View {
             .buttonStyle(RoundButton())
             .help("Don't suggest this again")
             .accessibilityLabel("Don't suggest connecting \(offer.name) again")
+        }
+        .padding(Row.padding)
+        .transition(appears)
+    }
+}
+
+private struct OpenAtLoginNudge: View {
+    @Environment(Bridge.self) private var bridge
+    @Environment(Login.self) private var login
+    @Environment(\.closePanel) private var closePanel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: Row.gap) {
+                Logo(size: Row.logo)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Open at login").font(.name)
+                    Text("Alerts come only while Turnscope runs.")
+                        .font(.small)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 6) {
+                Button("Turn on") {
+                    if withMotion({ login.set(true) }) == .needsApproval {
+                        closePanel()
+                        login.openSettings()
+                    }
+                }
+                .accessibilityHint("Opens Turnscope when you log in")
+                Button("Not now") {
+                    withMotion {
+                        bridge.send(.dismissOpenAtLogin)
+                    }
+                }
+                .accessibilityHint("Doesn't ask again")
+            }
+            .buttonStyle(PillButton())
+            .padding(.leading, Row.logo + Row.gap)
         }
         .padding(Row.padding)
         .transition(appears)

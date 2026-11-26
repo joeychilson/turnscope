@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **The panel offers to open Turnscope at login, once.** It was off unless
+  turned on in Settings, and alerts come only while Turnscope runs. The
+  offer waits until history is read, every account in use lasts, and no
+  agent is offered; Turn on or Not now puts it away for good.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

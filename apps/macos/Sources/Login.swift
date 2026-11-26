@@ -1,48 +1,54 @@
 // Opening at login via ServiceManagement's main app service (docs/app.md#opening-at-login).
-// Checked off the main thread: SMAppService.mainApp.status measured 1.7 to 6.2 ms (Nov 2026).
+// Read off the main thread: SMAppService.mainApp.status measured 1.7 to 6.2 ms (Nov 2026).
 
 import AppKit
 import Observation
 import ServiceManagement
 
+/// Reads and changes whether macOS opens the app at login, and tells the core what it says.
+/// With `--fixture`, nothing of the Mac's is read or changed, and it starts off.
 @MainActor
 @Observable
 final class Login {
-    enum Status {
-        case off, on, needsApproval
+    private let bridge: Bridge
 
-        var isOn: Bool { self != .off }
+    init(bridge: Bridge) {
+        self.bridge = bridge
     }
 
-    private(set) var status: Status = .off
-
-    func check() {
-        Task { status = await Task.detached { Self.readStatus() }.value }
-    }
-
-    func set(_ on: Bool, isLive: Bool, log: (String) -> Void) {
-        guard isLive else {
-            status = on ? .on : .off
+    func read() {
+        guard bridge.isLive else {
+            bridge.send(.openAtLoginRead(status: .off))
             return
         }
-        do {
-            if on {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
+        Task { bridge.send(.openAtLoginRead(status: await Task.detached { Self.status() }.value)) }
+    }
+
+    /// Returns what macOS says once it's set.
+    func set(_ on: Bool) -> OpenAtLogin {
+        var status: OpenAtLogin = on ? .on : .off
+        if bridge.isLive {
+            do {
+                if on {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+            } catch {
+                bridge.log("open at login: \(error.localizedDescription)")
+                NSSound.beep()
             }
-        } catch {
-            log("open at login: \(error.localizedDescription)")
-            NSSound.beep()
+            status = Self.status()
         }
-        status = Self.readStatus()
+        bridge.send(.openAtLoginRead(status: status))
+        return status
     }
 
     func openSettings() {
         SMAppService.openSystemSettingsLoginItems()
     }
 
-    private nonisolated static func readStatus() -> Status {
+    private nonisolated static func status() -> OpenAtLogin {
         switch SMAppService.mainApp.status {
         case .enabled: .on
         case .requiresApproval: .needsApproval

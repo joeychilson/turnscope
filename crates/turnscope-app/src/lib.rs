@@ -37,6 +37,7 @@ pub struct StartConfig {
     pub from_disk_image: bool,
     pub menu_shows: MenuShows,
     pub dismissed_connect: Vec<String>,
+    pub dismissed_open_at_login: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +156,7 @@ pub fn start(
             preferences: Preferences {
                 menu_shows: config.menu_shows,
                 dismissed_connect: config.dismissed_connect.into_iter().collect(),
+                dismissed_open_at_login: config.dismissed_open_at_login,
             },
             ..State::default()
         },
@@ -413,6 +415,7 @@ mod tests {
             "fromDiskImage": false,
             "menuShows": "all",
             "dismissedConnect": [],
+            "dismissedOpenAtLogin": false,
         })
         .to_string();
         let cfg_c = CString::new(cfg).unwrap();
@@ -468,6 +471,7 @@ mod tests {
             "fromDiskImage": false,
             "menuShows": "all",
             "dismissedConnect": [],
+            "dismissedOpenAtLogin": false,
         })
         .to_string();
         let cfg_c = CString::new(cfg).unwrap();
@@ -552,7 +556,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn swift_models_match_rust_wire_contract() {
-        use crate::state::Effect;
+        use crate::state::{Effect, OpenAtLogin};
         use crate::view::*;
         use crate::words::AlertNote;
         use turnscope::alerts::Notify;
@@ -665,6 +669,7 @@ mod tests {
                     verb: "Reconnect".into(),
                     help: "Points Claude Code at this copy".into(),
                 }),
+                offer_open_at_login: true,
                 footer_note: Some(FooterNoteModel {
                     text: "Not up to date".into(),
                     help: Some("Offline".into()),
@@ -673,6 +678,7 @@ mod tests {
                 }),
                 settings: SettingsModel {
                     menu_shows: MenuShows::All,
+                    open_at_login: OpenAtLogin::NeedsApproval,
                     notify: Some(Notify {
                         running_out: true,
                         used_up: false,
@@ -723,6 +729,7 @@ mod tests {
                 Effect::SavePreferences {
                     menu_shows: MenuShows::One,
                     dismissed_connect: vec!["codex".into()],
+                    dismissed_open_at_login: true,
                 },
             ],
         };
@@ -778,6 +785,8 @@ precondition(p.unusedFoldLabel == "1 hidden")
 precondition(p.hiddenFoldLabel == "1 hidden")
 precondition(p.connectOffer?.note == "Uses another Turnscope")
 precondition(p.connectOffer?.configured == "/old/turnscope")
+precondition(p.offerOpenAtLogin)
+precondition(p.settings.openAtLogin == .needsApproval)
 precondition(p.footerNote == FooterNoteModel(text: "Not up to date", help: "Offline", spoken: "Not up to date: Offline", busy: false))
 precondition(p.settings.notify == NotifySettings(runningOut: true, usedUp: false, reset: true, signIn: false))
 precondition(p.settings.agentsEmpty == EmptyMessage(headline: "No agents", detail: "Install one"))
@@ -789,7 +798,7 @@ precondition(p.settings.subscriptions[0].via == "Claude Code")
 precondition(sync.effects == [
     .postAlerts(alerts: [AlertNote(id: 7, account: "anthropic:a", replaces: "turnscope-limit-anthropic:a", signIn: false, title: "Claude Max", subtitle: "5 hours", body: "Runs out in 50m")]),
     .removeNotifications(identifiers: ["turnscope-sign-in-anthropic:a"]),
-    .savePreferences(menuShows: .one, dismissedConnect: ["codex"]),
+    .savePreferences(menuShows: .one, dismissedConnect: ["codex"], dismissedOpenAtLogin: true),
 ])
 
 let snaps = try decoder.decode([SnapshotResponse].self, from: Data(contentsOf: URL(fileURLWithPath: args[2])))
@@ -842,6 +851,10 @@ let out = Out(
         .setMenuShows(shows: .all),
         .setMenuShows(shows: .one),
         .dismissConnect(id: "codex"),
+        .openAtLoginRead(status: .off),
+        .openAtLoginRead(status: .on),
+        .openAtLoginRead(status: .needsApproval),
+        .dismissOpenAtLogin,
         .acknowledgeAlert(id: 7, signInAccount: nil),
         .acknowledgeAlert(id: 8, signInAccount: "anthropic:a"),
         .refreshNow,
@@ -853,7 +866,8 @@ let out = Out(
         home: "/tmp/h",
         fromDiskImage: true,
         menuShows: .one,
-        dismissedConnect: ["codex"]
+        dismissedConnect: ["codex"],
+        dismissedOpenAtLogin: true
     ),
     snapshot: SnapshotConfig(fixture: "f.json", data: "/tmp/d", home: "/tmp/h")
 )
@@ -927,6 +941,16 @@ print(String(data: data, encoding: .utf8)!)
                     shows: MenuShows::One,
                 },
                 Action::DismissConnect { id: "codex".into() },
+                Action::OpenAtLoginRead {
+                    status: OpenAtLogin::Off,
+                },
+                Action::OpenAtLoginRead {
+                    status: OpenAtLogin::On,
+                },
+                Action::OpenAtLoginRead {
+                    status: OpenAtLogin::NeedsApproval,
+                },
+                Action::DismissOpenAtLogin {},
                 Action::AcknowledgeAlert {
                     id: 7,
                     sign_in_account: None,
@@ -945,6 +969,7 @@ print(String(data: data, encoding: .utf8)!)
         assert!(parsed.start.from_disk_image);
         assert_eq!(parsed.start.menu_shows, MenuShows::One);
         assert_eq!(parsed.start.dismissed_connect, vec!["codex"]);
+        assert!(parsed.start.dismissed_open_at_login);
         assert_eq!(
             parsed.snapshot.fixture.as_deref(),
             Some(Path::new("f.json"))
