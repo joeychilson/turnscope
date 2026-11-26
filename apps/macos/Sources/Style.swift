@@ -327,7 +327,7 @@ struct Spinner: View {
 }
 
 /// The spinner's arc, turned by Core Animation in the render server, and only while its window is
-/// on screen. SwiftUI's `repeatForever` rotation cost the app 4–5% of a core, on screen or ordered
+/// on screen. SwiftUI's `repeatForever` rotation cost the app 2–5% of a core, on screen or ordered
 /// out; this, nothing measurable (measured 2026-11-26).
 private struct TurningArc: NSViewRepresentable {
     func makeNSView(context: Context) -> TurningArcView { TurningArcView() }
@@ -392,6 +392,9 @@ private final class TurningArcView: NSView {
         turn.byValue = 2 * Double.pi
         turn.duration = 0.9
         turn.repeatCount = .infinity
+        // On a 100 Hz screen, WindowServer took 23% of a core to draw it at every refresh, 11% at
+        // 60 a second, and 7% at 30, which held some frames 40 ms (measured 2026-11-26).
+        turn.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60)
         arc.add(turn, forKey: "turn")
     }
 }
