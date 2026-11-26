@@ -451,7 +451,7 @@ impl Words {
         let account = accounts.iter().find(|a| a.id == alert.account);
         let title = account.map_or_else(
             || alert.account_title.clone(),
-            |a| called_among(a, accounts),
+            |a| called(a, twinned(a, accounts)),
         );
         let limit = account.and_then(|a| {
             a.limits
@@ -833,14 +833,6 @@ pub fn twinned<'a>(account: &Account, among: impl IntoIterator<Item = &'a Accoun
     among
         .into_iter()
         .any(|a| a.id != account.id && !a.hidden && a.title == account.title)
-}
-
-/// Notifications stand alone, so include the label only when another in-use account shares the title.
-fn called_among(account: &Account, accounts: &[Account]) -> String {
-    called(
-        account,
-        twinned(account, accounts.iter().filter(|a| a.in_use)),
-    )
 }
 
 fn plural(limit: &Limit) -> bool {
@@ -1481,7 +1473,7 @@ mod tests {
             label: Some("me@example.com".into()),
             ..account(vec![limit(runs_out())])
         };
-        let mut twin = Account {
+        let twin = Account {
             id: "anthropic:b".into(),
             label: Some("work@example.com".into()),
             ..account(vec![Limit {
@@ -1499,21 +1491,6 @@ mod tests {
             w.verdict(Some(&mine), false, &[mine.clone(), twin.clone()])
                 .0,
             "Claude Max runs out in\u{a0}2h"
-        );
-        assert_eq!(
-            called_among(&mine, &[mine.clone(), twin.clone()]),
-            "Claude Max (me@example.com)"
-        );
-        twin.hidden = true;
-        assert_eq!(
-            called_among(&mine, &[mine.clone(), twin.clone()]),
-            "Claude Max"
-        );
-        twin.hidden = false;
-        twin.in_use = false;
-        assert_eq!(
-            called_among(&mine, &[mine.clone(), twin.clone()]),
-            "Claude Max"
         );
 
         let all = [mine.clone(), twin.clone(), other.clone()];
@@ -1747,7 +1724,7 @@ mod tests {
                 account: "anthropic:a".into(),
                 replaces: "limit:anthropic:a:five_hour".into(),
                 sign_in: false,
-                title: "Claude Max".into(),
+                title: "Claude Max (me@example.com)".into(),
                 subtitle: "5 hours runs out 2 PM".into(),
                 body: "Back 3 PM.".into()
             }
@@ -1775,12 +1752,11 @@ mod tests {
             w.note(make_alert(AlertKind::UsedUp), &[]).title,
             "Claude Max (me@example.com)"
         );
-        accounts[1].in_use = true;
+        accounts[1].hidden = true;
         assert_eq!(
             w.note(make_alert(AlertKind::UsedUp), &accounts).title,
-            "Claude Max (me@example.com)"
+            "Claude Max"
         );
-        accounts[1].in_use = false;
         let days = Alert {
             resets: Some(moment("2026-10-03T00:00:00Z", ThisWeek)),
             runs_out: Some(moment("2026-10-02T09:00:00Z", ThisWeek)),

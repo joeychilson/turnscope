@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **A notification names an account with its label whenever its row
+  does**: when another shown account has the same title. Before, from
+  0.1.2, only another account in use counted, so a personal and a work
+  Claude Max, neither in use, got notifications that read word for word
+  the same.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

@@ -210,9 +210,9 @@ posts notifications only for an app bundle.
   for Turnscope in System Settings, Settings → General says so and offers
   to open them.
 - **Words.** The title is the account, with its label only when another
-  account in use has the same title. The subtitle is what happened, and
-  the body is when it's back or what to do. Times are clock times, since a
-  notification stays on screen.
+  shown account has the same title, as its row has it. The subtitle is
+  what happened, and the body is when it's back or what to do. Times are
+  clock times, since a notification stays on screen.
 - **Replacing.** Each is posted under the alert's `replaces`, so a newer
   one for the same limit or account replaces the older: "back" replaces
   "used up". A sign-in notification is removed once the account can be
