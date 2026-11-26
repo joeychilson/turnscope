@@ -267,9 +267,9 @@ pub fn write(db: &mut Connection) -> Result<Transaction<'_>> {
 
 /// Claim a periodic job for this process, in one statement, unless another
 /// claimed it less than `gap` ago, so no two do it at once: the job's
-/// `column` of `state` is set to `to`. A claim more than five minutes ahead of now is of
-/// a clock set back since. Looked at first: claiming waits for the write
-/// lock, which a hook shouldn't when nothing is due.
+/// `column` of `state` is set to `to`. A claim more than five minutes ahead
+/// of now is of a clock set back since. Looked at first: claiming waits for
+/// the write lock, which a hook shouldn't when nothing is due.
 pub fn claim(db: &mut Connection, column: &str, now: i64, gap: i64, to: i64) -> Result<bool> {
     const AHEAD: i64 = 5 * crate::time::MINUTE;
     let free = format!("{column} IS NULL OR {column} <= ?1 - ?2 OR {column} > ?1 + ?3");
