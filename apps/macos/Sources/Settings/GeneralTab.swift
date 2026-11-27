@@ -20,16 +20,6 @@ struct GeneralTab: View {
 
     private var menuBar: some View {
         SettingGroup(title: "Menu bar") {
-            SettingRow(title: "Show") {
-                Choice(
-                    label: "Show",
-                    options: [(MenuShows.all, "All in use"), (.one, "Most urgent")],
-                    selection: bridge.panel.settings.menuShows
-                ) { shows in
-                    bridge.send(.setMenuShows(shows: shows))
-                }
-                .fixedSize()
-            }
             SettingRow(
                 "Open at login",
                 isOn: Binding(

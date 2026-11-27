@@ -113,8 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 notifier.post(alerts)
             case let .removeNotifications(identifiers):
                 notifier.remove(identifiers)
-            case let .savePreferences(menuShows, dismissedConnect):
-                Preferences.save(menuShows: menuShows, dismissedConnect: dismissedConnect)
+            case let .savePreferences(dismissedConnect):
+                Preferences.save(dismissedConnect: dismissedConnect)
             }
         }
     }

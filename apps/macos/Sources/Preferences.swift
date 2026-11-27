@@ -4,24 +4,18 @@
 import Foundation
 
 struct Preferences {
-    private static let menuShowsKey = "menuShows"
     private static let dismissedConnectKey = "dismissedConnect"
 
-    var menuShows: MenuShows
     var dismissedConnect: [String]
 
     static func read() -> Preferences {
-        let defaults = UserDefaults.standard
-        let shows: MenuShows = defaults.string(forKey: menuShowsKey) == MenuShows.one.rawValue ? .one : .all
-        let dismissed = (defaults.string(forKey: dismissedConnectKey) ?? "")
+        let dismissed = (UserDefaults.standard.string(forKey: dismissedConnectKey) ?? "")
             .split(separator: ",")
             .map(String.init)
-        return Preferences(menuShows: shows, dismissedConnect: dismissed)
+        return Preferences(dismissedConnect: dismissed)
     }
 
-    static func save(menuShows: MenuShows, dismissedConnect: [String]) {
-        let defaults = UserDefaults.standard
-        defaults.set(menuShows.rawValue, forKey: menuShowsKey)
-        defaults.set(dismissedConnect.joined(separator: ","), forKey: dismissedConnectKey)
+    static func save(dismissedConnect: [String]) {
+        UserDefaults.standard.set(dismissedConnect.joined(separator: ","), forKey: dismissedConnectKey)
     }
 }

@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use turnscope::engine::{Engine, Shown};
 
-use crate::state::{Action, Call, MenuShows, Preferences, State};
+use crate::state::{Action, Call, Preferences, State};
 use crate::view::PanelModel;
 
 /// Resolves the bundled `Helpers/turnscope` (or sibling binary under `target/`)
@@ -35,7 +35,6 @@ pub struct StartConfig {
     pub data: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub from_disk_image: bool,
-    pub menu_shows: MenuShows,
     pub dismissed_connect: Vec<String>,
 }
 
@@ -153,7 +152,6 @@ pub fn start(
         Some(path) => State::fixed(read_fixture(path)?),
         None => State {
             preferences: Preferences {
-                menu_shows: config.menu_shows,
                 dismissed_connect: config.dismissed_connect.into_iter().collect(),
             },
             ..State::default()
@@ -411,7 +409,6 @@ mod tests {
         let cfg = serde_json::json!({
             "fixture": fixture,
             "fromDiskImage": false,
-            "menuShows": "all",
             "dismissedConnect": [],
         })
         .to_string();
@@ -466,7 +463,6 @@ mod tests {
             "data": data.path(),
             "home": home.path(),
             "fromDiskImage": false,
-            "menuShows": "all",
             "dismissedConnect": [],
         })
         .to_string();
@@ -618,14 +614,18 @@ mod tests {
                         provider: "anthropic".into(),
                         standing: Standing::Lasts,
                         figure: "88%".into(),
+                        must_show: false,
+                        spoken: "Claude Max, 88% left".into(),
                     },
                     MenuBarSlot {
                         provider: "openai".into(),
                         standing: Standing::UsedUp,
-                        figure: "Back 4:00 PM".into(),
+                        figure: "0%".into(),
+                        must_show: true,
+                        spoken: "Claude Max, 88% left; ChatGPT Pro, back 4 PM".into(),
                     },
                 ],
-                spoken: "Claude Max 88%".into(),
+                spoken: "Turnscope".into(),
                 out_of_date: true,
             },
             panel: PanelModel {
@@ -672,7 +672,6 @@ mod tests {
                     busy: false,
                 }),
                 settings: SettingsModel {
-                    menu_shows: MenuShows::All,
                     notify: Some(Notify {
                         running_out: true,
                         used_up: false,
@@ -721,7 +720,6 @@ mod tests {
                     identifiers: vec!["turnscope-sign-in-anthropic:a".into()],
                 },
                 Effect::SavePreferences {
-                    menu_shows: MenuShows::One,
                     dismissed_connect: vec!["codex".into()],
                 },
             ],
@@ -789,7 +787,7 @@ precondition(p.settings.subscriptions[0].via == "Claude Code")
 precondition(sync.effects == [
     .postAlerts(alerts: [AlertNote(id: 7, account: "anthropic:a", replaces: "turnscope-limit-anthropic:a", signIn: false, title: "Claude Max", subtitle: "5 hours", body: "Runs out in 50m")]),
     .removeNotifications(identifiers: ["turnscope-sign-in-anthropic:a"]),
-    .savePreferences(menuShows: .one, dismissedConnect: ["codex"]),
+    .savePreferences(dismissedConnect: ["codex"]),
 ])
 
 let snaps = try decoder.decode([SnapshotResponse].self, from: Data(contentsOf: URL(fileURLWithPath: args[2])))
@@ -839,8 +837,6 @@ let out = Out(
         .setHidden(id: "anthropic:a", hidden: true),
         .setConnected(id: "claude-code", connecting: true),
         .setNotify(notify: NotifySettings(runningOut: true, usedUp: false, reset: true, signIn: false)),
-        .setMenuShows(shows: .all),
-        .setMenuShows(shows: .one),
         .dismissConnect(id: "codex"),
         .acknowledgeAlert(id: 7, signInAccount: nil),
         .acknowledgeAlert(id: 8, signInAccount: "anthropic:a"),
@@ -852,7 +848,6 @@ let out = Out(
         data: "/tmp/d",
         home: "/tmp/h",
         fromDiskImage: true,
-        menuShows: .one,
         dismissedConnect: ["codex"]
     ),
     snapshot: SnapshotConfig(fixture: "f.json", data: "/tmp/d", home: "/tmp/h")
@@ -920,12 +915,6 @@ print(String(data: data, encoding: .utf8)!)
                         sign_in: false,
                     },
                 },
-                Action::SetMenuShows {
-                    shows: MenuShows::All,
-                },
-                Action::SetMenuShows {
-                    shows: MenuShows::One,
-                },
                 Action::DismissConnect { id: "codex".into() },
                 Action::AcknowledgeAlert {
                     id: 7,
@@ -943,7 +932,6 @@ print(String(data: data, encoding: .utf8)!)
         assert_eq!(parsed.start.data.as_deref(), Some(Path::new("/tmp/d")));
         assert_eq!(parsed.start.home.as_deref(), Some(Path::new("/tmp/h")));
         assert!(parsed.start.from_disk_image);
-        assert_eq!(parsed.start.menu_shows, MenuShows::One);
         assert_eq!(parsed.start.dismissed_connect, vec!["codex"]);
         assert_eq!(
             parsed.snapshot.fixture.as_deref(),

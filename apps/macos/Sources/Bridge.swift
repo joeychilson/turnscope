@@ -155,7 +155,6 @@ final class Bridge {
             data: launch.data,
             home: launch.home,
             fromDiskImage: fromDiskImage,
-            menuShows: preferences.menuShows,
             dismissedConnect: preferences.dismissedConnect
         ))
         var errorPtr: UnsafeMutablePointer<CChar>?

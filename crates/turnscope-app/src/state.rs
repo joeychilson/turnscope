@@ -12,18 +12,8 @@ use turnscope::status::{Account, Agent, Connection, Standing, Status};
 use crate::view::{self, AppSync};
 use crate::words::{self, AlertNote, Words};
 
-/// What the menu bar shows: every account in use, or only the most urgent.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum MenuShows {
-    #[default]
-    All,
-    One,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Preferences {
-    pub menu_shows: MenuShows,
     pub dismissed_connect: BTreeSet<String>,
 }
 
@@ -31,16 +21,9 @@ pub struct Preferences {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Effect {
-    PostAlerts {
-        alerts: Vec<AlertNote>,
-    },
-    RemoveNotifications {
-        identifiers: Vec<String>,
-    },
-    SavePreferences {
-        menu_shows: MenuShows,
-        dismissed_connect: Vec<String>,
-    },
+    PostAlerts { alerts: Vec<AlertNote> },
+    RemoveNotifications { identifiers: Vec<String> },
+    SavePreferences { dismissed_connect: Vec<String> },
 }
 
 /// What the shell asks. Variants with no fields are written `{}`, as Swift encodes them.
@@ -59,9 +42,6 @@ pub enum Action {
     },
     SetNotify {
         notify: Notify,
-    },
-    SetMenuShows {
-        shows: MenuShows,
     },
     DismissConnect {
         id: String,
@@ -242,9 +222,19 @@ impl State {
         }
     }
 
+    /// The accounts in use, the most urgent first, as the item drops those that don't fit from
+    /// the end: running out, while there's time to change course, then used up, which drops
+    /// out once its agent stops drawing on it, then the rest. The sort is stable, so each
+    /// keeps `status::rank`'s order: the soonest to run out, then the least left, first.
+    /// Until the history is read, every account counts as in use, so only the first shows.
     pub fn in_menu_bar(&self) -> Vec<&Account> {
         let mut shown = self.in_use();
-        if self.preferences.menu_shows == MenuShows::One {
+        shown.sort_by_key(|a| match a.standing() {
+            Standing::RunningOut => 0,
+            Standing::UsedUp => 1,
+            Standing::Lasts => 2,
+        });
+        if self.reading() {
             shown.truncate(1);
         }
         shown
@@ -406,12 +396,6 @@ impl State {
                     calls.push(Call::SaveSettings(status.settings));
                 }
             }
-            Action::SetMenuShows { shows } => {
-                if self.preferences.menu_shows != shows {
-                    self.preferences.menu_shows = shows;
-                    self.save_preferences();
-                }
-            }
             Action::DismissConnect { id } => {
                 if self.preferences.dismissed_connect.insert(id) {
                     self.save_preferences();
@@ -451,7 +435,6 @@ impl State {
             return;
         }
         self.effects.push(Effect::SavePreferences {
-            menu_shows: self.preferences.menu_shows,
             dismissed_connect: self.preferences.dismissed_connect.iter().cloned().collect(),
         });
     }
@@ -697,43 +680,44 @@ pub(crate) mod tests {
     #[test]
     fn preferences_are_saved_except_on_a_fixture() {
         let changed = |mut core: State| {
-            core.apply(
-                Action::SetMenuShows {
-                    shows: MenuShows::One,
-                },
-                0,
-            );
             core.apply(Action::DismissConnect { id: "codex".into() }, 0);
             core.sync().effects
         };
         assert_eq!(
             changed(shown(example())),
-            [
-                Effect::SavePreferences {
-                    menu_shows: MenuShows::One,
-                    dismissed_connect: vec![],
-                },
-                Effect::SavePreferences {
-                    menu_shows: MenuShows::One,
-                    dismissed_connect: vec!["codex".into()],
-                },
-            ]
+            [Effect::SavePreferences {
+                dismissed_connect: vec!["codex".into()],
+            }]
         );
         assert_eq!(changed(State::fixed(example())), []);
     }
 
+    /// Accounts come in `status::rank`'s order, which puts used up first.
     #[test]
-    fn set_to_most_urgent_the_menu_bar_shows_one_account() {
-        let mut two = example();
-        two.status.accounts[1].in_use = true;
-        let mut core = shown(two);
-        let slots = |core: &mut State| core.sync().menu_bar.slots.len();
-        assert_eq!(slots(&mut core), 2);
-        let one = Action::SetMenuShows {
-            shows: MenuShows::One,
-        };
-        core.apply(one, 0);
-        assert_eq!(slots(&mut core), 1);
+    fn the_menu_bar_fills_with_running_out_then_used_up_then_the_rest() {
+        let mut using = example();
+        let accounts = &mut using.status.accounts;
+        accounts.swap(0, 1);
+        let monthly = &mut accounts[0].limits[1];
+        monthly.left_percent = 0;
+        monthly.outlook = turnscope::status::Outlook::UsedUp { back: None };
+        for account in &mut accounts[..3] {
+            account.in_use = true;
+        }
+        let slots = |using: Shown| State::fixed(using).sync().menu_bar.slots;
+        let filled = slots(using.clone());
+        let figures: Vec<_> = filled
+            .iter()
+            .map(|s| (s.figure.as_str(), s.must_show))
+            .collect();
+        assert_eq!(figures, [("50m", true), ("0%", true), ("$8.70", false)]);
+        assert_eq!(
+            filled[1].spoken,
+            "Claude Max, runs out in 50 minutes; ChatGPT Pro, used up"
+        );
+        using.status.history_read = false;
+        let first: Vec<_> = slots(using).into_iter().map(|s| s.figure).collect();
+        assert_eq!(first, ["50m"]);
     }
 
     #[test]
