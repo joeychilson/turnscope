@@ -217,7 +217,10 @@ pub fn build_panel(s: &State) -> PanelModel {
         VerdictModel {
             headline,
             detail,
-            standing: headlined.map_or(Standing::Lasts, Account::standing),
+            standing: headlined.map_or(Standing::Lasts, |a| match words::used_up_part(a) {
+                Some(_) => Standing::UsedUp,
+                None => a.standing(),
+            }),
         }
     });
 

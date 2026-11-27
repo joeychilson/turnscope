@@ -15,10 +15,10 @@
   98% left, resets Fri 00:00", by the UTC day. The panel lists them once
   some are used, and for a day after they're back. `usage --limit free`
   lists the responses of free models.
-- **The panel's headline detail says another limit is used up or running
-  out** when the deciding one has no forecast, as it does when the deciding
-  one lasts: "OpenRouter API key has $25 of $50 left; it doesn't reset.
-  Pi's weekly key guardrail is used up, back Mon 12 AM."
+- **A used-up part of an account leads the panel's headline**, as its
+  notification does, in place of "You can keep going": "Pi's weekly key
+  guardrail is used up", "Opus weekly is used up". The headline detail
+  also says another limit runs out when the deciding one has no forecast.
 
 ## 0.4.2
 
