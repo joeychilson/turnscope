@@ -112,10 +112,11 @@ such as a new one, gets Turnscope's tables, whatever else it holds.
   the version it was last read with, and one read with an older one is
   read again from the start when it's next found: where it was, moved, or
   back after it was gone. Its responses, and which sessions it holds, are
-  taken out first. The sessions only such files hold lose their title and
-  parent, and keep their project, worked out from the folders when the
-  session was first seen: a worktree may be gone since. Responses and
-  sessions from files the agent has since deleted stay.
+  taken out first: every such file's before any is read, a second at a
+  time as history is written. The sessions only such files hold lose their
+  title and parent, and keep their project, worked out from the folders
+  when the session was first seen: a worktree may be gone since. Responses
+  and sessions from files the agent has since deleted stay.
 - **An older Turnscope still running**, such as an agent's MCP server
   started before an update, writes nothing once a newer one has written:
   `state` holds the newest version that has, and each function that
