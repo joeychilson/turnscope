@@ -200,12 +200,36 @@ impl Account {
             .map_or(Standing::Lasts, Limit::standing)
     }
 
+    /// Whether `limit`, one of its limits, is on all its usage: one with no
+    /// scope that isn't one key's, as credits, and beside such a one, each
+    /// limit of the only key here, as every response here goes through it.
+    /// A key with no limit of its own has no reading, so only the agents
+    /// signed in, each holding the key, tell it's the only one. With no
+    /// such limit, as with no credits bought, the most urgent of all its
+    /// limits decides (`deciding`), free models' too.
+    pub fn whole(&self, limit: &Limit) -> bool {
+        let alone = |limit: &Limit| limit.scope.is_none() && !limit.is_key();
+        let Some(key) = crate::providers::key_limit_fingerprint(&limit.key) else {
+            return alone(limit);
+        };
+        self.limits.iter().any(alone)
+            && !self.agents.is_empty()
+            && self
+                .agents
+                .iter()
+                .all(|agent| limit.held_by.contains(agent))
+            && self.limits.iter().all(|other| {
+                crate::providers::key_limit_fingerprint(&other.key)
+                    .is_none_or(|fingerprint| fingerprint == key)
+            })
+    }
+
     /// Whether it stands by `limit`, for whether it can be used and how
     /// long: a limit on all its usage, or where it has none, one of the
     /// pool its deciding limit is in (`pool`), or else its deciding key's.
     pub fn stands_by(&self, limit: &Limit) -> bool {
-        if self.limits.iter().any(Limit::whole) {
-            return limit.whole();
+        if self.limits.iter().any(|other| self.whole(other)) {
+            return self.whole(limit);
         }
         self.deciding_limit()
             .is_some_and(|deciding| match limit.scope {
@@ -271,13 +295,15 @@ pub enum Stale {
 #[serde(rename_all = "camelCase")]
 pub struct Limit {
     /// The provider's key: `five_hour`, `seven_day`. An API key's own limit
-    /// is `key-<fingerprint>`.
+    /// is `key-<fingerprint>`, and another on the key
+    /// `key-<fingerprint>-<its own>`.
     pub key: String,
     /// The provider's name: `5 hours`, `Weekly`, `Credits`.
     pub name: String,
     /// The model it applies to, such as `Opus`, several joined with "and",
-    /// such as `Claude and GPT`, or use no agent here makes, as `Other
-    /// apps`. None for all the account's usage.
+    /// such as `Claude and GPT`, a kind of model, as `Free models`, or use
+    /// no agent here makes, as `Other apps`. None for all the account's
+    /// usage.
     pub scope: Option<String>,
     /// None for a limit that never resets, such as credits.
     pub window: Option<LimitWindow>,
@@ -289,7 +315,7 @@ pub struct Limit {
     pub money: Option<Money>,
     /// When its window reset, if it has since it was read.
     pub reset_since: Option<i64>,
-    /// For one API key's own limit, the agents holding the key. Otherwise
+    /// For one API key's limit, the agents holding the key. Otherwise
     /// empty.
     pub held_by: Vec<String>,
     pub outlook: Outlook,
@@ -328,14 +354,14 @@ impl Limit {
         }
     }
 
-    /// Whether it limits the whole account: it has no scope, and isn't one
-    /// key's.
-    pub fn whole(&self) -> bool {
-        self.scope.is_none() && !self.is_key()
-    }
-
     pub fn is_key(&self) -> bool {
         crate::providers::key_limit_fingerprint(&self.key).is_some()
+    }
+
+    /// Whether it's an API key's own limit, not another on the key.
+    pub fn is_own_key(&self) -> bool {
+        crate::providers::key_limit_fingerprint(&self.key)
+            .is_some_and(|fingerprint| self.key == crate::providers::key_limit(fingerprint))
     }
 
     /// When its window resets, unless it already has since it was read.
@@ -588,6 +614,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
     // Between readings it changes at most once a minute.
     let now = time::minute(now);
     let mut signed: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // The agents holding each API key, by its fingerprint.
     let mut keys: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut rows = db.prepare(&format!(
         "SELECT s.agent, s.account, s.key FROM sign_in s
@@ -601,7 +628,7 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             agents.push(agent.clone());
         }
         if let Some(key) = key {
-            let agents = keys.entry(crate::providers::key_limit(&key)).or_default();
+            let agents = keys.entry(key).or_default();
             if !agents.contains(&agent) {
                 agents.push(agent);
             }
@@ -664,11 +691,11 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
         };
         let kind: Kind = row.get(2)?;
         let in_use = row.get(12)?;
-        accounts.push(Account {
+        let mut account = Account {
             spend: (kind == Kind::ApiKey)
                 .then(|| spend(db, &id, now))
                 .transpose()?,
-            deciding: deciding(&limits, pool(db, &id, &limits)?).map(|limit| limit.key.clone()),
+            deciding: None,
             in_use,
             recent: in_use || row.get(8)?,
             provider: row.get(1)?,
@@ -681,7 +708,10 @@ pub fn status(db: &rusqlite::Connection, now: i64) -> Result<Status> {
             agents,
             state,
             limits,
-        });
+        };
+        let pool = pool(db, &account.id, &account.limits)?;
+        account.deciding = deciding(&account, pool).map(|limit| limit.key.clone());
+        accounts.push(account);
     }
     let history_read = db.query_row("SELECT history_at IS NOT NULL FROM state", [], |row| {
         row.get(0)
@@ -973,7 +1003,10 @@ fn limits(
             },
         };
         limits.push(Limit {
-            held_by: keys.get(&key).cloned().unwrap_or_default(),
+            held_by: crate::providers::key_limit_fingerprint(&key)
+                .and_then(|fingerprint| keys.get(fingerprint))
+                .cloned()
+                .unwrap_or_default(),
             key,
             name,
             scope,
@@ -1159,15 +1192,17 @@ fn outlook(window: &Window, now: i64) -> Outlook {
 }
 
 /// The limit that decides how an account stands, of those on all its usage
-/// where it has any, or else of those in `pool`. Of several used up, the
-/// last back decides: the account can't be used until every one is back.
-fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
-    let whole = limits.iter().any(Limit::whole);
+/// (`Account::whole`) where it has any, or else of those in `pool`. Of
+/// several used up, the last back decides: the account can't be used until
+/// every one is back.
+fn deciding<'a>(account: &'a Account, pool: Option<&str>) -> Option<&'a Limit> {
+    let limits = &account.limits;
+    let whole = limits.iter().any(|limit| account.whole(limit));
     let standing: Vec<&Limit> = limits
         .iter()
         .filter(|limit| {
             if whole {
-                limit.whole()
+                account.whole(limit)
             } else {
                 pool.is_none_or(|pool| limit.scope.as_deref() == Some(pool))
             }
@@ -1184,11 +1219,14 @@ fn deciding<'a>(limits: &'a [Limit], pool: Option<&str>) -> Option<&'a Limit> {
                 } => spread.likely,
                 _ => limit.left_percent,
             };
+            // Of limits as urgent, one on all usage first: a limit on
+            // models an API key may not use never stands before its own.
             (
                 Reverse(limit.standing()),
                 Reverse(limit.back()),
                 limit.runs_out().unwrap_or(i64::MAX),
                 least,
+                limit.scope.is_some(),
             )
         })
         .or_else(|| standing.into_iter().max_by_key(|limit| limit.reset_since))
@@ -1204,7 +1242,7 @@ fn pool<'a>(
     account: &str,
     limits: &'a [Limit],
 ) -> Result<Option<&'a str>> {
-    if limits.iter().any(Limit::whole) {
+    if limits.iter().any(|limit| limit.scope.is_none()) {
         return Ok(None);
     }
     let mut pools: Vec<&str> = Vec::new();
@@ -1392,7 +1430,7 @@ mod tests {
             back: Some(Moment::of(now + hours * HOUR, now)),
         };
         let never = Outlook::UsedUp { back: None };
-        let decides = |account: &Account| deciding(&account.limits, None).unwrap().key.clone();
+        let decides = |account: &Account| deciding(account, None).unwrap().key.clone();
         // 5 hours is back in an hour and Weekly in three days: the account
         // can't be used until Weekly is.
         (account.limits[0].outlook, account.limits[1].outlook) = (back(1), back(72));
@@ -1709,6 +1747,94 @@ mod tests {
         assert_eq!(limit.held_by, ["pi"]);
     }
 
+    /// OpenRouter keys signed in to, as agent and key: `readings` of key,
+    /// name, scope and percent used, read an hour ago and now.
+    fn key_account(keys: &[(&str, &str)], readings: &[(&str, &str, Option<&str>, f64)]) -> Account {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).unwrap();
+        let now = 2 * HOUR;
+        db.execute(
+            "INSERT INTO account (id, provider, kind, title, read_at, full_read_at)
+             VALUES ('openrouter:api', 'openrouter', 'apiKey', 'OpenRouter API key', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        for (agent, key) in keys {
+            db.execute(
+                "INSERT INTO sign_in (agent, folder, provider, since, account, key)
+                 VALUES (?1, ?1 || ?2, 'openrouter', 0, 'openrouter:api', ?2)",
+                [agent, key],
+            )
+            .unwrap();
+        }
+        for at in [now - HOUR, now] {
+            for (key, name, scope, used) in readings {
+                db.execute(
+                    "INSERT INTO reading (account, limit_key, at, name, scope, used, size, starts, resets)
+                     VALUES ('openrouter:api', ?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+                    params![key, at, name, scope, used, scope.is_none().then_some(20.0), DAY],
+                )
+                .unwrap();
+            }
+        }
+        status(&db, now).unwrap().accounts.remove(0)
+    }
+
+    #[test]
+    fn a_key_limit_decides_over_a_limit_on_some_models_no_more_urgent() {
+        let free = |used| {
+            (
+                "free_model_daily_requests",
+                "Daily",
+                Some("Free models"),
+                used,
+            )
+        };
+        let decides = |key: f64, free_used: f64| {
+            let readings = [("key-abc", "Daily key limit", None, key), free(free_used)];
+            key_account(&[("pi", "abc")], &readings).deciding
+        };
+        // Used up; and as urgent, both with none used.
+        assert_eq!(decides(100.0, 12.0).as_deref(), Some("key-abc"));
+        assert_eq!(decides(0.0, 0.0).as_deref(), Some("key-abc"));
+        assert_eq!(
+            decides(10.0, 100.0).as_deref(),
+            Some("free_model_daily_requests")
+        );
+    }
+
+    #[test]
+    fn a_keys_guardrail_stops_the_account_only_where_its_the_one_key_here() {
+        let readings = [
+            ("credits", "Credits", None, 50.0),
+            ("key-abc", "Daily key limit", None, 10.0),
+            ("key-abc-guardrail-g1", "Daily guardrail", None, 100.0),
+        ];
+        // Every response here goes through Pi's key, so it can't be used.
+        let one = key_account(&[("pi", "abc")], &readings);
+        assert_eq!(one.deciding.as_deref(), Some("key-abc-guardrail-g1"));
+        // Signed out, no agent tells it's the only key.
+        let signed_out = key_account(&[], &readings);
+        assert_eq!(signed_out.deciding.as_deref(), Some("credits"));
+        // OpenCode on a key with no limit, or Pi on another key in another
+        // folder, still can.
+        let other = [&readings[..], &[("key-def", "Daily key limit", None, 10.0)]].concat();
+        for (keys, readings) in [
+            ([("pi", "abc"), ("opencode", "def")], &readings[..]),
+            ([("pi", "abc"), ("pi", "def")], &other[..]),
+        ] {
+            let account = key_account(&keys, readings);
+            assert_eq!(account.deciding.as_deref(), Some("credits"));
+        }
+        let guardrail = &one.limits[2];
+        assert_eq!(guardrail.named(), "Pi's daily guardrail");
+        // `pi` and `key limit` name the key's own limit.
+        for name in ["pi", "key limit"] {
+            assert_eq!(one.limit(name).unwrap().key, "key-abc");
+        }
+        assert_eq!(one.limit("guardrail").unwrap().key, "key-abc-guardrail-g1");
+    }
+
     #[test]
     fn a_time_on_next_weeks_same_weekday_is_later() {
         // Noon on 2026-10-15 in the local time zone, clear of DST changes.
@@ -1775,10 +1901,10 @@ mod tests {
         // is still used up and has not reset.
         account.limits[0].reset_since = Some(now - 5 * MINUTE);
         account.limits[1].reset_since = Some(now - 10 * MINUTE);
-        assert_eq!(deciding(&account.limits, None).unwrap().key, "five_hour");
+        assert_eq!(deciding(&account, None).unwrap().key, "five_hour");
         // Even if the scoped limit reset even later, a whole limit still decides.
         account.limits[2].reset_since = Some(now - MINUTE);
-        assert_eq!(deciding(&account.limits, None).unwrap().key, "five_hour");
+        assert_eq!(deciding(&account, None).unwrap().key, "five_hour");
     }
 
     #[test]

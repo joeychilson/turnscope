@@ -112,7 +112,9 @@ The panel is 340 points wide. From the top:
    account in use. It names the account by its title alone, as the first
    row under it shows the label. When that account is running out or used
    up and another live account has room, the line underneath names it too.
-   Before any account is found, why none is.
+   When it lasts but part of it is used up, as Opus or a key's guardrail,
+   the headline says that part is used up, in red, as its notification
+   does. Before any account is found, why none is.
 2. **Accounts in use**, most urgent first.
 3. **Used this week**: accounts not in use but used in the last 7 days,
    the most left first.
@@ -142,6 +144,9 @@ closing any other. Open, it shows each limit on a line of its own with a
 bar (a vertical tick marks how much of a fixed window's time is left, so
 a bar behind the tick is burning faster than steady pace), a note on what
 the limits can't say, and the sessions that used the deciding limit most.
+An API key's limit on some models, as OpenRouter's free models, is left
+out while none of it is used, unless it decides how the account stands or
+was told back in the last day.
 Clicking a session copies its project path (or title); right-clicking
 offers Open Project in Finder, Copy Project Path and Copy Session ID. The
 app asks for those sessions as the panel opens, so a row opens with them

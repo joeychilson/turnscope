@@ -5,9 +5,10 @@
 use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
-use turnscope::alerts::{Notify, Settings, replaces};
+use turnscope::alerts::{Kind, Notify, Settings, replaces};
 use turnscope::engine::{Event, Shown, Stopped, UsedMost};
 use turnscope::status::{Account, Agent, Connection, Standing, Status};
+use turnscope::time::DAY;
 
 use crate::view::{self, AppSync};
 use crate::words::{self, AlertNote, Words};
@@ -96,6 +97,8 @@ pub struct State {
     /// Why a connect failed, with the agent's connection then: it's said until that changes.
     pub agent_errors: HashMap<String, (Connection, String)>,
     pub used: HashMap<String, (String, Vec<UsedMost>)>,
+    /// The limits told back in the last day, as account, limit key and when.
+    pub back: Vec<(String, String, i64)>,
     /// A fixed status's time (`--fixture`, `--snapshot`), which its words are as of. With
     /// one, there's no engine, and nothing changed is kept.
     pub frozen: Option<i64>,
@@ -291,7 +294,17 @@ impl State {
         match event {
             Event::Shown(shown, alerts) => {
                 let before = self.status.take();
+                let at = shown.status.at;
                 self.take(*shown);
+                self.back.retain(|(_, _, told)| at - told <= DAY);
+                self.back.extend(
+                    alerts
+                        .iter()
+                        .filter(|alert| alert.kind == Kind::Reset)
+                        .filter_map(|alert| {
+                            Some((alert.account.clone(), alert.limit.clone()?, at))
+                        }),
+                );
                 let was_refused = |id: &str| {
                     before
                         .as_ref()

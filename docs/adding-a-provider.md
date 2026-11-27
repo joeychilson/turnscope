@@ -106,21 +106,27 @@ limit. Beyond the doc comments on `Reading`:
 
 - `key` is the same at every read: it names the limit in readings, alerts
   and what used it. A limit of one API key is keyed by `key_limit` of the
-  key's fingerprint: the status then shows the agents holding that key, and
-  the limit never decides how the account stands.
+  key's fingerprint, and another on that key, as a guardrail, by
+  `key_limit_on`: the status then shows the agents holding that key, and
+  its usage is that key's. When the key is the only one here and the
+  account has a limit on all its usage, as credits, the key's limits count
+  as on all its usage too; otherwise one decides how the account stands
+  only when nothing on all its usage does.
 - `name` is as the user knows it: `5 hours`, `Weekly`, `Credits`. A limit
   of money whose name ends in `s` is said as plural: "Credits are used up".
 - `starts` and `resets` are Unix milliseconds. `starts` is `None` for a
   window that rolls, which then has no outlook or work left; `resets` is
   `None` for a limit that never resets, such as credits.
-- A limit with a `scope` never decides how its account stands while one
-  without does.
+- A limit with a `scope` never decides how its account stands while one on
+  all its usage does.
 
 Where every key of an API-key account reads the same limits of the
 account itself, as OpenRouter's credits, implement `account_limits` for
 them, and keep them out of `limits`: they're asked once a read, with one
 key after another until one isn't refused, as a key may have no access to
-them.
+them. A limit of the account that comes in each key's own answer, as
+OpenRouter's free models' requests do, is read in `limits` under the same
+`key` for every key.
 
 For a window that rolls, implement `rolls`: given the limit's `key`, how
 long the window is. What used the limit is then the use of the last so

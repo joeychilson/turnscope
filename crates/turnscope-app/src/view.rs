@@ -217,7 +217,10 @@ pub fn build_panel(s: &State) -> PanelModel {
         VerdictModel {
             headline,
             detail,
-            standing: headlined.map_or(Standing::Lasts, Account::standing),
+            standing: headlined.map_or(Standing::Lasts, |a| match words::used_up_part(a) {
+                Some(_) => Standing::UsedUp,
+                None => a.standing(),
+            }),
         }
     });
 
@@ -290,7 +293,12 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
         format!("{called}, {status}, {figure_spoken}")
     };
 
-    let limits = a.limits.iter().map(|l| build_limit_line(w, l)).collect();
+    let limits = a
+        .limits
+        .iter()
+        .filter(|l| listed(s, a, l))
+        .map(|l| build_limit_line(w, l))
+        .collect();
     let sessions = s.used_most(a);
     let used_most = build_used_most(sessions);
     let used_most_heading = a.deciding_limit().map(words::used_most_heading);
@@ -313,6 +321,19 @@ fn build_account_row(s: &State, w: &Words, a: &Account, headlined: bool) -> Acco
         used_most_heading,
         used_most,
     }
+}
+
+/// Whether an account's row lists `limit`. An API key pays for what it
+/// uses, so its limit on some models says nothing while none of it is used,
+/// unless it decides how the account stands or was told back.
+fn listed(s: &State, a: &Account, limit: &Limit) -> bool {
+    a.kind != turnscope::providers::Kind::ApiKey
+        || limit.scope.is_none()
+        || limit.left_percent < 100
+        || a.deciding.as_ref() == Some(&limit.key)
+        || s.back
+            .iter()
+            .any(|(account, key, _)| *account == a.id && *key == limit.key)
 }
 
 fn build_limit_line(w: &Words, limit: &Limit) -> LimitLineModel {
@@ -448,8 +469,9 @@ fn build_agent_row(s: &State, agent: &Agent) -> AgentRowModel {
 mod tests {
     use super::*;
     use crate::state::tests::example;
-    use turnscope::engine::Shown;
-    use turnscope::time::MINUTE;
+    use turnscope::alerts::Alert;
+    use turnscope::engine::{Event, Shown};
+    use turnscope::time::{DAY, MINUTE};
 
     #[test]
     fn time_left_fraction_is_set_only_for_fixed_active_windows() {
@@ -469,6 +491,60 @@ mod tests {
         early.status.at = early.status.accounts[0].limits[0].started().unwrap() + 5 * MINUTE;
         let panel = build_panel(&State::fixed(early));
         assert_eq!(panel.in_use[0].limits[0].time_left_fraction, None);
+    }
+
+    #[test]
+    fn a_keys_limit_on_models_it_hasnt_used_isnt_listed() {
+        let mut shown = example();
+        let account = shown
+            .status
+            .accounts
+            .iter_mut()
+            .find(|a| a.kind == turnscope::providers::Kind::ApiKey && !a.limits.is_empty())
+            .unwrap();
+        let id = account.id.clone();
+        let mut free = account.limits[0].clone();
+        (free.key, free.scope, free.money, free.left_percent) =
+            ("free".into(), Some("Free models".into()), None, 100);
+        account.limits.push(free);
+        let listed = |state: &State| {
+            let panel = build_panel(state);
+            let row = [panel.in_use, panel.recent, panel.unused]
+                .into_iter()
+                .flatten()
+                .find(|row| row.id == id)
+                .unwrap();
+            row.limits.iter().any(|limit| limit.key == "free")
+        };
+        let mut state = State::default();
+        state.took(Event::Shown(Box::new(shown.clone()), Vec::new()));
+        assert!(!listed(&state));
+        // Told back, unused, for a day after.
+        let back = Alert {
+            id: 1,
+            kind: turnscope::alerts::Kind::Reset,
+            account: id.clone(),
+            account_title: "OpenRouter API key".into(),
+            limit: Some("free".into()),
+            limit_name: Some("Daily".into()),
+            resets: None,
+            runs_out: None,
+        };
+        state.took(Event::Shown(Box::new(shown.clone()), vec![back]));
+        assert!(listed(&state));
+        let mut later = shown.clone();
+        later.status.at += DAY + MINUTE;
+        state.took(Event::Shown(Box::new(later), Vec::new()));
+        assert!(!listed(&state));
+        // Once some are used.
+        let account = shown
+            .status
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .unwrap();
+        account.limits.last_mut().unwrap().left_percent = 98;
+        assert!(listed(&State::fixed(shown)));
     }
 
     #[test]

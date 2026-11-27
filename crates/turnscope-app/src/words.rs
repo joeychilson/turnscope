@@ -228,6 +228,10 @@ impl Words {
                 .unwrap_or("They aren't read yet.".into());
             return (format!("{}'s limits are unknown", account.title), detail);
         };
+        if let Some(part) = used_up_part(account) {
+            let is = if plural(part) { "are" } else { "is" };
+            return (format!("{} {is} used up", name(part)), self.back(part));
+        }
         let (subject, plural) = match &limit.scope {
             Some(_) => short_name(limit),
             None => (account.title.clone(), false),
@@ -249,14 +253,12 @@ impl Words {
             None => detail,
         };
         match &limit.outlook {
-            Outlook::UsedUp { back } => {
-                let after = back
-                    .as_ref()
-                    .map_or("It isn't known when it's back.".into(), |b| {
-                        format!("Back {}.", self.at(b))
-                    });
+            Outlook::UsedUp { .. } => {
                 let is = if plural { "are" } else { "is" };
-                (format!("{subject} {is} used up"), with_alternate(after))
+                (
+                    format!("{subject} {is} used up"),
+                    with_alternate(self.back(limit)),
+                )
             }
             Outlook::RunsOut { likely, .. } => {
                 let when = match likely.horizon {
@@ -273,22 +275,18 @@ impl Words {
             }
             Outlook::Unknown { reason } => (
                 "You can keep going".into(),
-                unforecast(limit, account, *reason),
+                self.besides(limit, account, unforecast(limit, account, *reason)),
             ),
-            Outlook::Lasts { .. } => ("You can keep going".into(), self.lasting(limit, account)),
+            Outlook::Lasts { .. } => (
+                "You can keep going".into(),
+                self.besides(limit, account, self.lasting(limit, account)),
+            ),
         }
     }
 
     fn lasting(&self, limit: &Limit, account: &Account) -> String {
-        let others: Vec<&Limit> = account
-            .limits
-            .iter()
-            .filter(|l| l.key != limit.key && l.reset_since.is_none())
-            .collect();
         let current = matches!(account.state, State::Live { .. });
-        let every = others
-            .iter()
-            .all(|l| matches!(l.outlook, Outlook::Lasts { .. }));
+        let every = others(limit, account).all(|l| matches!(l.outlook, Outlook::Lasts { .. }));
         let lasts = if every {
             format!("no {} limit runs out", account.title)
         } else if limit.held_by.is_empty() {
@@ -300,35 +298,33 @@ impl Words {
         } else {
             format!("{} lasts until it resets", in_sentence(limit))
         };
-        let sentence = if current {
+        if current {
             format!("At this pace, {lasts}.")
         } else {
             format!("As last read, {lasts}.")
-        };
-        let used_up = others
-            .iter()
-            .filter(|l| l.standing() == Standing::UsedUp)
-            .max_by_key(|l| l.back());
-        let Some(other) =
-            used_up.or_else(|| others.iter().find(|l| l.standing() != Standing::Lasts))
-        else {
-            return sentence;
-        };
-        match &other.outlook {
-            Outlook::UsedUp { back } => format!(
-                "{sentence} {} {} used up{}.",
-                name(other),
-                if plural(other) { "are" } else { "is" },
-                back.as_ref()
-                    .map_or(String::new(), |b| format!(", back {}", self.at(b)))
-            ),
-            Outlook::RunsOut { likely, .. } => format!(
-                "{sentence} {} {} out {}.",
-                name(other),
-                if plural(other) { "run" } else { "runs" },
-                self.at(likely)
-            ),
-            _ => sentence,
+        }
+    }
+
+    /// `said` of the deciding `limit`, then which other limit runs out.
+    fn besides(&self, limit: &Limit, account: &Account, said: String) -> String {
+        others(limit, account)
+            .find_map(|other| match &other.outlook {
+                Outlook::RunsOut { likely, .. } => Some(format!(
+                    "{said} {} {} out {}.",
+                    name(other),
+                    if plural(other) { "run" } else { "runs" },
+                    self.at(likely)
+                )),
+                _ => None,
+            })
+            .unwrap_or(said)
+    }
+
+    /// When a used-up `limit` is back.
+    fn back(&self, limit: &Limit) -> String {
+        match &limit.outlook {
+            Outlook::UsedUp { back: Some(back) } => format!("Back {}.", self.at(back)),
+            _ => "It isn't known when it's back.".into(),
         }
     }
 
@@ -619,17 +615,26 @@ fn spent(spend: &Spend) -> String {
 /// What a line too short for [`name`] calls a limit, and whether that's
 /// plural. One on some models, as a Google AI plan's pool, goes by its
 /// models: with its own name too, a row's "Claude and GPT weekly resets Sat
-/// 12 PM" was cut short, and the headline ran to two lines.
+/// 12 PM" was cut short, and the headline ran to two lines. Models listed,
+/// or named as "Free models", are plural.
 fn short_name(limit: &Limit) -> (String, bool) {
     match &limit.scope {
-        Some(models) => (models.clone(), models.contains(" and ")),
+        Some(models) => {
+            let plural = models.contains(" and ") || models.ends_with(" models");
+            (models.clone(), plural)
+        }
         None => (name(limit), plural(limit)),
     }
 }
 
 pub fn name(limit: &Limit) -> String {
     if !limit.held_by.is_empty() {
-        return format!("{}'s key", agent_names(&limit.held_by, "and"));
+        let holders = agent_names(&limit.held_by, "and");
+        // A key's own limit goes by the key; another on it, by its name.
+        return match limit.is_own_key() {
+            true => format!("{holders}'s key"),
+            false => format!("{holders}'s {}", limit.name.to_lowercase()),
+        };
     }
     match &limit.scope {
         Some(scope) => format!("{scope} {}", limit.name.to_lowercase()),
@@ -682,6 +687,30 @@ pub fn row_figure_spoken(account: &Account) -> String {
         .as_ref()
         .filter(|spend| !unknown(spend))
         .map_or(String::new(), spent)
+}
+
+/// An account's limits besides `limit` that haven't reset since they were read.
+/// A limit used up while the one deciding `account` still lasts, as a key's guardrail beside
+/// credits or Opus beside the weekly limit (the last back, of several): what stops some of its
+/// work leads, as its notification does.
+pub fn used_up_part(account: &Account) -> Option<&Limit> {
+    let limit = account.deciding_limit()?;
+    if matches!(
+        limit.outlook,
+        Outlook::UsedUp { .. } | Outlook::RunsOut { .. }
+    ) {
+        return None;
+    }
+    others(limit, account)
+        .filter(|l| l.standing() == Standing::UsedUp)
+        .max_by_key(|l| l.back())
+}
+
+fn others<'a>(limit: &'a Limit, account: &'a Account) -> impl Iterator<Item = &'a Limit> {
+    account
+        .limits
+        .iter()
+        .filter(move |l| l.key != limit.key && l.reset_since.is_none())
 }
 
 fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
@@ -1118,6 +1147,11 @@ mod tests {
             ..weekly(lasts(), 40)
         };
         assert_eq!(w.short(&pool), "Claude and GPT reset Sun 12 AM");
+        let free = Limit {
+            scope: Some("Free models".into()),
+            ..weekly(lasts(), 40)
+        };
+        assert_eq!(w.short(&free), "Free models reset Sun 12 AM");
 
         let held = Limit {
             key: "key-1".into(),
@@ -1126,6 +1160,12 @@ mod tests {
             ..limit(lasts())
         };
         assert_eq!(name(&held), "Codex and Pi's key");
+        let guardrail = Limit {
+            key: "key-1-guardrail-g".into(),
+            name: "Weekly guardrail".into(),
+            ..held.clone()
+        };
+        assert_eq!(name(&guardrail), "Codex and Pi's weekly guardrail");
 
         let spent = Limit {
             left_percent: 0,
@@ -1343,10 +1383,10 @@ mod tests {
             window: window("2026-10-03T09:00:00Z", ThisWeek),
             ..weekly(used_up(Some(moment("2026-10-03T09:00:00Z", ThisWeek))), 0)
         };
+        // A used-up part leads, as its notification does, not "You can keep going".
         assert_eq!(
-            w.verdict(Some(&account(vec![week.clone(), opus])), false, &[])
-                .1,
-            "At this pace, Claude Max's weekly lasts until it resets. Opus weekly is used up, back Sat 9 AM."
+            w.verdict(Some(&account(vec![week.clone(), opus])), false, &[]),
+            ("Opus weekly is used up".into(), "Back Sat 9 AM.".into())
         );
         let money = credits(29, 30.0, 8.7, unknown(Unknown::NoReset));
         assert_eq!(
@@ -1364,9 +1404,11 @@ mod tests {
                 Some(&account(vec![week.clone(), spent_credits])),
                 false,
                 &[]
+            ),
+            (
+                "Credits are used up".into(),
+                "It isn't known when it's back.".into()
             )
-            .1,
-            "At this pace, Claude Max's weekly lasts until it resets. Credits are used up."
         );
         let held = Limit {
             key: "key-1".into(),
@@ -1381,8 +1423,22 @@ mod tests {
             "At this pace, Pi's key lasts until it resets."
         );
         assert_eq!(
-            w.verdict(Some(&api_key(vec![money], None)), false, &[]).1,
+            w.verdict(Some(&api_key(vec![money.clone()], None)), false, &[])
+                .1,
             "OpenRouter API key has $8.70 of $30 left; it doesn't reset."
+        );
+        let guardrail = Limit {
+            key: "key-1-guardrail-g".into(),
+            name: "Weekly guardrail".into(),
+            held_by: vec!["pi".into()],
+            ..weekly(used_up(Some(moment("2026-10-04T00:00:00Z", ThisWeek))), 0)
+        };
+        assert_eq!(
+            w.verdict(Some(&api_key(vec![money, guardrail], None)), false, &[]),
+            (
+                "Pi's weekly guardrail is used up".into(),
+                "Back Sun 12 AM.".into()
+            )
         );
         let stale = Account {
             state: State::AsOf {
@@ -1447,19 +1503,22 @@ mod tests {
                 used_weekly.clone(),
             ])
         };
-        let base = "At this pace, Google AI Pro's Gemini weekly lasts until it resets.";
+        let weekly_out = (
+            "Claude and GPT weekly is used up".to_owned(),
+            "Back Sat 9 AM.".to_owned(),
+        );
         let back = plan(five(used_up(Some(moment("2026-09-30T13:00:00Z", Soon)))));
+        assert_eq!(w.verdict(Some(&back), false, &[]), weekly_out);
         assert_eq!(
-            w.verdict(Some(&back), false, &[]).1,
-            format!("{base} Claude and GPT weekly is used up, back Sat 9 AM.")
+            w.verdict(Some(&plan(five(used_up(None)))), false, &[]),
+            (
+                "Claude and GPT 5 hours is used up".into(),
+                "It isn't known when it's back.".into()
+            )
         );
         assert_eq!(
-            w.verdict(Some(&plan(five(used_up(None)))), false, &[]).1,
-            format!("{base} Claude and GPT 5 hours is used up.")
-        );
-        assert_eq!(
-            w.verdict(Some(&plan(five(runs_out()))), false, &[]).1,
-            format!("{base} Claude and GPT weekly is used up, back Sat 9 AM.")
+            w.verdict(Some(&plan(five(runs_out()))), false, &[]),
+            weekly_out
         );
 
         // Drawn on for Claude, its pool decides: that pool is used up, not the plan.

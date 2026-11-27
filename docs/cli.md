@@ -251,7 +251,9 @@ was spent since the key's last read, a last line gives both. A limit on
 some models,
 such as `Weekly (Opus)` or a [pool](architecture.md#glossary) such as
 `Weekly (Claude and GPT)`, counts only the responses of models whose id
-names one of them, such as `claude-opus-5`.
+names one of them, such as `claude-opus-5`. One on a kind of model, as
+`Daily (Free models)`, counts those whose id names the kind, such as
+`deepseek/deepseek-r1:free`.
 
 ## Accounts
 

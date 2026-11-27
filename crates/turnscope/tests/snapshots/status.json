@@ -141,7 +141,7 @@
       "agents": [
         "pi"
       ],
-      "deciding": "credits",
+      "deciding": "key-0123456789abcdef",
       "hidden": false,
       "id": "openrouter:api",
       "inUse": false,
