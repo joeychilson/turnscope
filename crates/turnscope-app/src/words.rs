@@ -263,9 +263,7 @@ impl Words {
             Outlook::UsedUp { back } => {
                 let after = back
                     .as_ref()
-                    .map_or("It isn't known when it's back.".into(), |b| {
-                        format!("Back {}.", self.at(b))
-                    });
+                    .map_or_else(|| never_resets(limit), |b| format!("Back {}.", self.at(b)));
                 let is = if plural { "are" } else { "is" };
                 (format!("{subject} {is} used up"), with_alternate(after))
             }
@@ -278,7 +276,7 @@ impl Words {
                 let headline = format!("{subject} {runs} out {}", unbroken(&when));
                 let back = match &limit.window {
                     Some(w) => format!("Back {}.", self.at(&w.resets)),
-                    None => unforecast(limit, account, Unknown::NoReset),
+                    None => never_resets(limit),
                 };
                 (headline, with_alternate(back))
             }
@@ -693,6 +691,12 @@ pub fn row_figure_spoken(account: &Account) -> String {
         .map_or(String::new(), spent)
 }
 
+/// That `limit` never comes back on its own: the row shows what's left of it.
+fn never_resets(limit: &Limit) -> String {
+    let doesnt = if plural(limit) { "don't" } else { "doesn't" };
+    format!("{} {doesnt} reset.", name(limit))
+}
+
 fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
     if reason == Unknown::Stale && limit.reset_since.is_some() {
         return RESET_FULL.into();
@@ -706,7 +710,7 @@ fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
     match reason {
         Unknown::NotEnoughData | Unknown::Rolling => format!("{standing}."),
         Unknown::Stale => format!("As last read, {standing}."),
-        Unknown::NoReset => format!("{standing}; it doesn't reset."),
+        Unknown::NoReset => never_resets(limit),
     }
 }
 
@@ -1253,7 +1257,15 @@ mod tests {
             w.verdict(Some(&key), false, &[]),
             (
                 "OpenRouter API key runs out Friday\u{a0}afternoon".into(),
-                "OpenRouter API key has $6.00 of $60 left; it doesn't reset.".into()
+                "Credits don't reset.".into()
+            )
+        );
+        let spent = api_key(vec![credits(0, 60.0, 0.0, used_up(None))], None);
+        assert_eq!(
+            w.verdict(Some(&spent), false, &[]),
+            (
+                "OpenRouter API key is used up".into(),
+                "Credits don't reset.".into()
             )
         );
 
@@ -1400,7 +1412,7 @@ mod tests {
         );
         assert_eq!(
             w.verdict(Some(&api_key(vec![money], None)), false, &[]).1,
-            "OpenRouter API key has $8.70 of $30 left; it doesn't reset."
+            "Credits don't reset."
         );
         let stale = Account {
             state: State::AsOf {
@@ -1424,10 +1436,7 @@ mod tests {
                 "As last read, Claude Max has 50% left of 5 hours.",
             ),
             (Unknown::Rolling, "Claude Max has 50% left of 5 hours."),
-            (
-                Unknown::NoReset,
-                "Claude Max has 50% left of 5 hours; it doesn't reset.",
-            ),
+            (Unknown::NoReset, "5 hours doesn't reset."),
         ] {
             let unknown = account(vec![Limit {
                 left_percent: 50,

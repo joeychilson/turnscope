@@ -22,8 +22,9 @@
   credits ran out with no warning.
 - **A limit running out is told when you turn warnings on or show its
   account again** while it still runs out. Before, it was never told.
-- **A notification about credits says they don't reset** under "Credits
-  are used up", which had nothing under it.
+- **Credits say they don't reset,** under "Credits are used up" in a
+  notification, which had nothing under it, and in the panel, which said
+  "It isn't known when it's back" or repeated what's left.
 - **A notification names a day a week or more ahead as it does nearer
   ones**, with its weekday and time, and its date too: "Back Monday,
   January 25, 9 AM", not "Back January 25" beside "Back Monday 10 AM".
