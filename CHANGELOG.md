@@ -6,7 +6,9 @@
   account sooner** when the agent doesn't name its session, as Codex, or
   its session isn't read yet. On a made-up year of heavy use, `guard` in a
   new Claude Code session took 65 ms instead of 280 ms, and in Codex 66 ms
-  instead of 109 ms.
+  instead of 109 ms. In a folder signed in to one account with no work
+  there that day, as a new `CLAUDE_CONFIG_DIR`, it took 109 ms instead of
+  469 ms on a busier Mac.
 
 ## 0.4.2
 
