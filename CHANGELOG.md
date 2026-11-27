@@ -5,11 +5,15 @@
 - **OpenRouter shows its guardrails and workspace budgets** beside credits
   and the key's limit: "Daily guardrail: $3.00 of $4.00 left, resets Fri
   00:00". A guardrail on one key is the key's, as its own limit is: "Pi's
-  key guardrail" stops only that key.
+  weekly key guardrail" stops only that key.
 - **OpenRouter shows free models' requests today**: "Daily (Free models):
   98% left, resets Fri 00:00", by the UTC day. The panel lists them once
   some are used, and for a day after they're back. `usage --limit free`
-  lists the responses of `:free` models.
+  lists the responses of free models.
+- **The panel's headline detail says another limit is used up or running
+  out** when the deciding one has no forecast, as it does when the deciding
+  one lasts: "OpenRouter API key has $25 of $50 left; it doesn't reset.
+  Pi's weekly key guardrail is used up, back Mon 12 AM."
 
 ## 0.4.2
 

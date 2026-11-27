@@ -129,13 +129,12 @@ fn budget(budget: &Value, fingerprint: &str, now: i64) -> Option<Reading> {
     let id = |field: &str| budget[field].as_str().filter(|id| !id.is_empty());
     let period = period(&budget["reset_interval"])?;
     // A guardrail on keys holds each key to its own spend, so it's the
-    // key's limit, named for the key with its period left to its reset:
-    // "Pi's key guardrail". One on members holds every key of theirs to
-    // their spend together.
+    // key's limit: "Pi's weekly key guardrail". One on members holds every
+    // key of theirs to their spend together.
     let (key, name) = match budget["scope"].as_str()? {
         "api_key" | "workspace_default_key" => (
             super::key_limit_on(fingerprint, &format!("guardrail-{}", id("guardrail_id")?)),
-            "Key guardrail".to_owned(),
+            named("key guardrail", period),
         ),
         "member" | "workspace_default_member" => (
             format!("guardrail-{}", id("guardrail_id")?),
@@ -367,14 +366,14 @@ mod tests {
                 // On the key alone, so the key's.
                 money(
                     "key-0123456789abcdef-guardrail-gr_3",
-                    "Key guardrail",
+                    "Weekly key guardrail",
                     25.0,
                     10.0,
                     week
                 ),
                 money(
                     "key-0123456789abcdef-guardrail-gr_4",
-                    "Key guardrail",
+                    "Monthly key guardrail",
                     25.0,
                     10.0,
                     month

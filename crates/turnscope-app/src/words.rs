@@ -273,22 +273,18 @@ impl Words {
             }
             Outlook::Unknown { reason } => (
                 "You can keep going".into(),
-                unforecast(limit, account, *reason),
+                self.besides(limit, account, unforecast(limit, account, *reason)),
             ),
-            Outlook::Lasts { .. } => ("You can keep going".into(), self.lasting(limit, account)),
+            Outlook::Lasts { .. } => (
+                "You can keep going".into(),
+                self.besides(limit, account, self.lasting(limit, account)),
+            ),
         }
     }
 
     fn lasting(&self, limit: &Limit, account: &Account) -> String {
-        let others: Vec<&Limit> = account
-            .limits
-            .iter()
-            .filter(|l| l.key != limit.key && l.reset_since.is_none())
-            .collect();
         let current = matches!(account.state, State::Live { .. });
-        let every = others
-            .iter()
-            .all(|l| matches!(l.outlook, Outlook::Lasts { .. }));
+        let every = others(limit, account).all(|l| matches!(l.outlook, Outlook::Lasts { .. }));
         let lasts = if every {
             format!("no {} limit runs out", account.title)
         } else if limit.held_by.is_empty() {
@@ -300,35 +296,39 @@ impl Words {
         } else {
             format!("{} lasts until it resets", in_sentence(limit))
         };
-        let sentence = if current {
+        if current {
             format!("At this pace, {lasts}.")
         } else {
             format!("As last read, {lasts}.")
-        };
-        let used_up = others
-            .iter()
+        }
+    }
+
+    /// `said` of the deciding `limit`, then which other limit is used up
+    /// (the last back, of several) or else running out.
+    fn besides(&self, limit: &Limit, account: &Account, said: String) -> String {
+        let used_up = others(limit, account)
             .filter(|l| l.standing() == Standing::UsedUp)
             .max_by_key(|l| l.back());
         let Some(other) =
-            used_up.or_else(|| others.iter().find(|l| l.standing() != Standing::Lasts))
+            used_up.or_else(|| others(limit, account).find(|l| l.standing() != Standing::Lasts))
         else {
-            return sentence;
+            return said;
         };
         match &other.outlook {
             Outlook::UsedUp { back } => format!(
-                "{sentence} {} {} used up{}.",
+                "{said} {} {} used up{}.",
                 name(other),
                 if plural(other) { "are" } else { "is" },
                 back.as_ref()
                     .map_or(String::new(), |b| format!(", back {}", self.at(b)))
             ),
             Outlook::RunsOut { likely, .. } => format!(
-                "{sentence} {} {} out {}.",
+                "{said} {} {} out {}.",
                 name(other),
                 if plural(other) { "run" } else { "runs" },
                 self.at(likely)
             ),
-            _ => sentence,
+            _ => said,
         }
     }
 
@@ -691,6 +691,14 @@ pub fn row_figure_spoken(account: &Account) -> String {
         .as_ref()
         .filter(|spend| !unknown(spend))
         .map_or(String::new(), spent)
+}
+
+/// An account's limits besides `limit` that haven't reset since they were read.
+fn others<'a>(limit: &'a Limit, account: &'a Account) -> impl Iterator<Item = &'a Limit> {
+    account
+        .limits
+        .iter()
+        .filter(move |l| l.key != limit.key && l.reset_since.is_none())
 }
 
 fn unforecast(limit: &Limit, account: &Account, reason: Unknown) -> String {
@@ -1142,10 +1150,10 @@ mod tests {
         assert_eq!(name(&held), "Codex and Pi's key");
         let guardrail = Limit {
             key: "key-1-guardrail-g".into(),
-            name: "Key guardrail".into(),
+            name: "Weekly key guardrail".into(),
             ..held.clone()
         };
-        assert_eq!(name(&guardrail), "Codex and Pi's key guardrail");
+        assert_eq!(name(&guardrail), "Codex and Pi's weekly key guardrail");
 
         let spent = Limit {
             left_percent: 0,
@@ -1401,8 +1409,20 @@ mod tests {
             "At this pace, Pi's key lasts until it resets."
         );
         assert_eq!(
-            w.verdict(Some(&api_key(vec![money], None)), false, &[]).1,
+            w.verdict(Some(&api_key(vec![money.clone()], None)), false, &[])
+                .1,
             "OpenRouter API key has $8.70 of $30 left; it doesn't reset."
+        );
+        let guardrail = Limit {
+            key: "key-1-guardrail-g".into(),
+            name: "Weekly key guardrail".into(),
+            held_by: vec!["pi".into()],
+            ..weekly(used_up(Some(moment("2026-10-04T00:00:00Z", ThisWeek))), 0)
+        };
+        assert_eq!(
+            w.verdict(Some(&api_key(vec![money, guardrail], None)), false, &[])
+                .1,
+            "OpenRouter API key has $8.70 of $30 left; it doesn't reset. Pi's weekly key guardrail is used up, back Sun 12 AM."
         );
         let stale = Account {
             state: State::AsOf {

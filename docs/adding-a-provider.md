@@ -115,8 +115,8 @@ limit. Beyond the doc comments on `Reading`:
 - `starts` and `resets` are Unix milliseconds. `starts` is `None` for a
   window that rolls, which then has no outlook or work left; `resets` is
   `None` for a limit that never resets, such as credits.
-- A limit with a `scope` never decides how its account stands while one
-  without does.
+- A limit with a `scope` never decides how its account stands while one on
+  all its usage does.
 
 Where every key of an API-key account reads the same limits of the
 account itself, as OpenRouter's credits, implement `account_limits` for

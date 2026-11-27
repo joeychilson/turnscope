@@ -1777,12 +1777,12 @@ mod tests {
         let account = key_account(&[
             ("credits", "Credits", None, 50.0),
             ("key-abc", "Daily key limit", None, 10.0),
-            ("key-abc-guardrail-g1", "Key guardrail", None, 100.0),
+            ("key-abc-guardrail-g1", "Daily key guardrail", None, 100.0),
         ]);
         // Used up, it stops the key, not the account.
         assert_eq!(account.deciding.as_deref(), Some("credits"));
         let guardrail = &account.limits[2];
-        assert_eq!(guardrail.named(), "Pi's key guardrail");
+        assert_eq!(guardrail.named(), "Pi's daily key guardrail");
         // `pi` and `key limit` name the key's own limit.
         for name in ["pi", "key limit"] {
             assert_eq!(account.limit(name).unwrap().key, "key-abc");
