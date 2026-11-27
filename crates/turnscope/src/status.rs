@@ -213,6 +213,7 @@ impl Account {
             return alone(limit);
         };
         self.limits.iter().any(alone)
+            && !self.agents.is_empty()
             && self
                 .agents
                 .iter()
@@ -1812,6 +1813,9 @@ mod tests {
         // Every response here goes through Pi's key, so it can't be used.
         let one = key_account(&[("pi", "abc")], &readings);
         assert_eq!(one.deciding.as_deref(), Some("key-abc-guardrail-g1"));
+        // Signed out, no agent tells it's the only key.
+        let signed_out = key_account(&[], &readings);
+        assert_eq!(signed_out.deciding.as_deref(), Some("credits"));
         // OpenCode on a key with no limit, or Pi on another key in another
         // folder, still can.
         let other = [&readings[..], &[("key-def", "Daily key limit", None, 10.0)]].concat();
