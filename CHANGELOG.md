@@ -18,8 +18,8 @@
     than it said.
 - **Credits are told running out** when they would within three days at
   the faster of the last day's and the last week's spend, in
-  notifications, the panel, `status` and `check_limits`. Before, credits
-  ran out with no warning.
+  notifications, the panel, `status`, `guard` and `check_limits`. Before,
+  credits ran out with no warning.
 - **A limit running out is told when you turn warnings on or show its
   account again** while it still runs out. Before, it was never told.
 - **A notification about credits says they don't reset** under "Credits

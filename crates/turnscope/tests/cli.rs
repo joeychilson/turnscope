@@ -1261,6 +1261,21 @@ fn credits_are_said_to_run_out_at_their_recent_spend() {
     ] {
         assert!(said.lines().any(|said| said == line), "{said}");
     }
+    let guard = [
+        "guard",
+        "--account",
+        "openrouter",
+        "--limit",
+        "credits",
+        "--below",
+        "20",
+    ];
+    let guard = turnscope(data.path(), &guard);
+    assert_eq!(guard.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&guard.stderr).trim_end(),
+        "OpenRouter API key's credits limit has 10% left, under 20%. At this pace it runs out Fri 09:20 (in 21h 20m)."
+    );
 }
 
 /// Usage since a time, as yesterday's, is the account's, without the limit
