@@ -2,10 +2,15 @@
 
 ## Unreleased
 
-- **The menu bar shows the most urgent account**, or up to 3, most urgent
-  first, with Settings → General → Show set to "Up to 3". It showed every
-  account in use, and with several, macOS could hide the item, as beside
-  the notch, leaving no way to open the panel. "All in use" is gone.
+- **The menu bar puts accounts running out first**, the soonest first,
+  then those used up, then the rest, the least left first. It holds about
+  4 short figures and leaves out the least urgent that don't fit, but
+  never one running out or used up. With several accounts in use, macOS
+  could hide the item, as beside the notch, leaving no way to open the
+  panel. Settings → General → Show is gone.
+- **A used-up account says "Used up" in the menu bar**, in place of when
+  it's back, until it's no longer in use. VoiceOver still says when it's
+  back.
 
 ## 0.4.2
 

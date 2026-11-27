@@ -69,13 +69,13 @@ impl Words {
     }
 
     /// Clock time rather than countdown, for persistent notifications.
-    fn clock(&self, moment: &Moment, full: bool) -> String {
+    fn clock(&self, moment: &Moment) -> String {
         let horizon = match moment.horizon {
             Horizon::Soon if self.zoned(moment.at).date() == self.today => Horizon::Today,
             Horizon::Soon => Horizon::ThisWeek,
             other => other,
         };
-        self.at_horizon(moment.at, horizon, full)
+        self.at_horizon(moment.at, horizon, true)
     }
 
     fn ago(&self, ms: i64) -> String {
@@ -388,9 +388,7 @@ impl Words {
             return account.spend.as_ref().map_or("—".into(), spent_figure);
         };
         match &limit.outlook {
-            Outlook::UsedUp { back } => back.as_ref().map_or("Used up".into(), |b| {
-                format!("Back {}", self.clock(b, false))
-            }),
+            Outlook::UsedUp { .. } => "Used up".into(),
             Outlook::RunsOut { likely, .. } if likely.horizon == Horizon::Soon => {
                 self.until(likely.at)
             }
@@ -423,9 +421,9 @@ impl Words {
             return account.spend.as_ref().map_or("not read yet".into(), spent);
         };
         match &limit.outlook {
-            Outlook::UsedUp { back } => back.as_ref().map_or("used up".into(), |b| {
-                format!("back {}", self.clock(b, true))
-            }),
+            Outlook::UsedUp { back } => back
+                .as_ref()
+                .map_or("used up".into(), |b| format!("back {}", self.clock(b))),
             Outlook::RunsOut { likely, .. } if likely.horizon == Horizon::Soon => {
                 format!("runs out in {}", self.spoken(likely.at))
             }
@@ -471,7 +469,7 @@ impl Words {
             alert
                 .resets
                 .as_ref()
-                .map_or(String::new(), |r| format!("Back {}.", self.clock(r, true)))
+                .map_or(String::new(), |r| format!("Back {}.", self.clock(r)))
         };
         let (subtitle, body) = match alert.kind {
             AlertKind::SignIn => (
@@ -482,7 +480,7 @@ impl Words {
                 let out = alert
                     .runs_out
                     .as_ref()
-                    .map_or("soon".into(), |r| self.clock(r, true));
+                    .map_or("soon".into(), |r| self.clock(r));
                 (format!("{limit_name} {runs} out {out}"), back())
             }
             AlertKind::UsedUp => (format!("{limit_name} {be} used up"), back()),
@@ -1017,11 +1015,11 @@ mod tests {
         );
         assert_eq!(w.at(&moment("2026-10-18T16:37:00Z", Later)), "Oct 18");
         assert_eq!(
-            w.clock(&moment("2026-10-03T19:50:00Z", ThisWeek), true),
+            w.clock(&moment("2026-10-03T19:50:00Z", ThisWeek)),
             "Saturday 7:50 PM"
         );
         assert_eq!(
-            w.clock(&moment("2026-10-18T16:37:00Z", Later), true),
+            w.clock(&moment("2026-10-18T16:37:00Z", Later)),
             "October 18"
         );
         assert_eq!(w.when(at("2026-10-03T19:51:00Z")), "Saturday evening");
@@ -1527,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_bar_says_what_is_left_how_long_or_when_its_back() {
+    fn the_menu_bar_says_what_is_left_how_long_or_that_its_used_up() {
         let w = words();
         let ok = account(vec![Limit {
             left_percent: 67,
@@ -1539,7 +1537,8 @@ mod tests {
             left_percent: 0,
             ..limit(used_up(Some(moment("2026-09-30T15:00:00Z", Soon))))
         }]);
-        assert_eq!(w.figure(&used), "Back 3 PM");
+        assert_eq!(w.figure(&used), "Used up");
+        assert_eq!(w.spoken_figure(&used), "back 3 PM");
 
         // Back soon, but past midnight.
         let late = as_of(at("2026-09-30T22:30:00Z"));
@@ -1547,14 +1546,12 @@ mod tests {
             left_percent: 0,
             ..limit(used_up(Some(moment("2026-10-01T01:00:00Z", Soon))))
         }]);
-        assert_eq!(late.figure(&overnight), "Back tomorrow 1 AM");
         assert_eq!(late.spoken_figure(&overnight), "back tomorrow 1 AM");
 
         let days = account(vec![Limit {
             left_percent: 0,
             ..limit(used_up(Some(moment("2026-10-03T09:00:00Z", ThisWeek))))
         }]);
-        assert_eq!(w.figure(&days), "Back Sat 9 AM");
         assert_eq!(w.spoken_figure(&days), "back Saturday 9 AM");
 
         let refused = Account {

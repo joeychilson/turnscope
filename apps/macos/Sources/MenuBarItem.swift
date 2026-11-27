@@ -10,7 +10,10 @@ final class MenuBarItem {
     private static let height: CGFloat = 22
     private static let logoSize: CGFloat = 21
     private static let markSize: CGFloat = 14
+    private static let gap: CGFloat = 10
     private static let dimmed: CGFloat = 0.45
+    /// Fits 4 accounts with short figures, as "$8.70", "68%", "97%" and "$84" (257 pt, Nov 2026).
+    private static let budget: CGFloat = 260
 
     private var drawn: MenuBarModel?
 
@@ -33,27 +36,28 @@ final class MenuBarItem {
             var width: CGFloat
         }
 
-        let parts: [Part] = model.slots.map { slot in
+        // The slots come most urgent first, so those that don't fit go from the end.
+        var parts: [Part] = []
+        var content: CGFloat = 0
+        var spoken = model.spoken
+        for slot in model.slots {
             let figure = slot.figure as NSString
-            let width = ceil(figure.size(withAttributes: measureAttrs).width)
-            return Part(
+            let part = Part(
                 logo: Logo.svg("providers/\(slot.provider)"),
                 figure: figure,
                 standing: slot.standing,
-                width: width
+                width: ceil(figure.size(withAttributes: measureAttrs).width)
             )
+            let wider = content + (parts.isEmpty ? 0 : Self.gap)
+                + (part.logo != nil ? Self.logoSize + 4 : 0) + part.width
+            if !slot.mustShow && wider + 2 > Self.budget { break }
+            parts.append(part)
+            content = wider
+            spoken = slot.spoken
         }
 
         let lineHeight = font.ascender - font.descender
-        let totalWidth: CGFloat
-        if parts.isEmpty {
-            totalWidth = Self.markSize + 2
-        } else {
-            let content = parts.reduce(CGFloat(0)) { sum, part in
-                sum + (part.logo != nil ? Self.logoSize + 4 : 0) + part.width
-            }
-            totalWidth = content + 10 * CGFloat(parts.count - 1) + 2
-        }
+        let totalWidth = parts.isEmpty ? Self.markSize + 2 : content + 2
 
         let amberColor = Self.dynamicColor(UrgencyHex.amber, alpha: fraction)
         let redColor = Self.dynamicColor(UrgencyHex.red, alpha: fraction)
@@ -104,12 +108,12 @@ final class MenuBarItem {
                     at: NSPoint(x: x, y: y),
                     withAttributes: [.font: font, .foregroundColor: ink(part.standing)]
                 )
-                x += part.width + 10
+                x += part.width + Self.gap
             }
             return true
         }
         image.isTemplate = isTemplate
-        image.accessibilityDescription = model.spoken
+        image.accessibilityDescription = spoken
         return image
     }
 

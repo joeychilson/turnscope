@@ -5,7 +5,7 @@ use turnscope::alerts::Notify;
 use turnscope::engine::{Stopped, UsedMost};
 use turnscope::status::{Account, Agent, Connection, Limit, Standing};
 
-use crate::state::{Effect, MenuShows, State};
+use crate::state::{Effect, State};
 use crate::words::{self, Words};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -22,6 +22,7 @@ pub struct AppSync {
 #[serde(rename_all = "camelCase")]
 pub struct MenuBarModel {
     pub slots: Vec<MenuBarSlot>,
+    /// What VoiceOver says with no slot drawn.
     pub spoken: String,
     pub out_of_date: bool,
 }
@@ -32,6 +33,10 @@ pub struct MenuBarSlot {
     pub provider: String,
     pub standing: Standing,
     pub figure: String,
+    /// Running out or used up: drawn even where it doesn't fit, as it's what to act on.
+    pub must_show: bool,
+    /// What VoiceOver says when the item ends with this slot.
+    pub spoken: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -173,7 +178,6 @@ pub struct AgentRowModel {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsModel {
-    pub menu_shows: MenuShows,
     pub notify: Option<Notify>,
     pub agents_empty: Option<EmptyMessage>,
     pub agents_title: String,
@@ -186,16 +190,20 @@ pub fn build_menu_bar(s: &State) -> MenuBarModel {
     let words = s.words_now();
     let shown = s.in_menu_bar();
     let out_of_date = s.problem.is_some();
+    let spoken = |accounts: &[&Account]| words.spoken_item(accounts, s.all(), out_of_date);
     MenuBarModel {
         slots: shown
             .iter()
-            .map(|a| MenuBarSlot {
+            .enumerate()
+            .map(|(i, a)| MenuBarSlot {
                 provider: a.provider.clone(),
                 standing: a.standing(),
                 figure: words.figure(a),
+                must_show: a.standing() != Standing::Lasts,
+                spoken: spoken(&shown[..=i]),
             })
             .collect(),
-        spoken: words.spoken_item(&shown, s.all(), out_of_date),
+        spoken: spoken(&[]),
         out_of_date,
     }
 }
@@ -404,7 +412,6 @@ fn build_settings(s: &State) -> SettingsModel {
         .partition::<Vec<_>, _>(|a| a.kind == turnscope::providers::Kind::ApiKey);
 
     SettingsModel {
-        menu_shows: s.preferences.menu_shows,
         notify: s.status.as_ref().map(|status| status.settings.notify),
         agents_empty,
         agents_title,

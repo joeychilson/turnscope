@@ -96,10 +96,6 @@ enum Standing: String, Codable {
     case lasts, runningOut, usedUp
 }
 
-enum MenuShows: String, Codable {
-    case one, three
-}
-
 struct NotifySettings: Codable, Equatable {
     var runningOut: Bool
     var usedUp: Bool
@@ -120,13 +116,15 @@ struct AlertNote: Decodable, Equatable {
 enum Effect: Decodable, Equatable {
     case postAlerts(alerts: [AlertNote])
     case removeNotifications(identifiers: [String])
-    case savePreferences(menuShows: MenuShows, dismissedConnect: [String])
+    case savePreferences(dismissedConnect: [String])
 }
 
 struct MenuBarSlot: Decodable, Equatable {
     var provider: String
     var standing: Standing
     var figure: String
+    var mustShow: Bool
+    var spoken: String
 }
 
 struct MenuBarModel: Decodable, Equatable {
@@ -232,7 +230,6 @@ struct AgentRowModel: Decodable, Equatable, Identifiable {
 }
 
 struct SettingsModel: Decodable, Equatable {
-    var menuShows: MenuShows
     var notify: NotifySettings?
     var agentsEmpty: EmptyMessage?
     var agentsTitle: String
@@ -241,7 +238,7 @@ struct SettingsModel: Decodable, Equatable {
     var apiKeys: [AccountModel]
 
     static let empty = SettingsModel(
-        menuShows: .one, notify: nil,
+        notify: nil,
         agentsEmpty: nil, agentsTitle: "", agents: [],
         subscriptions: [], apiKeys: []
     )
@@ -287,7 +284,6 @@ struct StartConfig: Encodable {
     var data: String?
     var home: String?
     var fromDiskImage: Bool
-    var menuShows: MenuShows
     var dismissedConnect: [String]
 }
 
@@ -308,7 +304,6 @@ enum AppAction: Encodable {
     case setHidden(id: String, hidden: Bool)
     case setConnected(id: String, connecting: Bool)
     case setNotify(notify: NotifySettings)
-    case setMenuShows(shows: MenuShows)
     case dismissConnect(id: String)
     case acknowledgeAlert(id: Int64, signInAccount: String?)
     case refreshNow
