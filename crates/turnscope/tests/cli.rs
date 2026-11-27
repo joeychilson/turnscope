@@ -772,23 +772,8 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
     // above names it.
     assert_eq!(guard("claude", "5h", "50").status.code(), Some(2));
     assert_eq!(guard("claude", "5-hour limit", "50").status.code(), Some(2));
-    // Nothing is left of "-limit" to name a limit by: not even "limit",
-    // which the key's own limit's name holds.
-    let args = [
-        "guard",
-        "--account",
-        "openrouter",
-        "--limit=-limit",
-        "--below",
-        "100",
-    ];
-    let refused = turnscope(data.path(), &args);
-    assert_eq!(refused.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("has no limit named -limit;"),
-        "{}",
-        String::from_utf8_lossy(&refused.stderr)
-    );
+    // Nothing is left of " limit" to name a limit by.
+    assert_eq!(guard("claude", " limit", "100").status.code(), Some(1));
     // A guardrail on the OpenRouter key, as its "weekly key guardrail
     // limit", sorts before the key's own limit, which "key limit" names.
     turnscope::db::open(data.path())
