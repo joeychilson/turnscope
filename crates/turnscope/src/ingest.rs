@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
 
 use crate::agents::{self, Agent, Read, Response};
 use crate::prices::{History, Prices, in_force};
@@ -130,12 +130,9 @@ impl Known {
     /// How the file, read before as this and now `stat`, is read. One an
     /// older reader read is added to `older`, to take out what it made.
     ///
-    /// Its reader is recorded when the read ends, over when what it made is
-    /// taken out, so a file taken out and then not read, as when the process
-    /// ends between the two, never looks read. The cost: one that can't be
-    /// read yet is taken out again at each catch-up, in a write of its own,
-    /// 6 ms of CPU and 78 ms in all among 876,086 made-up responses
-    /// (November 2026).
+    /// Its reader is recorded when the read ends or fails (`failed`), over
+    /// when what it made is taken out, so a file taken out and then not
+    /// read, as when the process ends between the two, never looks read.
     fn resume(&self, stat: &Stat, older: &mut Vec<i64>) -> Resume {
         if self.readers < READERS {
             older.push(self.id);
@@ -296,7 +293,9 @@ fn due(db: &mut Connection, home: &Path) -> Result<(Vec<Due>, Vec<i64>)> {
 
 /// Write in turns, each one write of at most `HOLD` begun `PAUSE` after the
 /// last ended, at `ended`. `write` writes while its second argument says
-/// the turn lasts, and says whether there's more.
+/// the turn lasts, and says whether there's more. It lasts at the first ask
+/// however long the turn took to get there: a turn whose start took `HOLD`
+/// would write nothing, turn after turn.
 fn in_turns(
     db: &mut Connection,
     ended: &mut Option<Instant>,
@@ -308,7 +307,8 @@ fn in_turns(
         }
         let tx = crate::db::write(db)?;
         let began = Instant::now();
-        let more = write(&tx, &|| began.elapsed() < HOLD)?;
+        let first = std::cell::Cell::new(true);
+        let more = write(&tx, &|| first.replace(false) || began.elapsed() < HOLD)?;
         tx.commit()?;
         *ended = Some(Instant::now());
         if !more {
@@ -397,18 +397,23 @@ pub fn ingest(db: &mut Connection, home: &Path, patience: Option<Duration>) -> R
     Ok(wrote)
 }
 
-/// A file that can't be read now is tried again next time, from where it
-/// was: its row keeps its cursor and what it was, and says why for doctor.
+/// A file that can't be read now is tried again next time, and its row says
+/// why for doctor. One read on keeps its cursor and what it was. One read
+/// from its start is kept as one never read, but as this reader's: what an
+/// older reader made of it is gone (`read_again`), so it isn't looked for
+/// again at each catch-up, in a walk of every response.
 fn failed(tx: &Transaction, due: &Due, error: &Error) -> Result<()> {
     tx.prepare_cached(
         "INSERT INTO file (path, agent, size, modified, inode, cursor, failed, readers)
-         VALUES (?1, ?2, -1, 0, ?3, '', ?4, ?5)
-         ON CONFLICT (path) DO UPDATE SET failed = excluded.failed",
+         VALUES (?1, ?2, -1, 0, ?3, ?4, ?5, ?6)
+         ON CONFLICT (path) DO UPDATE SET failed = excluded.failed, cursor = excluded.cursor,
+             size = iif(excluded.cursor = '', -1, size), readers = excluded.readers",
     )?
     .execute(params![
         due.path.to_string_lossy(),
         due.agent.info().id,
         due.stat.inode,
+        due.cursor,
         error.to_string(),
         READERS,
     ])?;
@@ -644,31 +649,61 @@ pub fn price_again(tx: &Transaction, models: &[(String, String)]) -> Result<()> 
 ///
 /// All of them before any is read again, as a response two files report
 /// would keep the older reader's counts (`Response::merge`), and in turns
-/// as reading is: in one write, over 876,086 made-up responses on a busy
-/// Mac, another process's write waited 59 to 75 s; in turns, at most 3.4 s
-/// (November 2026).
+/// as reading is: over 876,086 made-up responses on a busy Mac, another
+/// process's write waited 87 to 103 s in one write, at most 1.6 s in turns
+/// (November 2026). The turns walk `response` in session order, so what
+/// one takes out lies together in the indexes on time, account and session:
+/// in key order, taking out alone took 197 to 229 s, not 92 to 143 s. An
+/// index on `file` took as long, and added 62 MB to 595.
 fn read_again(db: &mut Connection, files: &[i64], ended: &mut Option<Instant>) -> Result<()> {
-    let mut files = files.iter().peekable();
-    in_turns(db, ended, |tx, lasts| {
-        tx.execute("CREATE TEMP TABLE again (file INTEGER PRIMARY KEY)", [])?;
-        let mut again = tx.prepare("INSERT INTO again (file) VALUES (?1)")?;
-        let mut forget = tx.prepare("DELETE FROM response WHERE file = ?1")?;
-        while let Some(file) = files.next_if(|_| lasts()) {
-            again.execute([file])?;
-            forget.execute([file])?;
-        }
-        drop((again, forget));
-        // A session's files taken out in an earlier turn no longer hold it.
-        tx.execute_batch(
-            "UPDATE session SET title = NULL, title_rank = -1, parent = NULL
-                 WHERE id IN (SELECT session FROM session_file WHERE file IN (SELECT file FROM again))
-                 AND NOT EXISTS (SELECT 1 FROM session_file held
-                     WHERE held.session = session.id AND held.file NOT IN (SELECT file FROM again));
-             DELETE FROM session_file WHERE file IN (SELECT file FROM again);
-             DROP TABLE again;",
+    /// Responses walked a statement.
+    const SLICE: i64 = 1000;
+    // Only `temp` is written: no other process waits for it.
+    let tx = db.transaction()?;
+    tx.execute("CREATE TEMP TABLE again (file INTEGER PRIMARY KEY)", [])?;
+    let mut again = tx.prepare("INSERT INTO again (file) VALUES (?1)")?;
+    for file in files {
+        again.execute([file])?;
+    }
+    drop(again);
+    tx.commit()?;
+    let mut walked: [String; 3] = Default::default();
+    let taken = in_turns(db, ended, |tx, lasts| {
+        let mut slice = tx.prepare(
+            "SELECT session, agent, id FROM response WHERE (session, agent, id) > (?1, ?2, ?3)
+             ORDER BY session, agent, id LIMIT ?4",
         )?;
-        Ok(files.peek().is_some())
-    })
+        let mut forget = tx.prepare(
+            "DELETE FROM response
+             WHERE (session, agent, id) > (?1, ?2, ?3) AND (session, agent, id) <= (?4, ?5, ?6)
+                 AND file IN (SELECT file FROM again)",
+        )?;
+        while lasts() {
+            let to: Option<[String; 3]> = slice
+                .query_map(params![walked[0], walked[1], walked[2], SLICE], |row| {
+                    Ok([row.get(0)?, row.get(1)?, row.get(2)?])
+                })?
+                .last()
+                .transpose()?;
+            let Some(to) = to else {
+                tx.execute_batch(
+                    "UPDATE session SET title = NULL, title_rank = -1, parent = NULL
+                         WHERE id IN (SELECT session FROM session_file WHERE file IN (SELECT file FROM again))
+                         AND NOT EXISTS (SELECT 1 FROM session_file held
+                             WHERE held.session = session.id AND held.file NOT IN (SELECT file FROM again));
+                     DELETE FROM session_file WHERE file IN (SELECT file FROM again);",
+                )?;
+                return Ok(false);
+            };
+            forget.execute(params_from_iter(walked.iter().chain(&to)))?;
+            walked = to;
+        }
+        Ok(true)
+    });
+    // Ended or not: the app's connection stays open, and the next read again
+    // would fail to make it.
+    db.execute("DROP TABLE again", [])?;
+    taken
 }
 
 /// The repository `cwd` is in, as its main working tree, so a subdirectory
