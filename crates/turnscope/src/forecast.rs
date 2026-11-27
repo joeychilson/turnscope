@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_out_is_told_within_a_fifth_of_5_hours() {
+    fn a_run_out_is_told_within_a_fifth_of_a_day_or_less() {
         // A burst at the start of a 5-hour window: 25% in the first hour
         // runs out at 4h, too far to tell, and 75 minutes off still is; by
         // 3h, 60 minutes off, it's told.
@@ -306,6 +306,12 @@ mod tests {
         assert!(!told(&window, HOUR, out));
         assert!(!told(&window, 2 * HOUR + 45 * MINUTE, out));
         assert!(told(&window, 3 * HOUR, out));
+        let day = Window {
+            resets: DAY,
+            ..window
+        };
+        assert!(!told(&day, 0, DAY / 5 + MINUTE));
+        assert!(told(&day, 0, DAY / 5));
     }
 
     #[test]

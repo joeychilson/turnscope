@@ -145,8 +145,8 @@ SuperGrok (me@example.com) · via Grok Build
 ```
 
 "At this pace" uses clock time, breaks included. Of money that doesn't
-reset, as credits, it's the last week's spend, and a run-out is said only
-within three days. "Of work" counts only the
+reset, as credits, it's the faster of the last day's and the last week's
+spend, and a run-out is said only within three days. "Of work" counts only the
 hours your agents were working: the work rate, `40.9% an hour of work`, is
 how much of the limit an hour of it uses. "As little as" and "as soon as"
 are at a pace that went faster only 1 time in 10.

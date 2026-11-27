@@ -367,10 +367,12 @@ says how to run it). `status.rs` applies it.
 - **Not enough data** gives `unknown` early in a window, after little use,
   or when the run-out is too far off to tell: over a fifth of a window of
   a day or less away, 60 minutes of 5 hours, or a quarter of a longer one.
-- **Money that never resets**, as credits, runs out at what was spent
-  since its last reading a week old or older, said once that's within
-  three days. What was spent is how much all ever used grew, in dollars,
-  as its percent falls when more is bought.
+- **Money that never resets**, as credits, runs out at the faster of what
+  was spent since its last reading a day old or older and since its last
+  a week old or older, said once that's within three days. The day's
+  catches spend that sped up, the week's spend paused for a day. What was
+  spent is how much all ever used grew, in dollars, as its percent falls
+  when more is bought.
 - **The fast end** is the pace times `FAST`, which the pace that followed
   stayed under 90% of the time in the backtest. It gives the least left at
   the reset and the soonest a limit runs out. A least of 0% isn't said:
@@ -386,7 +388,7 @@ says how to run it). `status.rs` applies it.
 
 | Kind | Raised when |
 |---|---|
-| `runningOut` | A limit of an account in use runs out before its reset at its pace, or money that never resets within three days at the last week's spend, as the status shows it |
+| `runningOut` | A limit of an account in use runs out before its reset at its pace, or money that never resets within three days at its recent spend, as the status shows it |
 | `usedUp` | A limit of an account in use is used up: one with a window, or money that never resets, such as credits |
 | `reset` | A limit that was used up is back: its window ended in the last day, use was given back early, or money that never resets has some left |
 | `signIn` | An account in use can't be read because its login was refused at two reads in a row |
@@ -405,13 +407,16 @@ says how to run it). `status.rs` applies it.
   its provider didn't say, raises nothing.
 - A limit back within 15 minutes of being read used up raises neither
   `usedUp` nor `reset`.
-- Some alerts are recorded as already shown: one for a hidden account, one
+- A `runningOut` for a hidden account or with that kind off isn't
+  recorded, so it's told if the account is shown or the kind turned on
+  while the limit still runs out.
+- Other alerts are recorded as already shown: one for a hidden account, one
   of a kind turned off, a `reset` while another limit on the same models or on the whole
   account is still used up, a `reset` longer after the return than its
   window's length (a day at most), as when the Mac wakes, and a `usedUp`
-  of a window of a day or less that a `runningOut` was raised for, with
-  that kind on: the warning said it, and when it's back. Showing the
-  account or turning the kind on later doesn't bring back the past.
+  of a window of a day or less that a `runningOut` was told for: the
+  warning said it, and when it's back. Showing the account or turning the
+  kind on later doesn't bring back the past.
 - An alert waits until the app acknowledges it (`Engine::acknowledge`).
   Until then the engine tells it again with its first status: a `runningOut` or `usedUp` while its window lasts, or
   with no window while its limit is still used up; a `reset` for a day,

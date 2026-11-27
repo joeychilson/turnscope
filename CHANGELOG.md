@@ -17,8 +17,11 @@
     longer limit is: it can be used up days after its warning, and sooner
     than it said.
 - **Credits are told running out** when they would within three days at
-  the last week's spend, in notifications, the panel, `status` and
-  `check_limits`. Before, credits ran out with no warning.
+  the faster of the last day's and the last week's spend, in
+  notifications, the panel, `status` and `check_limits`. Before, credits
+  ran out with no warning.
+- **A limit running out is told when you turn warnings on or show its
+  account again** while it still runs out. Before, it was never told.
 - **A notification about credits says they don't reset** under "Credits
   are used up", which had nothing under it.
 - **A notification names a day a week or more ahead as it does nearer

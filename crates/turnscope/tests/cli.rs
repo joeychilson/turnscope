@@ -1241,7 +1241,7 @@ fn usage_of_credits_says_which_it_is_and_what_of_them_is_used() {
 /// Credits with $5.00 of $50.00 left, $45.00 spent since a reading 8 days
 /// ago: they run out in under a day at that spend.
 #[test]
-fn credits_are_said_to_run_out_at_the_last_weeks_spend() {
+fn credits_are_said_to_run_out_at_their_recent_spend() {
     let data = store();
     let db = Connection::open(data.path().join("turnscope.db")).unwrap();
     db.execute_batch(&format!(
@@ -1257,7 +1257,7 @@ fn credits_are_said_to_run_out_at_the_last_weeks_spend() {
     let said = String::from_utf8_lossy(&output.stdout);
     for line in [
         "OpenRouter API key: whether 1 more hour of work fits can't be told: Credits have $5.00 of $50.00 left and run out Fri 09:20 (in 21h 20m) at this pace, but too little work on them has been measured.",
-        "  Credits: $5.00 of $50.00 left. At this pace it runs out Fri 09:20 (in 21h 20m).",
+        "  Credits: $5.00 of $50.00 left. At this pace they run out Fri 09:20 (in 21h 20m).",
     ] {
         assert!(said.lines().any(|said| said == line), "{said}");
     }

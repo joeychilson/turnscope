@@ -126,18 +126,21 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             // Warned that a window of a day or less runs out, the warning
             // said it, and when it's back. Replayed (November 2026), 5 hours
             // were used up 0.1–2.9 hours after their warning, weeks and months
-            // 28 hours to 7 days, some sooner than said. With warnings off,
-            // none was told.
+            // 28 hours to 7 days, some sooner than said.
             Kind::UsedUp => {
                 limit
                     .and_then(Limit::length)
                     .is_none_or(|length| length > DAY)
-                    || !notify.running_out
                     || !known(Kind::RunningOut)?
             }
             Kind::RunningOut | Kind::SignIn => true,
         };
         let told = on && !account.hidden && news;
+        // Only a warning told is kept, so its used up is told when it wasn't,
+        // and the warning is told once turned on or shown while it runs out.
+        if kind == Kind::RunningOut && !told {
+            return Ok(());
+        }
         let detail = Detail {
             account_title: account.full_title(),
             limit_name: limit.map(|limit| limit.name.clone()),
@@ -510,9 +513,9 @@ mod tests {
     }
 
     /// Warned that 5 hours runs out, it's told back but not used up: the
-    /// warning said that. Told used up when not warned, when warnings are
-    /// off, and of a longer window, whose used up can come days after its
-    /// warning.
+    /// warning said that. Told used up when not warned, when the warning
+    /// wasn't told, and of a longer window, whose used up can come days
+    /// after its warning.
     #[test]
     fn a_5_hour_window_warned_of_is_told_back_but_not_used_up() {
         let out = Outlook::RunsOut {
@@ -541,13 +544,17 @@ mod tests {
             [Kind::UsedUp]
         );
 
-        let (_dir, mut db) = open();
-        let mut warned = five_hours(10 * DAY - HOUR, 20, out);
-        warned.settings.notify.running_out = false;
-        raise(&mut db, &warned).unwrap();
-        let mut used_up = five_used_up;
-        used_up.settings.notify.running_out = false;
-        assert_eq!(kinds(&raise(&mut db, &used_up).unwrap()), [Kind::UsedUp]);
+        // Not told the warning, with warnings off or the account hidden.
+        let mut off = five_hours(10 * DAY - HOUR, 20, out.clone());
+        off.settings.notify.running_out = false;
+        let mut hidden = five_hours(10 * DAY - HOUR, 20, out);
+        hidden.accounts[0].hidden = true;
+        for warned in [off, hidden] {
+            let (_dir, mut db) = open();
+            assert!(raise(&mut db, &warned).unwrap().is_empty());
+            let said = raise(&mut db, &five_used_up).unwrap();
+            assert_eq!(kinds(&said), [Kind::UsedUp]);
+        }
     }
 
     /// An OpenRouter account whose credits, `size` dollars of them, have
@@ -672,29 +679,31 @@ mod tests {
     }
 
     /// Recorded as shown, so showing the account or turning the kind on
-    /// later doesn't bring back the past.
+    /// later doesn't bring back the past. A warning isn't kept: turned on
+    /// while the limit still runs out, it's told.
     #[test]
-    fn an_alert_for_a_hidden_account_or_a_kind_turned_off_is_never_told() {
+    fn a_used_up_for_a_hidden_account_or_a_kind_turned_off_is_never_told() {
         let mut hidden = status(DAY, 0, Outlook::UsedUp { back: None });
         hidden.accounts[0].hidden = true;
         let mut used_up = status(DAY, 0, Outlook::UsedUp { back: None });
         used_up.settings.notify.used_up = false;
-        let mut running_out = runs_out(DAY);
-        running_out.settings.notify.running_out = false;
-        for (mut status, kind) in [
-            (hidden, "usedUp"),
-            (used_up, "usedUp"),
-            (running_out, "runningOut"),
-        ] {
+        for mut status in [hidden, used_up] {
             let (_dir, mut db) = open();
             assert!(raise(&mut db, &status).unwrap().is_empty());
             let recorded = rows(&db, "SELECT kind, acknowledged FROM alert");
-            assert_eq!(recorded, [format!("{kind}|1")]);
+            assert_eq!(recorded, ["usedUp|1"]);
             assert!(pending(&db, &status, DAY).unwrap().is_empty());
             status.accounts[0].hidden = false;
             status.settings.notify = Notify::default();
             assert!(raise(&mut db, &status).unwrap().is_empty());
         }
+        let mut running_out = runs_out(DAY);
+        running_out.settings.notify.running_out = false;
+        let (_dir, mut db) = open();
+        assert!(raise(&mut db, &running_out).unwrap().is_empty());
+        running_out.settings.notify = Notify::default();
+        let said = raise(&mut db, &running_out).unwrap();
+        assert_eq!(kinds(&said), [Kind::RunningOut]);
     }
 
     /// Not raised, so not recorded either: told once the account is in use.
