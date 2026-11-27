@@ -768,8 +768,27 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
         "Claude Max's 5-hour limit has 25% left, under 50%. It resets 14:00 (in 2h); at this pace it runs out 13:00 (in 1h)."
     );
     assert_eq!(guard("claude", "5 hours", "20").status.code(), Some(0));
-    // Named as the status line shows it, `5h 25%`.
+    // Named as the status line shows it, `5h 25%`, or as its own reason
+    // above names it.
     assert_eq!(guard("claude", "5h", "50").status.code(), Some(2));
+    assert_eq!(guard("claude", "5-hour limit", "50").status.code(), Some(2));
+    // Nothing is left of " limit" to name a limit by.
+    assert_eq!(guard("claude", " limit", "100").status.code(), Some(1));
+    // A guardrail on the OpenRouter key, as its "weekly key guardrail
+    // limit", sorts before the key's own limit, which "key limit" names.
+    turnscope::db::open(data.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO reading (account, limit_key, at, name, used, size, starts, resets)
+                 VALUES ('openrouter:api', 'budget-api_key-gr_2-0123456789abcdef', ?1, 'Weekly key guardrail', 80, 25, ?2, ?3)",
+            [NOW - HOUR / 6, NOW - 60 * HOUR, NOW + 108 * HOUR],
+        )
+        .unwrap();
+    let key = guard("openrouter", "key limit", "100");
+    assert_eq!(
+        String::from_utf8_lossy(&key.stderr).trim(),
+        "OpenRouter API key's weekly key limit has 55% left, under 100%. It resets Tue 00:00 (in 4d 12h)."
+    );
     // One it can't follow blocks nothing.
     assert_eq!(guard("claude", "month", "50").status.code(), Some(1));
     // Nor does one mistyped.
@@ -802,6 +821,43 @@ fn a_guard_blocks_under_its_percent_and_passes_otherwise() {
         "50",
     ];
     assert_eq!(quiet(turnscope(none.path(), &args)), (Some(0), true));
+}
+
+/// A limit named as Turnscope writes it in a sentence, and a time in any
+/// case, answer as the names `status` shows and the times `--help` lists.
+#[test]
+fn explain_usage_reads_names_and_times_as_turnscope_writes_them() {
+    let data = store();
+    let same = [
+        (
+            r#"{"account":"claude","limit":"5-hour limit","since":"Window"}"#,
+            r#"{"account":"claude","limit":"5 hours"}"#,
+        ),
+        (
+            r#"{"account":"claude","limit":"5 hour limit"}"#,
+            r#"{"account":"claude","limit":"5 hours"}"#,
+        ),
+        (
+            r#"{"account":"claude","limit":"weekly limit"}"#,
+            r#"{"account":"claude","limit":"weekly"}"#,
+        ),
+        (
+            r#"{"account":"claude","since":"Week","until":"NOW"}"#,
+            r#"{"account":"claude","since":"week","until":"now"}"#,
+        ),
+        (
+            r#"{"account":"claude","since":"24H"}"#,
+            r#"{"account":"claude","since":"24h"}"#,
+        ),
+    ];
+    let calls: Vec<(&str, &str)> = same
+        .iter()
+        .flat_map(|(asked, shown)| [("explain_usage", *asked), ("explain_usage", *shown)])
+        .collect();
+    let answers = tools(&mut command(data.path(), &["mcp"]), &calls);
+    for ((asked, _), answers) in same.iter().zip(answers.chunks(2)) {
+        assert_eq!(answers[0], answers[1], "{asked}");
+    }
 }
 
 /// A new session isn't read yet, as a status line never catches up: its

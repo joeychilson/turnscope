@@ -170,22 +170,38 @@ impl Account {
         self.limits.is_empty().then(|| self.state.why()).flatten()
     }
 
-    /// Its limit `name` names, or an error naming the limits it has.
+    /// Its first limit by key that `name` names (`Limit::answers_to`), in
+    /// any case: `gpt` alone is 5 hours (Claude and GPT). Where none does,
+    /// the one it names as a sentence says it, as `guard` does, with "-hour"
+    /// for " hour" and "limit" after: `5-hour limit` names 5 hours, and
+    /// `gpt-5.3-codex-spark weekly limit` Weekly (GPT-5.3-Codex-Spark). Read
+    /// that way first, "key limit" named a key's guardrail, which sorts
+    /// before the key's own limit.
+    pub fn find_limit(&self, name: &str) -> Option<&Limit> {
+        let find = |name: &str| self.limits.iter().find(|limit| limit.answers_to(name));
+        let name = name.to_lowercase();
+        find(&name).or_else(|| {
+            let spaced = name.replace("-hour", " hour");
+            let spaced = spaced.trim_end();
+            let named = spaced.strip_suffix(" limit").unwrap_or(spaced).trim();
+            (!named.is_empty()).then(|| find(named)).flatten()
+        })
+    }
+
+    /// Its limit `name` names (`find_limit`), or an error naming the limits
+    /// it has.
     pub fn limit(&self, name: &str) -> crate::Result<&Limit> {
-        self.limits
-            .iter()
-            .find(|limit| limit.answers_to(name))
-            .ok_or_else(|| {
-                let names: Vec<String> = self.limits.iter().map(Limit::named).collect();
-                crate::Error::NotFound(match names.is_empty() {
-                    true => format!("{} has no limits read", self.full_title()),
-                    false => format!(
-                        "{} has no limit named {name}; it has {}",
-                        self.full_title(),
-                        names.join(", ")
-                    ),
-                })
+        self.find_limit(name).ok_or_else(|| {
+            let names: Vec<String> = self.limits.iter().map(Limit::named).collect();
+            crate::Error::NotFound(match names.is_empty() {
+                true => format!("{} has no limits read", self.full_title()),
+                false => format!(
+                    "{} has no limit named {name}; it has {}",
+                    self.full_title(),
+                    names.join(", ")
+                ),
             })
+        })
     }
 
     pub fn deciding_limit(&self) -> Option<&Limit> {
@@ -381,17 +397,14 @@ impl Limit {
         self.lowercase("h")
     }
 
-    /// Whether `name` names it: part of its name as shown, with its models
-    /// after it as the command line shows them or before it as the app
-    /// does, as the status line shows it, or part of its key. So `week`
-    /// names Weekly and `seven_day`, `5h` names 5 hours, `weekly (claude`
-    /// and `gpt weekly` name Weekly (Claude and GPT), and `pi` names Pi's
-    /// key limit. Of the limits
-    /// a name fits, the first by key is taken: `gpt` alone is 5 hours
-    /// (Claude and GPT).
-    pub fn answers_to(&self, name: &str) -> bool {
-        let name = name.to_lowercase();
-        let holds = |text: &str| text.to_lowercase().contains(&name);
+    /// Whether `name`, in lowercase, names it: part of its name as shown,
+    /// with its models after it as the command line shows them or before it
+    /// as the app does, as the status line shows it, or part of its key. So
+    /// `week` names Weekly and `seven_day`, `5h` names 5 hours, `weekly
+    /// (claude` and `gpt weekly` name Weekly (Claude and GPT), and `pi` names
+    /// Pi's key limit.
+    fn answers_to(&self, name: &str) -> bool {
+        let holds = |text: &str| text.to_lowercase().contains(name);
         holds(&self.named())
             || holds(&self.short_name())
             || holds(&self.key)
@@ -1381,6 +1394,10 @@ mod tests {
         let none = account.limit("month").unwrap_err().to_string();
         let names = "has no limit named month; it has 5 hours, Weekly, Weekly (Claude and GPT)";
         assert!(none.ends_with(names), "{none}");
+        // As `guard` names a model's limit, its model's own hyphens kept.
+        account.limits[0].scope = Some("GPT-5.3-Codex-Spark".to_owned());
+        let spark = account.limit("gpt-5.3-codex-spark 5-hour limit").unwrap();
+        assert_eq!(spark.key, "five_hour");
     }
 
     #[test]

@@ -76,13 +76,14 @@ fn start_of_day(day: Date, zone: &TimeZone) -> i64 {
 
 pub fn parse(text: &str, now: i64) -> Result<i64> {
     let text = text.trim();
+    let lower = text.to_lowercase();
     // A count too large to go back is no time at all, and a negative one,
     // which would be ahead, isn't one.
     let back = |unit: char, hours: i64| {
-        let count: u32 = text.strip_suffix(unit)?.parse().ok()?;
+        let count: u32 = lower.strip_suffix(unit)?.parse().ok()?;
         now.checked_sub(i64::from(count).checked_mul(hours * HOUR)?)
     };
-    let found = match text {
+    let found = match lower.as_str() {
         "now" => Some(now),
         "today" => Some(start_of(Period::Day, now)),
         "yesterday" => Some(start_of(Period::Day, start_of(Period::Day, now) - 1)),

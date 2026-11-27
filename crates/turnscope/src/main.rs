@@ -75,7 +75,7 @@ enum Command {
     Mcp,
     /// For an agent's hook: exit 2 when your account's limit is under a percent left
     Guard {
-        /// Part of the limit's name, such as week or "5 hours"
+        /// Part of the limit's name, such as week, "5 hours" or "5-hour limit"
         #[arg(long)]
         limit: String,
         /// Block under this percent left
@@ -515,8 +515,7 @@ fn limit_of<'a>(
     account: Option<&str>,
     name: &str,
 ) -> Result<(&'a status::Account, &'a status::Limit)> {
-    let has =
-        |account: &&status::Account| account.limits.iter().any(|limit| limit.answers_to(name));
+    let has = |account: &&status::Account| account.find_limit(name).is_some();
     let account = match account {
         Some(account) => status::one_account(status, account)?,
         None => mcp::Caller::detect()
