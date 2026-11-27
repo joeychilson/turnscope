@@ -98,8 +98,8 @@ struct Model {
 
 /// Models whose fast mode excludes prompts over 272K tokens, which are
 /// billed at Standard rates (openai.com/api-priority-processing, read
-/// 2026-11-26).
-const STANDARD_PAST_TIER: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+/// 2026-11-26). A gateway names one after a prefix: `openai/gpt-5.5`.
+const STANDARD_PAST_272K: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
 pub struct Prices(HashMap<String, HashMap<String, History<Model>>>);
 
@@ -158,8 +158,10 @@ impl Prices {
             .rev()
             .find(|(above, _)| response.prompt > *above)
             .map(|(_, rates)| *rates);
-        let rates = match (model.priority.filter(|_| response.priority), tier) {
-            (Some(_), Some(tier)) if STANDARD_PAST_TIER.contains(&response.model.as_str()) => tier,
+        let name = response.model.rsplit('/').next().unwrap_or_default();
+        let standard = response.prompt > 272_000 && STANDARD_PAST_272K.contains(&name);
+        let fast = model.priority.filter(|_| response.priority && !standard);
+        let rates = match (fast, tier) {
             (Some(priority), Some(tier)) => priority.past(model.base, tier),
             (Some(priority), None) => priority,
             (None, tier) => tier.unwrap_or(model.base),
@@ -440,27 +442,37 @@ mod tests {
         assert!((prices.cost("claude-code", &used).unwrap() - 5.45).abs() < 1e-9);
     }
 
-    /// gpt-5.5's fast mode leaves out a prompt over 272K tokens, which costs
-    /// Standard's long-context rates.
+    /// gpt-5.5's and gpt-5.4 mini's fast mode leaves out a prompt over 272K
+    /// tokens, which costs Standard's rates: long-context ones where listed.
     #[test]
     fn a_long_prompt_a_fast_mode_excludes_costs_standard() {
-        let prices = priced(&[(
-            "openai",
-            "gpt-5.5",
-            0,
-            r#"{"input":5,"output":30,"cache_read":0.5,"tiers":[{"input":10,"output":45,"cache_read":1,"tier":{"type":"context","size":272000}}]}"#,
-            Some(r#"{"input":12.5,"output":75,"cache_read":1.25}"#),
-        )]);
+        let cost = r#"{"input":5,"output":30,"cache_read":0.5,"tiers":[{"input":10,"output":45,"cache_read":1,"tier":{"type":"context","size":272000}}]}"#;
+        let fast = Some(r#"{"input":12.5,"output":75,"cache_read":1.25}"#);
+        let mini = r#"{"input":0.75,"output":4.5,"cache_read":0.075}"#;
+        let mini_fast = Some(r#"{"input":1.5,"output":9,"cache_read":0.15}"#);
+        let prices = priced(&[
+            ("openai", "gpt-5.5", 0, cost, fast),
+            ("zenmux", "openai/gpt-5.5", 0, cost, fast),
+            ("openai", "gpt-5.4-mini", 0, mini, mini_fast),
+        ]);
         let tokens = Tokens {
             input: 20_000,
             cache_read: 280_000,
             output: 4_000,
             ..Tokens::default()
         };
-        let mut used = response("openai", "gpt-5.5", tokens);
-        used.priority = true;
-        // 20,000×10 + 280,000×1 + 4,000×45.
-        assert!((prices.cost("codex", &used).unwrap() - 0.66).abs() < 1e-9);
+        // 20,000×10 + 280,000×1 + 4,000×45, and on mini, 20,000×0.75 +
+        // 280,000×0.075 + 4,000×4.5.
+        for (provider, model, dollars) in [
+            ("openai", "gpt-5.5", 0.66),
+            ("zenmux", "openai/gpt-5.5", 0.66),
+            ("openai", "gpt-5.4-mini", 0.054),
+        ] {
+            let mut used = response(provider, model, tokens);
+            used.priority = true;
+            let cost = prices.cost("opencode", &used).unwrap();
+            assert!((cost - dollars).abs() < 1e-9, "{model}: {cost}");
+        }
     }
 
     #[test]

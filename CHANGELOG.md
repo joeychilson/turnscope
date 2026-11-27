@@ -6,8 +6,10 @@
   Fast long-context price.** It was priced at the short-prompt Fast rate:
   20K input, 280K cached and 4K output tokens of gpt-6.2-sol cost $0.22,
   where OpenAI lists $0.39. On gpt-5.5, gpt-5.4 and gpt-5.4 mini, whose
-  fast mode leaves out such a prompt, it costs Standard's long-context
-  price: $0.66 for the same tokens on gpt-5.5, not $0.90.
+  fast mode leaves out such a prompt, it costs Standard's price, the
+  long-context one where it's listed: $0.66 for the same tokens on gpt-5.5,
+  not $0.90, and $0.054 on gpt-5.4 mini, not $0.108. The same holds
+  through a gateway that names the model `openai/gpt-5.5`.
 
 ## 0.4.2
 
