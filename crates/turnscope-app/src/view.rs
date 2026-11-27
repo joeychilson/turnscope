@@ -32,6 +32,7 @@ pub struct MenuBarSlot {
     pub provider: String,
     pub standing: Standing,
     pub figure: String,
+    pub out_of_date: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -193,6 +194,7 @@ pub fn build_menu_bar(s: &State) -> MenuBarModel {
                 provider: a.provider.clone(),
                 standing: a.standing(),
                 figure: words.figure(a),
+                out_of_date: out_of_date || words::read_out_of_date(a),
             })
             .collect(),
         spoken: words.spoken_item(&shown, s.all(), out_of_date),
@@ -573,6 +575,42 @@ mod tests {
             spoken(&shown, "Anthropic API key"),
             ("—".into(), "Anthropic API key, Sign in again".into())
         );
+    }
+
+    /// Claude Max was running out 40 minutes ago, and its reads have failed since.
+    #[test]
+    fn a_read_out_of_date_is_said_and_dimmed() {
+        use turnscope::status::{Outlook, Stale, Unknown};
+        let mut shown = example();
+        let read_at = shown.status.at - 40 * turnscope::time::MINUTE;
+        let claude = &mut shown.status.accounts[0];
+        claude.state = turnscope::status::State::AsOf {
+            read_at,
+            why: Stale::ReadFailed,
+            worked_minutes: 40,
+        };
+        for limit in &mut claude.limits {
+            limit.read_at = read_at;
+            limit.outlook = Outlook::Unknown {
+                reason: Unknown::Stale,
+            };
+        }
+        let state = State::fixed(shown);
+        let bar = build_menu_bar(&state);
+        assert!(bar.slots[0].out_of_date);
+        assert!(
+            bar.spoken
+                .starts_with("Claude Max, 28% left, not up to date")
+        );
+        let panel = build_panel(&state);
+        let verdict = panel.verdict.unwrap();
+        assert_eq!(verdict.headline, "Claude Max isn't up to date");
+        assert!(
+            verdict
+                .detail
+                .ends_with("Your agents have worked about 40m since it was last read.")
+        );
+        assert!(panel.in_use[0].status.starts_with("Not read since"));
     }
 
     #[test]

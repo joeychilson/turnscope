@@ -96,7 +96,8 @@ then its figure:
 With nothing in use, it shows Turnscope's logo. While every account it
 shows lasts, it's a template image in the menu bar's own color; once one
 needs attention, it's drawn in color. While the data can't be kept
-current, it's dimmed, since it shows the last status. With Settings →
+current, it's dimmed, since it shows the last status; so is an account
+whose last read is too old to say where it's headed. With Settings →
 General → Show set to Most urgent, it shows only the most urgent account.
 VoiceOver reads each account's title, with its label where two share
 one, and what its figure says, then "not up to date" while it's dimmed. Clicking the item opens or closes the
@@ -112,6 +113,9 @@ The panel is 340 points wide. From the top:
    account in use. It names the account by its title alone, as the first
    row under it shows the label. When that account is running out or used
    up and another live account has room, the line underneath names it too.
+   When its last read is too old to say, or came before a reset your
+   agents may have worked after, it says the account isn't up to date and
+   how long your agents have worked since.
    Before any account is found, why none is.
 2. **Accounts in use**, most urgent first.
 3. **Used this week**: accounts not in use but used in the last 7 days,
@@ -136,9 +140,10 @@ isn't known, so every account shown counts as in use: the headline is
 about the most urgent, the menu bar shows each, and none is folded away.
 
 An account's row shows its logo, its title (and its label when another
-shown account has the same title), the line for its deciding limit, and
-what's left of it. A row opens in place on a click, Space or Return,
-closing any other. Open, it shows each limit on a line of its own with a
+shown account has the same title), the line for its deciding limit (or
+when it was last read, once that's too long ago to say where it's
+headed), and what's left of it. A row opens in place on a click, Space or
+Return, closing any other. Open, it shows each limit on a line of its own with a
 bar (a vertical tick marks how much of a fixed window's time is left, so
 a bar behind the tick is burning faster than steady pace), a note on what
 the limits can't say, and the sessions that used the deciding limit most.

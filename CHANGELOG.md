@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **The panel no longer says "You can keep going" about a limit it can't
+  tell.** Once an account in use hasn't been read for 30 minutes, the
+  headline says it isn't up to date and how long your agents have worked
+  since, as `check_limits` and `status --hours` do. So does one whose
+  window reset since that read once your agents worked on it, in place of
+  "Full since the reset". Its row says when it was last read, and its
+  logo and figure in the menu bar are dimmed. A logo now dims with its figure while the
+  data can't be kept current too: in black, it stayed black.
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

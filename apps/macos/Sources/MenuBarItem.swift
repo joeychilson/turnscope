@@ -19,7 +19,8 @@ final class MenuBarItem {
         drawn = model
 
         let isTemplate = model.slots.allSatisfy { $0.standing == .lasts }
-        let fraction: CGFloat = model.outOfDate ? Self.dimmed : 1.0
+        let dimmed = Self.dimmed
+        let markFraction: CGFloat = model.outOfDate ? dimmed : 1.0
         let font = NSFont.monospacedDigitSystemFont(
             ofSize: NSFont.menuBarFont(ofSize: 0).pointSize,
             weight: .semibold
@@ -30,6 +31,7 @@ final class MenuBarItem {
             var logo: NSImage?
             var figure: NSString
             var standing: Standing
+            var outOfDate: Bool
             var width: CGFloat
         }
 
@@ -40,6 +42,7 @@ final class MenuBarItem {
                 logo: Logo.svg("providers/\(slot.provider)"),
                 figure: figure,
                 standing: slot.standing,
+                outOfDate: slot.outOfDate,
                 width: width
             )
         }
@@ -55,18 +58,15 @@ final class MenuBarItem {
             totalWidth = content + 10 * CGFloat(parts.count - 1) + 2
         }
 
-        let amberColor = Self.dynamicColor(UrgencyHex.amber, alpha: fraction)
-        let redColor = Self.dynamicColor(UrgencyHex.red, alpha: fraction)
-
         let image = NSImage(size: NSSize(width: totalWidth, height: Self.height), flipped: false) { _ in
-            func ink(_ standing: Standing) -> NSColor {
+            func ink(_ standing: Standing, _ fraction: CGFloat) -> NSColor {
                 if isTemplate {
                     return NSColor.black.withAlphaComponent(fraction)
                 }
                 return switch standing {
                 case .lasts: NSColor.labelColor.withAlphaComponent(0.85 * fraction)
-                case .runningOut: amberColor
-                case .usedUp: redColor
+                case .runningOut: Self.dynamicColor(UrgencyHex.amber, alpha: fraction)
+                case .usedUp: Self.dynamicColor(UrgencyHex.red, alpha: fraction)
                 }
             }
 
@@ -78,13 +78,14 @@ final class MenuBarItem {
                         width: Self.markSize,
                         height: Self.markSize
                     ),
-                    color: ink(.lasts)
+                    color: ink(.lasts, markFraction)
                 )
                 return true
             }
 
             var x: CGFloat = 1
             for part in parts {
+                let fraction: CGFloat = part.outOfDate ? dimmed : 1.0
                 if let logo = part.logo {
                     Self.drawTinted(
                         logo,
@@ -94,7 +95,8 @@ final class MenuBarItem {
                             width: Self.logoSize,
                             height: Self.logoSize
                         ),
-                        color: ink(.lasts)
+                        color: ink(.lasts, 1),
+                        fraction: fraction
                     )
                     x += Self.logoSize + 4
                 }
@@ -102,7 +104,7 @@ final class MenuBarItem {
                 let y = (Self.height - lineHeight) / 2 + 1
                 part.figure.draw(
                     at: NSPoint(x: x, y: y),
-                    withAttributes: [.font: font, .foregroundColor: ink(part.standing)]
+                    withAttributes: [.font: font, .foregroundColor: ink(part.standing, fraction)]
                 )
                 x += part.width + 10
             }
@@ -113,7 +115,9 @@ final class MenuBarItem {
         return image
     }
 
-    private nonisolated static func drawTinted(_ image: NSImage, in rect: NSRect, color: NSColor) {
+    /// Draws `image` in `color`, then at `fraction` opacity: tinted over the logo, a color's own
+    /// alpha would leave it opaque.
+    private nonisolated static func drawTinted(_ image: NSImage, in rect: NSRect, color: NSColor, fraction: CGFloat) {
         let size = image.size
         guard size.width > 0, size.height > 0 else { return }
         let scale = min(rect.width / size.width, rect.height / size.height)
@@ -130,7 +134,7 @@ final class MenuBarItem {
             bounds.fill(using: .sourceAtop)
             return true
         }
-        tinted.draw(in: dest)
+        tinted.draw(in: dest, from: .zero, operation: .sourceOver, fraction: fraction)
     }
 
     /// Turnscope's mark as `Turnscope.icon` draws it: a ring around a 235° wedge in 530 units.
@@ -154,7 +158,7 @@ final class MenuBarItem {
         slice.fill()
     }
 
-    private static func dynamicColor(_ hexes: [UInt32], alpha: CGFloat) -> NSColor {
+    private nonisolated static func dynamicColor(_ hexes: [UInt32], alpha: CGFloat) -> NSColor {
         let colors = hexes.map { hex in
             NSColor(
                 srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,

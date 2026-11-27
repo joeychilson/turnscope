@@ -618,11 +618,13 @@ mod tests {
                         provider: "anthropic".into(),
                         standing: Standing::Lasts,
                         figure: "88%".into(),
+                        out_of_date: true,
                     },
                     MenuBarSlot {
                         provider: "openai".into(),
                         standing: Standing::UsedUp,
                         figure: "Back 4:00 PM".into(),
+                        out_of_date: false,
                     },
                 ],
                 spoken: "Claude Max 88%".into(),
