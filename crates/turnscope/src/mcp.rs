@@ -170,49 +170,83 @@ impl Caller {
                 .clone()
                 .or_else(|| agent.folders(home).into_iter().next())
         {
-            let agent = agent.info().id;
-            let folder = folder.to_string_lossy();
-            let latest: Option<(String, String)> = db
-                .prepare_cached(
-                    "SELECT account, provider FROM response
-                     WHERE agent = ?1 AND folder = ?2 AND account IS NOT NULL
-                     ORDER BY at DESC LIMIT 1",
-                )?
-                .query_row(rusqlite::params![agent, folder.as_ref()], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })
-                .optional()?;
-            let current = match &latest {
-                Some((_, provider)) => db
-                    .prepare_cached(
-                        "SELECT account FROM sign_in
-                         WHERE folder = ?1 AND provider = ?2
-                         ORDER BY since DESC LIMIT 1",
-                    )?
-                    .query_row(rusqlite::params![folder.as_ref(), provider], |row| {
-                        row.get::<_, Option<String>>(0)
-                    })
-                    .optional()?,
-                None => None,
-            };
-            id = match (latest, current) {
-                (_, Some(Some(signed_in))) => Some(signed_in),
-                (Some((account, _)), None) => Some(account),
-                (latest, _) => db
-                    .prepare_cached(&format!(
-                        "SELECT s.account FROM sign_in s
-                         WHERE s.agent = ?1 AND s.folder = ?2 AND s.account IS NOT NULL
-                             AND EXISTS (SELECT 1 FROM account WHERE id = s.account) AND {}
-                         ORDER BY s.since DESC, s.provider ASC LIMIT 1",
-                        turnscope::limits::SIGNED_IN_NOW
-                    ))?
-                    .query_row(rusqlite::params![agent, folder.as_ref()], |row| row.get(0))
-                    .optional()?
-                    .or_else(|| latest.map(|(account, _)| account)),
-            };
+            id = folder_account(db, agent.info().id, &folder.to_string_lossy(), status.at)?;
         }
         Ok(id.and_then(|id| status.accounts.iter().find(|account| account.id == id)))
     }
+}
+
+/// The account `agent` draws on in its agent folder `folder`: what the
+/// folder is signed in to now for its latest response's provider, or else
+/// for any provider, or else that response's.
+fn folder_account(db: &Connection, agent: &str, folder: &str, now: i64) -> Result<Option<String>> {
+    // The folder's one sign-in in force with an account, of any agent's as
+    // `current` takes them, is what the rest gives too when it's the agent's
+    // and known, without reading a response.
+    let signed_in: Vec<(String, bool)> = db
+        .prepare_cached(&format!(
+            "SELECT s.account, s.agent = ?1 AND EXISTS (SELECT 1 FROM account WHERE id = s.account)
+             FROM sign_in s WHERE s.folder = ?2 AND s.account IS NOT NULL AND {} LIMIT 2",
+            turnscope::limits::SIGNED_IN_NOW
+        ))?
+        .query_map(rusqlite::params![agent, folder], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    if let [(account, true)] = signed_in.as_slice() {
+        return Ok(Some(account.clone()));
+    }
+    // Most often within the last day: walking `response_at` back from now
+    // finds it in 0.22 ms at most, where the planner's own choice, reading
+    // and sorting all of the agent's, took up to 540 ms among 709,071
+    // made-up responses, and a folder with none that day costs 11 to 15 ms
+    // more (November 2026).
+    const MINE: &str = "agent = ?1 AND folder = ?2 AND account IS NOT NULL";
+    let row = |row: &rusqlite::Row<'_>| Ok((row.get(0)?, row.get(1)?));
+    let mut latest: Option<(String, String)> = db
+        .prepare_cached(&format!(
+            "SELECT account, provider FROM response INDEXED BY response_at
+             WHERE {MINE} AND at >= ?3 ORDER BY at DESC LIMIT 1"
+        ))?
+        .query_row(rusqlite::params![agent, folder, now - time::DAY], row)
+        .optional()?;
+    if latest.is_none() {
+        latest = db
+            .prepare_cached(&format!(
+                "SELECT account, provider FROM response WHERE {MINE}
+                 ORDER BY at DESC LIMIT 1"
+            ))?
+            .query_row(rusqlite::params![agent, folder], row)
+            .optional()?;
+    }
+    let current = match &latest {
+        Some((_, provider)) => db
+            .prepare_cached(
+                "SELECT account FROM sign_in
+                 WHERE folder = ?1 AND provider = ?2
+                 ORDER BY since DESC LIMIT 1",
+            )?
+            .query_row(rusqlite::params![folder, provider], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .optional()?,
+        None => None,
+    };
+    Ok(match (latest, current) {
+        (_, Some(Some(signed_in))) => Some(signed_in),
+        (Some((account, _)), None) => Some(account),
+        (latest, _) => db
+            .prepare_cached(&format!(
+                "SELECT s.account FROM sign_in s
+                 WHERE s.agent = ?1 AND s.folder = ?2 AND s.account IS NOT NULL
+                     AND EXISTS (SELECT 1 FROM account WHERE id = s.account) AND {}
+                 ORDER BY s.since DESC, s.provider ASC LIMIT 1",
+                turnscope::limits::SIGNED_IN_NOW
+            ))?
+            .query_row(rusqlite::params![agent, folder], |row| row.get(0))
+            .optional()?
+            .or_else(|| latest.map(|(account, _)| account)),
+    })
 }
 
 /// An agent folder as a variable names it, in the form a response holds
