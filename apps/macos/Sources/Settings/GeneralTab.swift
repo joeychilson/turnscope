@@ -23,7 +23,7 @@ struct GeneralTab: View {
             SettingRow(title: "Show") {
                 Choice(
                     label: "Show",
-                    options: [(MenuShows.three, "3 most urgent"), (.one, "Most urgent")],
+                    options: [(MenuShows.one, "Most urgent account"), (.three, "Up to 3")],
                     selection: bridge.panel.settings.menuShows
                 ) { shows in
                     bridge.send(.setMenuShows(shows: shows))

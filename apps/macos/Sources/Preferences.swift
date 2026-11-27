@@ -12,7 +12,7 @@ struct Preferences {
 
     static func read() -> Preferences {
         let defaults = UserDefaults.standard
-        let shows: MenuShows = defaults.string(forKey: menuShowsKey) == MenuShows.one.rawValue ? .one : .three
+        let shows: MenuShows = defaults.string(forKey: menuShowsKey) == MenuShows.three.rawValue ? .three : .one
         let dismissed = (defaults.string(forKey: dismissedConnectKey) ?? "")
             .split(separator: ",")
             .map(String.init)

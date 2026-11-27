@@ -12,13 +12,13 @@ use turnscope::status::{Account, Agent, Connection, Standing, Status};
 use crate::view::{self, AppSync};
 use crate::words::{self, AlertNote, Words};
 
-/// What the menu bar shows: the 3 most urgent accounts in use, or only the most urgent.
+/// What the menu bar shows: the most urgent account in use, or up to 3.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MenuShows {
     #[default]
-    Three,
     One,
+    Three,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -705,7 +705,7 @@ pub(crate) mod tests {
         let changed = |mut core: State| {
             core.apply(
                 Action::SetMenuShows {
-                    shows: MenuShows::One,
+                    shows: MenuShows::Three,
                 },
                 0,
             );
@@ -716,11 +716,11 @@ pub(crate) mod tests {
             changed(shown(example())),
             [
                 Effect::SavePreferences {
-                    menu_shows: MenuShows::One,
+                    menu_shows: MenuShows::Three,
                     dismissed_connect: vec![],
                 },
                 Effect::SavePreferences {
-                    menu_shows: MenuShows::One,
+                    menu_shows: MenuShows::Three,
                     dismissed_connect: vec!["codex".into()],
                 },
             ]
@@ -729,7 +729,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_menu_bar_shows_the_3_most_urgent_or_1_while_history_is_read() {
+    fn the_menu_bar_shows_the_most_urgent_or_up_to_3_once_history_is_read() {
         let mut every = example();
         for account in &mut every.status.accounts {
             account.in_use = true;
@@ -740,13 +740,15 @@ pub(crate) mod tests {
             slots.into_iter().map(|s| s.figure).collect::<Vec<_>>()
         };
         let mut core = State::fixed(every);
-        assert_eq!(figures(&mut core), ["50m", "97%", "$8.70"]);
-        let one = Action::SetMenuShows {
-            shows: MenuShows::One,
-        };
-        core.apply(one, 0);
         assert_eq!(figures(&mut core), ["50m"]);
-        assert_eq!(figures(&mut State::fixed(first_launch())), ["50m"]);
+        let three = Action::SetMenuShows {
+            shows: MenuShows::Three,
+        };
+        core.apply(three.clone(), 0);
+        assert_eq!(figures(&mut core), ["50m", "97%", "$8.70"]);
+        let mut first = State::fixed(first_launch());
+        first.apply(three, 0);
+        assert_eq!(figures(&mut first), ["50m"]);
     }
 
     #[test]

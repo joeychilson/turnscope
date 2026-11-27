@@ -2,10 +2,10 @@
 
 ## Unreleased
 
-- **The menu bar shows up to 3 accounts**, most urgent first, and only the
-  most urgent while history is first read. With more, macOS could hide the
-  item, as beside the notch, leaving no way to open the panel. Settings →
-  General → Show's "All in use" is now "3 most urgent".
+- **The menu bar shows the most urgent account**, or up to 3, most urgent
+  first, with Settings → General → Show set to "Up to 3". It showed every
+  account in use, and with several, macOS could hide the item, as beside
+  the notch, leaving no way to open the panel. "All in use" is gone.
 
 ## 0.4.2
 
