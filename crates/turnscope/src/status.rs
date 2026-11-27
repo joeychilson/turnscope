@@ -1808,7 +1808,7 @@ mod tests {
         let readings = [
             ("credits", "Credits", None, 50.0),
             ("key-abc", "Daily key limit", None, 10.0),
-            ("key-abc-guardrail-g1", "Daily key guardrail", None, 100.0),
+            ("key-abc-guardrail-g1", "Daily guardrail", None, 100.0),
         ];
         // Every response here goes through Pi's key, so it can't be used.
         let one = key_account(&[("pi", "abc")], &readings);
@@ -1827,13 +1827,13 @@ mod tests {
             assert_eq!(account.deciding.as_deref(), Some("credits"));
         }
         let guardrail = &one.limits[2];
-        assert_eq!(guardrail.named(), "Pi's daily key guardrail");
+        assert_eq!(guardrail.named(), "Pi's daily guardrail");
         // `pi` and `key limit` name the key's own limit.
         for name in ["pi", "key limit"] {
             assert_eq!(one.limit(name).unwrap().key, "key-abc");
         }
         assert_eq!(
-            one.limit("key guardrail").unwrap().key,
+            one.limit("guardrail").unwrap().key,
             "key-abc-guardrail-g1"
         );
     }

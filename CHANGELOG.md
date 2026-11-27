@@ -5,7 +5,7 @@
 - **OpenRouter shows its guardrails and workspace budgets** beside credits
   and the key's limit: "Daily guardrail: $3.00 of $4.00 left, resets Fri
   00:00". A guardrail on one key is the key's, as its own limit is: "Pi's
-  weekly key guardrail" stops only that key.
+  weekly guardrail" stops only that key.
 - **With one OpenRouter key here, its limits stop the account.** Every
   response goes through it, so its limit or a guardrail used up says
   "OpenRouter API key is used up" even with credits left, and one with
@@ -16,7 +16,7 @@
   some are used, and for a day after they're back. `usage --limit free`
   lists the responses of free models.
 - **A used-up part of an account leads the panel's headline**, as its
-  notification does, in place of "You can keep going": "Pi's weekly key
+  notification does, in place of "You can keep going": "Pi's weekly
   guardrail is used up", "Opus weekly is used up". The headline detail
   also says another limit runs out when the deciding one has no forecast.
 

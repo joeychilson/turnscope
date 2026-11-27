@@ -1162,10 +1162,10 @@ mod tests {
         assert_eq!(name(&held), "Codex and Pi's key");
         let guardrail = Limit {
             key: "key-1-guardrail-g".into(),
-            name: "Weekly key guardrail".into(),
+            name: "Weekly guardrail".into(),
             ..held.clone()
         };
-        assert_eq!(name(&guardrail), "Codex and Pi's weekly key guardrail");
+        assert_eq!(name(&guardrail), "Codex and Pi's weekly guardrail");
 
         let spent = Limit {
             left_percent: 0,
@@ -1429,14 +1429,14 @@ mod tests {
         );
         let guardrail = Limit {
             key: "key-1-guardrail-g".into(),
-            name: "Weekly key guardrail".into(),
+            name: "Weekly guardrail".into(),
             held_by: vec!["pi".into()],
             ..weekly(used_up(Some(moment("2026-10-04T00:00:00Z", ThisWeek))), 0)
         };
         assert_eq!(
             w.verdict(Some(&api_key(vec![money, guardrail], None)), false, &[]),
             (
-                "Pi's weekly key guardrail is used up".into(),
+                "Pi's weekly guardrail is used up".into(),
                 "Back Sun 12 AM.".into()
             )
         );
