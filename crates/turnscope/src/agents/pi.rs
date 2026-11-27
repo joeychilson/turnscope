@@ -57,6 +57,11 @@ struct Cursor {
     /// The provider and model of the latest response, which a summary is
     /// written with.
     model: Option<(String, String)>,
+    /// Whether the file is Pi's session format 1, with no `version`, whose
+    /// entries have no id. Pi rewrites one with ids and a version before it
+    /// adds to it. `responseId` is optional in pi-ai's `AssistantMessage`.
+    #[serde(default)]
+    format_1: bool,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +74,8 @@ struct Line<'a> {
     timestamp: Option<Cow<'a, str>>,
     #[serde(borrow, default, deserialize_with = "super::lenient")]
     cwd: Option<Cow<'a, str>>,
+    #[serde(default, deserialize_with = "super::lenient")]
+    version: Option<u64>,
     #[serde(borrow, default, deserialize_with = "super::lenient")]
     name: Option<Cow<'a, str>>,
     #[serde(borrow)]
@@ -186,6 +193,7 @@ impl Agent for Pi {
 fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
     let at = line.timestamp.as_deref().and_then(crate::time::millis);
     if line.kind == "session" {
+        cursor.format_1 = line.version.is_none();
         let Some(native) = line.id.as_deref() else {
             return;
         };
@@ -195,9 +203,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         (cursor.session, cursor.began) = (Some(session), at);
         return;
     }
-    let Some(session) = cursor.session.as_deref() else {
-        return;
-    };
+    let session = cursor.session.as_deref();
     // An entry from before the session began is a fork's copy of its
     // parent's.
     let copy = at.zip(cursor.began).is_some_and(|(at, began)| at < began);
@@ -206,35 +212,38 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
     let entry = || {
         line.id
             .as_deref()
+            .zip(session)
             .filter(|_| !copy)
-            .map(|id| format!("{session}:{id}"))
+            .map(|(id, session)| format!("{session}:{id}"))
     };
     let (usage, provider, model, id, at) = match &*line.kind {
         "session_info" if !copy => {
-            if let Some(name) = line.name.as_deref() {
+            if let (Some(session), Some(name)) = (session, line.name.as_deref()) {
                 read.session(session).title(Title::Named, name);
             }
             return;
         }
-        "usage" => {
-            let (Some(provider), Some(model), Some(id)) =
-                (line.provider.as_deref(), line.model.as_deref(), entry())
-            else {
-                return;
-            };
-            (line.usage, provider.to_owned(), model.to_owned(), id, at)
-        }
+        "usage" => (
+            line.usage,
+            line.provider.as_deref(),
+            line.model.as_deref(),
+            entry(),
+            at,
+        ),
         "compaction" | "branch_summary" => {
             let Some(usage) = line.usage.filter(|raw| raw.get().starts_with('{')) else {
                 return;
             };
-            let (Some((provider, model)), Some(id)) = (cursor.model.as_ref(), entry()) else {
-                return;
-            };
-            (Some(usage), provider.clone(), model.clone(), id, at)
+            let (provider, model) = cursor
+                .model
+                .as_ref()
+                .map(|(provider, model)| (provider.as_str(), model.as_str()))
+                .unzip();
+            (Some(usage), provider, model, entry(), at)
         }
         "message" => {
             let Some(message) = &line.message else {
+                read.skipped += 1;
                 return;
             };
             match message.role.as_deref() {
@@ -247,7 +256,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
                         .into_iter()
                         .flatten()
                         .find(|text| !text.trim().is_empty());
-                    if let Some(asked) = asked {
+                    if let (Some(session), Some(asked)) = (session, asked) {
                         read.session(session).title(Title::Prompt, &asked);
                         cursor.titled = true;
                     }
@@ -261,33 +270,38 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
                         .filter(|model| !model.is_empty())
                         .or(message.model.as_deref())
                         .filter(|model| !model.is_empty());
-                    let (Some(provider), Some(model)) = (message.provider.as_deref(), model) else {
-                        return;
-                    };
-                    cursor.model = Some((provider.to_owned(), model.to_owned()));
-                    // A copy without a response id couldn't be told
-                    // from its parent's.
-                    let Some(id) = message
+                    if let (Some(provider), Some(model)) = (message.provider.as_deref(), model) {
+                        cursor.model = Some((provider.to_owned(), model.to_owned()));
+                    }
+                    let id = message
                         .response_id
                         .as_deref()
                         .filter(|id| !id.is_empty())
                         .map(str::to_owned)
-                        .or_else(entry)
-                    else {
-                        return;
-                    };
+                        .or_else(entry);
                     let at = message
                         .timestamp
                         .and_then(|raw| raw.get().parse().ok())
                         .or(at);
-                    (message.usage, provider.to_owned(), model.to_owned(), id, at)
+                    (message.usage, message.provider.as_deref(), model, id, at)
                 }
                 _ => return,
             }
         }
         _ => return,
     };
-    let (Some(usage), Some(at)) = (super::parsed::<Usage>(usage), at) else {
+    // A copy without a response id couldn't be told from its parent's.
+    if id.is_none() && (copy || cursor.format_1) {
+        return;
+    }
+    let (Some(session), Some(usage), Some(provider), Some(model), Some(id), Some(at)) = (
+        session,
+        super::parsed::<Usage>(usage),
+        provider,
+        model,
+        id,
+        at,
+    ) else {
         read.skipped += 1;
         return;
     };
@@ -305,8 +319,8 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         session: session.to_owned(),
         copy,
         at,
-        provider,
-        model,
+        provider: provider.to_owned(),
+        model: model.to_owned(),
         prompt: tokens.prompt(),
         tokens,
         web_searches: 0,
@@ -484,6 +498,64 @@ mod tests {
         assert_eq!((copy.session.as_str(), copy.copy), ("pi:s2", true));
         // A fork is a session of its own.
         assert!(read.sessions["pi:s2"].parent.is_none());
+        // Its copied usage entry is the parent's, not a line that couldn't be read.
+        assert_eq!(read.skipped, 0);
+    }
+
+    #[test]
+    fn usage_of_no_known_session_provider_or_entry_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let reply = json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant",
+            "provider": "xai", "model": "grok-4.6", "responseId": "resp_1", "usage": usage(50, 0.01)}});
+        // A reply with neither an entry id nor a response id, as only Pi's
+        // format 1 writes it.
+        let mut unidentified = reply.clone();
+        unidentified.as_object_mut().unwrap().remove("id");
+        unidentified["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("responseId");
+        let unnamed = session(
+            dir.path(),
+            "2026-09-30T09-00-00-000Z_s1.jsonl",
+            &[
+                json!({"type": "session", "version": 3, "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z"}),
+                reply.clone(),
+                unidentified.clone(),
+            ],
+        );
+        let mut unprovided = reply;
+        let message = unprovided["message"].as_object_mut().unwrap();
+        let provider = message.remove("provider").unwrap();
+        message.insert("providerName".to_owned(), provider);
+        let named = session(
+            dir.path(),
+            "2026-09-30T09-00-00-000Z_s2.jsonl",
+            &[
+                json!({"type": "session", "version": 3, "id": "s2", "timestamp": "2026-09-30T09:00:00Z"}),
+                unprovided,
+                json!({"type": "usage", "entryId": "e2", "timestamp": "2026-09-30T09:10:00Z", "provider": "xai",
+                    "model": "grok-4.6", "usage": usage(5, 0.001)}),
+                unidentified.clone(),
+            ],
+        );
+        let old = session(
+            dir.path(),
+            "2026-09-30T09-00-00-000Z_s3.jsonl",
+            &[
+                json!({"type": "session", "id": "s3", "timestamp": "2026-09-30T09:00:00Z"}),
+                unidentified,
+            ],
+        );
+        // A cursor that doesn't say the file's format reads it on as one
+        // with ids.
+        let header = std::fs::read_to_string(&named).unwrap().find('\n').unwrap() + 1;
+        let cursor = json!({"offset": header, "session": "pi:s2", "titled": false});
+        assert_eq!(Pi.read(&named, &cursor.to_string()).unwrap().skipped, 3);
+        for (file, skipped) in [(unnamed, 2), (named, 3), (old, 0)] {
+            let read = Pi.read(&file, "").unwrap();
+            assert_eq!((read.responses.len(), read.skipped), (0, skipped));
+        }
     }
 
     #[test]

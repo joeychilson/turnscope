@@ -138,18 +138,20 @@ struct ModelRef<'a> {
     id: Option<Cow<'a, str>>,
 }
 
+/// Every count is required, so a renamed one shows in `doctor` as usage
+/// skipped.
 #[derive(Deserialize)]
 struct MessageTokens {
-    input: Option<u64>,
-    output: Option<u64>,
-    reasoning: Option<u64>,
-    cache: Option<CacheTokens>,
+    input: u64,
+    output: u64,
+    reasoning: u64,
+    cache: CacheTokens,
 }
 
 #[derive(Deserialize)]
 struct CacheTokens {
-    read: Option<u64>,
-    write: Option<u64>,
+    read: u64,
+    write: u64,
 }
 
 #[derive(Deserialize)]
@@ -246,14 +248,14 @@ fn messages(
         };
         // A message has no tokens until its response ends.
         let Some(MessageTokens {
-            input: Some(input),
-            output: Some(output),
-            reasoning: Some(reasoning),
+            input,
+            output,
+            reasoning,
             cache:
-                Some(CacheTokens {
-                    read: Some(cache_read),
-                    write: Some(cache_write),
-                }),
+                CacheTokens {
+                    read: cache_read,
+                    write: cache_write,
+                },
         }) = data.tokens
         else {
             continue;
@@ -438,6 +440,23 @@ mod tests {
             .unwrap();
         let later = OpenCode.read(&file, &first.cursor).unwrap();
         assert_eq!(later.responses["m4"].tokens.input, 50);
+    }
+
+    #[test]
+    fn a_reply_whose_tokens_dont_read_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = database(dir.path());
+        let reply = json!({"model": {"providerID": "opencode-go", "id": "glm-5.3"}, "time": {"created": 2600, "completed": 2700},
+            "tokens": {"inputTokens": 50, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}}});
+        Connection::open(&file)
+            .unwrap()
+            .execute(
+                "INSERT INTO session_message VALUES ('m4', 's1', 'assistant', 3, 2600, 2700, ?1)",
+                [reply.to_string()],
+            )
+            .unwrap();
+        let read = OpenCode.read(&file, "").unwrap();
+        assert_eq!((read.responses.len(), read.skipped), (1, 1));
     }
 
     #[test]

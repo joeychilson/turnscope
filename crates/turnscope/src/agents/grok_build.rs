@@ -111,6 +111,8 @@ struct Update<'a> {
 struct TurnUsage<'a> {
     #[serde(rename = "modelUsage", borrow)]
     models: Option<HashMap<Cow<'a, str>, &'a RawValue>>,
+    #[serde(rename = "modelCalls")]
+    calls: Option<u64>,
 }
 
 impl<'a> Line<'a> {
@@ -120,14 +122,28 @@ impl<'a> Line<'a> {
 }
 
 impl<'a> Update<'a> {
-    /// Each model's usage in a finished turn: `None` for one that can't be
-    /// read.
-    fn used(&self) -> impl Iterator<Item = (Cow<'a, str>, Option<Used>)> {
-        super::parsed::<TurnUsage<'a>>(self.usage)
-            .and_then(|usage| usage.models)
-            .into_iter()
-            .flatten()
-            .map(|(model, used)| (model, serde_json::from_str::<Used>(used.get()).ok()))
+    /// Each model's usage in a finished turn, `None` for one that can't be
+    /// read; or `None` if the turn's usage can't be. Grok Build (its
+    /// `PromptUsage`, November 2026) leaves out the `usage` of a turn
+    /// stopped before any model call, and `modelUsage` when no model was
+    /// called.
+    fn used(&self) -> Option<impl Iterator<Item = (Cow<'a, str>, Option<Used>)>> {
+        let models = match self.usage {
+            None => None,
+            Some(usage) => {
+                let usage = serde_json::from_str::<TurnUsage<'a>>(usage.get()).ok()?;
+                if usage.models.is_none() && usage.calls.is_some_and(|calls| calls > 0) {
+                    return None;
+                }
+                usage.models
+            }
+        };
+        Some(
+            models
+                .into_iter()
+                .flatten()
+                .map(|(model, used)| (model, serde_json::from_str::<Used>(used.get()).ok())),
+        )
     }
 }
 
@@ -231,13 +247,14 @@ fn updates(file: &Path, session: &str, cursor: &mut Cursor, read: &mut Read) -> 
             return Ok(ControlFlow::Continue(()));
         };
         match update.kind.as_deref() {
-            Some("turn_completed") => {
-                if let Some(at) = at {
+            Some("turn_completed") => match at {
+                Some(at) => {
                     let theirs = subagents.used(&cursor.subagents, cursor.ended, at)?;
                     turn(&update, at, session, &theirs, read);
                     cursor.ended = Some(at);
                 }
-            }
+                None => read.skipped += 1,
+            },
             Some("subagent_spawned") => {
                 if let Some(child) = update.child_session_id.filter(|child| !child.is_empty()) {
                     read.session(&INFO.session(&child)).parent = Some(session.to_owned());
@@ -365,6 +382,8 @@ impl Subagents<'_> {
             if update.kind.as_deref() == Some("turn_completed") {
                 let used = update
                     .used()
+                    .into_iter()
+                    .flatten()
                     .filter_map(|(model, used)| Some((model.into_owned(), used?)))
                     .collect();
                 turns.push((at, used));
@@ -381,10 +400,11 @@ fn turn(
     subagents: &[(String, Used)],
     read: &mut Read,
 ) {
-    let Some(prompt) = update.prompt_id.as_deref() else {
+    let (Some(prompt), Some(models)) = (update.prompt_id.as_deref(), update.used()) else {
+        read.skipped += 1;
         return;
     };
-    for (model, used) in update.used() {
+    for (model, used) in models {
         let Some(used) = used else {
             read.skipped += 1;
             continue;
@@ -441,6 +461,48 @@ mod tests {
 
     fn update(at: i64, update: Value) -> Value {
         json!({"timestamp": at, "params": {"update": update}})
+    }
+
+    #[test]
+    fn a_turn_without_its_prompt_time_or_usage_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = json!({"modelCalls": 3, "modelUsage": {"grok-4.6-build": used(30000, 20000, 3, 133_892_000)}});
+        let turn = |prompt: &str, stop: &str, usage: Value| json!({"sessionUpdate": "turn_completed", "prompt_id": prompt, "stop_reason": stop, "usage": usage});
+        let file = updates(
+            dir.path(),
+            "s1",
+            &[
+                update(
+                    1_790_000_060,
+                    json!({"sessionUpdate": "turn_completed", "promptId": "p1", "usage": usage}),
+                ),
+                json!({"params": {"update": turn("p2", "end_turn", usage.clone())}}),
+                update(
+                    1_790_000_120,
+                    turn(
+                        "p3",
+                        "end_turn",
+                        json!({"modelCalls": 3, "models": usage["modelUsage"]}),
+                    ),
+                ),
+                // As Grok Build writes a turn cancelled or failed before any
+                // model call: no usage, or none of a model's.
+                update(
+                    1_790_000_180,
+                    json!({"sessionUpdate": "turn_completed", "prompt_id": "p4", "stop_reason": "cancelled"}),
+                ),
+                update(
+                    1_790_000_240,
+                    turn(
+                        "p5",
+                        "error",
+                        json!({"inputTokens": 0, "outputTokens": 0, "modelCalls": 0, "usageIsIncomplete": true}),
+                    ),
+                ),
+            ],
+        );
+        let read = GrokBuild.read(&file, "").unwrap();
+        assert_eq!((read.responses.len(), read.skipped), (0, 3));
     }
 
     #[test]

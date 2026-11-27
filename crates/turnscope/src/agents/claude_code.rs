@@ -563,9 +563,13 @@ fn read_line(line: &Line, own_native: &str, own: &str, cursor: &mut Cursor, read
 }
 
 fn respond(line: &Line, session: &str, copy: bool, read: &mut Read) {
-    let Some(message) = line.message.as_ref().filter(|message| !message.synthetic()) else {
+    let Some(message) = &line.message else {
+        read.skipped += 1;
         return;
     };
+    if message.synthetic() {
+        return;
+    }
     let (Some(usage), Some(message_id), Some(model), Some(at)) =
         (&message.usage, &message.id, &message.model, line.at())
     else {
@@ -877,6 +881,17 @@ mod tests {
             let skipped = u64::from(tokens.is_none());
             assert_eq!((counted, read.skipped), (tokens, skipped), "{name}");
         }
+    }
+
+    #[test]
+    fn a_reply_without_its_message_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reply = assistant("s1", 1, "2026-09-30T09:00:00Z", usage(5, 16), json!([]));
+        let message = reply.as_object_mut().unwrap().remove("message").unwrap();
+        reply["msg"] = message;
+        let file = log(dir.path(), "s1.jsonl", &[reply]);
+        let read = ClaudeCode.read(&file, "").unwrap();
+        assert_eq!((read.responses.len(), read.skipped), (0, 1));
     }
 
     #[test]
