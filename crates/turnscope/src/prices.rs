@@ -46,11 +46,60 @@ struct Threshold {
     size: u64,
 }
 
-struct Model {
-    base: Rates,
-    tiers: Vec<(u64, Rates)>,
-    priority: Option<Rates>,
+/// What a million of each kind of token costs. Where models.dev lists no
+/// rate for a cache read or write, it's the input rate, and for reasoning,
+/// the output rate.
+#[derive(Clone, Copy)]
+struct Charged {
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_write: f64,
+    reasoning: f64,
 }
+
+impl From<Rates> for Charged {
+    fn from(rates: Rates) -> Charged {
+        Charged {
+            input: rates.input,
+            output: rates.output,
+            cache_read: rates.cache_read.unwrap_or(rates.input),
+            cache_write: rates.cache_write.unwrap_or(rates.input),
+            reasoning: rates.reasoning.unwrap_or(rates.output),
+        }
+    }
+}
+
+impl Charged {
+    /// A priority price past a tier: each rate scaled as `tier` scales
+    /// `base`'s, where that's not free. models.dev gives a priority price no
+    /// tiers, and OpenAI's Fast prices for prompts over 272K tokens are its
+    /// short ones scaled so, for every model it gives both (read 2026-11-26).
+    fn past(self, base: Charged, tier: Charged) -> Charged {
+        let scaled = |rate: f64, base: f64, tier: f64| match base > 0.0 {
+            true => rate * tier / base,
+            false => rate,
+        };
+        Charged {
+            input: scaled(self.input, base.input, tier.input),
+            output: scaled(self.output, base.output, tier.output),
+            cache_read: scaled(self.cache_read, base.cache_read, tier.cache_read),
+            cache_write: scaled(self.cache_write, base.cache_write, tier.cache_write),
+            reasoning: scaled(self.reasoning, base.reasoning, tier.reasoning),
+        }
+    }
+}
+
+struct Model {
+    base: Charged,
+    tiers: Vec<(u64, Charged)>,
+    priority: Option<Charged>,
+}
+
+/// Models whose fast mode excludes prompts over 272K tokens, which are
+/// billed at Standard rates (openai.com/api-priority-processing, read
+/// 2026-11-26). A gateway names one after a prefix: `openai/gpt-5.5`.
+const STANDARD_PAST_272K: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
 pub struct Prices(HashMap<String, HashMap<String, History<Model>>>);
 
@@ -64,16 +113,17 @@ impl Prices {
             let Ok(cost) = serde_json::from_str::<Cost>(row.get_ref(3)?.as_str()?) else {
                 continue;
             };
-            let mut tiers: Vec<(u64, Rates)> = cost
+            let mut tiers: Vec<(u64, Charged)> = cost
                 .tiers
                 .iter()
-                .map(|tier| (tier.tier.size, tier.rates))
+                .map(|tier| (tier.tier.size, tier.rates.into()))
                 .collect();
             tiers.sort_by_key(|(above, _)| *above);
             let priority = row
                 .get_ref(4)?
                 .as_str_or_null()?
-                .and_then(|fast| serde_json::from_str(fast).ok());
+                .and_then(|fast| serde_json::from_str::<Rates>(fast).ok())
+                .map(Charged::from);
             models
                 .entry(row.get(0)?)
                 .or_default()
@@ -82,7 +132,7 @@ impl Prices {
                 .push((
                     row.get(2)?,
                     Model {
-                        base: cost.base,
+                        base: cost.base.into(),
                         tiers,
                         priority,
                     },
@@ -102,22 +152,27 @@ impl Prices {
         let Some(model) = self.at(&response.provider, &response.model, response.at) else {
             return recorded;
         };
-        let rates = match model.priority {
-            Some(priority) if response.priority => priority,
-            _ => model
-                .tiers
-                .iter()
-                .rev()
-                .find(|(above, _)| response.prompt > *above)
-                .map_or(model.base, |(_, rates)| *rates),
+        let tier = model
+            .tiers
+            .iter()
+            .rev()
+            .find(|(above, _)| response.prompt > *above)
+            .map(|(_, rates)| *rates);
+        let name = response.model.rsplit('/').next().unwrap_or_default();
+        let standard = response.prompt > 272_000 && STANDARD_PAST_272K.contains(&name);
+        let fast = model.priority.filter(|_| response.priority && !standard);
+        let rates = match (fast, tier) {
+            (Some(priority), Some(tier)) => priority.past(model.base, tier),
+            (Some(priority), None) => priority,
+            (None, tier) => tier.unwrap_or(model.base),
         };
         let tokens = &response.tokens;
         let dollars = tokens.input as f64 * rates.input
-            + tokens.cache_read as f64 * rates.cache_read.unwrap_or(rates.input)
-            + tokens.cache_write_5m as f64 * rates.cache_write.unwrap_or(rates.input)
+            + tokens.cache_read as f64 * rates.cache_read
+            + tokens.cache_write_5m as f64 * rates.cache_write
             + tokens.cache_write_1h as f64 * 2.0 * rates.input
             + tokens.output.saturating_sub(tokens.reasoning) as f64 * rates.output
-            + tokens.reasoning as f64 * rates.reasoning.unwrap_or(rates.output);
+            + tokens.reasoning as f64 * rates.reasoning;
         Some(dollars / 1e6 + response.web_searches as f64 * 0.01)
     }
 
@@ -362,8 +417,8 @@ mod tests {
             "openai",
             "gpt-6-astra",
             0,
-            r#"{"input":10,"output":50,"cache_read":1,"tiers":[{"input":20,"output":75,"cache_read":2,"tier":{"type":"context","size":272000}}]}"#,
-            Some(r#"{"input":20,"output":100,"cache_read":2}"#),
+            r#"{"input":10,"output":50,"cache_read":1,"cache_write":12.5,"tiers":[{"input":20,"output":75,"cache_read":2,"cache_write":25,"tier":{"type":"context","size":272000}}]}"#,
+            Some(r#"{"input":20,"output":100,"cache_read":2,"cache_write":25}"#),
         )]);
         let tokens = Tokens {
             input: 100_000,
@@ -379,6 +434,45 @@ mod tests {
         used.prompt = 50_000;
         used.priority = true;
         assert!((prices.cost("claude-code", &used).unwrap() - 2.5).abs() < 1e-9);
+        // Priority past 272K: OpenAI's Fast long-context rates for
+        // gpt-6-astra, $40 input, $4 cached and $150 output, and its cache
+        // write scaled alike, $25 to $50.
+        used.prompt = 300_000;
+        used.tokens.cache_write_5m = 10_000;
+        assert!((prices.cost("claude-code", &used).unwrap() - 5.45).abs() < 1e-9);
+    }
+
+    /// gpt-5.5's and gpt-5.4 mini's fast mode leaves out a prompt over 272K
+    /// tokens, which costs Standard's rates: long-context ones where listed.
+    #[test]
+    fn a_long_prompt_a_fast_mode_excludes_costs_standard() {
+        let cost = r#"{"input":5,"output":30,"cache_read":0.5,"tiers":[{"input":10,"output":45,"cache_read":1,"tier":{"type":"context","size":272000}}]}"#;
+        let fast = Some(r#"{"input":12.5,"output":75,"cache_read":1.25}"#);
+        let mini = r#"{"input":0.75,"output":4.5,"cache_read":0.075}"#;
+        let mini_fast = Some(r#"{"input":1.5,"output":9,"cache_read":0.15}"#);
+        let prices = priced(&[
+            ("openai", "gpt-5.5", 0, cost, fast),
+            ("zenmux", "openai/gpt-5.5", 0, cost, fast),
+            ("openai", "gpt-5.4-mini", 0, mini, mini_fast),
+        ]);
+        let tokens = Tokens {
+            input: 20_000,
+            cache_read: 280_000,
+            output: 4_000,
+            ..Tokens::default()
+        };
+        // 20,000×10 + 280,000×1 + 4,000×45, and on mini, 20,000×0.75 +
+        // 280,000×0.075 + 4,000×4.5.
+        for (provider, model, dollars) in [
+            ("openai", "gpt-5.5", 0.66),
+            ("zenmux", "openai/gpt-5.5", 0.66),
+            ("openai", "gpt-5.4-mini", 0.054),
+        ] {
+            let mut used = response(provider, model, tokens);
+            used.priority = true;
+            let cost = prices.cost("opencode", &used).unwrap();
+            assert!((cost - dollars).abs() < 1e-9, "{model}: {cost}");
+        }
     }
 
     #[test]
