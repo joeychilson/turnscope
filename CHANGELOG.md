@@ -8,9 +8,9 @@
   never one running out or used up. With several accounts in use, macOS
   could hide the item, as beside the notch, leaving no way to open the
   panel. Settings → General → Show is gone.
-- **A used-up account says "Used up" in the menu bar**, in place of when
-  it's back, until it's no longer in use. VoiceOver still says when it's
-  back.
+- **A used-up account shows a red `0%` (or `$0`) in the menu bar**, in
+  place of when it's back, until it's no longer in use, like every other
+  figure saying what's left. VoiceOver still says when it's back.
 
 ## 0.4.2
 

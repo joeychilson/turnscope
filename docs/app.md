@@ -96,8 +96,8 @@ running out or used up always shows. Its figure is:
 
 - What's left, `68%`, in amber once it's running out.
 - How long it has, `1h 40m`, within 3 hours of running out.
-- `Used up`, in red. An account used up shows until it's no longer in
-  use, as its agent stops drawing on it.
+- Nothing left, `0%` or `$0`, in red once it's used up. An account used
+  up shows until it's no longer in use, as its agent stops drawing on it.
 - For an API key with no limit, what it cost this month, `$84`.
 
 With nothing in use, it shows Turnscope's logo. While every account it

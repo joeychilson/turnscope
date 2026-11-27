@@ -620,7 +620,7 @@ mod tests {
                     MenuBarSlot {
                         provider: "openai".into(),
                         standing: Standing::UsedUp,
-                        figure: "Used up".into(),
+                        figure: "0%".into(),
                         must_show: true,
                         spoken: "Claude Max, 88% left; ChatGPT Pro, back 4 PM".into(),
                     },

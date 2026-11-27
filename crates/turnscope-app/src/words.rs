@@ -388,7 +388,6 @@ impl Words {
             return account.spend.as_ref().map_or("—".into(), spent_figure);
         };
         match &limit.outlook {
-            Outlook::UsedUp { .. } => "Used up".into(),
             Outlook::RunsOut { likely, .. } if likely.horizon == Horizon::Soon => {
                 self.until(likely.at)
             }
@@ -1537,7 +1536,7 @@ mod tests {
             left_percent: 0,
             ..limit(used_up(Some(moment("2026-09-30T15:00:00Z", Soon))))
         }]);
-        assert_eq!(w.figure(&used), "Used up");
+        assert_eq!(w.figure(&used), "0%");
         assert_eq!(w.spoken_figure(&used), "back 3 PM");
 
         // Back soon, but past midnight.

@@ -710,10 +710,7 @@ pub(crate) mod tests {
             .iter()
             .map(|s| (s.figure.as_str(), s.must_show))
             .collect();
-        assert_eq!(
-            figures,
-            [("50m", true), ("Used up", true), ("$8.70", false)]
-        );
+        assert_eq!(figures, [("50m", true), ("0%", true), ("$8.70", false)]);
         assert_eq!(
             filled[1].spoken,
             "Claude Max, runs out in 50 minutes; ChatGPT Pro, used up"
