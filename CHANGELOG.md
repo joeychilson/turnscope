@@ -7,11 +7,6 @@
   its session isn't read yet. On a made-up year of heavy use, `guard` in a
   new Claude Code session took 65 ms instead of 280 ms, and in Codex 66 ms
   instead of 109 ms.
-- **Hiding an account or changing a setting works while history is read
-  again after an update.** Taking out what the older version had read held
-  the database for up to 75 s on a made-up year of heavy use, so the change
-  waited 10 s and failed. Now it's taken out a second at a time, and no
-  write waited over 3.4 s.
 
 ## 0.4.2
 
