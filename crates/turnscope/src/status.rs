@@ -1832,10 +1832,7 @@ mod tests {
         for name in ["pi", "key limit"] {
             assert_eq!(one.limit(name).unwrap().key, "key-abc");
         }
-        assert_eq!(
-            one.limit("guardrail").unwrap().key,
-            "key-abc-guardrail-g1"
-        );
+        assert_eq!(one.limit("guardrail").unwrap().key, "key-abc-guardrail-g1");
     }
 
     #[test]
