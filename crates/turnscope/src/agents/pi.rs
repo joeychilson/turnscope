@@ -57,11 +57,11 @@ struct Cursor {
     /// The provider and model of the latest response, which a summary is
     /// written with.
     model: Option<(String, String)>,
-    /// Whether every entry has an id. Pi's session format 1, with no
-    /// `version`, gave none, and a file of it not opened since still has
-    /// none; `responseId` is optional in pi-ai's `AssistantMessage`.
+    /// Whether the file is Pi's session format 1, with no `version`, whose
+    /// entries have no id. Pi rewrites one with ids and a version before it
+    /// adds to it. `responseId` is optional in pi-ai's `AssistantMessage`.
     #[serde(default)]
-    ids: bool,
+    format_1: bool,
 }
 
 #[derive(Deserialize)]
@@ -193,6 +193,7 @@ impl Agent for Pi {
 fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
     let at = line.timestamp.as_deref().and_then(crate::time::millis);
     if line.kind == "session" {
+        cursor.format_1 = line.version.is_none();
         let Some(native) = line.id.as_deref() else {
             return;
         };
@@ -200,7 +201,6 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         read.session(&session);
         read.cwd(&session, line.cwd.as_deref());
         (cursor.session, cursor.began) = (Some(session), at);
-        cursor.ids = line.version.is_some();
         return;
     }
     let session = cursor.session.as_deref();
@@ -291,7 +291,7 @@ fn read_line(line: &Line<'_>, cursor: &mut Cursor, read: &mut Read) {
         _ => return,
     };
     // A copy without a response id couldn't be told from its parent's.
-    if id.is_none() && (copy || !cursor.ids) {
+    if id.is_none() && (copy || cursor.format_1) {
         return;
     }
     let (Some(session), Some(usage), Some(provider), Some(model), Some(id), Some(at)) = (
@@ -507,26 +507,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reply = json!({"type": "message", "id": "e1", "timestamp": "2026-09-30T09:00:05Z", "message": {"role": "assistant",
             "provider": "xai", "model": "grok-4.6", "responseId": "resp_1", "usage": usage(50, 0.01)}});
+        // A reply with neither an entry id nor a response id, as only Pi's
+        // format 1 writes it.
+        let mut unidentified = reply.clone();
+        unidentified.as_object_mut().unwrap().remove("id");
+        unidentified["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("responseId");
         let unnamed = session(
             dir.path(),
             "2026-09-30T09-00-00-000Z_s1.jsonl",
             &[
                 json!({"type": "session", "version": 3, "sessionId": "s1", "timestamp": "2026-09-30T09:00:00Z"}),
                 reply.clone(),
+                unidentified.clone(),
             ],
         );
-        let mut unprovided = reply.clone();
+        let mut unprovided = reply;
         let message = unprovided["message"].as_object_mut().unwrap();
         let provider = message.remove("provider").unwrap();
         message.insert("providerName".to_owned(), provider);
-        // A reply with neither an entry id nor a response id, as only Pi's
-        // format 1 writes it.
-        let mut unidentified = reply;
-        unidentified.as_object_mut().unwrap().remove("id");
-        unidentified["message"]
-            .as_object_mut()
-            .unwrap()
-            .remove("responseId");
         let named = session(
             dir.path(),
             "2026-09-30T09-00-00-000Z_s2.jsonl",
@@ -546,7 +547,12 @@ mod tests {
                 unidentified,
             ],
         );
-        for (file, skipped) in [(unnamed, 1), (named, 3), (old, 0)] {
+        // A cursor that doesn't say the file's format reads it on as one
+        // with ids.
+        let header = std::fs::read_to_string(&named).unwrap().find('\n').unwrap() + 1;
+        let cursor = json!({"offset": header, "session": "pi:s2", "titled": false});
+        assert_eq!(Pi.read(&named, &cursor.to_string()).unwrap().skipped, 3);
+        for (file, skipped) in [(unnamed, 2), (named, 3), (old, 0)] {
             let read = Pi.read(&file, "").unwrap();
             assert_eq!((read.responses.len(), read.skipped), (0, skipped));
         }
