@@ -211,8 +211,10 @@ posts notifications only for an app bundle.
   to open them.
 - **Words.** The title is the account, with its label only when another
   account in use has the same title. The subtitle is what happened, and
-  the body is when it's back or what to do. Times are clock times, since a
-  notification stays on screen.
+  the body is when it's back, that it doesn't reset, or what to do. Times
+  are clock times, since a notification stays on screen, with the day
+  named as "tomorrow" or its weekday, and a week or more ahead with its
+  date too: "Monday, January 25, 9 AM".
 - **Replacing.** Each is posted under the alert's `replaces`, so a newer
   one for the same limit or account replaces the older: "back" replaces
   "used up". A sign-in notification is removed once the account can be

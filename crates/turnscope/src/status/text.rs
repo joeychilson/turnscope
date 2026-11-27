@@ -200,9 +200,11 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
             }
             None => "No use shows in its reading yet.".to_owned(),
         },
-        Outlook::RunsOut { likely, soonest } if soonest.at == likely.at => {
-            format!("At this pace it runs out {}.", time::ahead(likely.at, now))
-        }
+        Outlook::RunsOut { likely, soonest } if soonest.at == likely.at => format!(
+            "At this pace {} out {}.",
+            agree(limit, "it runs", "they run"),
+            time::ahead(likely.at, now)
+        ),
         Outlook::RunsOut { likely, soonest } => {
             // Today's day said where the likely time says one, as "13:30"
             // beside "Sat 18:00" would read as Saturday's.
@@ -211,7 +213,8 @@ pub fn limit_text(limit: &Limit, now: i64) -> String {
                 false => time::clock(at, now),
             };
             format!(
-                "At this pace it runs out {}, as soon as {}.",
+                "At this pace {} out {}, as soon as {}.",
+                agree(limit, "it runs", "they run"),
                 time::ahead(likely.at, now),
                 near(soonest.at)
             )
@@ -593,10 +596,13 @@ fn paced(limit: &Limit, now: i64) -> String {
     }
     let resets = limit.resets().map(|resets| time::ahead(resets, now));
     let ahead = match (&limit.outlook, resets) {
-        (Outlook::RunsOut { likely, .. }, Some(resets)) => format!(
-            " and {} out {} at this pace, before it resets {resets}",
+        (Outlook::RunsOut { likely, .. }, resets) => format!(
+            " and {} out {} at this pace{}",
             agree(limit, "runs", "run"),
-            time::ahead(likely.at, now)
+            time::ahead(likely.at, now),
+            resets.map_or(String::new(), |resets| format!(
+                ", before it resets {resets}"
+            ))
         ),
         (Outlook::Lasts { .. }, Some(resets)) => format!(
             " and {} at this pace until it resets {resets}",

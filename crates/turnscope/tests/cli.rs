@@ -1238,6 +1238,46 @@ fn usage_of_credits_says_which_it_is_and_what_of_them_is_used() {
     );
 }
 
+/// Credits with $5.00 of $50.00 left, $45.00 spent since a reading 8 days
+/// ago: they run out in under a day at that spend.
+#[test]
+fn credits_are_said_to_run_out_at_their_recent_spend() {
+    let data = store();
+    let db = Connection::open(data.path().join("turnscope.db")).unwrap();
+    db.execute_batch(&format!(
+        "UPDATE reading SET used = 90 WHERE limit_key = 'credits';
+         INSERT INTO reading (account, limit_key, at, name, used, size)
+             VALUES ('openrouter:api', 'credits', {NOW} - 192 * {HOUR}, 'Credits', 0, 50);"
+    ))
+    .unwrap();
+    let output = turnscope(
+        data.path(),
+        &["status", "--account", "openrouter", "--hours", "1"],
+    );
+    let said = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        "OpenRouter API key: whether 1 more hour of work fits can't be told: Credits have $5.00 of $50.00 left and run out Fri 09:20 (in 21h 20m) at this pace, but too little work on them has been measured.",
+        "  Credits: $5.00 of $50.00 left. At this pace they run out Fri 09:20 (in 21h 20m).",
+    ] {
+        assert!(said.lines().any(|said| said == line), "{said}");
+    }
+    let guard = [
+        "guard",
+        "--account",
+        "openrouter",
+        "--limit",
+        "credits",
+        "--below",
+        "20",
+    ];
+    let guard = turnscope(data.path(), &guard);
+    assert_eq!(guard.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&guard.stderr).trim_end(),
+        "OpenRouter API key's credits limit has 10% left, under 20%. At this pace it runs out Fri 09:20 (in 21h 20m)."
+    );
+}
+
 /// Usage since a time, as yesterday's, is the account's, without the limit
 /// whose window is now's.
 #[test]

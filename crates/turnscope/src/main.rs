@@ -604,15 +604,19 @@ fn guard(
             ))
         ),
         outlook => {
-            let mut said = format!("{called} has {}% left, under {below}%.", found.left_percent);
-            if let Some(resets) = found.resets() {
-                said += &format!(" It resets {}", ahead(resets));
-                if let status::Outlook::RunsOut { likely, .. } = outlook {
-                    said += &format!("; at this pace it runs out {}", ahead(likely.at));
+            let left = format!("{called} has {}% left, under {below}%.", found.left_percent);
+            let runs_out = match outlook {
+                status::Outlook::RunsOut { likely, .. } => Some(ahead(likely.at)),
+                _ => None,
+            };
+            match (found.resets().map(ahead), runs_out) {
+                (Some(resets), Some(out)) => {
+                    format!("{left} It resets {resets}; at this pace it runs out {out}.")
                 }
-                said += ".";
+                (Some(resets), None) => format!("{left} It resets {resets}."),
+                (None, Some(out)) => format!("{left} At this pace it runs out {out}."),
+                (None, None) => left,
             }
-            said
         }
     }))
 }
