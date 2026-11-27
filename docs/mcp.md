@@ -139,7 +139,8 @@ The answer has three parts:
 
 1. With `hours`, whether they fit at the work rate: a line for each
    account, named. It goes by the limits an account stands by: those on
-   all its usage, not one model's or one key's, or of the
+   all its usage, not one model's, nor one key's unless it's the only key
+   here and the account has credits, or of the
    [pool](architecture.md#glossary) it last drew on, or, for an API key
    with key limits alone, its deciding one. One that runs out
    says after how much work, with how little it could be and its reset, as

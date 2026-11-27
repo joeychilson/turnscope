@@ -226,7 +226,7 @@ fn window(limit: &Limit) -> Option<i64> {
 fn blocked(account: &Account, limit: &Limit) -> bool {
     account.limits.iter().any(|other| {
         other.key != limit.key
-            && (other.whole() || (other.scope.is_some() && other.scope == limit.scope))
+            && (account.whole(other) || (other.scope.is_some() && other.scope == limit.scope))
             && matches!(other.outlook, Outlook::UsedUp { .. })
     })
 }

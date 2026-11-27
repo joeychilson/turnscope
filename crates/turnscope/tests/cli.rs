@@ -1222,7 +1222,7 @@ fn a_limit_in_dollars_is_shared_by_dollars() {
 fn usage_of_credits_says_which_it_is_and_what_of_them_is_used() {
     let data = store();
     let said = "Credits don't reset, so this is this month's usage, since 00:00 (12h ago): nothing yet. $15.00 of them are used; give since, such as 30d, to see what used them.";
-    let answer = ask("pi", data.path(), "explain_usage", "{}");
+    let answer = ask("pi", data.path(), "explain_usage", r#"{"limit":"credits"}"#);
     assert_eq!(answer, format!("OpenRouter API key: {said}"));
     let output = turnscope(
         data.path(),
