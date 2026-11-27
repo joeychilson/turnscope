@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- **Fewer notifications that say nothing new.** Replaying three weeks of
+  twelve made-up people's work, Turnscope sent 227 notifications where it
+  sent 347, and every warning that came true is still sent:
+  - **A 5-hour limit is told running out within 60 minutes, not 75**, in
+    notifications and the panel: 14 fewer warnings that never came true.
+  - **"Back" is told only while it's news**: within its window's length of
+    coming back, a day at most. A 5-hour limit that came back overnight
+    isn't told back when the Mac wakes.
+  - **A limit back within 15 minutes of being used up is told neither
+    used up nor back.**
+  - **A 5-hour limit you were warned about isn't told used up**: the
+    warning said it would be, and when it's back, which is still told. A
+    longer limit is: it can be used up days after its warning, and sooner
+    than it said.
+- **Credits are told running out** when they would within three days at
+  the last week's spend, in notifications, the panel, `status` and
+  `check_limits`. Before, credits ran out with no warning.
+- **A notification about credits says they don't reset** under "Credits
+  are used up", which had nothing under it.
+- **A notification names a day a week or more ahead as it does nearer
+  ones**, with its weekday and time, and its date too: "Back Monday,
+  January 25, 9 AM", not "Back January 25" beside "Back Monday 10 AM".
+
 ## 0.4.2
 
 - **A forecast says how bad it could get, not a range.** A limit that

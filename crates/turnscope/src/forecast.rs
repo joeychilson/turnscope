@@ -88,15 +88,19 @@ pub fn project(window: &Window, now: i64) -> Option<Projection> {
 }
 
 /// Whether a run-out at `out` is near enough to `at` to tell: within a
-/// quarter of `window`'s length, 75 minutes of 5 hours or 42 hours of a
-/// week. Further out, the pace mostly carries a burst at the window's start
-/// forward, through the nights for a week. Four weeks of this Mac's work,
-/// replayed as 5-hour and weekly windows at 0.8 to 4 times its spend
-/// (October 2026): run-outs told as soon as the pace gave one came true
-/// 56–76% of the time, and those told within a quarter 75–100%, missing at
-/// most one more and still told about an hour, or a day and a half, ahead.
+/// fifth of a window of a day or less, 60 minutes of 5 hours, and a quarter
+/// of a longer one, 42 hours of a week. Further out, the pace mostly carries
+/// a burst at the window's start forward, through the nights for a week.
+/// Four weeks of this Mac's work, replayed as 5-hour and weekly windows at
+/// 0.8 to 4 times its spend (October 2026): run-outs told as soon as the
+/// pace gave one came true 56–76% of the time, and those told within a
+/// quarter 75–100%, missing at most one more and still told about an hour,
+/// or a day and a half, ahead. Three weeks of twelve made-up people's work,
+/// replayed (November 2026): 60 minutes of 5 hours told 14 fewer than 75
+/// that never came true, and missed none more; 45 missed 3 more.
 pub fn told(window: &Window, at: i64, out: i64) -> bool {
-    out - at <= (window.resets - window.starts) / 4
+    let length = window.resets - window.starts;
+    out - at <= length / if length <= DAY { 5 } else { 4 }
 }
 
 /// The fast end of pace, as a multiple of the pace projected, for `window`.
@@ -292,14 +296,16 @@ mod tests {
     }
 
     #[test]
-    fn a_run_out_is_told_within_a_quarter_of_the_window() {
+    fn a_run_out_is_told_within_a_fifth_of_5_hours() {
         // A burst at the start of a 5-hour window: 25% in the first hour
-        // runs out at 4h, too far to tell; by 2h45m, 75 minutes off, it is.
+        // runs out at 4h, too far to tell, and 75 minutes off still is; by
+        // 3h, 60 minutes off, it's told.
         let window = window(&[(1.0, 25.0)]);
         let out = project(&window, HOUR).unwrap().runs_out.unwrap();
         assert_eq!(out, 4 * HOUR);
         assert!(!told(&window, HOUR, out));
-        assert!(told(&window, 2 * HOUR + 45 * MINUTE, out));
+        assert!(!told(&window, 2 * HOUR + 45 * MINUTE, out));
+        assert!(told(&window, 3 * HOUR, out));
     }
 
     #[test]

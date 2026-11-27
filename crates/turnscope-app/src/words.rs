@@ -64,7 +64,18 @@ impl Words {
                 let z = self.zoned(at);
                 format!("{} {}", self.day(&z, full), fmt_time(&z))
             }
-            Horizon::Later => fmt_month_day(&self.zoned(at), full),
+            // Said as nearer days are, with the date that tells it from this
+            // week's: "Monday, January 25, 9 AM" beside "Monday 10 AM".
+            Horizon::Later if full => {
+                let z = self.zoned(at);
+                format!(
+                    "{}, {}, {}",
+                    fmt_weekday(&z, true),
+                    fmt_month_day(&z, true),
+                    fmt_time(&z)
+                )
+            }
+            Horizon::Later => fmt_month_day(&self.zoned(at), false),
         }
     }
 
@@ -265,10 +276,10 @@ impl Words {
                 };
                 let runs = if plural { "run" } else { "runs" };
                 let headline = format!("{subject} {runs} out {}", unbroken(&when));
-                let back = limit
-                    .window
-                    .as_ref()
-                    .map_or(String::new(), |w| format!("Back {}.", self.at(&w.resets)));
+                let back = match &limit.window {
+                    Some(w) => format!("Back {}.", self.at(&w.resets)),
+                    None => unforecast(limit, account, Unknown::NoReset),
+                };
                 (headline, with_alternate(back))
             }
             Outlook::Unknown { reason } => (
@@ -462,16 +473,14 @@ impl Words {
             .map(name)
             .or_else(|| alert.limit_name.clone())
             .unwrap_or("A limit".into());
-        let (runs, be) = if limit.is_some_and(plural) {
-            ("run", "are")
+        let (runs, be, it) = if limit.is_some_and(plural) {
+            ("run", "are", "They don't")
         } else {
-            ("runs", "is")
+            ("runs", "is", "It doesn't")
         };
-        let back = || {
-            alert
-                .resets
-                .as_ref()
-                .map_or(String::new(), |r| format!("Back {}.", self.clock(r, true)))
+        let back = || match &alert.resets {
+            Some(resets) => format!("Back {}.", self.clock(resets, true)),
+            None => format!("{it} reset."),
         };
         let (subtitle, body) = match alert.kind {
             AlertKind::SignIn => (
@@ -1022,7 +1031,7 @@ mod tests {
         );
         assert_eq!(
             w.clock(&moment("2026-10-18T16:37:00Z", Later), true),
-            "October 18"
+            "Sunday, October 18, 4:37 PM"
         );
         assert_eq!(w.when(at("2026-10-03T19:51:00Z")), "Saturday evening");
         assert_eq!(w.when(at("2026-10-01T00:40:00Z")), "tonight");
@@ -1236,6 +1245,15 @@ mod tests {
             (
                 "OpenCode Go runs out Oct\u{a0}8".into(),
                 "Back Oct 30.".into()
+            )
+        );
+        let credits_out = runs_out_at(moment("2026-10-02T16:00:00Z", ThisWeek));
+        let key = api_key(vec![credits(10, 60.0, 6.0, credits_out)], None);
+        assert_eq!(
+            w.verdict(Some(&key), false, &[]),
+            (
+                "OpenRouter API key runs out Friday\u{a0}afternoon".into(),
+                "OpenRouter API key has $6.00 of $60 left; it doesn't reset.".into()
             )
         );
 
@@ -1811,7 +1829,7 @@ mod tests {
             (
                 "OpenRouter API key".into(),
                 "Credits are used up".into(),
-                String::new()
+                "They don't reset.".into()
             )
         );
         let key_refilled = api_key(

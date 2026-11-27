@@ -511,9 +511,10 @@ pub enum Outlook {
     /// down; `None` with nothing used yet.
     #[serde(rename_all = "camelCase")]
     Lasts { left_at_reset: Option<Spread> },
-    /// It runs out before its reset: likely then, and soonest at the fast
-    /// end. Each is rounded to 10 minutes within a day and to the hour
-    /// beyond, and is never in the past.
+    /// It runs out before its reset, or money that never resets within three
+    /// days at the last week's spend: likely then, and soonest at the fast
+    /// end, which money has none of. Each is rounded to 10 minutes within a
+    /// day and to the hour beyond, and is never in the past.
     #[serde(rename_all = "camelCase")]
     RunsOut { likely: Moment, soonest: Moment },
     /// It's used up, and back when it resets: `None` for a limit that never
@@ -529,12 +530,13 @@ pub enum Outlook {
 #[serde(rename_all = "camelCase")]
 pub enum Unknown {
     /// Too little of the window has passed or been used to tell a pace, or
-    /// its pace runs it out more than a quarter of the window away, too far
-    /// to tell (`forecast::told`, docs/architecture.md#forecast).
+    /// its pace runs it out too far away to tell (`forecast::told`,
+    /// docs/architecture.md#forecast).
     NotEnoughData,
     /// Read too long ago, or its window reset since.
     Stale,
-    /// It never resets, as credits.
+    /// It never resets, as credits, and doesn't run out within three days at
+    /// the last week's spend, or that spend isn't known.
     NoReset,
     /// Its window rolls, with no start to pace from.
     Rolling,
@@ -968,9 +970,7 @@ fn limits(
             (None, Some(_)) => Outlook::Unknown {
                 reason: Unknown::Rolling,
             },
-            (_, None) => Outlook::Unknown {
-                reason: Unknown::NoReset,
-            },
+            (_, None) => spending(db, account, &key, used, size, now)?,
         };
         limits.push(Limit {
             held_by: keys.get(&key).cloned().unwrap_or_default(),
@@ -1130,15 +1130,10 @@ fn outlook(window: &Window, now: i64) -> Outlook {
         }
         // The fast end runs out first, as every fast end is over 1.
         let soonest = forecast::runs_out(&projection, fast);
-        // A pace can't tell the minute a week runs out.
-        let shown = |at: i64| {
-            let step = if at - now <= DAY { 10 * MINUTE } else { HOUR };
-            ((at + step / 2).div_euclid(step) * step).max(now)
-        };
-        let likely = shown(out);
+        let likely = shown(out, now);
         return Outlook::RunsOut {
             likely: Moment::of(likely, now),
-            soonest: Moment::of(shown(soonest.unwrap_or(out)).min(likely), now),
+            soonest: Moment::of(shown(soonest.unwrap_or(out), now).min(likely), now),
         };
     }
     // Only one with nothing used says nothing of the reset: one whose use was
@@ -1156,6 +1151,57 @@ fn outlook(window: &Window, now: i64) -> Outlook {
             likely: left(projection.at_reset),
         }),
     }
+}
+
+/// A run-out as it's said: to 10 minutes within a day and to the hour
+/// beyond, as a pace can't tell the minute a week runs out.
+fn shown(at: i64, now: i64) -> i64 {
+    let step = if at - now <= DAY { 10 * MINUTE } else { HOUR };
+    ((at + step / 2).div_euclid(step) * step).max(now)
+}
+
+/// Money that never resets, as credits, at what was spent since its last
+/// reading a week old or older: running out once that's within three days,
+/// time enough to buy more. What was spent is how much all ever used grew,
+/// in dollars, as its percent falls when more is bought.
+fn spending(
+    db: &rusqlite::Connection,
+    account: &str,
+    key: &str,
+    used: f64,
+    size: Option<f64>,
+    now: i64,
+) -> Result<Outlook> {
+    let unknown = Outlook::Unknown {
+        reason: Unknown::NoReset,
+    };
+    let Some(size) = size else {
+        return Ok(unknown);
+    };
+    let Some((then, spent_then)) = db
+        .prepare_cached(
+            "SELECT at, used * size / 100 FROM reading
+             WHERE account = ?1 AND limit_key = ?2 AND at <= ?3 AND size IS NOT NULL
+             ORDER BY at DESC LIMIT 1",
+        )?
+        .query_row(params![account, key, now - 7 * DAY], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+        })
+        .optional()?
+    else {
+        return Ok(unknown);
+    };
+    let spent = used * size / 100.0;
+    let rate = (spent - spent_then) / (now - then) as f64;
+    let until = (size - spent) / rate;
+    if rate <= 0.0 || until > (3 * DAY) as f64 {
+        return Ok(unknown);
+    }
+    let likely = Moment::of(shown(now + until as i64, now), now);
+    Ok(Outlook::RunsOut {
+        likely,
+        soonest: likely,
+    })
 }
 
 /// The limit that decides how an account stands, of those on all its usage

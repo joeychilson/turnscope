@@ -593,10 +593,13 @@ fn paced(limit: &Limit, now: i64) -> String {
     }
     let resets = limit.resets().map(|resets| time::ahead(resets, now));
     let ahead = match (&limit.outlook, resets) {
-        (Outlook::RunsOut { likely, .. }, Some(resets)) => format!(
-            " and {} out {} at this pace, before it resets {resets}",
+        (Outlook::RunsOut { likely, .. }, resets) => format!(
+            " and {} out {} at this pace{}",
             agree(limit, "runs", "run"),
-            time::ahead(likely.at, now)
+            time::ahead(likely.at, now),
+            resets.map_or(String::new(), |resets| format!(
+                ", before it resets {resets}"
+            ))
         ),
         (Outlook::Lasts { .. }, Some(resets)) => format!(
             " and {} at this pace until it resets {resets}",

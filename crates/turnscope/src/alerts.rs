@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::status::{Account, Limit, Moment, Outlook, State, Status, Unknown};
-use crate::time::DAY;
+use crate::time::{DAY, MINUTE};
 use crate::{Result, forecast};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,15 +83,18 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
         // read that worked, and one minutes after it is a sign-in since.
         let exact = window < 0 || kind == Kind::SignIn;
         let drift = if exact { 0 } else { forecast::DRIFT };
-        let known = tx
-            .prepare_cached(
-                "SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3 AND window BETWEEN ?4 - ?5 AND ?4 + ?5",
-            )?
-            .query_row(params![account.id, key, kind.as_str(), window, drift], |_| {
-                Ok(())
-            })
-            .optional()?;
-        if known.is_some() {
+        let known = |kind: Kind| -> Result<bool> {
+            Ok(tx
+                .prepare_cached(
+                    "SELECT 1 FROM alert WHERE account = ?1 AND limit_key = ?2 AND kind = ?3 AND window BETWEEN ?4 - ?5 AND ?4 + ?5",
+                )?
+                .query_row(params![account.id, key, kind.as_str(), window, drift], |_| {
+                    Ok(())
+                })
+                .optional()?
+                .is_some())
+        };
+        if known(kind)? {
             return Ok(());
         }
         // A reset ends the limit's warnings, and the limit used up again
@@ -113,10 +116,28 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             Kind::Reset => notify.reset,
             Kind::SignIn => notify.sign_in,
         };
-        // Back while another limit that stops it is used up, it still can't
-        // be used: that limit's own return says so.
-        let blocked = kind == Kind::Reset && limit.is_some_and(|limit| blocked(account, limit));
-        let told = on && !account.hidden && !blocked;
+        let news = match kind {
+            // Back while another limit that stops it is used up, it still
+            // can't be used: that limit's own return says so.
+            Kind::Reset => {
+                recent(window, limit.and_then(Limit::length), now)
+                    && !limit.is_some_and(|limit| blocked(account, limit))
+            }
+            // Warned that a window of a day or less runs out, the warning
+            // said it, and when it's back. Replayed (November 2026), 5 hours
+            // were used up 0.1–2.9 hours after their warning, weeks and months
+            // 28 hours to 7 days, some sooner than said. With warnings off,
+            // none was told.
+            Kind::UsedUp => {
+                limit
+                    .and_then(Limit::length)
+                    .is_none_or(|length| length > DAY)
+                    || !notify.running_out
+                    || !known(Kind::RunningOut)?
+            }
+            Kind::RunningOut | Kind::SignIn => true,
+        };
+        let told = on && !account.hidden && news;
         let detail = Detail {
             account_title: account.full_title(),
             limit_name: limit.map(|limit| limit.name.clone()),
@@ -190,6 +211,9 @@ pub fn raise(db: &mut Connection, status: &Status) -> Result<Vec<Alert>> {
             }
             // After its return, which ends the warnings told before it.
             match limit.outlook {
+                // Back within 15 minutes, it's back about as soon as a read
+                // sees it used up: neither is news.
+                Outlook::UsedUp { back: Some(back) } if back.at - now <= 15 * MINUTE => {}
                 Outlook::UsedUp { .. } if account.in_use => {
                     raise(account, Some(limit), Kind::UsedUp, window, None)?
                 }
@@ -223,6 +247,14 @@ fn window(limit: &Limit) -> Option<i64> {
     }
 }
 
+/// Whether a return at `back`, the reset of the window used up, is still
+/// news: for its window's length, a day at most. Told when the Mac woke 13
+/// hours after a 5-hour window came back, it's always back by then. Money
+/// that never resets has no time it came back, and is news until told.
+fn recent(back: i64, length: Option<i64>, now: i64) -> bool {
+    back < 0 || now - back <= length.unwrap_or(DAY).min(DAY)
+}
+
 fn blocked(account: &Account, limit: &Limit) -> bool {
     account.limits.iter().any(|other| {
         other.key != limit.key
@@ -235,7 +267,7 @@ fn blocked(account: &Account, limit: &Limit) -> bool {
 /// accounts and limits that have since recovered or moved to a new window.
 pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>> {
     let mut statement = db.prepare(
-        "SELECT id, kind, at, account, limit_key, detail FROM alert WHERE acknowledged = 0 ORDER BY id",
+        "SELECT id, kind, at, account, limit_key, detail, window FROM alert WHERE acknowledged = 0 ORDER BY id",
     )?;
     let mut rows = statement.query([])?;
     let mut pending = Vec::new();
@@ -277,7 +309,9 @@ pub fn pending(db: &Connection, status: &Status, now: i64) -> Result<Vec<Alert>>
                     None => known_limit.is_some_and(applies),
                 }
             }
-            Kind::Reset => now - at <= DAY,
+            Kind::Reset => {
+                now - at <= DAY && recent(row.get(6)?, known_limit.and_then(Limit::length), now)
+            }
             Kind::SignIn => now - at <= DAY && known.is_some_and(Account::refused),
         };
         if stands {
@@ -370,7 +404,7 @@ mod tests {
     use super::*;
     use crate::db::test::rows;
     use crate::status::{Horizon, LimitWindow};
-    use crate::time::MINUTE;
+    use crate::time::HOUR;
 
     fn status(at: i64, left: u8, outlook: Outlook) -> Status {
         let mut status: Status =
@@ -395,6 +429,21 @@ mod tests {
     const LASTS: Outlook = Outlook::Lasts {
         left_at_reset: None,
     };
+
+    /// Its window 5 hours long, resetting on day 10.
+    fn five_hours(at: i64, left: u8, outlook: Outlook) -> Status {
+        let mut status = status(at, left, outlook);
+        let window = status.accounts[0].limits[0].window.as_mut().unwrap();
+        window.starts_at = Some(10 * DAY - 5 * HOUR);
+        status
+    }
+
+    fn soon(at: i64) -> Moment {
+        Moment {
+            at,
+            horizon: Horizon::Soon,
+        }
+    }
 
     fn open() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
@@ -427,6 +476,78 @@ mod tests {
         let ended = status(10 * DAY + MINUTE, 100, LASTS);
         assert_eq!(kinds(&raise(&mut db, &ended).unwrap()), [Kind::Reset]);
         assert!(raise(&mut db, &ended).unwrap().is_empty(), "told once");
+    }
+
+    /// 5 hours used up on day 10, back at its reset: told within 5 hours,
+    /// with the first status too while the app hasn't shown it, and not
+    /// when the Mac wakes the next morning.
+    #[test]
+    fn a_return_is_told_only_while_its_window_could_not_have_reset_anyway() {
+        let used_up = five_hours(10 * DAY - HOUR, 0, Outlook::UsedUp { back: None });
+        let back = |hours| five_hours(10 * DAY + hours * HOUR, 100, LASTS);
+        let (_dir, mut db) = open();
+        raise(&mut db, &used_up).unwrap();
+        assert_eq!(kinds(&raise(&mut db, &back(4)).unwrap()), [Kind::Reset]);
+        let first = |hours| kinds(&pending(&db, &back(hours), 10 * DAY + hours * HOUR).unwrap());
+        assert_eq!(first(5), [Kind::Reset]);
+        assert!(first(6).is_empty());
+
+        let (_dir, mut db) = open();
+        raise(&mut db, &used_up).unwrap();
+        assert!(raise(&mut db, &back(13)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_limit_back_within_15_minutes_is_told_neither_used_up_nor_back() {
+        for (minutes, told) in [(15, vec![]), (20, vec![Kind::UsedUp, Kind::Reset])] {
+            let (_dir, mut db) = open();
+            let back = Some(soon(10 * DAY));
+            let used_up = status(10 * DAY - minutes * MINUTE, 0, Outlook::UsedUp { back });
+            let mut said = raise(&mut db, &used_up).unwrap();
+            said.extend(raise(&mut db, &status(10 * DAY + MINUTE, 100, LASTS)).unwrap());
+            assert_eq!(kinds(&said), told);
+        }
+    }
+
+    /// Warned that 5 hours runs out, it's told back but not used up: the
+    /// warning said that. Told used up when not warned, when warnings are
+    /// off, and of a longer window, whose used up can come days after its
+    /// warning.
+    #[test]
+    fn a_5_hour_window_warned_of_is_told_back_but_not_used_up() {
+        let out = Outlook::RunsOut {
+            likely: soon(10 * DAY - 30 * MINUTE),
+            soonest: soon(10 * DAY - 30 * MINUTE),
+        };
+        let used_up = Outlook::UsedUp { back: None };
+        let (_dir, mut db) = open();
+        raise(&mut db, &five_hours(10 * DAY - HOUR, 20, out.clone())).unwrap();
+        let five_used_up = five_hours(10 * DAY - 30 * MINUTE, 0, used_up.clone());
+        assert!(raise(&mut db, &five_used_up).unwrap().is_empty());
+        let back = five_hours(10 * DAY + MINUTE, 100, LASTS);
+        assert_eq!(kinds(&raise(&mut db, &back).unwrap()), [Kind::Reset]);
+
+        let (_dir, mut db) = open();
+        assert_eq!(
+            kinds(&raise(&mut db, &five_used_up).unwrap()),
+            [Kind::UsedUp]
+        );
+
+        let (_dir, mut db) = open();
+        raise(&mut db, &runs_out(DAY)).unwrap();
+        let week_used_up = status(2 * DAY, 0, used_up);
+        assert_eq!(
+            kinds(&raise(&mut db, &week_used_up).unwrap()),
+            [Kind::UsedUp]
+        );
+
+        let (_dir, mut db) = open();
+        let mut warned = five_hours(10 * DAY - HOUR, 20, out);
+        warned.settings.notify.running_out = false;
+        raise(&mut db, &warned).unwrap();
+        let mut used_up = five_used_up;
+        used_up.settings.notify.running_out = false;
+        assert_eq!(kinds(&raise(&mut db, &used_up).unwrap()), [Kind::UsedUp]);
     }
 
     /// An OpenRouter account whose credits, `size` dollars of them, have

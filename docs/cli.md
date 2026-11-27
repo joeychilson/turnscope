@@ -144,7 +144,9 @@ SuperGrok (me@example.com) · via Grok Build
   Its login was refused; open Grok Build to sign in again.
 ```
 
-"At this pace" uses clock time, breaks included. "Of work" counts only the
+"At this pace" uses clock time, breaks included. Of money that doesn't
+reset, as credits, it's the last week's spend, and a run-out is said only
+within three days. "Of work" counts only the
 hours your agents were working: the work rate, `40.9% an hour of work`, is
 how much of the limit an hour of it uses. "As little as" and "as soon as"
 are at a pace that went faster only 1 time in 10.

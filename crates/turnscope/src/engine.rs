@@ -985,7 +985,7 @@ mod tests {
         read_just_now(data.path())
             .execute(
                 "INSERT INTO alert (account, limit_key, kind, window, at, detail)
-                 VALUES ('anthropic:a', 'five_hour', 'reset', 1, ?1, '{\"accountTitle\":\"Claude Max\"}')",
+                 VALUES ('anthropic:a', 'five_hour', 'reset', ?1, ?1, '{\"accountTitle\":\"Claude Max\"}')",
                 [crate::now()],
             )
             .unwrap();
@@ -1512,7 +1512,7 @@ mod tests {
         );
         db.execute(
             "INSERT INTO alert (account, limit_key, kind, window, at, detail)
-             VALUES ('anthropic:a', 'seven_day', 'reset', 1, ?1, '{\"accountTitle\":\"Claude Max\"}')",
+             VALUES ('anthropic:a', 'seven_day', 'reset', ?1, ?1, '{\"accountTitle\":\"Claude Max\"}')",
             [now],
         )
         .unwrap();
