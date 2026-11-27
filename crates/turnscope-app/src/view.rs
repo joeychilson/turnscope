@@ -608,7 +608,7 @@ mod tests {
         assert!(
             verdict
                 .detail
-                .ends_with("Your agents have worked about 40m since.")
+                .ends_with("Your agents have worked about 40m since it was last read.")
         );
         assert!(panel.in_use[0].status.starts_with("Not read since"));
     }

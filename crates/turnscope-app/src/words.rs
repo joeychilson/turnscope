@@ -272,33 +272,15 @@ impl Words {
                     .map_or(String::new(), |w| format!("Back {}.", self.at(&w.resets)));
                 (headline, with_alternate(back))
             }
-            Outlook::Unknown { .. } if stale(limit) => (
+            Outlook::Unknown { .. } if read_out_of_date(account) => (
                 format!("{} isn't up to date", account.title),
-                self.last_read(limit, account),
+                worked_since_read(account),
             ),
             Outlook::Unknown { reason } => (
                 "You can keep going".into(),
                 unforecast(limit, account, *reason),
             ),
             Outlook::Lasts { .. } => ("You can keep going".into(), self.lasting(limit, account)),
-        }
-    }
-
-    /// What `limit` had left at its last read, too long ago to say where it's headed, and how
-    /// long agents here have worked on it since.
-    fn last_read(&self, limit: &Limit, account: &Account) -> String {
-        let then = format!(
-            "Last read {}, when {} had {} left.",
-            self.ago(limit.read_at),
-            name(limit),
-            left_of(limit)
-        );
-        match account.worked_since_read() {
-            Some((_, worked)) => format!(
-                "{then} Your agents have worked {} since.",
-                turnscope::status::about(worked)
-            ),
-            None => then,
         }
     }
 
@@ -606,9 +588,25 @@ fn stale(limit: &Limit) -> bool {
             })
 }
 
-/// Whether what `account`'s figure says is as of a read that's out of date.
+/// Whether what `account`'s figure says is as of a read that's out of date: one too old to say
+/// where it's headed, or one before a reset that agents here may have worked after.
 pub fn read_out_of_date(account: &Account) -> bool {
-    account.deciding_limit().is_some_and(stale)
+    account.deciding_limit().is_some_and(|limit| {
+        stale(limit) || (limit.reset_since.is_some() && account.worked_since_read().is_some())
+    })
+}
+
+/// How long agents here have worked on `account` since its last read, which the read can't
+/// hold: the row shows when that was and what was left.
+fn worked_since_read(account: &Account) -> String {
+    account
+        .worked_since_read()
+        .map_or(String::new(), |(_, worked)| {
+            format!(
+                "Your agents have worked {} since it was last read.",
+                turnscope::status::about(worked)
+            )
+        })
 }
 
 /// What an API key with no deciding limit spent, once it's been read: one
@@ -1241,6 +1239,23 @@ mod tests {
                 "Full since the reset, unless used on the web or another device.".into()
             )
         );
+        // Worked on since its last read, maybe after the reset: not known to be full.
+        let worked = Account {
+            state: State::AsOf {
+                read_at: at("2026-09-30T10:00:00Z"),
+                why: Stale::Expired,
+                worked_minutes: 40,
+            },
+            ..full
+        };
+        assert_eq!(
+            w.verdict(Some(&worked), false, &[]),
+            (
+                "Claude Max isn't up to date".into(),
+                "Your agents have worked about 40m since it was last read.".into()
+            )
+        );
+        assert!(read_out_of_date(&worked));
     }
 
     #[test]
@@ -1478,14 +1493,10 @@ mod tests {
             w.verdict(Some(&dated(40)), false, &[]),
             (
                 "Claude Max isn't up to date".into(),
-                "Last read 11:20 AM, when 5 hours had 28% left. Your agents have worked about 40m since."
-                    .into()
+                "Your agents have worked about 40m since it was last read.".into()
             )
         );
-        assert_eq!(
-            w.verdict(Some(&dated(0)), false, &[]).1,
-            "Last read 11:20 AM, when 5 hours had 28% left."
-        );
+        assert_eq!(w.verdict(Some(&dated(0)), false, &[]).1, "");
         assert_eq!(w.status(&dated(40)), "Not read since 11:20 AM");
 
         // Multiple other limits used up: names the last back, prioritizing used-up over running-out.
